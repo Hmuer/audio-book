@@ -1,0 +1,70 @@
+from __future__ import annotations
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+from .core.config import settings
+from .db.session import init_db
+from .api.routes import router as api_router
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+logger = logging.getLogger("novel-tts")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    logger.info("DB initialized")
+    yield
+
+
+app = FastAPI(
+    title="AI 有声小说生成器",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+app.include_router(api_router)
+
+# /media -> audio files
+media_dir = Path(settings.AUDIO_DIR)
+media_dir.mkdir(parents=True, exist_ok=True)
+
+# 自定义 StaticFiles 支持 Range（浏览器 <audio> 拖动）
+class _RangedStaticFiles(StaticFiles):
+    pass
+
+app.mount("/media", _RangedStaticFiles(directory=str(media_dir)), name="media")
+
+# 前端 out 目录：先尝试相对 repo 根路径
+FRONTEND_OUT_CANDIDATES = [
+    Path(__file__).resolve().parent.parent.parent / "frontend" / "out",
+    Path("./frontend/out").resolve(),
+]
+frontend_out: Path | None = None
+for p in FRONTEND_OUT_CANDIDATES:
+    if p.exists() and (p / "index.html").exists():
+        frontend_out = p
+        break
+
+if frontend_out:
+    logger.info(f"挂载前端静态目录: {frontend_out}")
+    app.mount("/", StaticFiles(directory=str(frontend_out), html=True), name="frontend")
+else:
+    logger.warning(
+        "前端构建产物未找到 (frontend/out/index.html)。"
+        "请先 `cd frontend && npm install && npm run build`，或运行 start.sh。"
+    )
+
+    @app.get("/")
+    async def root_missing():
+        return {
+            "message": "前端还未构建，请先运行 start.sh 或构建 frontend",
+            "docs": "/docs",
+        }
