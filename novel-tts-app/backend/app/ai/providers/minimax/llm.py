@@ -54,7 +54,7 @@ class MiniMaxLLMProvider(BaseLLMProvider):
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     resp = await client.post(
-                        f"{self.base_url}/chatcompletions",
+                        f"{self.base_url}/chat/completions",
                         headers={
                             "Authorization": f"Bearer {self.api_key}",
                             "Content-Type": "application/json",
