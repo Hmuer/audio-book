@@ -12,9 +12,13 @@ from .api.routes import router as api_router
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    format="%(asctime)s | %(levelname)-5s | %(name)s:%(lineno)d | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("novel-tts")
+
+# 屏蔽 httpx 内部 INFO 级别的请求日志（我们自己会在 provider 层打更有上下文的日志）
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @asynccontextmanager

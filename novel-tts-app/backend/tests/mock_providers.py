@@ -161,13 +161,22 @@ class MockTTSProvider(BaseTTSProvider):
     async def list_voices(self) -> list[dict[str, Any]]:
         return self._voices
 
-    async def synthesize_to_bytes(self, text: str, voice_id: str) -> bytes:
+    async def synthesize_to_bytes(
+        self, text: str, voice_id: str, *, emotion: str = "calm"
+    ) -> bytes:
         # 每 5 个字约 1s，用静音 MP3
         dur_ms = max(200, len(text) * 200)
         return make_silent_mp3(dur_ms)
 
-    async def synthesize_to_file(self, text: str, voice_id: str, output_path: str) -> tuple[str, int]:
-        data = await self.synthesize_to_bytes(text, voice_id)
+    async def synthesize_to_file(
+        self,
+        text: str,
+        voice_id: str,
+        output_path: str,
+        *,
+        emotion: str = "calm",
+    ) -> tuple[str, int]:
+        data = await self.synthesize_to_bytes(text, voice_id, emotion=emotion)
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "wb") as f:
             f.write(data)

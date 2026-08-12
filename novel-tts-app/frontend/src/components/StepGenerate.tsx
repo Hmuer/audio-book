@@ -24,10 +24,9 @@ export default function StepGenerate({
   const [segmentOverrides, setSegmentOverrides] = useState<Record<number, string>>({});
   const [previewAudio, setPreviewAudio] = useState<string | null>(null);
 
-  const { narrator, assignments }: any = useMemo(() => {
-    const v = (typeof window !== 'undefined' && (window as any).__novel_voices) || {};
-    return v;
-  }, []);
+  // 从 window 读取 Step 2 中选择的音色（每次渲染都读最新值，避免 stale closure）
+  const { narrator, assignments }: any =
+    (typeof window !== 'undefined' && (window as any).__novel_voices) || {};
 
   const narratorVoiceId =
     narrator || voices.find(v => v.id === 'neutral_03')?.id || voices[0]?.id || '';
