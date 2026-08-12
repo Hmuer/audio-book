@@ -355,9 +355,6 @@ def _build_segments_for_chapter(
             text=dlg.text,
             confidence=dlg.confidence,
         )
-        # segment_overrides 覆盖 (键为全局 segment_index 预占位)
-        if segment_overrides and idx in segment_overrides:
-            dlg_seg.voice_id = segment_overrides[idx]
         segs.append(dlg_seg)
         idx += 1
 
@@ -395,8 +392,8 @@ async def synthesize_chapter(
     job = result.scalar_one()
     polished_text = job.polished_text or job.raw_text
 
-    # 2. 加载所有 dialogue + 重新分章
-    chapters = await split_chapters_with_llm(polished_text)
+    # 2. 使用单章处理（避免重新调 LLM 分章导致与 prepare 阶段不一致）
+    chapters = [Chapter(idx=0, title="正文", text=polished_text)]
 
     stmt_d = select(DbDialogue).where(DbDialogue.job_id == job_id).order_by(DbDialogue.anchor_start)
     result_d = await session.execute(stmt_d)
@@ -442,10 +439,19 @@ async def synthesize_chapter(
             ch, dls,
             narrator_voice_id=narrator_voice_id,
             voice_assignments=voice_assignments,
-            segment_overrides=segment_overrides,
+            segment_overrides=None,  # 覆盖在构建后按对白索引应用
             start_idx=seg_idx,
         )
         segments.extend(ch_segs)
+
+    # 3.5 按"对白索引"应用 segment_overrides（前端发送的是对白序号，非 segment 序号）
+    if segment_overrides:
+        dlg_idx = 0
+        for seg in segments:
+            if seg.kind == "dialogue":
+                if dlg_idx in segment_overrides:
+                    seg.voice_id = segment_overrides[dlg_idx]
+                dlg_idx += 1
 
     # 4. 并发合成每个非 silence 段
     tts = get_tts()

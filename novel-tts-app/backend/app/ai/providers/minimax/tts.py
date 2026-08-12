@@ -83,7 +83,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             return make_silent_mp3(50)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(
-                f"{self.base_url}/tts/stream",
+                f"{self.base_url}/t2a_stream",
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
