@@ -85,6 +85,8 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                                     "strict": False,
                                 },
                             },
+                            # 关闭 thinking：json_schema 模式下 thinking 会污染 content 导致 JSON 解析失败
+                            "thinking": {"type": "disabled"},
                         },
                     )
                     http_status = resp.status_code
@@ -113,21 +115,22 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                     completion_tokens = usage.get("completion_tokens")
                     total_tokens = usage.get("total_tokens")
                     msg_obj = data.get("choices", [{}])[0].get("message", {})
-                    # MiniMax 默认在 content 中嵌入 <think>...</think> 思考内容，需要剥离
                     content = msg_obj.get("content", "") or ""
                     resp_chars = len(content)
                     if not content.strip():
                         raise ValueError(f"Empty LLM response: {data}")
 
-                    # 1) 剥离 <think> 标签（MiniMax/M3/M2.x 系列默认 thinking）
                     import re as _re
+
+                    # 1) 剥离 thinking 标签（MiniMax M3/M2.x 默认在 content 内嵌入）
                     stripped = _re.sub(
-                        r"<think>.*?</think>",
+                        r"<thinking>.*?</thinking>",
                         "",
                         content,
                         flags=_re.DOTALL,
                     ).strip()
-                    # 若 reasoning_content 字段存在且 content 为纯 thinking 时，回退
+
+                    # 2) 若剥离后为空，尝试 reasoning_content 字段
                     if not stripped:
                         reasoning = msg_obj.get("reasoning_content")
                         if reasoning:
@@ -136,14 +139,26 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                     if not stripped:
                         raise ValueError(f"LLM 响应仅含 thinking 无有效内容: {content[:500]}")
 
-                    # 2) 有时 LLM 额外包裹 ```json ... ```，去掉
+                    # 3) 去掉 markdown 代码块包裹
                     if stripped.startswith("```"):
                         stripped = stripped.strip("`")
                         if stripped.lower().startswith("json"):
                             stripped = stripped[4:]
                         stripped = stripped.strip()
 
-                    parsed = json.loads(stripped)
+                    # 4) 尝试解析 JSON
+                    try:
+                        parsed = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        # 5) 最后 fallback：用正则提取第一个 JSON 对象
+                        json_match = _re.search(r'\{.*\}', stripped, _re.DOTALL)
+                        if not json_match:
+                            logger.error(
+                                f"[LLM] JSON parse failed, raw content (first 1000 chars): {content[:1000]}"
+                            )
+                            raise
+                        parsed = json.loads(json_match.group(0))
+
                     validated = output_schema.model_validate(parsed)
                     elapsed = _time.perf_counter() - t0
                     total_elapsed = _time.perf_counter() - total_start
