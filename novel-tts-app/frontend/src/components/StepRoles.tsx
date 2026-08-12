@@ -15,7 +15,7 @@ export default function StepRoles({
   onNext: () => void;
 }) {
   // 存 narrator voice + 每个角色的 voice
-  const narratorDefault = voices.find(v => v.id === 'neutral_03') || voices[0];
+  const narratorDefault = voices.find(v => v.id === 'male-qn-jingying') || voices[0];
   const [narratorVoice, setNarratorVoice] = useState<string>(narratorDefault?.id || '');
 
   const [charVoices, setCharVoices] = useState<Record<string, string>>(() => {

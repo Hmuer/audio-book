@@ -116,9 +116,9 @@ class MockLLMProvider(BaseLLMProvider):
 
         if "VoiceRecommendation" in schema_name or "Voice" in schema_name:
             recs = [
-                {"character_name": "林若雪", "suggested_voice_id": "female_tianmei_01", "reason": "少女匹配甜美音色"},
-                {"character_name": "李明", "suggested_voice_id": "male_qingnian_01", "reason": "青年男声"},
-                {"character_name": "王大爷", "suggested_voice_id": "male_cangsang_01", "reason": "老年沧桑"},
+                {"character_name": "林若雪", "suggested_voice_id": "female-tianmei", "reason": "少女匹配甜美音色"},
+                {"character_name": "李明", "suggested_voice_id": "male-qn-qingse", "reason": "青年男声"},
+                {"character_name": "王大爷", "suggested_voice_id": "male-qn-badao", "reason": "老年沧桑"},
             ]
             return output_schema.model_validate({"data": recs})
 

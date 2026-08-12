@@ -31,7 +31,7 @@ PROMPT_BASE = r"""
 输出格式：
 {
   "data": [
-    {"character_name": "林若雪", "suggested_voice_id": "female_tianmei_01", "reason": "17岁内向少女，匹配甜美少女音色的温柔轻声风格。"}
+    {"character_name": "林若雪", "suggested_voice_id": "female-tianmei", "reason": "17岁内向少女，匹配甜美少女音色的温柔轻声风格。"}
   ]
 }
 ⚠️输出必须是 JSON，顶层一定有 data 字段，每个角色一条。

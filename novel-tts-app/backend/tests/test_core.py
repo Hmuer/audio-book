@@ -77,11 +77,11 @@ async def test_three_character_synthesize_voice_ids_propagate(_isolate_data_dir,
 
     # 造 assignments：指定 3 个不同音色
     assignments = {
-        "林若雪": "female_tianmei_01",
-        "李明": "male_qingnian_01",
-        "王大爷": "male_cangsang_01",
+        "林若雪": "female-tianmei",
+        "李明": "male-qn-qingse",
+        "王大爷": "male-qn-badao",
     }
-    narrator = "neutral_03"
+    narrator = "male-qn-jingying"
 
     synth = await synthesize_chapter(
         db_session,
