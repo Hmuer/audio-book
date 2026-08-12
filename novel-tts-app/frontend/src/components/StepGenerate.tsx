@@ -29,7 +29,7 @@ export default function StepGenerate({
     (typeof window !== 'undefined' && (window as any).__novel_voices) || {};
 
   const narratorVoiceId =
-    narrator || voices.find(v => v.id === 'neutral_03')?.id || voices[0]?.id || '';
+    narrator || voices.find(v => v.id === 'male-qn-jingying')?.id || voices[0]?.id || '';
 
   const dialoguesOnly = useMemo(
     () => prepareResult.dialogue_attributions.filter(d => d.speaker),
