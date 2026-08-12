@@ -112,17 +112,31 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                     prompt_tokens = usage.get("prompt_tokens")
                     completion_tokens = usage.get("completion_tokens")
                     total_tokens = usage.get("total_tokens")
-                    content = (
-                        data.get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content", "")
-                    )
+                    msg_obj = data.get("choices", [{}])[0].get("message", {})
+                    # MiniMax 默认在 content 中嵌入 <think>...</think> 思考内容，需要剥离
+                    content = msg_obj.get("content", "") or ""
                     resp_chars = len(content)
-                    if not content:
+                    if not content.strip():
                         raise ValueError(f"Empty LLM response: {data}")
 
-                    # 有时 LLM 返回的是 ```json ... ```，去掉
-                    stripped = content.strip()
+                    # 1) 剥离 <think> 标签（MiniMax/M3/M2.x 系列默认 thinking）
+                    import re as _re
+                    stripped = _re.sub(
+                        r"<think>.*?</think>",
+                        "",
+                        content,
+                        flags=_re.DOTALL,
+                    ).strip()
+                    # 若 reasoning_content 字段存在且 content 为纯 thinking 时，回退
+                    if not stripped:
+                        reasoning = msg_obj.get("reasoning_content")
+                        if reasoning:
+                            stripped = reasoning.strip()
+
+                    if not stripped:
+                        raise ValueError(f"LLM 响应仅含 thinking 无有效内容: {content[:500]}")
+
+                    # 2) 有时 LLM 额外包裹 ```json ... ```，去掉
                     if stripped.startswith("```"):
                         stripped = stripped.strip("`")
                         if stripped.lower().startswith("json"):
