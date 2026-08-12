@@ -170,7 +170,14 @@ async def prepare_chapter(
     raw_text: str,
     enable_polish: bool = True,
 ) -> PrepareResponse:
+    import time as _time
     job_id = uuid.uuid4().hex
+    t0 = _time.perf_counter()
+    raw_chars = len(raw_text)
+    logger.info(
+        f"[prepare] START job_id={job_id[:8]}... raw_chars={raw_chars} enable_polish={enable_polish}"
+    )
+    phase_timings: dict[str, int] = {}
 
     # 1) Polish
     polished_text = raw_text
@@ -178,11 +185,16 @@ async def prepare_chapter(
     polish_warning: str | None = None
 
     if enable_polish:
+        pt = _time.perf_counter()
         try:
             polish_result = await polish_with_llm(raw_text)
             if polish_result.is_reasonable:
                 polished_text = polish_result.polished_text
                 diff = [d.model_dump() for d in polish_result.diff]
+                logger.info(
+                    f"[prepare] job_id={job_id[:8]}... polish ok: diff_count={len(diff)} "
+                    f"ms={int((_time.perf_counter()-pt)*1000)}"
+                )
             else:
                 # 回退原文
                 polished_text = raw_text
@@ -190,12 +202,20 @@ async def prepare_chapter(
                     "LLM 自我评估本次修改不合理（过度润色或改动文风），已回退到原文。"
                     f"原因：{polish_result.reason}"
                 )
+                logger.warning(
+                    f"[prepare] job_id={job_id[:8]}... polish rejected: reason={polish_result.reason[:80]}"
+                )
         except Exception as e:
-            logger.warning(f"[polish] 失败: {e}")
+            logger.warning(
+                f"[prepare] job_id={job_id[:8]}... polish failed: {type(e).__name__}: {e}",
+                exc_info=False,
+            )
             polish_warning = f"错别字纠错调用失败，使用原文。原因：{type(e).__name__}"
             polished_text = raw_text
+        phase_timings["polish_ms"] = int((_time.perf_counter() - pt) * 1000)
 
     # 2) 角色识别（短文本也调 LLM）
+    pt = _time.perf_counter()
     characters = await _split_50k_and_run(
         polished_text, extract_characters_with_llm
     )
@@ -206,10 +226,18 @@ async def prepare_chapter(
         characters, name_map = apply_dedup(characters, dedup_results)
     else:
         name_map = {c.name: c.name for c in characters}
+    phase_timings["char_extract_ms"] = int((_time.perf_counter() - pt) * 1000)
+    logger.info(
+        f"[prepare] job_id={job_id[:8]}... characters={len(characters)} "
+        f"ms={phase_timings['char_extract_ms']}"
+    )
 
     # 3) 对白归属（按章节）
+    pt = _time.perf_counter()
     chapters = await split_chapters_with_llm(polished_text)
+    phase_timings["split_chapter_ms"] = int((_time.perf_counter() - pt) * 1000)
 
+    pt = _time.perf_counter()
     dialogue_attrs: list[DialogueAttribution] = []
 
     async def _attr_one(chapter_text: str) -> list[DialogueAttribution]:
@@ -227,15 +255,24 @@ async def prepare_chapter(
             # speaker 做去重 name → canonical 映射
             a.speaker = name_map.get(a.speaker, a.speaker)
         dialogue_attrs.extend(attrs)
+    phase_timings["dialogue_attr_ms"] = int((_time.perf_counter() - pt) * 1000)
+    logger.info(
+        f"[prepare] job_id={job_id[:8]}... chapters={len(chapters)} "
+        f"dialogues={len(dialogue_attrs)} ms={phase_timings['dialogue_attr_ms']}"
+    )
 
     # 4) 音色推荐
+    pt = _time.perf_counter()
+    voice_recs: list[VoiceRecommendation] = []
     try:
         voice_recs = await recommend_voices_with_llm(characters)
     except Exception as e:
-        logger.warning(f"[voice_rec] 失败: {e}")
+        logger.warning(f"[prepare] job_id={job_id[:8]}... voice_rec failed: {e}")
         voice_recs = []
+    phase_timings["voice_rec_ms"] = int((_time.perf_counter() - pt) * 1000)
 
     # 5) 落库
+    pt = _time.perf_counter()
     job = Job(
         job_id=job_id,
         status="ready",
@@ -254,7 +291,6 @@ async def prepare_chapter(
             personality=c.personality,
             canonical_name=c.name,
         ))
-    # 对白带章节号和全局 segment_index 占位（先按出现顺序给 id，synthesize 时重算 segment_index）
     for i, d in enumerate(dialogue_attrs):
         session.add(DbDialogue(
             job_id=job_id,
@@ -268,6 +304,15 @@ async def prepare_chapter(
             confidence=d.confidence,
         ))
     await session.commit()
+    phase_timings["db_ms"] = int((_time.perf_counter() - pt) * 1000)
+
+    total_ms = int((_time.perf_counter() - t0) * 1000)
+    timing_str = " ".join(f"{k}={v}" for k, v in phase_timings.items())
+    logger.info(
+        f"[prepare] DONE job_id={job_id[:8]}... total_ms={total_ms} {timing_str} "
+        f"chars={len(polished_text)} chapters={len(chapters)} "
+        f"characters={len(characters)} dialogues={len(dialogue_attrs)}"
+    )
 
     return PrepareResponse(
         job_id=job_id,
@@ -386,6 +431,14 @@ async def synthesize_chapter(
     narrator_voice_id: str,
     segment_overrides: dict[int, str] | None = None,
 ) -> SynthesizeResponse:
+    import time as _time
+    t0 = _time.perf_counter()
+    logger.info(
+        f"[synthesize] START job_id={job_id[:8]}... "
+        f"narrator={narrator_voice_id} voices={len(voice_assignments)} "
+        f"overrides={len(segment_overrides or {})}"
+    )
+    phase: dict[str, int] = {}
     # 1. 加载 job
     stmt = select(Job).where(Job.job_id == job_id)
     result = await session.execute(stmt)
@@ -476,8 +529,15 @@ async def synthesize_chapter(
             dur = _estimate_mp3_duration_ms(data)
             return s, data, dur, fname
 
+    pt = _time.perf_counter()
     tasks = [_synth_seg(s) for s in segments]
+    non_silence_count = sum(1 for s in segments if s.kind != "silence")
+    logger.info(
+        f"[synthesize] job_id={job_id[:8]}... segments_total={len(segments)} "
+        f"to_synth={non_silence_count} concurrent=4"
+    )
     results = await asyncio.gather(*tasks)
+    phase["synth_ms"] = int((_time.perf_counter() - pt) * 1000)
 
     # 5. 拼接最终 MP3
     all_bytes = [r[1] for r in results]
@@ -524,6 +584,13 @@ async def synthesize_chapter(
             dlg_ptr += 1
     await session.commit()
 
+    total_elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+    timing_str = " ".join(f"{k}={v}" for k, v in phase.items())
+    logger.info(
+        f"[synthesize] DONE job_id={job_id[:8]}... total_ms={total_elapsed_ms} {timing_str} "
+        f"final_size_kb={len(final_bytes)//1024} duration_s={round(total_ms/1000,1)} "
+        f"segments={len(results)}"
+    )
     return SynthesizeResponse(
         job_id=job_id,
         audio_filename=final_name,

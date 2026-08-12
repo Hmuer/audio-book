@@ -1,8 +1,8 @@
 from __future__ import annotations
 import logging
+import time as _time
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,25 +64,51 @@ async def list_voices():
 @router.post("/chapter/prepare", response_model=PrepareResponse)
 async def api_prepare(
     req: PrepareRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    t0 = _time.perf_counter()
+    remote = request.client.host if request.client else "?"
+    text_len = len(req.text)
+    logger.info(
+        f"[HTTP] POST /api/chapter/prepare client={remote} "
+        f"text_len={text_len} enable_polish={req.enable_polish}"
+    )
     try:
         resp = await prepare_chapter(
             session=db,
             raw_text=req.text,
             enable_polish=req.enable_polish,
         )
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.info(
+            f"[HTTP] 200 /api/chapter/prepare job_id={resp.job_id[:8]}... "
+            f"chapters={len(resp.chapters)} chars={len(resp.polished_text)} total_ms={elapsed_ms}"
+        )
         return resp
     except Exception as e:
-        logger.exception("prepare 失败")
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.error(
+            f"[HTTP] 500 /api/chapter/prepare client={remote} total_ms={elapsed_ms} "
+            f"text_len={text_len} -> {type(e).__name__}: {e}",
+            exc_info=True,
+        )
         raise HTTPException(500, f"prepare 失败: {type(e).__name__}: {e}")
 
 
 @router.post("/chapter/synthesize", response_model=SynthesizeResponse)
 async def api_synthesize(
     req: SynthesizeRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    t0 = _time.perf_counter()
+    remote = request.client.host if request.client else "?"
+    logger.info(
+        f"[HTTP] POST /api/chapter/synthesize client={remote} job_id={req.job_id[:8]}... "
+        f"voices={len(req.voice_assignments)} narrator={req.narrator_voice_id} "
+        f"overrides={len(req.segment_overrides or {})}"
+    )
     try:
         resp = await synthesize_chapter(
             session=db,
@@ -91,14 +117,34 @@ async def api_synthesize(
             narrator_voice_id=req.narrator_voice_id,
             segment_overrides=req.segment_overrides,
         )
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.info(
+            f"[HTTP] 200 /api/chapter/synthesize job_id={req.job_id[:8]}... "
+            f"duration_s={resp.duration_sec} segments={len(resp.segments)} total_ms={elapsed_ms}"
+        )
         return resp
     except Exception as e:
-        logger.exception("synthesize 失败")
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.error(
+            f"[HTTP] 500 /api/chapter/synthesize client={remote} "
+            f"job_id={req.job_id[:8]}... total_ms={elapsed_ms} -> "
+            f"{type(e).__name__}: {e}",
+            exc_info=True,
+        )
         raise HTTPException(500, f"synthesize 失败: {type(e).__name__}: {e}")
 
 
 @router.post("/tts/preview")
-async def api_tts_preview(req: TtsPreviewRequest):
+async def api_tts_preview(
+    req: TtsPreviewRequest,
+    request: Request,
+):
+    t0 = _time.perf_counter()
+    remote = request.client.host if request.client else "?"
+    logger.info(
+        f"[HTTP] POST /api/tts/preview client={remote} "
+        f"voice={req.voice_id} text_len={len(req.text)}"
+    )
     try:
         tts = get_tts()
         audio_dir = Path(settings.AUDIO_DIR)
@@ -107,11 +153,22 @@ async def api_tts_preview(req: TtsPreviewRequest):
         fname = f"preview_{_uuid.uuid4().hex[:10]}.mp3"
         fpath = str(audio_dir / fname)
         path, dur_ms = await tts.synthesize_to_file(req.text, req.voice_id, fpath)
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.info(
+            f"[HTTP] 200 /api/tts/preview voice={req.voice_id} "
+            f"dur_ms={dur_ms} total_ms={elapsed_ms}"
+        )
         return {
             "audio_filename": fname,
             "audio_url": f"/media/{fname}",
             "duration_ms": dur_ms,
         }
     except Exception as e:
-        logger.exception("TTS preview 失败")
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.error(
+            f"[HTTP] 500 /api/tts/preview client={remote} "
+            f"voice={req.voice_id} total_ms={elapsed_ms} -> "
+            f"{type(e).__name__}: {e}",
+            exc_info=True,
+        )
         raise HTTPException(500, f"TTS 失败: {type(e).__name__}: {e}")

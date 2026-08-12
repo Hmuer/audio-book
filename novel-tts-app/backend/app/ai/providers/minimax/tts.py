@@ -6,7 +6,7 @@ import logging
 import wave
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 import httpx
 
 from ....core.config import settings
@@ -78,33 +78,69 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         return self._voices
 
     async def synthesize_to_bytes(self, text: str, voice_id: str) -> bytes:
+        import time as _time
+        t0 = _time.perf_counter()
         if not text.strip():
             # 空文本返回短静音
+            logger.debug(f"[TTS] empty text, return silence voice_id={voice_id}")
             return make_silent_mp3(50)
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(
-                f"{self.base_url}/t2a_stream",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "speech-02",
-                    "voice_id": voice_id,
-                    "text": text,
-                    "speed": 1.0,
-                    "vol": 1.0,
-                    "pitch": 0,
-                    "sample_rate": 24000,
-                    "bitrate": 128000,
-                    "format": "mp3",
-                },
-            )
-            if resp.status_code >= 400:
-                raise RuntimeError(
-                    f"TTS HTTP {resp.status_code}: {resp.text[:500]}"
+        req_id: Optional[str] = None
+        http_status: Optional[int] = None
+        text_chars = len(text)
+        model = "speech-02"
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(
+                    f"{self.base_url}/t2a_stream",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "voice_id": voice_id,
+                        "text": text,
+                        "speed": 1.0,
+                        "vol": 1.0,
+                        "pitch": 0,
+                        "sample_rate": 24000,
+                        "bitrate": 128000,
+                        "format": "mp3",
+                    },
                 )
-            return resp.content
+                http_status = resp.status_code
+                req_id = (
+                    resp.headers.get("x-request-id")
+                    or resp.headers.get("X-Request-Id")
+                    or None
+                )
+                if resp.status_code >= 400:
+                    try:
+                        err_data = resp.json()
+                        req_id = err_data.get("request_id") or req_id
+                        err_msg = err_data.get("error", {}).get("message") or resp.text[:500]
+                    except Exception:
+                        err_msg = resp.text[:500]
+                    raise RuntimeError(
+                        f"TTS HTTP {resp.status_code}: {err_msg}"
+                    )
+                audio_bytes = resp.content
+                kb = len(audio_bytes) / 1024
+                elapsed = _time.perf_counter() - t0
+                logger.info(
+                    f"[TTS] ok model={model} voice={voice_id} chars={text_chars} "
+                    f"size={kb:.1f}KB req_id={req_id} status={http_status} ms={int(elapsed*1000)}"
+                )
+                return audio_bytes
+        except Exception as e:
+            elapsed = _time.perf_counter() - t0
+            logger.error(
+                f"[TTS] FAIL model={model} voice={voice_id} chars={text_chars} "
+                f"req_id={req_id} status={http_status} ms={int(elapsed*1000)} "
+                f"{type(e).__name__}: {e}",
+                exc_info=True,
+            )
+            raise
 
     async def synthesize_to_file(
         self, text: str, voice_id: str, output_path: str
