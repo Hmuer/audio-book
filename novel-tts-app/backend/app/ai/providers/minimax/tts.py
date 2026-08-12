@@ -77,7 +77,13 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                 self._voices = json.load(f)
         return self._voices
 
-    async def synthesize_to_bytes(self, text: str, voice_id: str) -> bytes:
+    async def synthesize_to_bytes(
+        self,
+        text: str,
+        voice_id: str,
+        *,
+        emotion: str = "calm",
+    ) -> bytes:
         import time as _time
         t0 = _time.perf_counter()
         if not text.strip():
@@ -106,6 +112,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                             "speed": 1.0,
                             "vol": 1.0,
                             "pitch": 0,
+                            "emotion": emotion,
                         },
                         "audio_setting": {
                             "sample_rate": 32000,
@@ -180,9 +187,14 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             raise
 
     async def synthesize_to_file(
-        self, text: str, voice_id: str, output_path: str
+        self,
+        text: str,
+        voice_id: str,
+        output_path: str,
+        *,
+        emotion: str = "calm",
     ) -> tuple[str, int]:
-        data = await self.synthesize_to_bytes(text, voice_id)
+        data = await self.synthesize_to_bytes(text, voice_id, emotion=emotion)
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "wb") as f:
             f.write(data)
