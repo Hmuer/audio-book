@@ -70,6 +70,7 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                             "response_format": {
                                 "type": "json_schema",
                                 "json_schema": {
+                                    "name": output_schema.__name__,
                                     "schema": schema_dict,
                                     "strict": False,
                                 },
