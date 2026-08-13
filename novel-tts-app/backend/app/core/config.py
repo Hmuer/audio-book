@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     # 相对保守的值：短对白 1s/TTS，100 并发 ≈ 100 段/秒的吞吐。
     # 如果调用方遇到 TTS RPM 429，可下调到 50 / 20。
     TTS_MAX_CONCURRENCY: int = 100
+    # TTS 段缓存：内存 LRU 上限（条）；超上限淘汰最旧。
+    # 注：磁盘缓存不限制大小（AUDIO_DIR/_seg_cache/），重启后仍可命中。
+    TTS_SEGMENT_CACHE_MAX_ENTRIES: int = 20_000
 
     # Auth (JWT)
     JWT_SECRET: str = "change-me-in-production-please-use-a-long-random-string"

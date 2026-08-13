@@ -585,6 +585,41 @@ async def _run_build_inner(
 
     for ch_idx, ch in enumerate(chapters):
         ch_t0 = _time.perf_counter()
+
+        # === 章级幂等 Skip：BuildArtifact.status=done 且 MP3 文件存在 ===
+        skip_this_chapter = False
+        async with factory() as s:
+            stmt_art = select(BuildArtifact).where(
+                BuildArtifact.build_id == build_id,
+                BuildArtifact.chapter_idx == ch_idx,
+            )
+            art = (await s.execute(stmt_art)).scalar_one_or_none()
+            if art and art.status == "done" and art.audio_filename:
+                expected_path = audio_dir / art.audio_filename
+                if expected_path.is_file():
+                    # 命中：直接写入 chapter_outputs，不重新合成
+                    chapter_outputs[ch_idx] = (
+                        str(expected_path),
+                        art.duration_ms or _estimate_mp3_duration_ms(
+                            expected_path.read_bytes()
+                        ),
+                    )
+                    completed += 1
+                    skip_this_chapter = True
+                    logger.info(
+                        f"[build_worker] build_id={build_id[:8]}... "
+                        f"ch {ch_idx+1}/{total} 已完成 → skip (命中 BuildArtifact.done)"
+                    )
+        if skip_this_chapter:
+            # 同步更新 Build.completed_chapters / progress_msg
+            async with factory() as s:
+                b = await s.get(Build, build_id)
+                if b:
+                    b.completed_chapters = completed
+                    b.progress_msg = f"已跳过第 {ch_idx+1}/{total} 章（已完成）：{ch.title}"
+                await s.commit()
+            continue
+
         # BuildArtifact.status → synthesizing + progress_msg
         async with factory() as s:
             stmt_art = select(BuildArtifact).where(
@@ -613,15 +648,23 @@ async def _run_build_inner(
                 start_idx=0,
             )
 
-            # 章内并发合成
+            # 章内并发合成（段级：先查缓存，未命中再调 TTS API；全局 Semaphore 限流）
             async def _synth_seg(s: _Segment) -> tuple[_Segment, bytes, int]:
                 if s.kind == "silence":
                     return s, make_silent_mp3(max(s.silence_ms, 1)), s.silence_ms
+                vid = s.voice_id or narrator_voice_id
+                # 1) 段缓存：优先命中，零花费零延迟
+                cached = await tts_segment_cache_get(vid, speed, s.text)
+                if cached is not None:
+                    mp3_b, dur_ms = cached
+                    return s, mp3_b, dur_ms
+                # 2) 未命中：走 TTS API（全局 Semaphore 限流）
                 async with sem:
-                    vid = s.voice_id or narrator_voice_id
                     data = await tts.synthesize_to_bytes(s.text, vid, speed=speed)
-                    dur = _estimate_mp3_duration_ms(data)
-                    return s, data, dur
+                dur = _estimate_mp3_duration_ms(data)
+                # 3) 写回缓存（内存 + 磁盘双写）
+                await tts_segment_cache_put(vid, speed, s.text, data, dur)
+                return s, data, dur
 
             tasks = [_synth_seg(seg) for seg in segs]
             results = await asyncio.gather(*tasks)

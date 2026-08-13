@@ -148,6 +148,34 @@ class MockLLMProvider(BaseLLMProvider):
                 pass
             return output_schema.model_validate({"data": recs})
 
+        if schema_name == "DialogueBatchResponse":
+            # 批量对白归属：从 prompt 解析每个 CHAPTER_xxx 块，像单章那样为引号内容造对白归属。
+            import re as _re
+            chapters_data: list[dict] = []
+            # prompt 用 "===== CHAPTER idx=X START =====" / "===== CHAPTER idx=X END =====" 包裹
+            for m in _re.finditer(
+                r"=====\s*CHAPTER\s*idx=(\d+)\s*START\s*=====(.*?)=====\s*CHAPTER\s*idx=\1\s*END\s*=====",
+                prompt,
+                _re.DOTALL,
+            ):
+                idx = int(m.group(1))
+                chapter_text = m.group(2).strip()
+                attrs: list[dict] = []
+                i = 0
+                for q in _re.finditer(r"[「『]([^」』]+)[」』]", chapter_text):
+                    quote = q.group(0)
+                    content = q.group(1)
+                    speaker = ["李明", "林若雪", "王大爷"][i % 3]
+                    i += 1
+                    attrs.append({
+                        "anchor": {"text": quote, "start": q.start(), "end": q.end()},
+                        "speaker": speaker,
+                        "confidence": 0.9 if i != 2 else 0.65,
+                        "text": content,
+                    })
+                chapters_data.append({"chapter_idx": idx, "dialogues": attrs})
+            return output_schema.model_validate({"data": chapters_data})
+
         if "Chapter" in schema_name:
             text = _extract_text_block(prompt, "---LONG TEXT START---", "---LONG TEXT END---")
             return output_schema.model_validate({"data": [
