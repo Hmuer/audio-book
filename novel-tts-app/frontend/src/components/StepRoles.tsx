@@ -43,20 +43,67 @@ export default function StepRoles({
     return init;
   });
 
-  // 音色预览 cache：避免重复试听同一个 voice+text
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [previewing, setPreviewing] = useState(false);
+  // 试听状态：统一用一个隐藏 audio 元素管理播放
+  //   - playingVoice: 当前正在播放的 voiceId（用于按钮显示 ⏸）
+  //   - loadingVoice: 正在等待 TTS 返回 URL 的 voiceId（用于按钮显示 loading）
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playingVoice, setPlayingVoice] = useState<string | null>(null);
+  const [loadingVoice, setLoadingVoice] = useState<string | null>(null);
+  // URL 缓存：voiceId -> {url, text, speed}，text+speed 变化时重新合成
+  const urlCacheRef = useRef<Map<string, { url: string; text: string; speed: number }>>(new Map());
 
-  const preview = async (voiceId: string, text: string) => {
-    setPreviewUrl(null);
-    setPreviewing(true);
+  const isPlaying = (vid: string) => playingVoice === vid;
+  const isLoading = (vid: string) => loadingVoice === vid;
+
+  const stopPlayback = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+    setPlayingVoice(null);
+  };
+
+  const togglePlay = async (voiceId: string, text: string) => {
+    // 如果正在播放同一个，点击就暂停
+    if (playingVoice === voiceId) {
+      stopPlayback();
+      return;
+    }
+    // 否则停止当前播放，开始新的
+    stopPlayback();
+
+    // 检查缓存
+    const sampleKey = `${voiceId}|${text}|${speed}`;
+    const cached = urlCacheRef.current.get(sampleKey);
+    if (cached) {
+      playUrl(voiceId, cached.url);
+      return;
+    }
+
+    // 调用后端合成
+    setLoadingVoice(voiceId);
     try {
       const r = await api.preview(text.slice(0, 80), voiceId, speed);
-      setPreviewUrl(r.audio_url);
+      urlCacheRef.current.set(sampleKey, { url: r.audio_url, text, speed });
+      playUrl(voiceId, r.audio_url);
     } finally {
-      setPreviewing(false);
+      setLoadingVoice(prev => (prev === voiceId ? null : prev));
     }
   };
+
+  const playUrl = (voiceId: string, url: string) => {
+    if (!audioRef.current) return;
+    audioRef.current.src = url;
+    audioRef.current.onended = () => setPlayingVoice(null);
+    audioRef.current.onerror = () => setPlayingVoice(null);
+    setPlayingVoice(voiceId);
+    audioRef.current.play().catch(() => {
+      setPlayingVoice(null);
+    });
+  };
+
+  // 兼容旧的 preview() 函数（其他地方若有调用）
+  const preview = togglePlay;
 
   const voiceById = useMemo(() => {
     const m = new Map<string, Voice>();
@@ -111,12 +158,12 @@ export default function StepRoles({
           voices={voices}
           value={narratorVoice}
           onChange={setNarratorVoice}
-          onPreview={vid => preview(vid, '这是一段旁白示例文本，用于试听所选音色的朗读效果。')}
+          onPreview={vid => togglePlay(vid, '这是一段旁白示例文本，用于试听所选音色的朗读效果。')}
+          isPlaying={isPlaying(narratorVoice)}
+          isLoading={isLoading(narratorVoice)}
+          playingVoiceId={playingVoice}
+          loadingVoiceId={loadingVoice}
         />
-        {previewing && <div className="text-xs text-white/50 mt-2">TTS 合成中…</div>}
-        {previewUrl && (
-          <audio controls src={previewUrl} className="mt-2 w-full" />
-        )}
       </div>
 
       {/* 语速控制 */}
@@ -175,7 +222,11 @@ export default function StepRoles({
                   onChange={vid =>
                     setCharVoices(prev => ({ ...prev, [c.name]: vid }))
                   }
-                  onPreview={vid => preview(vid, characterSample(c))}
+                  onPreview={vid => togglePlay(vid, characterSample(c))}
+                  isPlaying={isPlaying(charVoices[c.name])}
+                  isLoading={isLoading(charVoices[c.name])}
+                  playingVoiceId={playingVoice}
+                  loadingVoiceId={loadingVoice}
                   compact
                 />
               </div>
@@ -185,6 +236,8 @@ export default function StepRoles({
         {/* 持久化到 window 上，下一步合成直接拿 */}
         <PersistToWindow narrator={narratorVoice} assignments={charVoices} speed={speed} />
       </div>
+      {/* 全局隐藏 audio 元素：统一播放管理 */}
+      <audio ref={audioRef} style={{ display: 'none' }} />
     </section>
   );
 }
@@ -238,12 +291,20 @@ function VoicePicker({
   onChange,
   onPreview,
   compact = false,
+  isPlaying = false,
+  isLoading = false,
+  playingVoiceId = null,
+  loadingVoiceId = null,
 }: {
   voices: Voice[];
   value: string;
   onChange: (id: string) => void;
   onPreview: (id: string) => void;
   compact?: boolean;
+  isPlaying?: boolean;
+  isLoading?: boolean;
+  playingVoiceId?: string | null;
+  loadingVoiceId?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -320,12 +381,12 @@ function VoicePicker({
           )}
         </button>
         <button
-          className="btn-ghost shrink-0"
+          className={`btn-ghost shrink-0 ${isPlaying ? 'ring-2 ring-brand-500/50' : ''}`}
           onClick={() => selected && onPreview(selected.id)}
-          disabled={!selected}
-          title="试听"
+          disabled={!selected || isLoading}
+          title={isPlaying ? '停止播放' : '试听'}
         >
-          ▶
+          {isLoading ? '…' : isPlaying ? '⏸' : '▶'}
         </button>
       </div>
       {open && coords && typeof document !== 'undefined' && createPortal(
@@ -371,13 +432,19 @@ function VoicePicker({
                         <div className="flex justify-between gap-2">
                           <span className="font-medium">{v.name}</span>
                           <button
-                            className="opacity-70 hover:opacity-100 text-xs"
+                            className={`opacity-80 hover:opacity-100 text-xs ${
+                              playingVoiceId === v.id ? 'text-brand-400' : ''
+                            } ${loadingVoiceId === v.id ? 'animate-pulse' : ''}`}
                             onClick={e => {
                               e.stopPropagation();
                               onPreview(v.id);
                             }}
                           >
-                            ▶
+                            {loadingVoiceId === v.id
+                              ? '…'
+                              : playingVoiceId === v.id
+                              ? '⏸'
+                              : '▶'}
                           </button>
                         </div>
                         <div className="text-[11px] text-white/50 line-clamp-1 mt-0.5">
