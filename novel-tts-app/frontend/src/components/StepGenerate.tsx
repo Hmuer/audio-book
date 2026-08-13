@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { api, PrepareResp, SynthResp, SynthSegment, Voice } from '@/lib/api';
+import VoicePicker from './VoicePicker';
 
 export default function StepGenerate({
   voices,
@@ -24,13 +25,64 @@ export default function StepGenerate({
   const [segmentOverrides, setSegmentOverrides] = useState<Record<number, string>>({});
   const [previewAudio, setPreviewAudio] = useState<string | null>(null);
 
-  // 从 window 读取 Step 2 中选择的音色与语速（每次渲染都读最新值，避免 stale closure）
-  const { narrator, assignments, speed }: any =
+  // 试听播放管理（与 StepRoles 类似的统一 audio 元素）
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playingVoice, setPlayingVoice] = useState<string | null>(null);
+  const [loadingVoice, setLoadingVoice] = useState<string | null>(null);
+  const urlCacheRef = useRef<Map<string, { url: string; text: string; speed: number }>>(new Map());
+  const synthSpeed = (typeof window !== 'undefined' && (window as any).__novel_voices?.speed) || 1.0;
+
+  const isPlaying = (vid: string) => playingVoice === vid;
+  const isLoading = (vid: string) => loadingVoice === vid;
+
+  const stopPlayback = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+    setPlayingVoice(null);
+  };
+
+  const togglePlay = async (voiceId: string, text: string) => {
+    if (playingVoice === voiceId) {
+      stopPlayback();
+      return;
+    }
+    stopPlayback();
+    const sampleKey = `${voiceId}|${text}|${synthSpeed}`;
+    const cached = urlCacheRef.current.get(sampleKey);
+    if (cached) {
+      if (audioRef.current) {
+        audioRef.current.src = cached.url;
+        audioRef.current.onended = () => setPlayingVoice(null);
+        audioRef.current.onerror = () => setPlayingVoice(null);
+        setPlayingVoice(voiceId);
+        audioRef.current.play().catch(() => setPlayingVoice(null));
+      }
+      return;
+    }
+    setLoadingVoice(voiceId);
+    try {
+      const r = await api.preview(text.slice(0, 80), voiceId, synthSpeed);
+      urlCacheRef.current.set(sampleKey, { url: r.audio_url, text, speed: synthSpeed });
+      if (audioRef.current) {
+        audioRef.current.src = r.audio_url;
+        audioRef.current.onended = () => setPlayingVoice(null);
+        audioRef.current.onerror = () => setPlayingVoice(null);
+        setPlayingVoice(voiceId);
+        audioRef.current.play().catch(() => setPlayingVoice(null));
+      }
+    } finally {
+      setLoadingVoice(prev => (prev === voiceId ? null : prev));
+    }
+  };
+
+  // 从 window 读取 Step 2 中选择的音色与语速
+  const { narrator, assignments }: any =
     (typeof window !== 'undefined' && (window as any).__novel_voices) || {};
 
   const narratorVoiceId =
     narrator || voices.find(v => v.id === 'male-qn-jingying')?.id || voices[0]?.id || '';
-  const synthSpeed = typeof speed === 'number' ? speed : 1.0;
 
   const dialoguesOnly = useMemo(
     () => prepareResult.dialogue_attributions.filter(d => d.speaker),
@@ -153,23 +205,19 @@ export default function StepGenerate({
                 <label className="text-xs text-white/50 block mb-1">
                   段级音色覆盖（可选，优先级最高）：
                 </label>
-                <select
-                  className="text-sm"
+                <VoicePicker
+                  voices={voices}
                   value={segmentOverrides[i] || ''}
-                  onChange={e =>
-                    setSegmentOverrides(prev => ({
-                      ...prev,
-                      [i]: e.target.value,
-                    }))
+                  onChange={vid =>
+                    setSegmentOverrides(prev => ({ ...prev, [i]: vid }))
                   }
-                >
-                  <option value="">（默认使用角色音色）</option>
-                  {voices.map(v => (
-                    <option key={v.id} value={v.id}>
-                      {v.name} · {v.gender}
-                    </option>
-                  ))}
-                </select>
+                  onPreview={vid => togglePlay(vid, d.text)}
+                  isPlaying={isPlaying(segmentOverrides[i])}
+                  isLoading={isLoading(segmentOverrides[i])}
+                  playingVoiceId={playingVoice}
+                  loadingVoiceId={loadingVoice}
+                  compact
+                />
               </div>
             );
           })}
@@ -240,6 +288,8 @@ export default function StepGenerate({
           <audio controls src={previewAudio} className="w-full" autoPlay />
         </div>
       )}
+      {/* 全局隐藏 audio 元素：统一播放管理 */}
+      <audio ref={audioRef} style={{ display: 'none' }} />
     </section>
   );
 }
