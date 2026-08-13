@@ -45,10 +45,21 @@ class Settings(BaseSettings):
     # 现在无论小说多长，都会按 SLICE_SIZE 全量切片跑完后合并去重；
     # 否则后半本书的新角色会被整本书漏掉，后续对白归属全部失败。
 
-    # TTS 并发限流（全局）：同时最多 N 个 TTS synthesize 调用在飞。
-    # 无论开几个整本合成 worker / 单章合成，都共用同一个 semaphore 计数，
-    # 防止多 worker 各自开 4 并发 → 实际并发叠加爆供应商 RPM 限制（429）。
-    TTS_MAX_CONCURRENCY: int = 4
+    # 对白归属批大小（章/批）：一次 LLM 请求同时处理 N 章的对白归属，
+    # 能显著降低 HTTP 开销和 LLM 调度耗时。M2.7-highspeed 1M 上下文
+    # 3000 字/章 × 14 章 ≈ 42k 字 + prompt ≈ 50k，远低于上限。
+    DIALOGUE_BATCH_CHAPTERS: int = 14
+
+    # 对白归属批并发度：同时在飞的批数量。LLM_MAX_CONCURRENCY=1 时这里多高都
+    # 会被 provider semaphore 串行，但大于 1 时可在多个"批"之间让 HTTP/响应解析
+    # 和下一批的语义处理重叠，总体更快。
+    DIALOGUE_BATCH_CONCURRENCY: int = 2
+
+    # TTS 并发限流（全局，段级）：同时最多 N 个 TTS synthesize 调用在飞。
+    # 现在已经改成 **段级** semaphore（不是"每章并发"），默认 100 段并行是
+    # 相对保守的值：短对白 1s/TTS，100 并发 ≈ 100 段/秒的吞吐。
+    # 如果调用方遇到 TTS RPM 429，可下调到 50 / 20。
+    TTS_MAX_CONCURRENCY: int = 100
 
     # Auth (JWT)
     JWT_SECRET: str = "change-me-in-production-please-use-a-long-random-string"

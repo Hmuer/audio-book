@@ -4,12 +4,17 @@
 设计要点：
 - start_build: 创建 Build 记录 + 每章一条 pending BuildArtifact，启动后台任务立即返回
 - _run_build_inner: 后台 worker（独立 session），逐章合成→更新 BuildArtifact；失败章写占位静音 MP3
-- 双重去重：内存锁 _RUNNING_BUILDS（按 project_id） + DB Build.status 检查
+- 幂等（合成阶段三层去重）：
+  1) start_build 内存锁 _RUNNING_BUILDS（按 project_id）+ DB Build.status=running/queued
+  2) **Build.config_digest 命中**：同一 project + 相同 narrator/speed/voice_assignments 且历史已有成功 Build，直接复用
+  3) **段级 + 章级 skip**：worker 每章发现 BuildArtifact.status=done 且 MP3 存在 → 整章跳过；
+     段级再走 tts_segment_cache_get/put（sha256(voice+speed+text) → 复用已有 MP3）
 - 音频文件命名：build_{build_id}_ch{idx:04d}.mp3，ZIP：build_{build_id}_all.zip
 """
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -179,6 +184,124 @@ def _audio_filename(build_id: str, ch_idx: int, failed: bool = False) -> str:
     return f"build_{build_id}_ch{ch_idx:04d}{suffix}.mp3"
 
 
+# =====================================================================
+# TTS 段级缓存（跨 Build、跨段复用）
+# 键：sha256(f"v1|{voice_id}|{speed:.2f}|{text}").hexdigest()
+# 值：(mp3_bytes, duration_ms)
+# 说明：
+# - 进程级内存缓存（LRU 上限 TTS_SEGMENT_CACHE_MAX_ENTRIES）；
+# - 同时落盘到 settings.AUDIO_DIR / "_seg_cache" / "{key}.mp3"，元数据 JSON 同目录，
+#   这样重启后仍能命中；
+# - MP3 是不可压缩/不需要无损的媒体格式，二进制文件直接存即可；
+# - 命中时无需调用 TTS API（零花费、零延迟、零 429 风险）。
+# =====================================================================
+
+_TTS_SEG_CACHE_MAX_DEFAULT = 20_000
+# 内存 LRU：dict 按插入顺序天然 FIFO；超上限时 popitem(last=False) 淘汰最旧
+_tts_seg_mem_cache: dict[str, tuple[bytes, int]] = {}
+_tts_seg_mem_lock = asyncio.Lock()
+
+
+def _seg_cache_dir() -> Path:
+    p = Path(settings.AUDIO_DIR) / "_seg_cache"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _seg_cache_key(voice_id: str, speed: float, text: str) -> str:
+    raw = f"v1|{voice_id}|{speed:.4f}|{text}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _seg_cache_mp3_path(key: str) -> Path:
+    return _seg_cache_dir() / f"{key}.mp3"
+
+
+def _seg_cache_meta_path(key: str) -> Path:
+    return _seg_cache_dir() / f"{key}.json"
+
+
+async def tts_segment_cache_get(voice_id: str, speed: float, text: str) -> tuple[bytes, int] | None:
+    """返回 (mp3_bytes, duration_ms)，未命中返回 None。先查内存，再查磁盘。"""
+    key = _seg_cache_key(voice_id, speed, text)
+    # 1) 内存
+    async with _tts_seg_mem_lock:
+        hit = _tts_seg_mem_cache.get(key)
+    if hit is not None:
+        return hit
+    # 2) 磁盘
+    mp3_p = _seg_cache_mp3_path(key)
+    meta_p = _seg_cache_meta_path(key)
+    try:
+        if mp3_p.is_file() and meta_p.is_file():
+            mp3_bytes = mp3_p.read_bytes()
+            dur_ms = int(json.loads(meta_p.read_text(encoding="utf-8")).get("dur_ms", 0))
+            # 回填内存
+            async with _tts_seg_mem_lock:
+                if key not in _tts_seg_mem_cache:
+                    _tts_seg_mem_cache[key] = (mp3_bytes, dur_ms)
+                    # LRU 淘汰
+                    max_entries = max(1000, int(
+                        getattr(settings, "TTS_SEGMENT_CACHE_MAX_ENTRIES", _TTS_SEG_CACHE_MAX_DEFAULT)
+                        or _TTS_SEG_CACHE_MAX_DEFAULT
+                    ))
+                    while len(_tts_seg_mem_cache) > max_entries:
+                        _tts_seg_mem_cache.popitem(last=False)
+            return mp3_bytes, dur_ms
+    except Exception:
+        return None
+    return None
+
+
+async def tts_segment_cache_put(
+    voice_id: str, speed: float, text: str, mp3_bytes: bytes, dur_ms: int
+) -> None:
+    """写 TTS 段缓存：内存 + 磁盘双写。"""
+    key = _seg_cache_key(voice_id, speed, text)
+    # 1) 内存
+    async with _tts_seg_mem_lock:
+        _tts_seg_mem_cache[key] = (mp3_bytes, int(dur_ms))
+        max_entries = max(1000, int(
+            getattr(settings, "TTS_SEGMENT_CACHE_MAX_ENTRIES", _TTS_SEG_CACHE_MAX_DEFAULT)
+            or _TTS_SEG_CACHE_MAX_DEFAULT
+        ))
+        while len(_tts_seg_mem_cache) > max_entries:
+            _tts_seg_mem_cache.popitem(last=False)
+    # 2) 磁盘（best-effort；失败不抛）
+    try:
+        mp3_p = _seg_cache_mp3_path(key)
+        meta_p = _seg_cache_meta_path(key)
+        if not mp3_p.is_file():
+            mp3_p.write_bytes(mp3_bytes)
+        if not meta_p.is_file():
+            meta_p.write_text(
+                json.dumps({"dur_ms": int(dur_ms)}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+    except Exception as e:
+        logger.warning(f"[tts_seg_cache] put disk fail key={key[:12]}... err={e}")
+
+
+# =====================================================================
+# Build 配置哈希：同 project + (narrator, speed, voice_assignments) 相同 → 视为同一配置
+# =====================================================================
+
+
+def _calc_config_digest(narrator_voice_id: str, speed: float, voice_assignments: dict[str, str]) -> str:
+    # voice_assignments 先按 key 排序再序列化，避免 dict 顺序差异导致哈希不同
+    sorted_va = dict(sorted((voice_assignments or {}).items()))
+    raw = json.dumps(
+        {
+            "narrator": narrator_voice_id or "",
+            "speed": round(float(speed), 6),
+            "va": sorted_va,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def _zip_filename(build_id: str) -> str:
     return f"build_{build_id}_all.zip"
 
@@ -240,11 +363,15 @@ async def start_build(
     """
     创建 Build + 每章 BuildArtifact（pending），启动后台 worker，立即返回。
 
-    双重去重：
-    1. 内存锁 _RUNNING_BUILDS：单 worker 内同一 project 不重复
-    2. DB Build.status：若已有 running/queued 的 build，拒绝新建
+    合成幂等（三层去重）：
+      1) 内存锁 _RUNNING_BUILDS：单 worker 内同一 project 不重复
+      2) DB Build.status：若已有 running/queued 的 build，直接复用
+      3) **config_digest 命中**：同一 project + 相同 narrator/speed/voice_assignments，
+         且历史已有**成功** Build（ZIP 生成过）→ 直接返回旧 build_id，不重建。
+         （细粒度"某章没完成"的情况，由 worker 内部章级 skip 继续补做，而不是直接复用整个 build）
     """
     narrator_voice_id = await _ensure_default_narrator(narrator_voice_id)
+    digest = _calc_config_digest(narrator_voice_id, speed, voice_assignments)
 
     # 内存锁检查（不持锁长时间占用，只快速判断）
     async with _RUNNING_LOCK:
@@ -293,7 +420,31 @@ async def start_build(
             )
             return _build_to_resp(active)
 
-        # 3. 创建 Build + BuildArtifact
+        # 3. config_digest 去重：相同配置的历史成功 build → 直接返回（真正"幂等"，不重复合成）
+        stmt_success = (
+            select(Build)
+            .where(
+                Build.project_id == project_id,
+                Build.status == "success",
+                Build.config_digest == digest,
+            )
+            .order_by(Build.created_at.desc())
+            .limit(1)
+        )
+        success_hit = (await session.execute(stmt_success)).scalar_one_or_none()
+        if success_hit:
+            # 额外校验：ZIP 文件必须真的存在；存在就直接返回
+            if success_hit.zip_filename:
+                expected_zip = Path(settings.AUDIO_DIR) / success_hit.zip_filename
+                if expected_zip.is_file():
+                    logger.info(
+                        f"[build_start] project_id={project_id[:8]}... "
+                        f"命中 config_digest 成功历史 build={success_hit.build_id[:8]}... "
+                        f"直接复用（不重新合成）"
+                    )
+                    return _build_to_resp(success_hit)
+
+        # 4. 创建 Build + BuildArtifact（写 config_digest，下次可命中）
         build_id = uuid.uuid4().hex
         voice_json = json.dumps(voice_assignments, ensure_ascii=False)
         b = Build(
@@ -306,6 +457,7 @@ async def start_build(
             narrator_voice_id=narrator_voice_id,
             speed=speed,
             voice_assignments_json=voice_json,
+            config_digest=digest,
         )
         session.add(b)
         for ch in chapters:

@@ -32,7 +32,11 @@ from .character import (
     deduplicate_characters_with_llm,
     apply_dedup,
 )
-from .dialogue import attribute_dialogues_with_llm
+from .dialogue import (
+    attribute_dialogues_with_llm,
+    attribute_dialogues_batch_with_llm,
+    ChapterDialogueBatchResult,
+)
 from .voice_recommender import VoiceRecommendation, recommend_voices_with_llm
 
 logger = logging.getLogger(__name__)
@@ -362,52 +366,239 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
             f"split_chapters={len(chapters)} ms={int((_time.perf_counter()-pt)*1000)}"
         )
 
-        # 4. 全书角色识别（50k 切片串行：小说情节是串行的，并发会触发限流且
-        #    可能导致跨切片识别错乱；同时 provider 层有 semaphore 兜底）
+        # 4. 全书角色识别（50k 切片串行 + checkpoint：逐片写入 progress_json，
+        #    重跑 prepare_project 时跳过已完成切片）
         pt = _time.perf_counter()
         full_text = "\n".join(c.text for c in chapters)
-        characters = await _split_50k_and_run_chars_serial(full_text, extract_characters_with_llm)
-        if len(characters) >= 2:
-            names = [c.name for c in characters]
-            dedup_results = await deduplicate_characters_with_llm(names, full_text)
-            characters, name_map = apply_dedup(characters, dedup_results)
+
+        # 4a. 加载/初始化 checkpoint
+        async def _read_progress() -> dict:
+            async with factory() as sess:
+                proj = await sess.get(Project, project_id)
+                if not proj or not proj.progress_json:
+                    return {"version": 1}
+                try:
+                    return json.loads(proj.progress_json)
+                except Exception:
+                    logger.warning(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"progress_json 解析失败，当作空 checkpoint 从头开始"
+                    )
+                    return {"version": 1}
+
+        async def _write_progress(partial: dict) -> None:
+            partial["updated_at"] = _time.strftime("%Y-%m-%d %H:%M:%S")
+            async with factory() as sess:
+                proj = await sess.get(Project, project_id)
+                if proj:
+                    proj.progress_json = json.dumps(partial, ensure_ascii=False)
+                    await sess.commit()
+
+        prog = await _read_progress()
+
+        # 4b. 角色识别（50k 切片，逐片 checkpoint）
+        char_slice_size = max(10000, int(settings.LLM_CHAR_EXTRACT_SLICE_SIZE) or 50000)
+        char_slices: list[tuple[int, str]] = [
+            (i, full_text[i : i + char_slice_size])
+            for i in range(0, len(full_text), char_slice_size)
+        ]
+        completed_slice_idxs: set[int] = set(prog.get("char_slice_completed", []))
+        char_raw_list: list[dict] = list(prog.get("char_extract_raw_list", []) or [])
+
+        if prog.get("stage") in ("characters", "dedup", "dialogues", "voice_recs", "done") and char_raw_list:
+            logger.info(
+                f"[project_prepare] project_id={project_id[:8]}... "
+                f"命中角色识别 checkpoint：已完成 {len(completed_slice_idxs)}/{len(char_slices)} 切片"
+            )
         else:
-            name_map = {c.name: c.name for c in characters}
+            # 从头开始，重置
+            completed_slice_idxs = set()
+            char_raw_list = []
+            prog = {
+                "version": 1,
+                "stage": "characters",
+                "char_slice_completed": [],
+                "char_extract_raw_list": [],
+                "dialogue_completed_chapters": [],
+            }
+            await _write_progress(prog)
+
+        characters_merged: list[Character] = [
+            Character(**d) for d in char_raw_list
+        ]
+        for slice_idx, slice_text in char_slices:
+            if slice_idx in completed_slice_idxs:
+                logger.info(
+                    f"[project_prepare] project_id={project_id[:8]}... "
+                    f"chars slice {slice_idx+1}/{len(char_slices)} 跳过（checkpoint）"
+                )
+                continue
+            logger.info(
+                f"[project_prepare] project_id={project_id[:8]}... "
+                f"chars slice {slice_idx+1}/{len(char_slices)} chars={len(slice_text)} start"
+            )
+            r = await extract_characters_with_llm(slice_text)
+            characters_merged.extend(r)
+            completed_slice_idxs.add(slice_idx)
+            char_raw_list.extend([c.model_dump() for c in r])
+            prog["stage"] = "characters"
+            prog["char_slice_completed"] = sorted(completed_slice_idxs)
+            prog["char_extract_raw_list"] = char_raw_list
+            await _write_progress(prog)
+            logger.info(
+                f"[project_prepare] project_id={project_id[:8]}... "
+                f"chars slice {slice_idx+1}/{len(char_slices)} done "
+                f"extracted={len(r)} cum_unique_chars={len({c.name for c in characters_merged})}"
+            )
+
+        # 4c. dedup（完成后 checkpoint 跳到 dedup=done）
+        if prog.get("stage") in ("dedup", "dialogues", "voice_recs", "done") and prog.get("dedup_done"):
+            name_map: dict[str, str] = dict(prog.get("name_map", {}) or {})
+            characters = [Character(**d) for d in prog.get("deduped_characters", []) or []]
+            if not name_map:
+                name_map = {c.name: c.name for c in characters}
+            logger.info(
+                f"[project_prepare] project_id={project_id[:8]}... "
+                f"命中角色 dedup checkpoint：characters={len(characters)}"
+            )
+        else:
+            if len(characters_merged) >= 2:
+                names = [c.name for c in characters_merged]
+                dedup_results = await deduplicate_characters_with_llm(names, full_text)
+                characters, name_map = apply_dedup(characters_merged, dedup_results)
+            else:
+                characters = characters_merged
+                name_map = {c.name: c.name for c in characters}
+            prog["stage"] = "dedup"
+            prog["dedup_done"] = True
+            prog["deduped_characters"] = [c.model_dump() for c in characters]
+            prog["name_map"] = name_map
+            await _write_progress(prog)
         logger.info(
             f"[project_prepare] project_id={project_id[:8]}... "
             f"characters={len(characters)} ms={int((_time.perf_counter()-pt)*1000)}"
         )
 
-        # 5. 每章对白归属（串行：章节间存在上下文依赖，按章节顺序识别更稳；
-        #    且避免瞬时并发触发供应商 RPM 限制）
+        # 5. 对白归属：14 章/批批量 + DIALOGUE_BATCH_CONCURRENCY 并发跑批，
+        #    checkpoint 按章节记 dialogue_completed_chapters，重跑跳过已完成章节。
         pt = _time.perf_counter()
-        all_attrs_per_chapter: list[list] = []
+        batch_chapters_n = max(1, int(settings.DIALOGUE_BATCH_CHAPTERS) if hasattr(settings, "DIALOGUE_BATCH_CHAPTERS") else 14)
+        batch_concurrency = max(1, int(settings.DIALOGUE_BATCH_CONCURRENCY) if hasattr(settings, "DIALOGUE_BATCH_CONCURRENCY") else 2)
+
+        completed_ch_idxs: set[int] = set(prog.get("dialogue_completed_chapters", []))
+        # 从 checkpoint 里读单章级别的 attrs 缓存（按 chapter_idx 存序列化 JSON）
+        chapter_attrs_cache: dict[int, list] = {}
+        raw_cache = prog.get("dialogue_attrs_by_chapter_json", {}) or {}
+        if isinstance(raw_cache, dict):
+            for k, v in raw_cache.items():
+                try:
+                    chapter_attrs_cache[int(k)] = v
+                except Exception:
+                    pass
+
+        all_attrs_per_chapter: list[list] = [[] for _ in chapters]
         total_dialogues = 0
-        for ch_idx, ch in enumerate(chapters):
-            attrs = await attribute_dialogues_with_llm(ch.text, characters)
-            # speaker 做 name → canonical 映射
-            for a in attrs:
-                a.speaker = name_map.get(a.speaker, a.speaker)
-            all_attrs_per_chapter.append(attrs)
-            total_dialogues += len(attrs)
-            logger.info(
-                f"[project_prepare] project_id={project_id[:8]}... "
-                f"dialogue_attr chapter={ch_idx+1}/{len(chapters)} "
-                f"this_dialogues={len(attrs)} cum={total_dialogues}"
-            )
+
+        # 5a. 先把已完成章节的缓存填入
+        for ch_idx in sorted(completed_ch_idxs):
+            if 0 <= ch_idx < len(all_attrs_per_chapter):
+                cached = chapter_attrs_cache.get(ch_idx)
+                if cached:
+                    try:
+                        # 缓存里存的是 dict list，转回 DialogueAttribution-like dict（这里直接用就行，因为写 DB 只取字段）
+                        all_attrs_per_chapter[ch_idx] = cached
+                        total_dialogues += len(cached)
+                    except Exception:
+                        all_attrs_per_chapter[ch_idx] = []
+                logger.info(
+                    f"[project_prepare] project_id={project_id[:8]}... "
+                    f"dialogue_attr chapter={ch_idx+1}/{len(chapters)} 跳过（checkpoint）"
+                )
+
+        # 5b. 未完成的章节 → 按 DIALOGUE_BATCH_CHAPTERS 切批
+        pending_chapters: list[tuple[int, str]] = [
+            (ch.idx, ch.text)
+            for ch in chapters
+            if ch.idx not in completed_ch_idxs
+        ]
+        batches: list[list[tuple[int, str]]] = [
+            pending_chapters[i : i + batch_chapters_n]
+            for i in range(0, len(pending_chapters), batch_chapters_n)
+        ]
+
+        # 并发 semaphore 限制批并发（provider 层另有全局 LLM semaphore 兜底串行）
+        dialogue_batch_sem = asyncio.Semaphore(batch_concurrency)
+        pending_progresses: set[int] = set()
+
+        async def _process_one_batch(
+            batch: list[tuple[int, str]], batch_idx: int
+        ) -> list[tuple[int, list]]:
+            async with dialogue_batch_sem:
+                logger.info(
+                    f"[project_prepare] project_id={project_id[:8]}... "
+                    f"dialogue batch {batch_idx+1}/{len(batches)} chapters="
+                    f"{[c[0]+1 for c in batch]} start"
+                )
+                results = await attribute_dialogues_batch_with_llm(batch, characters)
+                out: list[tuple[int, list]] = []
+                for r in results:
+                    attrs = r.dialogues
+                    for a in attrs:
+                        a.speaker = name_map.get(a.speaker, a.speaker)
+                    out.append((r.chapter_idx, [a.model_dump() for a in attrs]))
+                return out
+
+        if batches:
+            batch_tasks = [
+                asyncio.create_task(_process_one_batch(b, i))
+                for i, b in enumerate(batches)
+            ]
+            for t in asyncio.as_completed(batch_tasks):
+                batch_results = await t
+                for ch_idx, attrs_dicts in batch_results:
+                    if 0 <= ch_idx < len(all_attrs_per_chapter):
+                        all_attrs_per_chapter[ch_idx] = attrs_dicts
+                    completed_ch_idxs.add(ch_idx)
+                    chapter_attrs_cache[ch_idx] = attrs_dicts
+                    total_dialogues += len(attrs_dicts)
+                    # 每完成一章就持久化一次 checkpoint
+                    prog["stage"] = "dialogues"
+                    prog["dialogue_completed_chapters"] = sorted(completed_ch_idxs)
+                    prog["dialogue_attrs_by_chapter_json"] = chapter_attrs_cache
+                    await _write_progress(prog)
+                    logger.info(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"dialogue_attr chapter={ch_idx+1}/{len(chapters)} "
+                        f"this_dialogues={len(attrs_dicts)} cum={total_dialogues}"
+                    )
+
         logger.info(
             f"[project_prepare] project_id={project_id[:8]}... "
             f"dialogue_attr done total_dialogues={total_dialogues} "
             f"ms={int((_time.perf_counter()-pt)*1000)}"
         )
 
-        # 6. 音色推荐
+        # 6. 音色推荐（完成后 checkpoint 跳过）
         pt = _time.perf_counter()
-        voice_recs: list[VoiceRecommendation] = []
-        try:
-            voice_recs = await recommend_voices_with_llm(characters)
-        except Exception as e:
-            logger.warning(f"[project_prepare] project_id={project_id[:8]}... voice_rec failed: {e}")
+        if prog.get("stage") in ("voice_recs", "done") and prog.get("voice_recs_done"):
+            voice_recs_raw = prog.get("voice_recs_raw", []) or []
+            voice_recs: list[VoiceRecommendation] = [
+                VoiceRecommendation(**d) for d in voice_recs_raw
+            ]
+            logger.info(
+                f"[project_prepare] project_id={project_id[:8]}... "
+                f"命中音色推荐 checkpoint：voice_recs={len(voice_recs)}"
+            )
+        else:
+            voice_recs = []
+            try:
+                voice_recs = await recommend_voices_with_llm(characters)
+            except Exception as e:
+                logger.warning(f"[project_prepare] project_id={project_id[:8]}... voice_rec failed: {e}")
+            prog["stage"] = "voice_recs"
+            prog["voice_recs_done"] = True
+            prog["voice_recs_raw"] = [r.model_dump() for r in voice_recs]
+            await _write_progress(prog)
         logger.info(
             f"[project_prepare] project_id={project_id[:8]}... "
             f"voice_recs={len(voice_recs)} ms={int((_time.perf_counter()-pt)*1000)}"
@@ -447,16 +638,40 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
                 ))
             for ch_idx, attrs in enumerate(all_attrs_per_chapter):
                 for seg_idx, a in enumerate(attrs):
+                    # checkpoint 里缓存的 attrs 是 dict（含 anchor=dict），直接用 key 访问；
+                    # 首次 fresh 路径里的 attrs 是 DialogueAttribution Pydantic 对象，支持属性访问。
+                    # 用 duck-typing 方式兼容两种。
+                    def _f(obj, key, default=None):
+                        if isinstance(obj, dict):
+                            v = obj.get(key, default)
+                        else:
+                            v = getattr(obj, key, default)
+                        # anchor 嵌套
+                        if key == "anchor" and isinstance(v, dict):
+                            return v
+                        return v
+                    anchor = _f(a, "anchor")
+                    if isinstance(anchor, dict):
+                        a_start = int(anchor.get("start", 0))
+                        a_end = int(anchor.get("end", 0))
+                        a_text = str(anchor.get("text", ""))
+                    else:
+                        a_start = int(getattr(anchor, "start", 0) or 0)
+                        a_end = int(getattr(anchor, "end", 0) or 0)
+                        a_text = str(getattr(anchor, "text", "") or "")
+                    speaker_raw = _f(a, "speaker", "")
+                    text_raw = _f(a, "text", "")
+                    conf_raw = _f(a, "confidence", 1.0)
                     session.add(ProjectDialogue(
                         project_id=project_id,
                         chapter_idx=ch_idx,
                         segment_index=seg_idx,
-                        anchor_start=a.anchor.start,
-                        anchor_end=a.anchor.end,
-                        anchor_text=a.anchor.text,
-                        speaker=a.speaker,
-                        text=a.text,
-                        confidence=a.confidence,
+                        anchor_start=a_start,
+                        anchor_end=a_end,
+                        anchor_text=a_text,
+                        speaker=str(speaker_raw),
+                        text=str(text_raw),
+                        confidence=float(conf_raw) if conf_raw is not None else 1.0,
                     ))
             p.chapters_json = chapters_json
             p.chapter_count = len(chapters)

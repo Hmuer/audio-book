@@ -137,6 +137,7 @@ async def extract_characters_with_llm(text: str) -> list[Character]:
             output_schema=_ListWrapper,
             temperature=0.2,
             max_tokens=8000,
+            use_fast_model=True,  # 快速模型 M2.7-highspeed 足以胜任角色提取，速度提升明显
         )
         return wrapped.data
     except Exception:
@@ -146,6 +147,7 @@ async def extract_characters_with_llm(text: str) -> list[Character]:
             output_schema=_ListWrapper,
             temperature=0.3,
             max_tokens=8000,
+            use_fast_model=True,
         )
         return fallback.data
 
@@ -175,6 +177,7 @@ async def deduplicate_characters_with_llm(
         output_schema=_Wrapper,
         temperature=0.1,
         max_tokens=4000,
+        use_fast_model=True,  # 消歧是结构化判断任务，M2.7-highspeed 足够且速度更快
     )
     return wrapped.data
 

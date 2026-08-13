@@ -83,6 +83,18 @@ class Project(Base):
     chapters_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     chapter_count: Mapped[int] = mapped_column(Integer, default=0)
 
+    # Prepare 进度 checkpoint（prepare_project 中断后重跑可恢复）
+    # 结构：
+    # {
+    #   "version": 1,
+    #   "stage": "characters" | "dedup" | "dialogues" | "voice_recs" | "done" | "failed",
+    #   "char_slice_completed": [0,1,2,...],        # 已完成角色识别的切片 index
+    #   "char_extract_raw_json": "[{name,...},...]"  # 已提取但未 dedup 的角色原始结果
+    #   "dialogue_completed_chapters": [0,1,5,...],  # 已完成对白归属的章节 index
+    #   "updated_at": "2025-..."
+    # }
+    progress_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # 项目级默认配置
     default_narrator_voice_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     default_speed: Mapped[float] = mapped_column(Float, default=1.0)
@@ -122,6 +134,11 @@ class Build(Base):
     narrator_voice_id: Mapped[str] = mapped_column(String(128), default="")
     speed: Mapped[float] = mapped_column(Float, default=1.0)
     voice_assignments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # 配置哈希：同一个 project + (narrator,speed,voice_assignments) 相同 → 若上次 build 成功，
+    # 可直接返回已存在的 build_id（Synthesize 幂等第一层去重）；
+    # 细粒度的段级缓存走段级 sha256，不在这里比。
+    config_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     # 产出
     zip_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)

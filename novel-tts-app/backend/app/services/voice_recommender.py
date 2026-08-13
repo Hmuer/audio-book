@@ -71,5 +71,6 @@ async def recommend_voices_with_llm(
         output_schema=_Wrapper,
         temperature=0.2,
         max_tokens=8000,
+        use_fast_model=True,  # 音色推荐是"特征匹配"任务；M2.7-highspeed 准确率足够且速度快
     )
     return wrapped.data
