@@ -1,11 +1,15 @@
 from datetime import datetime
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy import ForeignKey, Integer, String, Text, Float, DateTime
+from sqlalchemy import ForeignKey, Integer, String, Text, Float, DateTime, Boolean
 
 
 class Base(DeclarativeBase):
     pass
 
+
+# =====================================================================
+# 单章模式（保留旧 Job 表，兼容单章流程）
+# =====================================================================
 
 class Job(Base):
     __tablename__ = "jobs"
@@ -20,21 +24,15 @@ class Job(Base):
     final_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    # ---------- 整本小说相关字段（is_book=False 时这些字段无意义）----------
+    # ---------- 整本小说相关字段（兼容旧 book 流程，新项目模式走 Project/Build 表）----------
     is_book: Mapped[bool] = mapped_column(default=False)
     source_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
     book_title: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    # 整本流程状态：uploading/preparing/prepared/synthesizing/done/failed
     book_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    # 已完成章数（仅 synthesize 阶段递增，供前端轮询进度）
     completed_chapters: Mapped[int] = mapped_column(Integer, default=0)
-    # 当前阶段的人类可读描述，例如 "正在合成第 3/20 章"
     progress_msg: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    # 整本 prepare 后的章节 JSON（[{idx,title,text},...]），合成时按此切分
     chapters_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # 所有章 MP3 字节总和（仅整本书模式）
     total_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # 整包 ZIP 文件名（仅整本书模式，done 时生成）
     zip_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
     characters: Mapped[list["Character"]] = relationship(
@@ -47,6 +45,139 @@ class Job(Base):
         back_populates="job", cascade="all, delete-orphan"
     )
 
+
+# =====================================================================
+# 项目制模式（新架构）
+# =====================================================================
+
+class Project(Base):
+    """一本书一个项目。"""
+    __tablename__ = "projects"
+
+    project_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(256), default="")
+    book_title: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    source_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    source_file_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    source_file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_charset: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    # 项目状态机：draft → importing → imported → preparing → ready → synthesizing → done → failed
+    status: Mapped[str] = mapped_column(String(32), default="draft")
+    chapters_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chapter_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # 项目级默认配置
+    default_narrator_voice_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    default_speed: Mapped[float] = mapped_column(Float, default=1.0)
+
+    # 元信息
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tags: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    cover_color: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    builds: Mapped[list["Build"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    project_characters: Mapped[list["ProjectCharacter"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    project_dialogues: Mapped[list["ProjectDialogue"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+
+
+class Build(Base):
+    """一次生成任务（类似 GitHub Actions Run）。"""
+    __tablename__ = "builds"
+
+    build_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(64), ForeignKey("projects.project_id", ondelete="CASCADE"))
+    status: Mapped[str] = mapped_column(String(32), default="queued")
+    # queued / running / success / failed / cancelled
+    progress_msg: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    completed_chapters: Mapped[int] = mapped_column(Integer, default=0)
+    total_chapters: Mapped[int] = mapped_column(Integer, default=0)
+
+    # 本次配置快照
+    narrator_voice_id: Mapped[str] = mapped_column(String(128), default="")
+    speed: Mapped[float] = mapped_column(Float, default=1.0)
+    voice_assignments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # 产出
+    zip_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    total_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    project: Mapped[Project] = relationship(back_populates="builds")
+    artifacts: Mapped[list["BuildArtifact"]] = relationship(
+        back_populates="build", cascade="all, delete-orphan"
+    )
+
+
+class BuildArtifact(Base):
+    """每次 Build 的每章产出。"""
+    __tablename__ = "build_artifacts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    build_id: Mapped[str] = mapped_column(String(64), ForeignKey("builds.build_id", ondelete="CASCADE"))
+    chapter_idx: Mapped[int] = mapped_column(Integer, default=0)
+    title: Mapped[str] = mapped_column(String(256), default="")
+    # pending / synthesizing / done / failed
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    audio_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    audio_url: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    build: Mapped[Build] = relationship(back_populates="artifacts")
+
+
+class ProjectCharacter(Base):
+    """项目级角色识别结果。"""
+    __tablename__ = "project_characters"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(String(64), ForeignKey("projects.project_id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(128))
+    gender: Mapped[str] = mapped_column(String(16), default="未知")
+    age: Mapped[str] = mapped_column(String(64), default="")
+    personality: Mapped[str] = mapped_column(String(512), default="")
+    canonical_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    assigned_voice_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    project: Mapped[Project] = relationship(back_populates="project_characters")
+
+
+class ProjectDialogue(Base):
+    """项目级对白归属。"""
+    __tablename__ = "project_dialogues"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(String(64), ForeignKey("projects.project_id", ondelete="CASCADE"))
+    chapter_idx: Mapped[int] = mapped_column(Integer, default=0)
+    segment_index: Mapped[int] = mapped_column(Integer, default=0)
+    anchor_start: Mapped[int] = mapped_column(Integer, default=0)
+    anchor_end: Mapped[int] = mapped_column(Integer, default=0)
+    anchor_text: Mapped[str] = mapped_column(Text, default="")
+    speaker: Mapped[str] = mapped_column(String(128), default="")
+    text: Mapped[str] = mapped_column(Text, default="")
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+
+    project: Mapped[Project] = relationship(back_populates="project_dialogues")
+
+
+# =====================================================================
+# 单章模式旧表（Character/Dialogue/ChapterResult 仍关联到 jobs）
+# =====================================================================
 
 class Character(Base):
     __tablename__ = "characters"
@@ -84,14 +215,13 @@ class Dialogue(Base):
 
 
 class ChapterResult(Base):
-    """整本合成时的每章结果记录（仅 is_book=True 的 Job 用）"""
+    """整本合成时的每章结果记录（仅 is_book=True 的旧 Job 用，新项目模式走 BuildArtifact）。"""
     __tablename__ = "chapter_results"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     job_id: Mapped[str] = mapped_column(String(64), ForeignKey("jobs.job_id", ondelete="CASCADE"))
     chapter_idx: Mapped[int] = mapped_column(Integer, default=0)
     title: Mapped[str] = mapped_column(String(256), default="")
-    # pending / synthesizing / done / failed
     status: Mapped[str] = mapped_column(String(16), default="pending")
     audio_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
     audio_url: Mapped[str | None] = mapped_column(String(256), nullable=True)

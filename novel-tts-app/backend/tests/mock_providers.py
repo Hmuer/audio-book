@@ -114,12 +114,38 @@ class MockLLMProvider(BaseLLMProvider):
                 })
             return output_schema.model_validate({"data": attrs})
 
-        if "VoiceRecommendation" in schema_name or "Voice" in schema_name:
+        # 音色推荐：prompt 含 "配音导演" 或 "音色列表"，schema 是 _Wrapper(data=list[VoiceRecommendation])
+        if (schema_name == "_Wrapper" and ("配音导演" in prompt or "音色列表" in prompt)) or \
+           ("VoiceRecommendation" in schema_name or "Voice" in schema_name):
+            # 从 prompt 抽取角色名，给每个挑一个默认音色
+            import re as _re
             recs = [
                 {"character_name": "林若雪", "suggested_voice_id": "female-tianmei", "reason": "少女匹配甜美音色"},
                 {"character_name": "李明", "suggested_voice_id": "male-qn-qingse", "reason": "青年男声"},
                 {"character_name": "王大爷", "suggested_voice_id": "male-qn-badao", "reason": "老年沧桑"},
             ]
+            # 从 prompt 抽取实际角色名，替换默认值
+            try:
+                char_block = prompt.split("【角色列表】", 1)[1]
+                char_block = char_block.split("【音色列表】", 1)[0]
+                # 抓 "name": "xxx"
+                names = _re.findall(r'"name"\s*:\s*"([^"]+)"', char_block)
+                if names:
+                    default_voices = {
+                        "林若雪": "female-tianmei",
+                        "李明": "male-qn-qingse",
+                        "王大爷": "male-qn-badao",
+                    }
+                    recs = [
+                        {
+                            "character_name": n,
+                            "suggested_voice_id": default_voices.get(n, "male-qn-jingying"),
+                            "reason": f"{n} 默认推荐",
+                        }
+                        for n in names
+                    ]
+            except Exception:
+                pass
             return output_schema.model_validate({"data": recs})
 
         if "Chapter" in schema_name:
