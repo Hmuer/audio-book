@@ -502,33 +502,51 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
 
 async def _split_50k_and_run_chars_serial(text: str, coro_fn) -> list[Character]:
     """
-    长文本角色识别主入口：
-    - <= LLM_CHAR_EXTRACT_LIMIT（默认 50 万字）：逐 50k 切片串行 + 合并（准确）
-    - >  LLM_CHAR_EXTRACT_LIMIT：只抽样前 LLM_CHAR_EXTRACT_LIMIT 字跑一次
-      （长篇小说前 50 万字通常已出场几乎全部主要角色，对白归属够用；
-       1000 章 200 万字书从 40 次 LLM → 1 次）
+    整本小说角色识别：**全量逐 50k 切片串行跑，不截断、不抽样。**
+
+    无论小说多长（10 万字 / 200 万字 / 1000 万字）都完整跑完：
+    - 每 50k 字符切片调用一次角色识别 LLM
+    - 所有切片结果合并后，再走一次去重（`deduplicate_characters_with_llm`）
+    - 串行调用（配合 provider 层全局 semaphore 防 RPM 429）
+
+    为什么不用"抽样前 50 万字"：
+      后半本书出场的配角、阶段性反派、关键角色在"抽样截断"时会被漏掉，
+      导致这些角色后续的对白归属全部失败（被识别成"旁白/未知"）。
+      按 3000 字/章 × 1000 章 = 300 万字估算，大约需要 60 次 LLM 调用，
+      即便串行跑 10s/次 也就 ~10 分钟，换来对白归属准确率完全可接受。
+
+    输出：合并后的 Character 列表（调用方会再跑 dedup + canonical 归一化）
     """
     from ..core.config import settings
     total_chars = len(text)
-    sample_limit = max(50000, int(settings.LLM_CHAR_EXTRACT_LIMIT))
-    if total_chars > sample_limit:
-        logger.warning(
-            f"[chars_split] total={total_chars} > LLM_CHAR_EXTRACT_LIMIT={sample_limit}, "
-            f"只抽样前 {sample_limit} 字识别角色（后续章节识别仍基于该角色库匹配）"
-        )
-        text = text[:sample_limit]
 
-    MAX = 50000
+    MAX = int(settings.LLM_CHAR_EXTRACT_SLICE_SIZE) if settings.LLM_CHAR_EXTRACT_SLICE_SIZE else 50000
+    MAX = max(10000, MAX)
     if len(text) <= MAX:
+        logger.info(f"[chars_split] total={total_chars} ≤ 50k，单切片处理")
         return await coro_fn(text)
+
     slices = [text[i:i+MAX] for i in range(0, len(text), MAX)]
+    logger.info(
+        f"[chars_split] total={total_chars} → slices={len(slices)} "
+        f"(全量串行处理，每个 slice ≤ {MAX} chars；"
+        f"预计耗时 ≈ {len(slices)} × 单次 LLM 时长，不会提前截断)"
+    )
     merged: list[Character] = []
     for i, s in enumerate(slices):
         logger.info(
             f"[chars_split] slice {i+1}/{len(slices)} chars={len(s)} start"
         )
         r = await coro_fn(s)
+        logger.info(
+            f"[chars_split] slice {i+1}/{len(slices)} done chars={len(s)} "
+            f"extracted_characters={len(r)}"
+        )
         merged.extend(r)
+    logger.info(
+        f"[chars_split] ALL DONE slices={len(slices)} "
+        f"raw_merged_characters={len(merged)}（下一步会做跨切片 dedup）"
+    )
     return merged
 
 
