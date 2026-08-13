@@ -1,6 +1,7 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { api, Character, PrepareResp, Voice } from '@/lib/api';
 
 export default function StepRoles({
@@ -215,6 +216,9 @@ function VoicePicker({
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const panelIdRef = useRef(`__voice_picker_panel_${Math.random().toString(36).slice(2)}`);
+  const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
 
   const groups = useMemo(() => {
     const g: Record<string, Voice[]> = { 男声: [], 女声: [], 中性: [] };
@@ -234,10 +238,42 @@ function VoicePicker({
 
   const selected = voices.find(v => v.id === value);
 
+  // 测量触发按钮位置，供 fixed 浮层定位
+  useLayoutEffect(() => {
+    if (!open || !btnRef.current) return;
+    const update = () => {
+      const r = btnRef.current?.getBoundingClientRect();
+      if (r) setCoords({ top: r.bottom + 4, left: r.left, width: r.width });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, [open]);
+
+  // 点击浮层外关闭
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (btnRef.current?.contains(target)) return;
+      // 浮层自身在 portal 中，无法用 ref 直接比对，靠 data 属性
+      const panel = document.getElementById(panelIdRef.current);
+      if (panel && panel.contains(target)) return;
+      setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
   return (
     <div className="relative">
       <div className="flex items-center gap-2">
         <button
+          ref={btnRef}
           onClick={() => setOpen(v => !v)}
           className={`${compact ? 'flex-1' : 'w-full'} text-left rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm`}
         >
@@ -261,8 +297,18 @@ function VoicePicker({
           ▶
         </button>
       </div>
-      {open && (
-        <div className="mt-2 absolute z-20 left-0 right-0 rounded-2xl border border-white/10 bg-gray-950 p-3 shadow-2xl max-h-[420px] overflow-hidden flex flex-col">
+      {open && coords && typeof document !== 'undefined' && createPortal(
+        <div
+          id={panelIdRef.current}
+          style={{
+            position: 'fixed',
+            top: `${coords.top}px`,
+            left: `${coords.left}px`,
+            width: `${coords.width}px`,
+            zIndex: 9999,
+          }}
+          className="rounded-2xl border border-white/10 bg-gray-950 p-3 shadow-2xl max-h-[420px] overflow-hidden flex flex-col"
+        >
           <input
             autoFocus
             className="input mb-2"
@@ -313,7 +359,8 @@ function VoicePicker({
               ) : null
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
