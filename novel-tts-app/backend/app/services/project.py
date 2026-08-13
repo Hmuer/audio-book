@@ -25,7 +25,7 @@ from ..db.models import (
     ProjectDialogue,
 )
 from ..db.session import get_session_factory
-from .book_split import split_book_chapters
+from .book_split import ChapterSplitError, split_book_chapters
 from .character import (
     Character,
     extract_characters_with_llm,
@@ -347,7 +347,16 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
     try:
         # 3. 章节识别
         pt = _time.perf_counter()
-        chapters = await split_book_chapters(raw_text)
+        try:
+            chapters = await split_book_chapters(raw_text)
+        except ChapterSplitError as e:
+            # 切章失败：不回退 LLM，不调用后续角色识别/对白归属，直接把错误信息提示给用户
+            # （CHAPTER_SPLIT_HARD_FALLBACK_ENABLED 控制是否启用硬切兜底，默认关闭）
+            logger.warning(
+                f"[project_prepare] project_id={project_id[:8]}... chapter split failed, "
+                f"no LLM fallback → raise directly"
+            )
+            raise
         logger.info(
             f"[project_prepare] project_id={project_id[:8]}... "
             f"split_chapters={len(chapters)} ms={int((_time.perf_counter()-pt)*1000)}"
