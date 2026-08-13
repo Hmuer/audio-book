@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useRef } from 'react';
+import { useMemo, useState, useRef, useEffect } from 'react';
 import { api, PrepareResp, SynthResp, SynthSegment, Voice } from '@/lib/api';
 import VoicePicker from './VoicePicker';
 
@@ -23,6 +23,9 @@ export default function StepGenerate({
 }) {
   const [err, setErr] = useState<string | null>(null);
   const [segmentOverrides, setSegmentOverrides] = useState<Record<number, string>>({});
+
+  // 合成结果卡的 ref，用于自动滚动
+  const resultRef = useRef<HTMLDivElement>(null);
 
   // 试听播放管理（与 StepRoles 类似的统一 audio 元素）
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -136,6 +139,13 @@ export default function StepGenerate({
   const dialogueSegments =
     synthResult?.segments.filter(s => s.kind === 'dialogue') || [];
 
+  // 合成完成后自动滚动到结果卡
+  useEffect(() => {
+    if (synthResult && resultRef.current) {
+      resultRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [synthResult]);
+
   return (
     <section className="space-y-6">
       <div className="card flex flex-wrap items-center justify-between gap-3">
@@ -160,6 +170,32 @@ export default function StepGenerate({
       {err && (
         <div className="card border-red-500/30 bg-red-500/5">
           <div className="text-sm text-red-300">❌ {err}</div>
+        </div>
+      )}
+
+      {/* 合成结果 + 下载（置顶，合成完成后自动滚动到此） */}
+      {synthResult && (
+        <div
+          ref={resultRef}
+          className="card border-brand-500/40 bg-brand-500/5 space-y-3 sticky top-4 z-10"
+        >
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div>
+              <div className="text-lg font-semibold">🎉 合成完成</div>
+              <div className="text-sm text-white/60">
+                总时长 {synthResult.duration_sec.toFixed(1)}s · 共{' '}
+                {synthResult.segments.length} 段 · 文件名 {synthResult.audio_filename}
+              </div>
+            </div>
+            <a
+              className="btn-primary"
+              href={synthResult.audio_url}
+              download={`novel_${prepareResult.job_id}.mp3`}
+            >
+              ⬇️ 下载 MP3
+            </a>
+          </div>
+          <audio controls src={synthResult.audio_url} className="w-full" />
         </div>
       )}
 
@@ -270,28 +306,6 @@ export default function StepGenerate({
         </div>
       </details>
 
-      {/* 合成结果 + 下载 */}
-      {synthResult && (
-        <div className="card border-brand-500/40 bg-brand-500/5 space-y-3">
-          <div className="flex items-center justify-between flex-wrap gap-3">
-            <div>
-              <div className="text-lg font-semibold">🎉 合成完成</div>
-              <div className="text-sm text-white/60">
-                总时长 {synthResult.duration_sec.toFixed(1)}s · 共{' '}
-                {synthResult.segments.length} 段 · 文件名 {synthResult.audio_filename}
-              </div>
-            </div>
-            <a
-              className="btn-primary"
-              href={synthResult.audio_url}
-              download={`novel_${prepareResult.job_id}.mp3`}
-            >
-              ⬇️ 下载 MP3
-            </a>
-          </div>
-          <audio controls src={synthResult.audio_url} className="w-full" />
-        </div>
-      )}
       {/* 全局隐藏 audio 元素：统一播放管理 */}
       <audio ref={audioRef} style={{ display: 'none' }} />
     </section>
