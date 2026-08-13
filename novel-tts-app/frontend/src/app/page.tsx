@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useTheme } from '@/components/ThemeContext';
+import { useAuth } from '@/components/AuthContext';
 import StepInput from '@/components/StepInput';
 import StepRoles from '@/components/StepRoles';
 import StepGenerate from '@/components/StepGenerate';
@@ -9,12 +10,15 @@ import BookFlow from '@/components/BookFlow';
 import ProjectListPage from '@/components/ProjectListPage';
 import ProjectWizard from '@/components/ProjectWizard';
 import ProjectDetailPage from '@/components/ProjectDetailPage';
+import LoginPage from '@/components/LoginPage';
+import UserMenu from '@/components/UserMenu';
 import { api, PrepareResp, SynthResp, Voice } from '@/lib/api';
 
 type Step = 1 | 2 | 3;
 
 // hash 路由解析后的路由对象
 type Route =
+  | { name: 'login' }
   | { name: 'single' }
   | { name: 'book' }
   | { name: 'projects-list' }
@@ -25,6 +29,7 @@ type Route =
 function parseHash(): Route {
   if (typeof window === 'undefined') return { name: 'single' };
   const h = window.location.hash.replace(/^#/, '');
+  if (h === '/login') return { name: 'login' };
   if (h === '/book') return { name: 'book' };
   if (h === '/projects' || h === '/projects/') return { name: 'projects-list' };
   if (h === '/projects/new') return { name: 'projects-new' };
@@ -37,6 +42,7 @@ function parseHash(): Route {
 
 export default function HomePage() {
   const { theme, toggle } = useTheme();
+  const { user, loading: authLoading } = useAuth();
   const [route, setRoute] = useState<Route>({ name: 'single' });
   const [step, setStep] = useState<Step>(1);
   const [voices, setVoices] = useState<Voice[]>([]);
@@ -52,11 +58,45 @@ export default function HomePage() {
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
+  // 登录态变化时，做必要的跳转
   useEffect(() => {
+    if (authLoading) return;
+    if (!user && route.name !== 'login') {
+      // 未登录且当前不在登录页 → 跳登录
+      window.location.hash = '/login';
+    } else if (user && route.name === 'login') {
+      // 已登录但停留在登录页 → 跳默认页（项目工作台）
+      window.location.hash = '/projects';
+    }
+  }, [user, authLoading, route.name]);
+
+  // 已登录才拉音色列表
+  useEffect(() => {
+    if (!user) {
+      setVoices([]);
+      return;
+    }
     api.voices()
       .then(setVoices)
       .catch(e => console.error('voices 加载失败:', e));
-  }, []);
+  }, [user]);
+
+  // 初始化 / 鉴权校验期间，显示 loading
+  if (authLoading) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center text-white/40">
+        <div className="text-center">
+          <div className="inline-block w-8 h-8 border-2 border-white/20 border-t-brand-500 rounded-full animate-spin mb-3" />
+          <div className="text-sm">加载中…</div>
+        </div>
+      </div>
+    );
+  }
+
+  // 未登录只展示登录页
+  if (!user) {
+    return <LoginPage />;
+  }
 
   // 顶部 tab 当前激活项，由 route 推导
   const activeTab: 'single' | 'projects' | 'book' =
@@ -97,6 +137,7 @@ export default function HomePage() {
           <button className="btn-ghost" onClick={toggle} title="切换深色/浅色">
             {theme === 'dark' ? '🌙 深色' : '☀️ 浅色'}
           </button>
+          <UserMenu />
         </div>
       </header>
 

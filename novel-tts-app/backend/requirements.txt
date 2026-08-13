@@ -7,5 +7,7 @@ aiosqlite==0.20.0
 SQLAlchemy==2.0.36
 python-dotenv==1.0.1
 python-multipart==0.0.12
+PyJWT==2.9.0
+bcrypt==4.2.0
 pytest==8.3.3
 pytest-asyncio==0.24.0

@@ -8,6 +8,22 @@ class Base(DeclarativeBase):
 
 
 # =====================================================================
+# 用户与鉴权
+# =====================================================================
+
+class User(Base):
+    """登录用户。启动时自动 seed admin/admin（密码 bcrypt 加密）。"""
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(256))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# =====================================================================
 # 单章模式（保留旧 Job 表，兼容单章流程）
 # =====================================================================
 

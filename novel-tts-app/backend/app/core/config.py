@@ -30,5 +30,14 @@ class Settings(BaseSettings):
     TTS_TIMEOUT: int = 600
     UVICORN_TIMEOUT: int = 600
 
+    # Auth (JWT)
+    JWT_SECRET: str = "change-me-in-production-please-use-a-long-random-string"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXP_DAYS: int = 7
+    SEED_ADMIN_USER: str = "admin"
+    SEED_ADMIN_PASS: str = "admin"
+    # 测试/本地调试用：DISABLE_AUTH=1 时所有 /api/* 不校验 token
+    DISABLE_AUTH: bool = False
+
 
 settings = Settings()

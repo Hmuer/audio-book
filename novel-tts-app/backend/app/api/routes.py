@@ -5,14 +5,23 @@ import urllib.parse
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.session import get_session_factory
-from ..db.models import Job, ChapterResult, Build, BuildArtifact, Project
+from ..db.models import Job, ChapterResult, Build, BuildArtifact, Project, User
 from ..ai.factory import get_tts
 from ..core.config import settings
+from ..services.auth import (
+    authenticate,
+    create_access_token,
+    decode_token,
+    get_user_by_username,
+    LoginResp,
+    UserInfo,
+)
 from ..services.chapter import (
     prepare_chapter,
     synthesize_chapter,
@@ -61,13 +70,169 @@ from ..services.build import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 业务路由：所有 endpoint 默认强制 JWT 鉴权（dependencies 在 get_current_user 定义后追加）
 router = APIRouter(prefix="/api", tags=["novel-tts"])
+
+# auth 路由：无鉴权（登录本身不需要 token；me/change-password/logout 在 endpoint 内显式 Depends）
+auth_router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# 公开路由：/health 仅用于运维健康检查，不要求登录
+public_router = APIRouter(prefix="/api", tags=["public"])
 
 
 async def get_db() -> AsyncSession:
     factory = get_session_factory()
     async with factory() as s:
         yield s
+
+
+# =====================================================================
+# 鉴权：JWT 依赖 + /api/auth/* 路由
+# =====================================================================
+
+# auto_error=False 让 401 由我们自己抛（带 WWW-Authenticate 头）
+_bearer = HTTPBearer(auto_error=False)
+
+
+async def get_current_user(
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> User:
+    """
+    JWT 鉴权依赖。所有需要登录的 /api/* 路由通过 Depends(get_current_user) 强制校验。
+    DISABLE_AUTH=True 时直接放行（仅本地调试/测试用）。
+    """
+    if settings.DISABLE_AUTH:
+        # 测试模式：放行。无 token 时返回一个虚拟 admin（保证非 None）
+        user = await get_user_by_username(settings.SEED_ADMIN_USER)
+        if not user:
+            # 极端情况：DB 还没 seed，构造一个临时 User
+            user = User(id=0, username="disabled-auth", password_hash="", is_active=True)
+        return user
+
+    if creds is None or creds.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=401,
+            detail="未提供认证 token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    username = decode_token(creds.credentials)
+    if not username:
+        raise HTTPException(
+            status_code=401,
+            detail="token 无效或已过期",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user = await get_user_by_username(username)
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=401,
+            detail="用户不存在或已禁用",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
+
+
+# 现在 get_current_user 已定义，给业务 router 追加全局 dependencies
+router.dependencies = [Depends(get_current_user)]
+
+
+# ---------- Auth Requests ----------
+
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=6, max_length=128)
+
+
+@auth_router.post("/login", response_model=LoginResp)
+async def api_auth_login(req: LoginRequest, request: Request):
+    """登录：用户名 + 密码 → JWT。"""
+    t0 = _time.perf_counter()
+    remote = request.client.host if request.client else "?"
+    logger.info(
+        f"[HTTP] POST /api/auth/login client={remote} username={req.username!r}"
+    )
+    try:
+        user = await authenticate(req.username, req.password)
+        if not user:
+            logger.warning(
+                f"[HTTP] 401 /api/auth/login client={remote} "
+                f"username={req.username!r} -> invalid credentials"
+            )
+            raise HTTPException(401, "用户名或密码错误")
+        token, expires_at = create_access_token(user.username)
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.info(
+            f"[HTTP] 200 /api/auth/login client={remote} "
+            f"username={user.username!r} total_ms={elapsed_ms}"
+        )
+        return LoginResp(
+            token=token,
+            token_type="Bearer",
+            expires_at=expires_at.isoformat(),
+            user=UserInfo(
+                id=user.id,
+                username=user.username,
+                is_active=user.is_active,
+                created_at=user.created_at.isoformat() if user.created_at else None,
+            ),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"[HTTP] 500 /api/auth/login -> {type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(500, f"登录失败: {type(e).__name__}: {e}")
+
+
+@auth_router.get("/me", response_model=UserInfo)
+async def api_auth_me(current: User = Depends(get_current_user)):
+    """返回当前登录用户信息（用于前端刷新页面后校验 token 有效性）。"""
+    return UserInfo(
+        id=current.id,
+        username=current.username,
+        is_active=current.is_active,
+        created_at=current.created_at.isoformat() if current.created_at else None,
+    )
+
+
+@auth_router.post("/change-password")
+async def api_auth_change_password(
+    req: ChangePasswordRequest,
+    current: User = Depends(get_current_user),
+):
+    """修改自己的密码。"""
+    from ..services.auth import hash_password, verify_password
+    if not verify_password(req.old_password, current.password_hash):
+        raise HTTPException(400, "原密码不正确")
+    if req.new_password == req.old_password:
+        raise HTTPException(400, "新密码不能与原密码相同")
+
+    factory = get_session_factory()
+    async with factory() as s:
+        u = await s.get(User, current.id)
+        if not u:
+            raise HTTPException(404, "用户不存在")
+        u.password_hash = hash_password(req.new_password)
+        await s.commit()
+    logger.info(f"[auth] 用户 {current.username!r} 修改了密码")
+    return {"ok": True}
+
+
+@auth_router.post("/logout")
+async def api_auth_logout(current: User = Depends(get_current_user)):
+    """
+    无状态 JWT 注销：服务端不存黑名单（单机单用户场景没必要）。
+    前端清掉本地 token 即可。这里只是占位返回 ok，方便前端统一调用。
+    """
+    return {"ok": True}
 
 
 # ---------- Requests ----------
@@ -93,7 +258,7 @@ class TtsPreviewRequest(BaseModel):
 
 # ---------- Health & Voices ----------
 
-@router.get("/health")
+@public_router.get("/health")
 async def health():
     return {"status": "ok", "service": "novel-tts"}
 

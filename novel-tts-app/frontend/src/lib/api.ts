@@ -1,12 +1,75 @@
 // Thin fetch wrappers. In static export mode we call backend same origin (/api).
 
 const BASE = '';
+const TOKEN_KEY = 'novel_tts_token';
+const TOKEN_EXP_KEY = 'novel_tts_token_exp';
+
+// ---------- Token 管理 ----------
+
+export function getToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (!token) return null;
+  // 过期检查（前端兜底；后端 JWT exp 才是权威）
+  const exp = localStorage.getItem(TOKEN_EXP_KEY);
+  if (exp) {
+    const expMs = parseInt(exp, 10);
+    if (Date.now() > expMs) {
+      // 已过期，清掉
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(TOKEN_EXP_KEY);
+      return null;
+    }
+  }
+  return token;
+}
+
+export function setToken(token: string, expiresAtIso: string): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(TOKEN_KEY, token);
+  const expMs = new Date(expiresAtIso).getTime();
+  if (!isNaN(expMs)) {
+    localStorage.setItem(TOKEN_EXP_KEY, String(expMs));
+  }
+}
+
+export function clearToken(): void {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(TOKEN_EXP_KEY);
+}
+
+export function isLoggedIn(): boolean {
+  return getToken() !== null;
+}
+
+// 401 时自动跳登录页
+let _onAuthFail: (() => void) | null = null;
+export function setOnAuthFail(cb: () => void): void {
+  _onAuthFail = cb;
+}
 
 async function _fetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  // FormData 上传时不显式设 Content-Type（浏览器自动 multipart boundary）
+  const bodyIsFormData = init?.body instanceof FormData;
+  if (!bodyIsFormData) {
+    headers['Content-Type'] = 'application/json';
+  }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
     ...init,
+    headers: { ...headers, ...(init?.headers as Record<string, string>) },
   });
+  if (res.status === 401) {
+    // token 失效/过期 → 清掉本地，触发登录跳转
+    clearToken();
+    if (_onAuthFail) _onAuthFail();
+    throw new Error('登录已失效，请重新登录');
+  }
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
     try {
@@ -17,6 +80,24 @@ async function _fetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
   return (await res.json()) as T;
 }
+
+// ---------- Auth 类型 ----------
+
+export interface UserInfo {
+  id: number;
+  username: string;
+  is_active: boolean;
+  created_at: string | null;
+}
+
+export interface LoginResp {
+  token: string;
+  token_type: string;
+  expires_at: string;
+  user: UserInfo;
+}
+
+// ---------- 业务类型 ----------
 
 export interface Voice {
   id: string;
@@ -134,6 +215,21 @@ export const api = {
   health: () => _fetch<{ status: string }>('/api/health'),
   voices: () =>
     _fetch<{ voices: Voice[]; count: number }>('/api/voices').then(r => r.voices),
+  // ---------- Auth ----------
+  authLogin: (username: string, password: string) =>
+    _fetch<LoginResp>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+  authMe: () => _fetch<UserInfo>('/api/auth/me'),
+  authLogout: () =>
+    _fetch<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+  authChangePassword: (oldPassword: string, newPassword: string) =>
+    _fetch<{ ok: boolean }>('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+    }),
+  // ---------- 业务 ----------
   prepare: (text: string, enable_polish: boolean) =>
     _fetch<PrepareResp>('/api/chapter/prepare', {
       method: 'POST',
@@ -159,8 +255,18 @@ export const api = {
   bookUpload: (file: File) => {
     const fd = new FormData();
     fd.append('file', file);
-    // 注意：FormData 不能预设 Content-Type，需要单独 fetch
-    return fetch(`${BASE}/api/book/upload`, { method: 'POST', body: fd }).then(async r => {
+    // FormData 由浏览器自动设置 Content-Type（含 boundary），不能预设
+    const token = getToken();
+    return fetch(`${BASE}/api/book/upload`, {
+      method: 'POST',
+      body: fd,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).then(async r => {
+      if (r.status === 401) {
+        clearToken();
+        if (_onAuthFail) _onAuthFail();
+        throw new Error('登录已失效，请重新登录');
+      }
       if (!r.ok) {
         let msg = `HTTP ${r.status}`;
         try { const j = await r.json(); if (j.detail) msg += `: ${j.detail}`; } catch {}
@@ -213,15 +319,21 @@ export const api = {
   // 删除项目
   projectDelete: (id: string) =>
     _fetch<{ ok: boolean }>(`/api/projects/${id}`, { method: 'DELETE' }),
-  // 上传文件到项目（multipart/form-data，参考 bookUpload 实现）
+  // 上传文件到项目（multipart/form-data，FormData 由浏览器设 Content-Type）
   projectImport: (id: string, file: File) => {
     const fd = new FormData();
     fd.append('file', file);
-    // 注意：FormData 不能预设 Content-Type，需要单独 fetch
+    const token = getToken();
     return fetch(`${BASE}/api/projects/${id}/import`, {
       method: 'POST',
       body: fd,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     }).then(async r => {
+      if (r.status === 401) {
+        clearToken();
+        if (_onAuthFail) _onAuthFail();
+        throw new Error('登录已失效，请重新登录');
+      }
       if (!r.ok) {
         let msg = `HTTP ${r.status}`;
         try { const j = await r.json(); if (j.detail) msg += `: ${j.detail}`; } catch {}

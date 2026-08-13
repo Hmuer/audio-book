@@ -14,6 +14,9 @@ if str(PROJECT_ROOT) not in sys.path:
 # monkeypatch env 必须在导入 backend 之前
 os.environ.setdefault("TTS_API_KEY", "test")
 os.environ.setdefault("LLM_API_KEY", "test")
+# 测试固定用 admin/admin，方便 fixture 里登录拿 token
+os.environ.setdefault("SEED_ADMIN_USER", "admin")
+os.environ.setdefault("SEED_ADMIN_PASS", "admin")
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +37,15 @@ def _isolate_data_dir(tmp_path, monkeypatch):
         "DATABASE_URL",
         f"sqlite+aiosqlite:///{data_dir}/app.db",
     )
+    # 测试期间默认启用鉴权（真实链路）；个别用例可 monkeypatch 关掉
+    monkeypatch.setattr(cfgmod.settings, "DISABLE_AUTH", False)
+
+    # 重置 DB engine / session_factory 全局缓存，确保每个测试用独立 DB
+    # （session.py 的 _engine / _session_factory 是模块级缓存，
+    #  不重置的话会复用第一个测试创建的 engine，导致跨测试数据泄漏）
+    from backend.app.db import session as sessmod
+    monkeypatch.setattr(sessmod, "_engine", None)
+    monkeypatch.setattr(sessmod, "_session_factory", None)
 
     # monkeypatch factory 返回 mock
     from backend.app.ai import factory as _aifactory_mod  # noqa: F401
@@ -60,3 +72,19 @@ async def db_session():
     factory = get_session_factory()
     async with factory() as s:
         yield s
+
+
+@pytest.fixture
+async def admin_token(_isolate_data_dir):
+    """
+    返回已登录 admin 的 JWT token。
+    - 自动 init_db + seed admin（admin/admin）
+    - 调用 /api/auth/login 拿 token
+    测试里用 client.headers['Authorization'] = f'Bearer {token}' 携带。
+    """
+    from backend.app.db.session import init_db
+    from backend.app.services.auth import seed_admin_user, create_access_token
+    await init_db()
+    await seed_admin_user()
+    token, _ = create_access_token("admin")
+    return token

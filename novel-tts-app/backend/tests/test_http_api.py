@@ -40,7 +40,7 @@ _BOOK_TXT = """\
 
 
 @pytest.mark.asyncio
-async def test_http_project_full_flow(_isolate_data_dir):
+async def test_http_project_full_flow(_isolate_data_dir, admin_token):
     """HTTP 层完整流程：建项目→导入→识别→改音色→启动build→完成→下载→删。"""
     from backend.app.db.session import init_db
     from backend.app.main import app
@@ -49,8 +49,9 @@ async def test_http_project_full_flow(_isolate_data_dir):
     await init_db()
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # 1. 健康检查
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as client:
+        # 1. 健康检查（公开，不需要 token）
         r = await client.get("/api/health")
         assert r.status_code == 200
         assert r.json()["status"] == "ok"
@@ -178,7 +179,7 @@ async def test_http_project_full_flow(_isolate_data_dir):
 
 
 @pytest.mark.asyncio
-async def test_http_project_validation_errors(_isolate_data_dir):
+async def test_http_project_validation_errors(_isolate_data_dir, admin_token):
     """HTTP 层错误处理：404/400/422 等。"""
     from backend.app.db.session import init_db
     from backend.app.main import app
@@ -186,7 +187,8 @@ async def test_http_project_validation_errors(_isolate_data_dir):
 
     await init_db()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as client:
         # 不存在的 project
         r = await client.get("/api/projects/notexist")
         assert r.status_code == 404
@@ -220,7 +222,7 @@ async def test_http_project_validation_errors(_isolate_data_dir):
 
 
 @pytest.mark.asyncio
-async def test_http_voices_endpoint(_isolate_data_dir):
+async def test_http_voices_endpoint(_isolate_data_dir, admin_token):
     """/api/voices 返回音色库（Mock TTS 加载的 voices.json）。"""
     from backend.app.db.session import init_db
     from backend.app.main import app
@@ -228,7 +230,8 @@ async def test_http_voices_endpoint(_isolate_data_dir):
 
     await init_db()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as client:
         r = await client.get("/api/voices")
         assert r.status_code == 200
         data = r.json()

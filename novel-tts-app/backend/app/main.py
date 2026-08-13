@@ -8,7 +8,8 @@ from fastapi.responses import FileResponse
 
 from .core.config import settings
 from .db.session import init_db
-from .api.routes import router as api_router
+from .api.routes import router as api_router, auth_router, public_router
+from .services.auth import seed_admin_user
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,6 +26,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 async def lifespan(app: FastAPI):
     await init_db()
     logger.info("DB initialized")
+    # 启动时确保默认 admin 账号存在
+    await seed_admin_user()
     yield
 
 
@@ -34,6 +37,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# 路由挂载顺序：先 auth（无鉴权）→ public（无鉴权）→ 业务（强制 JWT）
+app.include_router(auth_router)
+app.include_router(public_router)
 app.include_router(api_router)
 
 # /media -> audio files
