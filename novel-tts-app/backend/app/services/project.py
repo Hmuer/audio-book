@@ -528,7 +528,10 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
 
         # 并发 semaphore 限制批并发（provider 层另有全局 LLM semaphore 兜底串行）
         dialogue_batch_sem = asyncio.Semaphore(batch_concurrency)
-        pending_progresses: set[int] = set()
+        # progress 写 DB / 改 prog dict 必须串行：多个批同时改 prog 会互相覆盖
+        # （如批A写 dialogue_completed_chapters=[0..13]，批B写[14..27]，不加锁的话
+        #  as_completed 里会同时读-改-写 prog，出现 lost update）
+        progress_write_lock = asyncio.Lock()
 
         async def _process_one_batch(
             batch: list[tuple[int, str]], batch_idx: int
@@ -555,22 +558,24 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
             ]
             for t in asyncio.as_completed(batch_tasks):
                 batch_results = await t
-                for ch_idx, attrs_dicts in batch_results:
-                    if 0 <= ch_idx < len(all_attrs_per_chapter):
-                        all_attrs_per_chapter[ch_idx] = attrs_dicts
-                    completed_ch_idxs.add(ch_idx)
-                    chapter_attrs_cache[ch_idx] = attrs_dicts
-                    total_dialogues += len(attrs_dicts)
-                    # 每完成一章就持久化一次 checkpoint
+                # === 整批结果一次性在 lock 内合并，避免并发覆盖 prog dict ===
+                async with progress_write_lock:
+                    for ch_idx, attrs_dicts in batch_results:
+                        if 0 <= ch_idx < len(all_attrs_per_chapter):
+                            all_attrs_per_chapter[ch_idx] = attrs_dicts
+                        completed_ch_idxs.add(ch_idx)
+                        chapter_attrs_cache[ch_idx] = attrs_dicts
+                        total_dialogues += len(attrs_dicts)
+                        logger.info(
+                            f"[project_prepare] project_id={project_id[:8]}... "
+                            f"dialogue_attr chapter={ch_idx+1}/{len(chapters)} "
+                            f"this_dialogues={len(attrs_dicts)} cum={total_dialogues}"
+                        )
+                    # 合并完本 batch 所有章后，统一写一次 checkpoint（减少写 DB 次数）
                     prog["stage"] = "dialogues"
                     prog["dialogue_completed_chapters"] = sorted(completed_ch_idxs)
                     prog["dialogue_attrs_by_chapter_json"] = chapter_attrs_cache
                     await _write_progress(prog)
-                    logger.info(
-                        f"[project_prepare] project_id={project_id[:8]}... "
-                        f"dialogue_attr chapter={ch_idx+1}/{len(chapters)} "
-                        f"this_dialogues={len(attrs_dicts)} cum={total_dialogues}"
-                    )
 
         logger.info(
             f"[project_prepare] project_id={project_id[:8]}... "

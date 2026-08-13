@@ -1,6 +1,10 @@
-from datetime import datetime
+from datetime import datetime, UTC
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy import ForeignKey, Integer, String, Text, Float, DateTime, Boolean
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):
@@ -19,8 +23,8 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(256))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 # =====================================================================
@@ -38,7 +42,7 @@ class Job(Base):
     chapter_count: Mapped[int] = mapped_column(Integer, default=1)
     final_audio_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
     final_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     # ---------- 整本小说相关字段（兼容旧 book 流程，新项目模式走 Project/Build 表）----------
     is_book: Mapped[bool] = mapped_column(default=False)
@@ -104,8 +108,8 @@ class Project(Base):
     tags: Mapped[str | None] = mapped_column(String(256), nullable=True)
     cover_color: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     builds: Mapped[list["Build"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
@@ -147,7 +151,7 @@ class Build(Base):
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     project: Mapped[Project] = relationship(back_populates="builds")
     artifacts: Mapped[list["BuildArtifact"]] = relationship(
@@ -169,7 +173,7 @@ class BuildArtifact(Base):
     audio_url: Mapped[str | None] = mapped_column(String(256), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     build: Mapped[Build] = relationship(back_populates="artifacts")
 
@@ -260,6 +264,6 @@ class ChapterResult(Base):
     audio_url: Mapped[str | None] = mapped_column(String(256), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     job: Mapped[Job] = relationship(back_populates="chapter_results")

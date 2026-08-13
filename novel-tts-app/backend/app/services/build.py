@@ -22,7 +22,7 @@ import re
 import time as _time
 import uuid
 import zipfile
-from datetime import datetime
+from datetime import datetime, UTC
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -499,7 +499,7 @@ async def start_build(
                     if b2:
                         b2.status = "failed"
                         b2.progress_msg = f"合成失败: {type(e).__name__}: {e}"[:200]
-                        b2.completed_at = datetime.utcnow()
+                        b2.completed_at = datetime.now(UTC).replace(tzinfo=None)
                         await s.commit()
             except Exception as e2:
                 logger.error(f"[build_worker] final status write fail: {e2}")
@@ -566,7 +566,7 @@ async def _run_build_inner(
         if not b:
             raise RuntimeError(f"Build 不存在: {build_id}")
         b.status = "running"
-        b.started_at = datetime.utcnow()
+        b.started_at = datetime.now(UTC).replace(tzinfo=None)
         b.progress_msg = f"开始合成 1/{total} 章…"
         await s.commit()
 
@@ -586,30 +586,55 @@ async def _run_build_inner(
     for ch_idx, ch in enumerate(chapters):
         ch_t0 = _time.perf_counter()
 
-        # === 章级幂等 Skip：BuildArtifact.status=done 且 MP3 文件存在 ===
+        # === 章级幂等 Skip：
+        # 情形 A：BuildArtifact.status == "done" 且 MP3 文件存在（标准完成态）
+        # 情形 B：BuildArtifact.status 是 synthesizing / failed，但
+        #         _audio_filename(build_id, ch_idx, failed=False) 文件真实存在且可读
+        #         → 说明上次 worker 中途被杀进程，DB 状态没落盘。直接复用 MP3，
+        #           并顺手把 art.status 补回 done，避免后续"永远 synthesizing 卡住"。
         skip_this_chapter = False
+        ch_ok_path: Path | None = None
+        ch_ok_duration_ms: int | None = None
         async with factory() as s:
             stmt_art = select(BuildArtifact).where(
                 BuildArtifact.build_id == build_id,
                 BuildArtifact.chapter_idx == ch_idx,
             )
             art = (await s.execute(stmt_art)).scalar_one_or_none()
+
+            # 先看标准 done 情形
             if art and art.status == "done" and art.audio_filename:
-                expected_path = audio_dir / art.audio_filename
-                if expected_path.is_file():
-                    # 命中：直接写入 chapter_outputs，不重新合成
-                    chapter_outputs[ch_idx] = (
-                        str(expected_path),
-                        art.duration_ms or _estimate_mp3_duration_ms(
-                            expected_path.read_bytes()
-                        ),
-                    )
-                    completed += 1
-                    skip_this_chapter = True
-                    logger.info(
-                        f"[build_worker] build_id={build_id[:8]}... "
-                        f"ch {ch_idx+1}/{total} 已完成 → skip (命中 BuildArtifact.done)"
-                    )
+                p = audio_dir / art.audio_filename
+                if p.is_file():
+                    ch_ok_path = p
+                    ch_ok_duration_ms = art.duration_ms
+            # 再看"文件已存在但 DB 状态没同步"的杀进程残留情形
+            if ch_ok_path is None:
+                p_normal = audio_dir / _audio_filename(build_id, ch_idx, failed=False)
+                if p_normal.is_file():
+                    ch_ok_path = p_normal
+                    ch_ok_duration_ms = None  # 稍后从文件读
+                    # 顺手把 art 更新成 done（若存在）
+                    if art is not None:
+                        art.status = "done"
+                        art.audio_filename = p_normal.name
+                        art.audio_url = f"/media/{p_normal.name}"
+                        art.error_msg = None
+
+            if ch_ok_path is not None:
+                mp3_bytes = ch_ok_path.read_bytes()
+                ch_ok_duration_ms = int(ch_ok_duration_ms or 0) or _estimate_mp3_duration_ms(mp3_bytes)
+                chapter_outputs[ch_idx] = (str(ch_ok_path), ch_ok_duration_ms)
+                completed += 1
+                skip_this_chapter = True
+                # 如果补了 art.status=done，这里一起 commit
+                if art is not None and art in s.dirty:
+                    art.duration_ms = ch_ok_duration_ms
+                    await s.commit()
+                logger.info(
+                    f"[build_worker] build_id={build_id[:8]}... "
+                    f"ch {ch_idx+1}/{total} 已完成 → skip (MP3={ch_ok_path.name})"
+                )
         if skip_this_chapter:
             # 同步更新 Build.completed_chapters / progress_msg
             async with factory() as s:
@@ -774,7 +799,7 @@ async def _run_build_inner(
             b.zip_filename = zip_fname
             b.total_size_bytes = total_size_bytes
             b.total_duration_ms = total_ms
-            b.completed_at = datetime.utcnow()
+            b.completed_at = datetime.now(UTC).replace(tzinfo=None)
             await s.commit()
 
     total_elapsed_ms = int((_time.perf_counter() - t0) * 1000)
