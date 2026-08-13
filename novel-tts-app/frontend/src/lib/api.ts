@@ -172,13 +172,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ file_id, filename }),
     }),
+  // 注：/book/synthesize 是 fire-and-forget，立即返回 BookStatusResp，前端随后轮询 /status
   bookSynthesize: (args: {
     job_id: string;
     voice_assignments: Record<string, string>;
     narrator_voice_id: string;
     speed?: number;
   }) =>
-    _fetch<BookSynthResp>('/api/book/synthesize', {
+    _fetch<BookStatusResp>('/api/book/synthesize', {
       method: 'POST',
       body: JSON.stringify(args),
     }),

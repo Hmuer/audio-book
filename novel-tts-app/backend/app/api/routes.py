@@ -19,6 +19,7 @@ from ..services.book import (
     upload_book,
     prepare_book,
     synthesize_book,
+    start_synthesize_book_background,
     get_book_status,
     BookPrepareResponse,
     BookStatusResponse,
@@ -275,13 +276,15 @@ async def api_book_prepare(
         raise HTTPException(500, f"book prepare 失败: {type(e).__name__}: {e}")
 
 
-@router.post("/book/synthesize", response_model=BookSynthResponse)
+@router.post("/book/synthesize", response_model=BookStatusResponse)
 async def api_book_synthesize(
     req: BookSynthesizeRequest,
     request: Request,
-    db: AsyncSession = Depends(get_db),
 ):
-    """整本合成：按章串行合成，最后合并所有章节 MP3。"""
+    """
+    启动整本合成（后台任务，立即返回）。
+    调用后由前端轮询 GET /api/book/{job_id}/status 获取进度。
+    """
     t0 = _time.perf_counter()
     remote = request.client.host if request.client else "?"
     logger.info(
@@ -290,8 +293,7 @@ async def api_book_synthesize(
         f"speed={req.speed}"
     )
     try:
-        resp = await synthesize_book(
-            session=db,
+        resp = await start_synthesize_book_background(
             job_id=req.job_id,
             voice_assignments=req.voice_assignments,
             narrator_voice_id=req.narrator_voice_id,
@@ -300,9 +302,13 @@ async def api_book_synthesize(
         elapsed_ms = int((_time.perf_counter() - t0) * 1000)
         logger.info(
             f"[HTTP] 200 /api/book/synthesize job_id={req.job_id[:8]}... "
-            f"duration_s={resp.duration_sec} total_ms={elapsed_ms}"
+            f"status={resp.book_status} total_ms={elapsed_ms}"
         )
         return resp
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
         elapsed_ms = int((_time.perf_counter() - t0) * 1000)
         logger.error(

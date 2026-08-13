@@ -102,53 +102,53 @@ export default function BookFlow({ voices }: { voices: Voice[] }) {
   const startSynthesize = async () => {
     if (!prep) return;
     setErr(null);
-    setPhase('synthesizing');
-    setSynthJobId(prep.job_id);
-    // 不阻塞轮询：先发起合成请求
-    api
-      .bookSynthesize({
+    try {
+      // /book/synthesize 是 fire-and-forget：立即返回 status，真实合成在后端跑
+      const initStatus = await api.bookSynthesize({
         job_id: prep.job_id,
         voice_assignments: charVoices,
         narrator_voice_id: narrator,
         speed,
-      })
-      .then(r => {
-        // 合成完成：刷新状态
-        setStatus({
-          job_id: r.job_id,
-          book_status: 'done',
-          total_chapters: r.chapters.length,
-          completed_chapters: r.chapters.filter(c => c.status === 'done').length,
-          progress_msg: null,
-          final_audio_url: r.final_audio_url,
-          final_duration_sec: r.duration_sec,
-          chapters: r.chapters,
-        });
-        setPhase('done');
-      })
-      .catch(e => {
-        setErr(`合成失败: ${e?.message || e}`);
-        setPhase('config');
       });
+      setSynthJobId(prep.job_id);
+      setStatus(initStatus);
+      setPhase('synthesizing');
+    } catch (e: any) {
+      // 参数错、job 状态错等立即报错
+      setErr(`启动合成失败: ${e?.message || e}`);
+    }
   };
 
   // 合成期间轮询状态
   useEffect(() => {
     if (phase !== 'synthesizing' || !synthJobId) return;
     let stop = false;
+    let timer: any = null;
     const tick = async () => {
       if (stop) return;
       try {
         const s = await api.bookStatus(synthJobId);
-        if (!stop) setStatus(s);
-        if (s.book_status === 'done' || s.book_status === 'failed') return;
+        if (stop) return;
+        setStatus(s);
+        if (s.book_status === 'done') {
+          setPhase('done');
+          return;
+        }
+        if (s.book_status === 'failed') {
+          setErr(s.progress_msg || '合成失败');
+          setPhase('config');
+          return;
+        }
       } catch (e) {
         console.warn('status 轮询失败', e);
       }
-      setTimeout(tick, 2000);
+      timer = setTimeout(tick, 2000);
     };
     tick();
-    return () => { stop = true; };
+    return () => {
+      stop = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [phase, synthJobId]);
 
   // ---------- 试听 ----------
