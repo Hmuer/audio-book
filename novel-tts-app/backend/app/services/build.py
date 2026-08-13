@@ -13,8 +13,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time as _time
 import uuid
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -36,9 +38,48 @@ from ..ai.providers.minimax.tts import (
     _estimate_mp3_duration_ms,
 )
 from .chapter import Chapter, _Segment, _build_segments_for_chapter
-from .book import _sanitize_zip_entry, _build_book_zip  # 复用旧 book.py 的打包工具
 
 logger = logging.getLogger(__name__)
+
+
+# =====================================================================
+# ZIP 打包工具（原 book.py 内联，避免循环依赖）
+# =====================================================================
+
+_UNSAFE_FS_CHARS = re.compile(r'[\\/:*?"<>|\r\n\t]+')
+
+
+def _sanitize_zip_entry(name: str, fallback: str) -> str:
+    """给 ZIP 内部文件名用：控制字符/路径分隔符去掉；空字符串用 fallback。"""
+    n = _UNSAFE_FS_CHARS.sub("_", name).strip().strip(".")
+    n = n[:60]  # 避免文件名过长
+    return n or fallback
+
+
+def _build_book_zip(
+    zip_path: str,
+    *,
+    job_id: str,
+    job_title: str | None,
+    chapter_outputs: list[tuple[str | None, int | None]],
+    chapter_titles: list[str],
+) -> None:
+    """
+    把所有章节 MP3 打包到 ZIP。失败章的占位音频也会被打进 ZIP，避免缺文件。
+    ZIP 内部命名：《书名》/第001章 标题.mp3
+    """
+    book_dir = _sanitize_zip_entry(job_title or job_id, f"小说_{job_id[:8]}")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
+        for i, (path, _dur) in enumerate(chapter_outputs):
+            raw_title = chapter_titles[i] if i < len(chapter_titles) else ""
+            clean_title = _sanitize_zip_entry(raw_title, f"章节{i+1}")
+            # 统一前缀 001_ 保证按文件名排序 = 章节顺序；title 中已自带"第一章 xxx"就不再重复"章"字
+            base = f"{i+1:03d}_{clean_title}"
+            entry_name = f"{book_dir}/{base}.mp3"
+            if path and os.path.isfile(path):
+                zf.write(path, arcname=entry_name)
+            else:
+                zf.writestr(entry_name, make_silent_mp3(100))
 
 
 # =====================================================================
@@ -516,7 +557,6 @@ async def _run_build_inner(
 
     zip_fname = _zip_filename(build_id)
     zip_path = str(audio_dir / zip_fname)
-    # 复用 book.py 的 _build_book_zip：以 build_id 当作 job_id 入参
     _build_book_zip(
         zip_path,
         job_id=build_id,

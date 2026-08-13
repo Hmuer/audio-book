@@ -1,10 +1,8 @@
 """
-项目制服务（新架构）：把"整本小说"功能从 Job 表迁移到 Project → Build → BuildArtifact 三层结构。
+项目制服务（新架构）：把"整本小说"功能从旧 Job 表迁移到 Project → Build → BuildArtifact 三层结构。
 
 本文件只负责 Project 层的 CRUD + 文件导入 + 识别（章节 / 角色 / 对白 / 音色）。
 Build 合成逻辑见 services/build.py。
-
-旧 services/book.py 仍然保留给 /api/book/* 路由（单章模式 + 旧 BookFlow.tsx 兼容）。
 """
 from __future__ import annotations
 
@@ -28,7 +26,6 @@ from ..db.models import (
 )
 from ..db.session import get_session_factory
 from .book_split import split_book_chapters
-from .chapter import Chapter
 from .character import (
     Character,
     extract_characters_with_llm,
@@ -251,6 +248,50 @@ async def import_file(project_id: str, file_content: bytes, filename: str) -> Pr
         logger.info(
             f"[project_import] project_id={project_id[:8]}... "
             f"file={p.source_filename} size={len(file_content)} charset={charset}"
+        )
+        return _to_project_resp(p)
+
+
+async def import_text(
+    project_id: str,
+    text: str,
+    filename_hint: str = "pasted_text.txt",
+) -> ProjectResp:
+    """
+    粘贴纯文本导入：直接用字符串 → 按 UTF-8 编码落盘（因为是用户浏览器直接 paste，
+    无字节歧义，不需要编码检测）→ 更新 source_* 字段 → status=imported。
+    逻辑等价于 import_file（bytes），只是输入源直接是 text。
+    """
+    factory = get_session_factory()
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        if not p:
+            raise ValueError(f"项目不存在: {project_id}")
+
+        # 粘贴内容编码稳定（浏览器给的 JS string，直接 encode 成 utf-8）
+        file_content = text.encode("utf-8")
+        if not file_content.strip():
+            raise ValueError("粘贴内容为空")
+
+        ext = Path(filename_hint).suffix or ".txt"
+        saved_path = _project_source_path(project_id, ext)
+        Path(saved_path).write_bytes(file_content)
+
+        charset = "utf-8"
+        p.source_file_path = saved_path
+        p.source_filename = filename_hint or f"proj_{project_id[:8]}_pasted.txt"
+        p.source_file_size = len(file_content)
+        p.source_charset = charset
+        # 书名：优先用户给的 hint stem（没给就保留当前 book_title）
+        stem = Path(filename_hint).stem if filename_hint else None
+        if stem and stem.strip() and stem != "pasted_text":
+            p.book_title = stem.strip()
+        p.status = "imported"
+        await session.commit()
+        await session.refresh(p)
+        logger.info(
+            f"[project_import_text] project_id={project_id[:8]}... "
+            f"filename_hint={p.source_filename} size={len(file_content)}"
         )
         return _to_project_resp(p)
 

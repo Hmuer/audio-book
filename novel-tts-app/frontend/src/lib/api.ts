@@ -132,85 +132,6 @@ export interface VoiceRec {
   reason: string;
 }
 
-export interface PrepareResp {
-  job_id: string;
-  polished_text: string;
-  diff: any[];
-  polish_warning: string | null;
-  characters: Character[];
-  dialogue_attributions: DialogueAttr[];
-  chapters: ChapterMeta[];
-  voice_recommendations: VoiceRec[];
-}
-
-export interface SynthSegment {
-  idx: number;
-  kind: 'title' | 'narrator' | 'dialogue' | 'silence';
-  speaker: string | null;
-  voice_id: string;
-  text: string;
-  audio_filename: string;
-  audio_url: string;
-  duration_ms: number;
-  confidence: number | null;
-}
-
-export interface SynthResp {
-  job_id: string;
-  audio_filename: string;
-  audio_url: string;
-  duration_sec: number;
-  segments: SynthSegment[];
-}
-
-// ---------- Book (整本小说) ----------
-
-export interface BookChapterMeta {
-  idx: number;
-  title: string;
-  text_len: number;
-}
-
-export interface BookPrepareResp {
-  job_id: string;
-  book_title: string | null;
-  total_chapters: number;
-  chapters: BookChapterMeta[];
-  characters: Character[];
-  voice_recommendations: VoiceRec[];
-  polish_warning: string | null;
-}
-
-export interface BookChapterResult {
-  chapter_idx: number;
-  title: string;
-  status: 'pending' | 'synthesizing' | 'done' | 'failed';
-  audio_url: string | null;
-  duration_ms: number | null;
-  error_msg: string | null;
-}
-
-export interface BookStatusResp {
-  job_id: string;
-  book_status: 'prepared' | 'synthesizing' | 'done' | 'failed';
-  total_chapters: number;
-  completed_chapters: number;
-  progress_msg: string | null;
-  final_audio_url: string | null; // 整本书模式：逐章下载，此处通常为 null（保留兼容）
-  final_duration_sec: number | null; // 所有章节累计时长
-  zip_url: string | null; // done 后可整包下载 ZIP
-  total_size_kb: number | null; // 所有章 MP3 合计大小
-  chapters: BookChapterResult[];
-}
-
-export interface BookSynthResp {
-  job_id: string;
-  final_audio_filename: string;
-  final_audio_url: string;
-  duration_sec: number;
-  chapters: BookChapterResult[];
-}
-
 export const api = {
   health: () => _fetch<{ status: string }>('/api/health'),
   voices: () =>
@@ -229,76 +150,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
     }),
-  // ---------- 业务 ----------
-  prepare: (text: string, enable_polish: boolean) =>
-    _fetch<PrepareResp>('/api/chapter/prepare', {
-      method: 'POST',
-      body: JSON.stringify({ text, enable_polish }),
-    }),
-  synthesize: (args: {
-    job_id: string;
-    voice_assignments: Record<string, string>;
-    narrator_voice_id: string;
-    segment_overrides?: Record<number, string>;
-    speed?: number;
-  }) =>
-    _fetch<SynthResp>('/api/chapter/synthesize', {
-      method: 'POST',
-      body: JSON.stringify(args),
-    }),
+  // ---------- 业务：TTS 音色试听 ----------
   preview: (text: string, voice_id: string, speed?: number) =>
     _fetch<{ audio_url: string; duration_ms: number; audio_filename: string }>('/api/tts/preview', {
       method: 'POST',
       body: JSON.stringify({ text, voice_id, speed: speed ?? 1.0 }),
     }),
-  // ---------- Book ----------
-  bookUpload: (file: File) => {
-    const fd = new FormData();
-    fd.append('file', file);
-    // FormData 由浏览器自动设置 Content-Type（含 boundary），不能预设
-    const token = getToken();
-    return fetch(`${BASE}/api/book/upload`, {
-      method: 'POST',
-      body: fd,
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    }).then(async r => {
-      if (r.status === 401) {
-        clearToken();
-        if (_onAuthFail) _onAuthFail();
-        throw new Error('登录已失效，请重新登录');
-      }
-      if (!r.ok) {
-        let msg = `HTTP ${r.status}`;
-        try { const j = await r.json(); if (j.detail) msg += `: ${j.detail}`; } catch {}
-        throw new Error(msg);
-      }
-      return r.json() as Promise<{ file_id: string; filename: string; size: number }>;
-    });
-  },
-  bookPrepare: (file_id: string, filename: string) =>
-    _fetch<BookPrepareResp>('/api/book/prepare', {
-      method: 'POST',
-      body: JSON.stringify({ file_id, filename }),
-    }),
-  // 注：/book/synthesize 是 fire-and-forget，立即返回 BookStatusResp，前端随后轮询 /status
-  bookSynthesize: (args: {
-    job_id: string;
-    voice_assignments: Record<string, string>;
-    narrator_voice_id: string;
-    speed?: number;
-  }) =>
-    _fetch<BookStatusResp>('/api/book/synthesize', {
-      method: 'POST',
-      body: JSON.stringify(args),
-    }),
-  bookStatus: (job_id: string) =>
-    _fetch<BookStatusResp>(`/api/book/${job_id}/status`),
-  bookDownloadAll: (job_id: string) =>
-    `/api/book/${job_id}/download-all`,
-  bookChapterDownload: (job_id: string, idx: number) =>
-    `/api/book/${job_id}/chapters/${idx}/download`,
 
-  // ---------- Project 制（项目工作台） ----------
+  // ---------- Project 制（项目工作台：唯一入口） ----------
 
   // 创建项目
   projectCreate: (name: string) =>
@@ -319,7 +178,7 @@ export const api = {
   // 删除项目
   projectDelete: (id: string) =>
     _fetch<{ ok: boolean }>(`/api/projects/${id}`, { method: 'DELETE' }),
-  // 上传文件到项目（multipart/form-data，FormData 由浏览器设 Content-Type）
+  // 上传 TXT 文件到项目（multipart/form-data，FormData 由浏览器设 Content-Type）
   projectImport: (id: string, file: File) => {
     const fd = new FormData();
     fd.append('file', file);
@@ -342,6 +201,12 @@ export const api = {
       return r.json() as Promise<ProjectResp>;
     });
   },
+  // 粘贴文本到项目（直接 POST JSON，浏览器粘贴场景）
+  projectImportText: (id: string, text: string, filenameHint = 'pasted_text.txt') =>
+    _fetch<ProjectResp>(`/api/projects/${id}/import-text`, {
+      method: 'POST',
+      body: JSON.stringify({ text, filename_hint: filenameHint }),
+    }),
   // 触发后端识别（章节/角色/对白归属）
   projectPrepare: (id: string) =>
     _fetch<ProjectPrepareResp>(`/api/projects/${id}/prepare`, { method: 'POST' }),

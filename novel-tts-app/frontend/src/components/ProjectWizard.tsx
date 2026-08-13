@@ -6,7 +6,10 @@ import { api, ProjectPrepareResp } from '@/lib/api';
 // 4 步向导
 type WizardStep = 1 | 2 | 3 | 4;
 
-const STEP_LABELS = ['填写项目名', '上传 TXT', '识别中', '完成'];
+const STEP_LABELS = ['填写项目名', '导入小说', '识别中', '完成'];
+
+// Step2 导入方式：文件上传 / 粘贴文本
+type ImportMode = 'file' | 'text';
 
 export default function ProjectWizard() {
   const [step, setStep] = useState<WizardStep>(1);
@@ -15,9 +18,14 @@ export default function ProjectWizard() {
   // Step 1
   const [name, setName] = useState<string>('我的有声书');
 
-  // Step 2
+  // Step 2: 支持上传文件 + 粘贴文本两种模式
+  const [importMode, setImportMode] = useState<ImportMode>('file');
+  // 文件上传
   const [file, setFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  // 粘贴文本
+  const [pastedText, setPastedText] = useState<string>('');
+  const [textFilenameHint, setTextFilenameHint] = useState<string>('');
 
   // Step 3 / 4 共享
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -45,12 +53,18 @@ export default function ProjectWizard() {
     setFile(f);
   };
 
-  // ---------- Step 2 → 3：创建项目 + 上传 + prepare ----------
+  // ---------- Step 2 → 3：创建项目 + 导入（文件/文本二选一） + prepare ----------
   const goStep3 = async () => {
-    if (!file) {
+    let valid = true;
+    if (importMode === 'file' && !file) {
       setErr('请先选择 TXT 文件');
-      return;
+      valid = false;
     }
+    if (importMode === 'text' && !pastedText.trim()) {
+      setErr('请先粘贴小说正文内容');
+      valid = false;
+    }
+    if (!valid) return;
     setErr(null);
     setStep(3);
     setPrepareMsg('正在创建项目…');
@@ -58,11 +72,21 @@ export default function ProjectWizard() {
       // 1. 创建项目
       const proj = await api.projectCreate(name.trim());
       setProjectId(proj.project_id);
-      setPrepareMsg('项目已创建，正在上传文件…');
 
-      // 2. 上传文件
-      await api.projectImport(proj.project_id, file);
-      setPrepareMsg('上传完成，正在识别章节与角色（可能需 1-5 分钟）…');
+      // 2. 导入（文件 / 文本二选一）
+      if (importMode === 'file' && file) {
+        setPrepareMsg('项目已创建，正在上传文件…');
+        await api.projectImport(proj.project_id, file);
+      } else if (importMode === 'text') {
+        setPrepareMsg('项目已创建，正在保存粘贴内容…');
+        await api.projectImportText(
+          proj.project_id,
+          pastedText,
+          textFilenameHint.trim() || 'pasted_text.txt',
+        );
+      }
+
+      setPrepareMsg('导入完成，正在识别章节与角色（可能需 1-5 分钟）…');
 
       // 3. 触发 prepare
       const r = await api.projectPrepare(proj.project_id);
@@ -163,57 +187,138 @@ export default function ProjectWizard() {
         </div>
       )}
 
-      {/* ============ Step 2: 上传文件 ============ */}
+      {/* ============ Step 2: 导入小说（支持文件上传 + 粘贴文本） ============ */}
       {step === 2 && (
         <div className="card space-y-4">
-          <div>
-            <label className="block text-sm text-white/70 mb-2">上传 TXT 小说文件</label>
-            <label
-              className={`block border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition ${
-                dragOver
-                  ? 'border-brand-500 bg-brand-500/10'
-                  : 'border-white/20 hover:border-brand-500/60 hover:bg-brand-500/5'
+          {/* 模式切换：文件 / 粘贴文本 */}
+          <div className="flex gap-1 p-1 rounded-xl bg-white/5 border border-white/10 w-fit">
+            <button
+              className={`px-4 py-1.5 rounded-lg text-sm transition ${
+                importMode === 'file'
+                  ? 'bg-brand-600 text-white shadow-sm'
+                  : 'text-white/60 hover:text-white/90'
               }`}
-              onDragOver={e => {
-                e.preventDefault();
-                setDragOver(true);
-              }}
-              onDragLeave={() => setDragOver(false)}
-              onDrop={e => {
-                e.preventDefault();
-                setDragOver(false);
-                onPickFile(e.dataTransfer.files?.[0] || null);
-              }}
+              onClick={() => { setImportMode('file'); setErr(null); }}
             >
-              <input
-                type="file"
-                accept=".txt,.text,.md"
-                className="hidden"
-                onChange={e => onPickFile(e.target.files?.[0] || null)}
-              />
-              {file ? (
-                <div className="space-y-1">
-                  <div className="text-3xl">📄</div>
-                  <div className="font-medium">{file.name}</div>
-                  <div className="text-xs text-white/50">{(file.size / 1024).toFixed(1)} KB</div>
-                </div>
-              ) : (
-                <div className="space-y-2 text-white/60">
-                  <div className="text-3xl">📁</div>
-                  <div>点击或拖拽 TXT 文件到这里</div>
-                  <div className="text-xs">支持 .txt / .md，最大 50MB</div>
+              📁 上传 TXT 文件
+            </button>
+            <button
+              className={`px-4 py-1.5 rounded-lg text-sm transition ${
+                importMode === 'text'
+                  ? 'bg-brand-600 text-white shadow-sm'
+                  : 'text-white/60 hover:text-white/90'
+              }`}
+              onClick={() => { setImportMode('text'); setErr(null); }}
+            >
+              📝 粘贴文本内容
+            </button>
+          </div>
+
+          {/* 文件上传模式 */}
+          {importMode === 'file' && (
+            <div>
+              <label className="block text-sm text-white/70 mb-2">上传 TXT 小说文件</label>
+              <label
+                className={`block border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition ${
+                  dragOver
+                    ? 'border-brand-500 bg-brand-500/10'
+                    : 'border-white/20 hover:border-brand-500/60 hover:bg-brand-500/5'
+                }`}
+                onDragOver={e => {
+                  e.preventDefault();
+                  setDragOver(true);
+                }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={e => {
+                  e.preventDefault();
+                  setDragOver(false);
+                  onPickFile(e.dataTransfer.files?.[0] || null);
+                }}
+              >
+                <input
+                  type="file"
+                  accept=".txt,.text,.md"
+                  className="hidden"
+                  onChange={e => onPickFile(e.target.files?.[0] || null)}
+                />
+                {file ? (
+                  <div className="space-y-1">
+                    <div className="text-3xl">📄</div>
+                    <div className="font-medium">{file.name}</div>
+                    <div className="text-xs text-white/50">{(file.size / 1024).toFixed(1)} KB</div>
+                  </div>
+                ) : (
+                  <div className="space-y-2 text-white/60">
+                    <div className="text-3xl">📁</div>
+                    <div>点击或拖拽 TXT 文件到这里</div>
+                    <div className="text-xs">支持 .txt / .md，最大 50MB</div>
+                  </div>
+                )}
+              </label>
+              {file && (
+                <div className="mt-2 text-xs text-white/50">
+                  文件名将自动用作书名，可在项目详情中修改。
                 </div>
               )}
-            </label>
-          </div>
-          <div className="flex justify-between gap-2">
+            </div>
+          )}
+
+          {/* 粘贴文本模式 */}
+          {importMode === 'text' && (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm text-white/70 mb-2">书名（可选）</label>
+                <input
+                  type="text"
+                  className="input"
+                  value={textFilenameHint}
+                  onChange={e => setTextFilenameHint(e.target.value)}
+                  placeholder="例如：三体 · 第一部（留空则显示为 粘贴文本）"
+                  maxLength={100}
+                />
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm text-white/70">粘贴小说正文内容</label>
+                  <span
+                    className={`chip ${
+                      pastedText.length > 50 * 1024 * 1024 / 3  // 约 50MB UTF-8 中文上限
+                        ? 'bg-red-500/20 text-red-300'
+                        : 'bg-white/10 text-white/60'
+                    } text-xs`}
+                  >
+                    {pastedText.length} 字
+                  </span>
+                </div>
+                <textarea
+                  value={pastedText}
+                  onChange={e => setPastedText(e.target.value)}
+                  placeholder="在此粘贴整本小说正文（支持中文自动识别章节，推荐带「第一章」「第1章」等标题标记）…"
+                  className="textarea min-h-[380px] font-mono text-sm leading-relaxed"
+                />
+                <p className="text-xs text-white/50 mt-2">
+                  支持从浏览器/记事本/WPS 直接全选复制粘贴，内容会自动保存到项目中。
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-between gap-2 pt-2">
             <button className="btn-ghost" onClick={() => setStep(1)}>← 上一步</button>
             <button
               className="btn-primary"
-              disabled={!file}
+              disabled={
+                (importMode === 'file' && !file) ||
+                (importMode === 'text' && !pastedText.trim())
+              }
               onClick={goStep3}
             >
-              {file ? '🚀 上传并识别 →' : '请先选择文件'}
+              {(importMode === 'file' && file) || (importMode === 'text' && pastedText.trim())
+                ? '🚀 导入并识别 →'
+                : importMode === 'file'
+                  ? '请先选择文件'
+                  : '请先粘贴内容'
+              }
             </button>
           </div>
         </div>
