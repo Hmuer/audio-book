@@ -11,6 +11,7 @@ import httpx
 
 from ....core.config import settings
 from ...base import BaseTTSProvider
+from .onomatopoeia import apply_onomatopoeia
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,9 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             # 空文本返回短静音
             logger.debug(f"[TTS] empty text, return silence voice_id={voice_id}")
             return make_silent_mp3(50)
+        # 拟声词 → MiniMax Sound Tag（如"哈哈哈哈"→(laughs)）
+        # 仅对 MiniMax Speech 2.x 系列有效，放在此处统一覆盖合成 + 试听两路调用
+        text = apply_onomatopoeia(text, voice_id=voice_id)
         trace_id: Optional[str] = None
         http_status: Optional[int] = None
         text_chars = len(text)
