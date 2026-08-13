@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     TTS_TIMEOUT: int = 600
     UVICORN_TIMEOUT: int = 600
 
+    # LLM 限流：同时最多 N 个请求在飞（按量套餐 RPM 严格时建议 1=串行）
+    # 业务层可能并发调用（如每章对白归属 asyncio.gather），这里在 provider 层强制串行
+    LLM_MAX_CONCURRENCY: int = 1
+
     # Auth (JWT)
     JWT_SECRET: str = "change-me-in-production-please-use-a-long-random-string"
     JWT_ALGORITHM: str = "HS256"

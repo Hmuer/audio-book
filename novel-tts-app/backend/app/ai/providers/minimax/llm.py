@@ -14,6 +14,24 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 
+# 全局并发限流 semaphore：模块级单例，确保所有 LLM 调用（无论从哪发起）
+# 都被强制串行/限流。默认 LLM_MAX_CONCURRENCY=1，避免按量套餐 RPM 触发 429。
+def _build_llm_semaphore() -> asyncio.Semaphore:
+    n = max(1, int(settings.LLM_MAX_CONCURRENCY))
+    return asyncio.Semaphore(n)
+
+
+_llm_sem: asyncio.Semaphore | None = None
+
+
+def _get_llm_sem() -> asyncio.Semaphore:
+    """惰性初始化 semaphore（在事件循环内创建，避免跨循环报错）。"""
+    global _llm_sem
+    if _llm_sem is None:
+        _llm_sem = _build_llm_semaphore()
+    return _llm_sem
+
+
 class MiniMaxLLMProvider(BaseLLMProvider):
     name = "minimax"
 
@@ -53,7 +71,8 @@ class MiniMaxLLMProvider(BaseLLMProvider):
         total_start = _time.perf_counter()
         logger.info(
             f"[LLM] start model={model} schema={schema_name} "
-            f"prompt_chars={prompt_chars} max_tokens={max_tokens} retries={max_retries}"
+            f"prompt_chars={prompt_chars} max_tokens={max_tokens} retries={max_retries} "
+            f"concurrency={settings.LLM_MAX_CONCURRENCY}"
         )
 
         last_err: Optional[Exception] = None
@@ -61,34 +80,38 @@ class MiniMaxLLMProvider(BaseLLMProvider):
             t0 = _time.perf_counter()
             req_id: Optional[str] = None
             http_status: Optional[int] = None
+            is_rate_limited = False
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    resp = await client.post(
-                        f"{self.base_url}/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {self.api_key}",
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "model": model,
-                            "temperature": min(temperature + (attempt - 1) * 0.1, 1.0),
-                            "max_tokens": max_tokens,
-                            "messages": [
-                                {"role": "system", "content": sys_prompt},
-                                {"role": "user", "content": prompt},
-                            ],
-                            "response_format": {
-                                "type": "json_schema",
-                                "json_schema": {
-                                    "name": schema_name,
-                                    "schema": schema_dict,
-                                    "strict": False,
-                                },
+                # 关键：在 semaphore 内发请求，限流同时并发的 HTTP 调用数
+                # 业务层 asyncio.gather 多个 LLM 调用时，这里会强制排队
+                async with _get_llm_sem():
+                    async with httpx.AsyncClient(timeout=self.timeout) as client:
+                        resp = await client.post(
+                            f"{self.base_url}/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {self.api_key}",
+                                "Content-Type": "application/json",
                             },
-                            # 关闭 thinking：json_schema 模式下 thinking 会污染 content 导致 JSON 解析失败
-                            "thinking": {"type": "disabled"},
-                        },
-                    )
+                            json={
+                                "model": model,
+                                "temperature": min(temperature + (attempt - 1) * 0.1, 1.0),
+                                "max_tokens": max_tokens,
+                                "messages": [
+                                    {"role": "system", "content": sys_prompt},
+                                    {"role": "user", "content": prompt},
+                                ],
+                                "response_format": {
+                                    "type": "json_schema",
+                                    "json_schema": {
+                                        "name": schema_name,
+                                        "schema": schema_dict,
+                                        "strict": False,
+                                    },
+                                },
+                                # 关闭 thinking：json_schema 模式下 thinking 会污染 content 导致 JSON 解析失败
+                                "thinking": {"type": "disabled"},
+                            },
+                        )
                     http_status = resp.status_code
                     req_id = (
                         resp.headers.get("x-request-id")
@@ -104,6 +127,9 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                             err_msg = err_data.get("error", {}).get("message") or body_preview
                         except Exception:
                             err_msg = body_preview
+                        # 429 速率限制：标记走指数退避路径
+                        if resp.status_code == 429:
+                            is_rate_limited = True
                         raise RuntimeError(
                             f"LLM HTTP {resp.status_code}: {err_msg}"
                         )
@@ -185,7 +211,18 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                 )
                 logger.log(lvl, msg, exc_info=is_last)
                 if attempt < max_retries:
-                    await asyncio.sleep(1.0 * attempt)
+                    if is_rate_limited:
+                        # 429 速率限制：指数退避（2s / 4s / 8s ...）
+                        # 比固定 1s 更稳，给供应商 RPM 窗口恢复时间
+                        backoff = 2.0 * (2 ** (attempt - 1))
+                        logger.warning(
+                            f"[LLM] 429 rate-limited, backing off {backoff}s before retry "
+                            f"(attempt={attempt}/{max_retries})"
+                        )
+                        await asyncio.sleep(backoff)
+                    else:
+                        # 其他错误：保持原有 1s/2s/3s 退避
+                        await asyncio.sleep(1.0 * attempt)
         total_elapsed = _time.perf_counter() - total_start
         logger.error(
             f"[LLM] all {max_retries} attempts exhausted model={model} schema={schema_name} "
