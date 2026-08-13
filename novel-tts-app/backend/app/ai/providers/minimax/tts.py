@@ -83,6 +83,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         voice_id: str,
         *,
         emotion: str = "calm",
+        speed: float = 1.0,
     ) -> bytes:
         import time as _time
         t0 = _time.perf_counter()
@@ -95,6 +96,8 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         text_chars = len(text)
         # 官方文档模型名：speech-2.8-turbo / speech-2.8-hd / speech-02-turbo / speech-02-hd
         model = "speech-2.8-turbo"
+        # MiniMax 官方 speed 范围 [0.5, 2.0]，默认 1.0
+        speed = max(0.5, min(2.0, float(speed)))
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(
@@ -109,7 +112,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                         "stream": False,
                         "voice_setting": {
                             "voice_id": voice_id,
-                            "speed": 1.0,
+                            "speed": speed,
                             "vol": 1.0,
                             "pitch": 0,
                             "emotion": emotion,
@@ -172,7 +175,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                 audio_length_ms = extra_info.get("audio_length")
                 logger.info(
                     f"[TTS] ok model={model} voice={voice_id} chars={text_chars} "
-                    f"size={kb:.1f}KB audio_len_ms={audio_length_ms} "
+                    f"speed={speed} size={kb:.1f}KB audio_len_ms={audio_length_ms} "
                     f"trace_id={trace_id} status={http_status} ms={int(elapsed*1000)}"
                 )
                 return audio_bytes
@@ -193,8 +196,9 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         output_path: str,
         *,
         emotion: str = "calm",
+        speed: float = 1.0,
     ) -> tuple[str, int]:
-        data = await self.synthesize_to_bytes(text, voice_id, emotion=emotion)
+        data = await self.synthesize_to_bytes(text, voice_id, emotion=emotion, speed=speed)
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "wb") as f:
             f.write(data)

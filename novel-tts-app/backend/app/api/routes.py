@@ -38,11 +38,13 @@ class SynthesizeRequest(BaseModel):
     voice_assignments: dict[str, str] = Field(default_factory=dict)
     narrator_voice_id: str
     segment_overrides: dict[int, str] | None = None
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
 
 
 class TtsPreviewRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=500)
     voice_id: str
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
 
 
 # ---------- Health & Voices ----------
@@ -107,7 +109,7 @@ async def api_synthesize(
     logger.info(
         f"[HTTP] POST /api/chapter/synthesize client={remote} job_id={req.job_id[:8]}... "
         f"voices={len(req.voice_assignments)} narrator={req.narrator_voice_id} "
-        f"overrides={len(req.segment_overrides or {})}"
+        f"overrides={len(req.segment_overrides or {})} speed={req.speed}"
     )
     try:
         resp = await synthesize_chapter(
@@ -116,6 +118,7 @@ async def api_synthesize(
             voice_assignments=req.voice_assignments,
             narrator_voice_id=req.narrator_voice_id,
             segment_overrides=req.segment_overrides,
+            speed=req.speed,
         )
         elapsed_ms = int((_time.perf_counter() - t0) * 1000)
         logger.info(
@@ -143,7 +146,7 @@ async def api_tts_preview(
     remote = request.client.host if request.client else "?"
     logger.info(
         f"[HTTP] POST /api/tts/preview client={remote} "
-        f"voice={req.voice_id} text_len={len(req.text)}"
+        f"voice={req.voice_id} text_len={len(req.text)} speed={req.speed}"
     )
     try:
         tts = get_tts()
@@ -152,7 +155,9 @@ async def api_tts_preview(
         import uuid as _uuid
         fname = f"preview_{_uuid.uuid4().hex[:10]}.mp3"
         fpath = str(audio_dir / fname)
-        path, dur_ms = await tts.synthesize_to_file(req.text, req.voice_id, fpath)
+        path, dur_ms = await tts.synthesize_to_file(
+            req.text, req.voice_id, fpath, speed=req.speed
+        )
         elapsed_ms = int((_time.perf_counter() - t0) * 1000)
         logger.info(
             f"[HTTP] 200 /api/tts/preview voice={req.voice_id} "

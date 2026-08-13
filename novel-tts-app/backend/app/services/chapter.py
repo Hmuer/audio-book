@@ -439,13 +439,14 @@ async def synthesize_chapter(
     voice_assignments: dict[str, str],
     narrator_voice_id: str,
     segment_overrides: dict[int, str] | None = None,
+    speed: float = 1.0,
 ) -> SynthesizeResponse:
     import time as _time
     t0 = _time.perf_counter()
     logger.info(
         f"[synthesize] START job_id={job_id[:8]}... "
         f"narrator={narrator_voice_id} voices={len(voice_assignments)} "
-        f"overrides={len(segment_overrides or {})}"
+        f"overrides={len(segment_overrides or {})} speed={speed}"
     )
     phase: dict[str, int] = {}
     # 1. 加载 job
@@ -530,7 +531,9 @@ async def synthesize_chapter(
         async with sem:
             fname = f"job_{job_id}_seg{s.idx:05d}_{s.kind}.mp3"
             fpath = str(audio_dir / fname)
-            await tts.synthesize_to_file(s.text, s.voice_id or narrator_voice_id, fpath)
+            await tts.synthesize_to_file(
+                s.text, s.voice_id or narrator_voice_id, fpath, speed=speed
+            )
             with open(fpath, "rb") as f:
                 data = f.read()
             # 估算时长

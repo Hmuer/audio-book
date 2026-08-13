@@ -18,6 +18,8 @@ export default function StepRoles({
   // 存 narrator voice + 每个角色的 voice
   const narratorDefault = voices.find(v => v.id === 'male-qn-jingying') || voices[0];
   const [narratorVoice, setNarratorVoice] = useState<string>(narratorDefault?.id || '');
+  // 语速控制（0.5-2.0，默认 1.0），持久化到 window 供 StepGenerate 读取
+  const [speed, setSpeed] = useState<number>(1.0);
 
   const [charVoices, setCharVoices] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {};
@@ -49,7 +51,7 @@ export default function StepRoles({
     setPreviewUrl(null);
     setPreviewing(true);
     try {
-      const r = await api.preview(text.slice(0, 80), voiceId);
+      const r = await api.preview(text.slice(0, 80), voiceId, speed);
       setPreviewUrl(r.audio_url);
     } finally {
       setPreviewing(false);
@@ -117,6 +119,33 @@ export default function StepRoles({
         )}
       </div>
 
+      {/* 语速控制 */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="font-semibold">⚡ 语速控制</h3>
+          <span className="chip bg-brand-500/15 text-brand-300 font-mono">
+            {speed.toFixed(1)}x
+          </span>
+        </div>
+        <input
+          type="range"
+          min={0.5}
+          max={2.0}
+          step={0.1}
+          value={speed}
+          onChange={e => setSpeed(parseFloat(e.target.value))}
+          className="w-full accent-brand-500 cursor-pointer"
+        />
+        <div className="flex justify-between text-[11px] text-white/40 mt-1">
+          <span>0.5x 慢速</span>
+          <span>1.0x 正常</span>
+          <span>2.0x 快速</span>
+        </div>
+        <p className="text-xs text-white/50 mt-2">
+          调整后试听音色与最终合成都将使用此语速。
+        </p>
+      </div>
+
       {/* 角色列表 */}
       <div className="card">
         <h3 className="font-semibold mb-3">
@@ -154,7 +183,7 @@ export default function StepRoles({
           })}
         </div>
         {/* 持久化到 window 上，下一步合成直接拿 */}
-        <PersistToWindow narrator={narratorVoice} assignments={charVoices} />
+        <PersistToWindow narrator={narratorVoice} assignments={charVoices} speed={speed} />
       </div>
     </section>
   );
@@ -163,13 +192,15 @@ export default function StepRoles({
 function PersistToWindow({
   narrator,
   assignments,
+  speed,
 }: {
   narrator: string;
   assignments: Record<string, string>;
+  speed: number;
 }) {
   useEffect(() => {
-    (window as any).__novel_voices = { narrator, assignments };
-  }, [narrator, assignments]);
+    (window as any).__novel_voices = { narrator, assignments, speed };
+  }, [narrator, assignments, speed]);
   return null;
 }
 

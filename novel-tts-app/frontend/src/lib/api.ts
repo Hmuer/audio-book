@@ -96,14 +96,15 @@ export const api = {
     voice_assignments: Record<string, string>;
     narrator_voice_id: string;
     segment_overrides?: Record<number, string>;
+    speed?: number;
   }) =>
     _fetch<SynthResp>('/api/chapter/synthesize', {
       method: 'POST',
       body: JSON.stringify(args),
     }),
-  preview: (text: string, voice_id: string) =>
+  preview: (text: string, voice_id: string, speed?: number) =>
     _fetch<{ audio_url: string; duration_ms: number; audio_filename: string }>('/api/tts/preview', {
       method: 'POST',
-      body: JSON.stringify({ text, voice_id }),
+      body: JSON.stringify({ text, voice_id, speed: speed ?? 1.0 }),
     }),
 };

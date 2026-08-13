@@ -24,12 +24,13 @@ export default function StepGenerate({
   const [segmentOverrides, setSegmentOverrides] = useState<Record<number, string>>({});
   const [previewAudio, setPreviewAudio] = useState<string | null>(null);
 
-  // 从 window 读取 Step 2 中选择的音色（每次渲染都读最新值，避免 stale closure）
-  const { narrator, assignments }: any =
+  // 从 window 读取 Step 2 中选择的音色与语速（每次渲染都读最新值，避免 stale closure）
+  const { narrator, assignments, speed }: any =
     (typeof window !== 'undefined' && (window as any).__novel_voices) || {};
 
   const narratorVoiceId =
     narrator || voices.find(v => v.id === 'male-qn-jingying')?.id || voices[0]?.id || '';
+  const synthSpeed = typeof speed === 'number' ? speed : 1.0;
 
   const dialoguesOnly = useMemo(
     () => prepareResult.dialogue_attributions.filter(d => d.speaker),
@@ -61,6 +62,7 @@ export default function StepGenerate({
         segment_overrides: Object.keys(segmentOverrides).length
           ? segmentOverrides
           : undefined,
+        speed: synthSpeed,
       });
       setSynthResult(r);
     } catch (e: any) {
@@ -81,7 +83,7 @@ export default function StepGenerate({
         <div>
           <h2 className="text-lg font-semibold">Step 3 · 合成与试听</h2>
           <p className="text-sm text-white/60 mt-1">
-            对白共 {dialoguesOnly.length} 段 · 章节 {prepareResult.chapters.length} · 旁白与对白交替合成
+            对白共 {dialoguesOnly.length} 段 · 章节 {prepareResult.chapters.length} · 旁白与对白交替合成 · 语速 {synthSpeed.toFixed(1)}x
           </p>
         </div>
         <div className="flex gap-2">

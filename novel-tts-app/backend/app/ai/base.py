@@ -37,7 +37,7 @@ class BaseTTSProvider(ABC):
 
     @abstractmethod
     async def synthesize_to_bytes(
-        self, text: str, voice_id: str, *, emotion: str = "calm"
+        self, text: str, voice_id: str, *, emotion: str = "calm", speed: float = 1.0
     ) -> bytes:
         """同步合成音频，返回 MP3 bytes"""
         ...
@@ -50,6 +50,7 @@ class BaseTTSProvider(ABC):
         output_path: str,
         *,
         emotion: str = "calm",
+        speed: float = 1.0,
     ) -> tuple[str, int]:
         """
         合成音频并写入文件。
