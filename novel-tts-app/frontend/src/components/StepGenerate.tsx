@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, useRef } from 'react';
+import { useMemo, useState, useRef } from 'react';
 import { api, PrepareResp, SynthResp, SynthSegment, Voice } from '@/lib/api';
 import VoicePicker from './VoicePicker';
 
@@ -23,7 +23,6 @@ export default function StepGenerate({
 }) {
   const [err, setErr] = useState<string | null>(null);
   const [segmentOverrides, setSegmentOverrides] = useState<Record<number, string>>({});
-  const [previewAudio, setPreviewAudio] = useState<string | null>(null);
 
   // 试听播放管理（与 StepRoles 类似的统一 audio 元素）
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -43,6 +42,16 @@ export default function StepGenerate({
     setPlayingVoice(null);
   };
 
+  // 直接播放已有 URL（用于合成后段级试听）
+  const playUrl = (key: string, url: string) => {
+    if (!audioRef.current) return;
+    audioRef.current.src = url;
+    audioRef.current.onended = () => setPlayingVoice(null);
+    audioRef.current.onerror = () => setPlayingVoice(null);
+    setPlayingVoice(key);
+    audioRef.current.play().catch(() => setPlayingVoice(null));
+  };
+
   const togglePlay = async (voiceId: string, text: string) => {
     if (playingVoice === voiceId) {
       stopPlayback();
@@ -52,29 +61,27 @@ export default function StepGenerate({
     const sampleKey = `${voiceId}|${text}|${synthSpeed}`;
     const cached = urlCacheRef.current.get(sampleKey);
     if (cached) {
-      if (audioRef.current) {
-        audioRef.current.src = cached.url;
-        audioRef.current.onended = () => setPlayingVoice(null);
-        audioRef.current.onerror = () => setPlayingVoice(null);
-        setPlayingVoice(voiceId);
-        audioRef.current.play().catch(() => setPlayingVoice(null));
-      }
+      playUrl(voiceId, cached.url);
       return;
     }
     setLoadingVoice(voiceId);
     try {
       const r = await api.preview(text.slice(0, 80), voiceId, synthSpeed);
       urlCacheRef.current.set(sampleKey, { url: r.audio_url, text, speed: synthSpeed });
-      if (audioRef.current) {
-        audioRef.current.src = r.audio_url;
-        audioRef.current.onended = () => setPlayingVoice(null);
-        audioRef.current.onerror = () => setPlayingVoice(null);
-        setPlayingVoice(voiceId);
-        audioRef.current.play().catch(() => setPlayingVoice(null));
-      }
+      playUrl(voiceId, r.audio_url);
     } finally {
       setLoadingVoice(prev => (prev === voiceId ? null : prev));
     }
+  };
+
+  // 合成后段级试听：已有 URL，直接播放/停止
+  const togglePlaySegment = (segKey: string, url: string) => {
+    if (playingVoice === segKey) {
+      stopPlayback();
+      return;
+    }
+    stopPlayback();
+    playUrl(segKey, url);
   };
 
   // 从 window 读取 Step 2 中选择的音色与语速
@@ -170,6 +177,8 @@ export default function StepGenerate({
               s => s.kind === 'dialogue' && s.text === d.text
             );
             const lowConf = d.confidence < 0.7;
+            const segKey = `dialogue_${i}`;
+            const segPlaying = isPlaying(segKey);
             return (
               <div
                 key={i}
@@ -192,10 +201,11 @@ export default function StepGenerate({
                   </div>
                   {synced?.audio_url && (
                     <button
-                      className="btn-ghost text-xs py-1 px-2"
-                      onClick={() => setPreviewAudio(synced.audio_url!)}
+                      className={`btn-ghost text-xs py-1 px-2 ${segPlaying ? 'ring-2 ring-brand-500/50 text-brand-300' : ''}`}
+                      onClick={() => togglePlaySegment(segKey, synced.audio_url!)}
+                      title={segPlaying ? '停止播放' : '试听'}
                     >
-                      ▶ 试听
+                      {segPlaying ? '⏸ 试听中' : '▶ 试听'}
                     </button>
                   )}
                 </div>
@@ -233,7 +243,10 @@ export default function StepGenerate({
           {(synthResult
             ? synthResult.segments.filter(s => s.kind === 'narrator')
             : ([{ idx: 0, text: '合成后显示每段旁白及对应音频' }] as any)
-          ).map((s: any, i: number) => (
+          ).map((s: any, i: number) => {
+            const narKey = `narrator_${s.idx ?? i}`;
+            const narPlaying = isPlaying(narKey);
+            return (
             <div
               key={i}
               className="rounded-lg border border-white/10 bg-white/5 p-3"
@@ -242,16 +255,18 @@ export default function StepGenerate({
                 <span className="text-xs text-white/50">旁白段 #{s.idx ?? i}</span>
                 {s.audio_url && (
                   <button
-                    className="text-xs btn-ghost py-0.5 px-2"
-                    onClick={() => setPreviewAudio(s.audio_url)}
+                    className={`text-xs btn-ghost py-0.5 px-2 ${narPlaying ? 'ring-2 ring-brand-500/50 text-brand-300' : ''}`}
+                    onClick={() => togglePlaySegment(narKey, s.audio_url)}
+                    title={narPlaying ? '停止播放' : '试听'}
                   >
-                    ▶
+                    {narPlaying ? '⏸' : '▶'}
                   </button>
                 )}
               </div>
               <div className="line-clamp-3">{s.text}</div>
             </div>
-          ))}
+            );
+          })}
         </div>
       </details>
 
@@ -275,17 +290,6 @@ export default function StepGenerate({
             </a>
           </div>
           <audio controls src={synthResult.audio_url} className="w-full" />
-          {previewAudio && previewAudio !== synthResult.audio_url && (
-            <div className="pt-3 border-t border-white/10">
-              <div className="text-xs text-white/60 mb-1">段级试听：</div>
-              <audio controls src={previewAudio} className="w-full" />
-            </div>
-          )}
-        </div>
-      )}
-      {!synthResult && previewAudio && (
-        <div className="card">
-          <audio controls src={previewAudio} className="w-full" autoPlay />
         </div>
       )}
       {/* 全局隐藏 audio 元素：统一播放管理 */}
