@@ -32,6 +32,10 @@ class Job(Base):
     progress_msg: Mapped[str | None] = mapped_column(String(256), nullable=True)
     # 整本 prepare 后的章节 JSON（[{idx,title,text},...]），合成时按此切分
     chapters_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 所有章 MP3 字节总和（仅整本书模式）
+    total_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 整包 ZIP 文件名（仅整本书模式，done 时生成）
+    zip_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
     characters: Mapped[list["Character"]] = relationship(
         back_populates="job", cascade="all, delete-orphan"

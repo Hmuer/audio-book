@@ -17,8 +17,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import time as _time
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +60,41 @@ from ..ai.providers.minimax.tts import (
 logger = logging.getLogger(__name__)
 
 SILENCE_BETWEEN_CHAPTERS_MS = 1500
+
+_UNSAFE_FS_CHARS = re.compile(r'[\\/:*?"<>|\r\n\t]+')
+
+
+def _sanitize_zip_entry(name: str, fallback: str) -> str:
+    """给 ZIP 内部文件名用：控制字符/路径分隔符去掉；空字符串用 fallback。"""
+    n = _UNSAFE_FS_CHARS.sub("_", name).strip().strip(".")
+    n = n[:60]  # 避免文件名过长
+    return n or fallback
+
+
+def _build_book_zip(
+    zip_path: str,
+    *,
+    job_id: str,
+    job_title: str | None,
+    chapter_outputs: list[tuple[str | None, int | None]],
+    chapter_titles: list[str],
+) -> None:
+    """
+    把所有章节 MP3 打包到 ZIP。失败章的占位音频也会被打进 ZIP，避免缺文件。
+    ZIP 内部命名：《书名》/第001章 标题.mp3
+    """
+    book_dir = _sanitize_zip_entry(job_title or job_id, f"小说_{job_id[:8]}")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
+        for i, (path, _dur) in enumerate(chapter_outputs):
+            raw_title = chapter_titles[i] if i < len(chapter_titles) else ""
+            clean_title = _sanitize_zip_entry(raw_title, f"章节{i+1}")
+            # 统一前缀 001_ 保证按文件名排序 = 章节顺序；title 中已自带"第一章 xxx"就不再重复"章"字
+            base = f"{i+1:03d}_{clean_title}"
+            entry_name = f"{book_dir}/{base}.mp3"
+            if path and os.path.isfile(path):
+                zf.write(path, arcname=entry_name)
+            else:
+                zf.writestr(entry_name, make_silent_mp3(100))
 
 
 # ---------- 文件上传 ----------
@@ -109,8 +147,10 @@ class BookStatusResponse(BaseModel):
     total_chapters: int
     completed_chapters: int
     progress_msg: str | None
-    final_audio_url: str | None
-    final_duration_sec: float | None
+    final_audio_url: str | None  # 兼容旧字段；整本书模式按章下载，此处通常为 None
+    final_duration_sec: float | None  # 整本累计时长（sum 所有章，含失败占位）
+    zip_url: str | None  # done 后整包下载 ZIP
+    total_size_kb: int | None  # 所有章 MP3 合计大小（用于 UI 展示）
     chapters: list[BookChapterResult]
 
 
@@ -309,6 +349,7 @@ async def get_book_status(session: AsyncSession, job_id: str) -> BookStatusRespo
         ChapterResult.job_id == job_id
     ).order_by(ChapterResult.chapter_idx)
     results = list((await session.execute(stmt_cr)).scalars().all())
+    total_kb = (job.total_size_bytes // 1024) if job.total_size_bytes else None
     return BookStatusResponse(
         job_id=job_id,
         book_status=job.book_status or "unknown",
@@ -317,6 +358,8 @@ async def get_book_status(session: AsyncSession, job_id: str) -> BookStatusRespo
         progress_msg=job.progress_msg,
         final_audio_url=f"/media/{job.final_audio_filename}" if job.final_audio_filename else None,
         final_duration_sec=round((job.final_duration_ms or 0) / 1000.0, 2),
+        zip_url=f"/media/{job.zip_filename}" if job.zip_filename else None,
+        total_size_kb=total_kb,
         chapters=[
             BookChapterResult(
                 chapter_idx=r.chapter_idx,
@@ -473,6 +516,7 @@ async def _synthesize_book_inner(
         chapters_dicts = json.loads(job.chapters_json or "[]")
         chapters = [Chapter(idx=c["idx"], title=c["title"], text=c["text"]) for c in chapters_dicts]
         total = len(chapters)
+        job_title: str | None = job.book_title or job.source_filename or None
         # 加载所有对白（跨章节一次性读，不持有 DB 对象循环）
         stmt_d = select(DbDialogue).where(DbDialogue.job_id == job_id)
         all_dialogues_rows = list((await s.execute(stmt_d)).scalars().all())
@@ -602,59 +646,53 @@ async def _synthesize_book_inner(
                 await s.commit()
             continue
 
-    # 4. 合并所有章节 MP3（章节间插 1.5s 静音）
+    # 4. 汇总每章：按章单文件输出，生成整包 ZIP 便于"一键全部下载"
+    #    注意：最终不再产出单条合并 MP3，用户逐章试听 / 逐章下载 / 全本 ZIP 下载
     logger.info(
-        f"[book_synth_worker] job_id={job_id[:8]}... merging {total} chapters "
-        f"(failed={failed_count})"
+        f"[book_synth_worker] job_id={job_id[:8]}... packaging {total} chapters "
+        f"(completed={completed} failed={failed_count})"
     )
-    parts: list[bytes] = []
-    merged_dur_ms = 0
-    for i, (path, dur) in enumerate(chapter_outputs):
-        if path is None:
-            # 双重兜底：连占位都没写 → 补 0.5s 静音
-            placeholder = make_silent_mp3(500)
-            if i > 0:
-                parts.append(make_silent_mp3(SILENCE_BETWEEN_CHAPTERS_MS))
-                merged_dur_ms += SILENCE_BETWEEN_CHAPTERS_MS
-            parts.append(placeholder)
-            merged_dur_ms += 500
-            continue
-        if i > 0:
-            parts.append(make_silent_mp3(SILENCE_BETWEEN_CHAPTERS_MS))
-            merged_dur_ms += SILENCE_BETWEEN_CHAPTERS_MS
-        with open(path, "rb") as f:
-            data = f.read()
-        parts.append(data)
-        merged_dur_ms += dur or 0
+    total_ms = 0
+    total_size_bytes = 0
+    for _p, _d in chapter_outputs:
+        if _p:
+            try:
+                total_size_bytes += os.path.getsize(_p)
+            except OSError:
+                pass
+        total_ms += _d or 0
+    # 生成 ZIP（流式读取章节文件，避免重复写一份大文件）
+    zip_fname = f"book_{job_id}_all.zip"
+    zip_path = str(audio_dir / zip_fname)
+    _build_book_zip(
+        zip_path,
+        job_id=job_id,
+        job_title=job_title,
+        chapter_outputs=chapter_outputs,
+        chapter_titles=[c.title for c in chapters],
+    )
 
-    final_bytes = concat_mp3_files(*parts) if parts else make_silent_mp3(100)
-    final_fname = f"book_{job_id}_final.mp3"
-    final_path = str(audio_dir / final_fname)
-    with open(final_path, "wb") as f:
-        f.write(final_bytes)
-    total_ms = _estimate_mp3_duration_ms(final_bytes)
-
-    # 5. 写 Job 最终状态
+    # 5. 写 Job 最终状态（final_audio_filename 保持字段兼容但不再写入整 MP3；
+    #    前端以 chapters[].audio_url 逐章播放/下载；整包 ZIP 走独立接口）
     async with factory() as s:
         j = (await s.execute(select(Job).where(Job.job_id == job_id))).scalar_one()
-        if failed_count == 0:
-            j.book_status = "done"
-        else:
-            # 部分失败仍产出最终 MP3，但标记为带警告的 done
-            j.book_status = "done"
-        j.final_audio_filename = final_fname
+        j.book_status = "done"
+        j.final_audio_filename = None  # 无合并 MP3
         j.final_duration_ms = total_ms
         j.progress_msg = (
             f"全部完成 {completed}/{total} 章"
             + (f"（{failed_count} 章失败已用静音占位）" if failed_count else "")
         )
+        j.total_size_bytes = total_size_bytes
+        j.zip_filename = zip_fname
         await s.commit()
 
     total_elapsed_ms = int((_time.perf_counter() - t0) * 1000)
     logger.info(
         f"[book_synth_worker] DONE job_id={job_id[:8]}... total_ms={total_elapsed_ms} "
         f"completed={completed}/{total} failed={failed_count} "
-        f"final_size_kb={len(final_bytes)//1024} duration_s={round(total_ms/1000,1)}"
+        f"chapters_size_kb={total_size_bytes//1024} total_duration_s={round(total_ms/1000,1)} "
+        f"zip={zip_fname}"
     )
 
 

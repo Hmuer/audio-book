@@ -492,79 +492,130 @@ export default function BookFlow({ voices }: { voices: Voice[] }) {
       {/* ============ Phase 5: done ============ */}
       {phase === 'done' && status && (
         <div className="space-y-6">
-          <div className="card border-brand-500/40 bg-brand-500/5 space-y-4 sticky top-4 z-10">
+          <div className="card border-brand-500/40 bg-brand-500/5 space-y-3 sticky top-4 z-10">
             <div className="flex items-center justify-between flex-wrap gap-3">
               <div>
-                <div className="text-lg font-semibold">🎉 整本合成完成</div>
+                <div className="text-lg font-semibold">🎉 整本合成完成 · 一章一 MP3</div>
                 <div className="text-sm text-white/60">
                   共 {status.total_chapters} 章 · 总时长{' '}
                   {Math.floor((status.final_duration_sec || 0) / 60)}分
                   {Math.round((status.final_duration_sec || 0) % 60)}秒
+                  {typeof status.total_size_kb === 'number' && (
+                    <span className="ml-3">
+                      总大小 {status.total_size_kb >= 1024
+                        ? `${(status.total_size_kb / 1024).toFixed(1)} MB`
+                        : `${status.total_size_kb} KB`}
+                    </span>
+                  )}
                 </div>
               </div>
               <div className="flex gap-2">
-                <button
-                  className="btn-ghost"
-                  onClick={togglePlayFinal}
-                >
-                  {playingKey === 'final' ? '⏸ 暂停' : '▶ 播放整本'}
-                </button>
-                <a
-                  className="btn-primary"
-                  href={status.final_audio_url || '#'}
-                  download={`${prep?.book_title || 'book'}_整本.mp3`}
-                >
-                  ⬇️ 下载整本 MP3
-                </a>
+                {status.zip_url ? (
+                  <>
+                    {/* ZIP 直接下载（URL 与 /download-all 二选一，这里走接口保证中文文件名） */}
+                    <a
+                      className="btn-primary"
+                      href={api.bookDownloadAll(status.job_id)}
+                      download
+                    >
+                      📦 一键下载全部 ZIP
+                    </a>
+                  </>
+                ) : (
+                  <button className="btn-primary disabled:opacity-40" disabled>
+                    整包文件尚未准备好
+                  </button>
+                )}
               </div>
             </div>
-            <audio controls src={status.final_audio_url || undefined} className="w-full" />
+            {playingKey && (
+              <div className="pt-2 border-t border-white/10 flex items-center gap-3">
+                <span className="text-sm text-white/60 min-w-[80px]">
+                  正在播放：
+                </span>
+                <audio
+                  controls
+                  autoPlay
+                  src={audioRef.current?.src || undefined}
+                  className="flex-1 min-w-0"
+                  onPause={e => {
+                    // 同步 playingKey：外部暂停后清除状态
+                    if (!e.currentTarget.ended) {
+                      // 不强制 stop，保持用户操作
+                    }
+                  }}
+                />
+              </div>
+            )}
           </div>
 
           <div className="card space-y-2">
-            <h3 className="font-semibold mb-3">📜 各章详情</h3>
-            <div className="space-y-1 max-h-[500px] overflow-y-auto">
-              {status.chapters.map(c => (
-                <div
-                  key={c.chapter_idx}
-                  className="flex items-center justify-between gap-3 py-2 px-3 rounded-lg hover:bg-white/5"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <StatusIcon status={c.status} />
-                    <span className="text-white/40 text-xs w-8 shrink-0">#{c.chapter_idx + 1}</span>
-                    <span className="text-sm truncate">{c.title || '(无标题)'}</span>
+            <h3 className="font-semibold mb-1">📜 章节列表</h3>
+            <p className="text-xs text-white/50 mb-3">
+              每章独立 MP3，可单独试听、下载，失败章用 1 秒静音占位以保持章节顺序。
+            </p>
+            <div className="space-y-2 max-h-[620px] overflow-y-auto pr-1">
+              {status.chapters.map(c => {
+                const hasAudio = !!c.audio_url;
+                const playing = playingKey === `ch_${c.chapter_idx}`;
+                return (
+                  <div
+                    key={c.chapter_idx}
+                    className={
+                      'flex items-center justify-between gap-3 py-2.5 px-3 rounded-xl ' +
+                      (playing ? 'bg-brand-500/10 ring-1 ring-brand-500/40' : 'hover:bg-white/5')
+                    }
+                  >
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <StatusIcon status={c.status} />
+                      <span className="text-white/40 text-xs w-9 shrink-0">#{c.chapter_idx + 1}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm truncate">{c.title || '(无标题)'}</div>
+                        {c.status === 'failed' && c.error_msg && (
+                          <div
+                            className="text-[11px] text-red-300/90 truncate mt-0.5"
+                            title={c.error_msg}
+                          >
+                            ❌ {c.error_msg.split('\n')[0]}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {c.duration_ms ? (
+                        <span className="text-xs text-white/40 w-12 text-right">
+                          {c.duration_ms >= 60000
+                            ? `${(c.duration_ms / 60000).toFixed(1)}m`
+                            : `${(c.duration_ms / 1000).toFixed(1)}s`}
+                        </span>
+                      ) : null}
+                      {hasAudio && (
+                        <button
+                          className={
+                            'chip text-xs ' +
+                            (playing
+                              ? 'bg-brand-500 text-white hover:bg-brand-500/90'
+                              : 'bg-white/10 hover:bg-white/20')
+                          }
+                          onClick={() => togglePlayChapter(c.chapter_idx, c.audio_url!)}
+                        >
+                          {playing ? '⏸' : '▶'} 试听
+                        </button>
+                      )}
+                      {hasAudio && (
+                        <a
+                          className="chip bg-white/10 hover:bg-white/20 text-xs"
+                          href={api.bookChapterDownload(status.job_id, c.chapter_idx)}
+                          download
+                          title="下载该章（保存为中文文件名）"
+                        >
+                          ⬇ 下载
+                        </a>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-3 shrink-0">
-                    {c.duration_ms && (
-                      <span className="text-xs text-white/40">
-                        {(c.duration_ms / 1000).toFixed(1)}s
-                      </span>
-                    )}
-                    {c.status === 'done' && c.audio_url && (
-                      <button
-                        className="chip bg-white/10 hover:bg-white/20 text-xs"
-                        onClick={() => togglePlayChapter(c.chapter_idx, c.audio_url)}
-                      >
-                        {playingKey === `ch_${c.chapter_idx}` ? '⏸' : '▶'} 试听
-                      </button>
-                    )}
-                    {c.status === 'done' && c.audio_url && (
-                      <a
-                        className="chip bg-white/10 hover:bg-white/20 text-xs"
-                        href={c.audio_url}
-                        download={`${String(c.chapter_idx + 1).padStart(3, '0')}_${c.title}.mp3`}
-                      >
-                        ⬇
-                      </a>
-                    )}
-                    {c.status === 'failed' && c.error_msg && (
-                      <span className="text-xs text-red-300" title={c.error_msg}>
-                        ❌ 失败
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 

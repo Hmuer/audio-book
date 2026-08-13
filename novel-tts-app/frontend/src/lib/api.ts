@@ -115,8 +115,10 @@ export interface BookStatusResp {
   total_chapters: number;
   completed_chapters: number;
   progress_msg: string | null;
-  final_audio_url: string | null;
-  final_duration_sec: number | null;
+  final_audio_url: string | null; // 整本书模式：逐章下载，此处通常为 null（保留兼容）
+  final_duration_sec: number | null; // 所有章节累计时长
+  zip_url: string | null; // done 后可整包下载 ZIP
+  total_size_kb: number | null; // 所有章 MP3 合计大小
   chapters: BookChapterResult[];
 }
 
@@ -185,4 +187,8 @@ export const api = {
     }),
   bookStatus: (job_id: string) =>
     _fetch<BookStatusResp>(`/api/book/${job_id}/status`),
+  bookDownloadAll: (job_id: string) =>
+    `/api/book/${job_id}/download-all`,
+  bookChapterDownload: (job_id: string, idx: number) =>
+    `/api/book/${job_id}/chapters/${idx}/download`,
 };

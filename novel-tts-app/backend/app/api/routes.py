@@ -1,12 +1,16 @@
 from __future__ import annotations
 import logging
 import time as _time
+import urllib.parse
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.session import get_session_factory
+from ..db.models import Job, ChapterResult
 from ..ai.factory import get_tts
 from ..core.config import settings
 from ..services.chapter import (
@@ -338,3 +342,83 @@ async def api_book_status(
             exc_info=True,
         )
         raise HTTPException(500, f"status 查询失败: {type(e).__name__}: {e}")
+
+
+def _safe_download_name(book_title: str | None, job_id: str, ext: str) -> str:
+    """构造下载文件名（中文 + fallback 安全），ext 带点，例如 '.zip' / '.mp3'。"""
+    base = (book_title or "").strip() or f"小说_{job_id[:8]}"
+    # 去掉 Windows/Mac 都不允许的字符
+    for ch in '\\/:*?"<>|\r\n\t':
+        base = base.replace(ch, "_")
+    base = base[:100].strip() or f"小说_{job_id[:8]}"
+    return f"{base}{ext}"
+
+
+@router.get("/book/{job_id}/download-all")
+async def api_book_download_all(
+    job_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """一键全部下载：返回打包好的 ZIP（中文文件名）。"""
+    job = (await db.execute(select(Job).where(Job.job_id == job_id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(404, "job not found")
+    if not job.zip_filename:
+        raise HTTPException(400, "整包 ZIP 尚未生成，请先等合成完成")
+    audio_dir = Path(settings.AUDIO_DIR)
+    zip_path = audio_dir / job.zip_filename
+    if not zip_path.is_file():
+        raise HTTPException(404, "ZIP 文件不存在")
+    download_name = _safe_download_name(job.book_title, job_id, ".zip")
+    # Content-Disposition 同时提供 ASCII fallback + UTF-8 编码，确保 Safari/Chrome 中文
+    ascii_name = urllib.parse.quote(download_name.encode("utf-8"), safe="")
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{ascii_name}"
+    }
+    return FileResponse(
+        path=str(zip_path),
+        media_type="application/zip",
+        headers=headers,
+        filename=download_name,  # FastAPI 自身也会写 Content-Disposition
+    )
+
+
+@router.get("/book/{job_id}/chapters/{idx}/download")
+async def api_book_chapter_download(
+    job_id: str,
+    idx: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """单章下载：返回 FileResponse，强制浏览器保存为中文文件名。"""
+    job = (await db.execute(select(Job).where(Job.job_id == job_id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(404, "job not found")
+    cr = (
+        await db.execute(
+            select(ChapterResult).where(
+                ChapterResult.job_id == job_id,
+                ChapterResult.chapter_idx == idx,
+            )
+        )
+    ).scalar_one_or_none()
+    if not cr or not cr.audio_filename:
+        raise HTTPException(404, f"章节 {idx} 尚未生成")
+    audio_dir = Path(settings.AUDIO_DIR)
+    fpath = audio_dir / cr.audio_filename
+    if not fpath.is_file():
+        raise HTTPException(404, f"章节 {idx} 音频文件不存在")
+    fname = f"第{idx+1:03d}章 {cr.title or '章节'}.mp3"
+    for ch in '\\/:*?"<>|\r\n\t':
+        fname = fname.replace(ch, "_")
+    ascii_name = urllib.parse.quote(fname.encode("utf-8"), safe="")
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{ascii_name}"
+    }
+    return FileResponse(
+        path=str(fpath),
+        media_type="audio/mpeg",
+        headers=headers,
+        filename=fname,
+    )

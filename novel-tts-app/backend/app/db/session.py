@@ -47,6 +47,8 @@ _JOB_NEW_COLUMNS = {
     "completed_chapters": "INTEGER DEFAULT 0",
     "progress_msg": "VARCHAR(256)",
     "chapters_json": "TEXT",
+    "total_size_bytes": "INTEGER",
+    "zip_filename": "VARCHAR(256)",
 }
 
 
