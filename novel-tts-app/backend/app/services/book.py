@@ -218,18 +218,22 @@ async def prepare_book(file_id: str, original_filename: str = "") -> BookPrepare
         f"ms={int((_time.perf_counter()-pt)*1000)}"
     )
 
-    # 4. 每章对白归属（并行，每章独立）
+    # 4. 每章对白归属（串行：章节间存在上下文依赖，按顺序识别更稳；
+    #    同时避免瞬时并发触发供应商 RPM 限制 429）
     pt = _time.perf_counter()
-    async def _attr_one(ch: Chapter, ch_idx: int) -> list:
+    all_attrs_per_chapter: list[list] = []
+    total_dialogues = 0
+    for ch_idx, ch in enumerate(chapters):
         attrs = await attribute_dialogues_with_llm(ch.text, characters)
         # speaker 做去重 name → canonical 映射
         for a in attrs:
             a.speaker = name_map.get(a.speaker, a.speaker)
-        return attrs
-    all_attrs_per_chapter = await asyncio.gather(*[
-        _attr_one(ch, i) for i, ch in enumerate(chapters)
-    ])
-    total_dialogues = sum(len(a) for a in all_attrs_per_chapter)
+        all_attrs_per_chapter.append(attrs)
+        total_dialogues += len(attrs)
+        logger.info(
+            f"[book_prepare] job_id={job_id[:8]}... dialogue_attr chapter={ch_idx+1}/{len(chapters)} "
+            f"this={len(attrs)} cum={total_dialogues}"
+        )
     logger.info(
         f"[book_prepare] job_id={job_id[:8]}... dialogue_attr done "
         f"total_dialogues={total_dialogues} ms={int((_time.perf_counter()-pt)*1000)}"
@@ -326,14 +330,23 @@ async def prepare_book(file_id: str, original_filename: str = "") -> BookPrepare
 
 
 async def _split_50k_and_run_chars(text: str, coro_fn) -> list[Character]:
-    """长文本按 50k 切片并行跑角色识别，再合并去重前返回原始列表。"""
+    """
+    长文本按 50k 切片**串行**跑角色识别，再合并去重前返回原始列表。
+
+    设计考虑：小说情节是串行的，并发跑多个切片会让 LLM 在不同切片间丢失
+    上下文（同一角色在不同切片里可能被识别成不同名字），且并发容易触发供应
+    商 RPM 限制（429）。串行更稳。provider 层有 semaphore 兜底。
+    """
     MAX = 50000
     if len(text) <= MAX:
         return await coro_fn(text)
     slices = [text[i:i+MAX] for i in range(0, len(text), MAX)]
-    results = await asyncio.gather(*[coro_fn(s) for s in slices])
     merged: list[Character] = []
-    for r in results:
+    for i, s in enumerate(slices):
+        logger.info(
+            f"[chars_split] slice {i+1}/{len(slices)} chars={len(s)} start"
+        )
+        r = await coro_fn(s)
         merged.extend(r)
     return merged
 

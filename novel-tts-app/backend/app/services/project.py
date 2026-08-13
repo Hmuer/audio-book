@@ -312,10 +312,11 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
             f"split_chapters={len(chapters)} ms={int((_time.perf_counter()-pt)*1000)}"
         )
 
-        # 4. 全书角色识别（50k 切片并行 + 去重）
+        # 4. 全书角色识别（50k 切片串行：小说情节是串行的，并发会触发限流且
+        #    可能导致跨切片识别错乱；同时 provider 层有 semaphore 兜底）
         pt = _time.perf_counter()
         full_text = "\n".join(c.text for c in chapters)
-        characters = await _split_50k_and_run_chars(full_text, extract_characters_with_llm)
+        characters = await _split_50k_and_run_chars_serial(full_text, extract_characters_with_llm)
         if len(characters) >= 2:
             names = [c.name for c in characters]
             dedup_results = await deduplicate_characters_with_llm(names, full_text)
@@ -327,20 +328,23 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
             f"characters={len(characters)} ms={int((_time.perf_counter()-pt)*1000)}"
         )
 
-        # 5. 每章对白归属（并行，每章独立）
+        # 5. 每章对白归属（串行：章节间存在上下文依赖，按章节顺序识别更稳；
+        #    且避免瞬时并发触发供应商 RPM 限制）
         pt = _time.perf_counter()
-
-        async def _attr_one(ch: Chapter) -> list:
+        all_attrs_per_chapter: list[list] = []
+        total_dialogues = 0
+        for ch_idx, ch in enumerate(chapters):
             attrs = await attribute_dialogues_with_llm(ch.text, characters)
             # speaker 做 name → canonical 映射
             for a in attrs:
                 a.speaker = name_map.get(a.speaker, a.speaker)
-            return attrs
-
-        all_attrs_per_chapter = await asyncio.gather(*[
-            _attr_one(ch) for ch in chapters
-        ])
-        total_dialogues = sum(len(a) for a in all_attrs_per_chapter)
+            all_attrs_per_chapter.append(attrs)
+            total_dialogues += len(attrs)
+            logger.info(
+                f"[project_prepare] project_id={project_id[:8]}... "
+                f"dialogue_attr chapter={ch_idx+1}/{len(chapters)} "
+                f"this_dialogues={len(attrs)} cum={total_dialogues}"
+            )
         logger.info(
             f"[project_prepare] project_id={project_id[:8]}... "
             f"dialogue_attr done total_dialogues={total_dialogues} "
@@ -446,15 +450,24 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
         raise
 
 
-async def _split_50k_and_run_chars(text: str, coro_fn) -> list[Character]:
-    """长文本按 50k 切片并行跑角色识别，再合并返回原始列表（去重交给上层）。"""
+async def _split_50k_and_run_chars_serial(text: str, coro_fn) -> list[Character]:
+    """
+    长文本按 50k 切片**串行**跑角色识别，再合并返回原始列表（去重交给上层）。
+
+    设计考虑：小说情节是串行的，并发跑多个切片会让 LLM 在不同切片间
+    丢失上下文（同一角色在不同切片里可能被识别成不同名字），且并发
+    容易触发供应商 RPM 限制（429）。串行更稳，慢一点但识别更准。
+    """
     MAX = 50000
     if len(text) <= MAX:
         return await coro_fn(text)
     slices = [text[i:i+MAX] for i in range(0, len(text), MAX)]
-    results = await asyncio.gather(*[coro_fn(s) for s in slices])
     merged: list[Character] = []
-    for r in results:
+    for i, s in enumerate(slices):
+        logger.info(
+            f"[chars_split] slice {i+1}/{len(slices)} chars={len(s)} start"
+        )
+        r = await coro_fn(s)
         merged.extend(r)
     return merged
 

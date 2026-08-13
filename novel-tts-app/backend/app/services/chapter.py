@@ -146,8 +146,12 @@ async def split_chapters_with_llm(long_text: str) -> list[Chapter]:
 
 async def _split_50k_and_run(text: str, coro_fn) -> list:
     """
-    长文本按 50000 字切片，并行跑 coro_fn(slice)，再拼接。
+    长文本按 50000 字切片，**串行**跑 coro_fn(slice)，再拼接。
     coro_fn: async (str) -> list
+
+    设计考虑：小说情节是串行的，并发跑多个切片会让 LLM 在不同切片间丢失
+    上下文（同一角色在不同切片里可能被识别成不同名字），且并发容易触发供应
+    商 RPM 限制（429）。串行更稳。provider 层有 semaphore 兜底。
     """
     if len(text) <= MAX_CHAPTER_CHARS:
         return await coro_fn(text)
@@ -158,9 +162,12 @@ async def _split_50k_and_run(text: str, coro_fn) -> list:
         end = min(i + MAX_CHAPTER_CHARS, len(text))
         slices.append(text[i:end])
         i = end
-    results = await asyncio.gather(*[coro_fn(s) for s in slices])
     merged: list = []
-    for r in results:
+    for idx, s in enumerate(slices):
+        logger.info(
+            f"[chars_split] slice {idx+1}/{len(slices)} chars={len(s)} start"
+        )
+        r = await coro_fn(s)
         merged.extend(r)
     return merged
 
@@ -240,13 +247,10 @@ async def prepare_chapter(
     pt = _time.perf_counter()
     dialogue_attrs: list[DialogueAttribution] = []
 
-    async def _attr_one(chapter_text: str) -> list[DialogueAttribution]:
-        return await attribute_dialogues_with_llm(chapter_text, characters)
-
-    all_attrs = await asyncio.gather(*[
-        _attr_one(ch.text) for ch in chapters
-    ])
-    for ch_idx, attrs in enumerate(all_attrs):
+    # 串行跑每章对白归属：章节间存在上下文依赖，并发会让 LLM 在不同章节间
+    # 识别错乱；同时避免瞬时并发触发供应商 RPM 限制（429）
+    for ch_idx, ch in enumerate(chapters):
+        attrs = await attribute_dialogues_with_llm(ch.text, characters)
         # 每章的 anchor.start/end 都是在该章内的偏移，要累加上前缀
         prefix = sum(len(c.text) for c in chapters[:ch_idx])
         for a in attrs:
@@ -255,6 +259,10 @@ async def prepare_chapter(
             # speaker 做去重 name → canonical 映射
             a.speaker = name_map.get(a.speaker, a.speaker)
         dialogue_attrs.extend(attrs)
+        logger.info(
+            f"[prepare] job_id={job_id[:8]}... dialogue_attr chapter={ch_idx+1}/{len(chapters)} "
+            f"this={len(attrs)} cum={len(dialogue_attrs)}"
+        )
     phase_timings["dialogue_attr_ms"] = int((_time.perf_counter() - pt) * 1000)
     logger.info(
         f"[prepare] job_id={job_id[:8]}... chapters={len(chapters)} "
