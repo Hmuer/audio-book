@@ -11,7 +11,7 @@ FEW_SHOT = r"""
 1. **绝对禁止**使用 narrator/unknown/旁白/其他 作为 speaker，必须从给定角色列表中选一个最可能的。
 2. 如果对白前有"XX 说/道/喊/回答/冷喝/喃喃"等提示词，优先用提示词。
 3. 如果没有提示词，根据上下文语境、角色性格、对话内容风格合理推断。
-4. anchor 的 start/end 是对白原文（包含引号）在正文中的 0-indexed 字节位置。
+4. anchor 的 start/end 是对白原文（包含引号）在正文中的 0-indexed **字符位置**（Python 字符串索引，不是字节位置）。即 `text[start:end]` 应严格等于 anchor.text。
 5. confidence 0-1：0.7 以下表示你不太确定，让人工复核。
 6. 每段对白 text 字段去掉引号后的纯对白文本。
 

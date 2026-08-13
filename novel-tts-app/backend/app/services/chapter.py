@@ -376,6 +376,13 @@ def _build_segments_for_chapter(
         #     但这里传给 _build_segments_for_chapter 时已经先对章节切分做过转换）
         local_start = dlg.anchor_start
         local_end = dlg.anchor_end
+        # 校验并修正 anchor 位置：LLM 返回的位置可能不准（尤其中文/字节位置错位），
+        # 优先用 anchor_text 在 ch.text 中精确定位，避免 narrator 段误切片包含对白内容
+        if dlg.anchor_text:
+            found = ch.text.find(dlg.anchor_text)
+            if found >= 0:
+                local_start = found
+                local_end = found + len(dlg.anchor_text)
         # narrator 段：[cursor, local_start)
         if cursor < local_start:
             narrator_text = ch.text[cursor:local_start].strip()
@@ -409,7 +416,9 @@ def _build_segments_for_chapter(
         ))
         idx += 1
 
-        cursor = local_end
+        # 推进 cursor 到对白结束位置（防止 anchor 错位时 cursor 倒退导致重复切片）
+        if local_end > cursor:
+            cursor = local_end
 
     # 收尾 narrator
     if cursor < chapter_len:
