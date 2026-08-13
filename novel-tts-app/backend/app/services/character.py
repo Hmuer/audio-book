@@ -6,13 +6,18 @@ from ..ai.factory import get_llm
 
 
 EXTRACT_FEW_SHOT = r"""
-你是一名小说人物分析师。请从给定小说文本中提取所有出场的角色（主角、配角、只提过一次的路人都算）。
+你是一名小说人物分析师。请从给定小说文本中提取所有出场的**独立角色**（主角、配角、只提过一次的路人都算）。
 每个角色提取：姓名、性别、年龄段、性格描述。
 规则：
 - 性别只填「男」「女」「未知」三选一
 - 只出现"少年""少女"但无姓名的，如果上下文暗示是有台词的重要角色也提取，name 填「少年A」「少女1」这类占位
 - 不要提取"天""风""雨""天空""街道"等非人物
 - personality 用 2-4 个关键词或一句话
+- ⚠️ **严禁**将以下类型的称呼当作独立角色提取：
+  · 尊称/头衔：如「师尊」「师父」「长老」「前辈」「阁主」「宗主」「师兄」「师姐」「师叔」「道友」等——这些是对已出场角色的称呼，不是新角色
+  · 昵称/小名：如「燕儿」「雪儿」「灵儿」「阿明」——如果文中已有对应全名（如「周燕」「林若雪」），昵称指向同一人，不单独提取
+  · 代词：「他」「她」「我」「你」「众人」「几位」等
+- 判断标准：该称呼是否可以用"人名"替换而句意不变？若可以则不提取
 
 【示例 1】
 输入：
@@ -35,6 +40,16 @@ EXTRACT_FEW_SHOT = r"""
   {"name": "林若雪", "gender": "女", "age": "少女", "personality": "刚烈、决绝"},
   {"name": "少年A", "gender": "男", "age": "少年", "personality": "关心同伴、担忧"}
 ]
+
+【示例 3】—— 尊称/昵称处理
+输入：
+"师尊，您的伤不要紧吧！周燕扶起受伤的张羽。燕儿说：「师父，别担心。」"
+
+输出：
+[
+  {"name": "周燕", "gender": "女", "age": "青年", "personality": "关心师长、细心"},
+  {"name": "张羽", "gender": "男", "age": "中年", "personality": "受伤、虚弱"}
+]
 """
 
 
@@ -46,8 +61,12 @@ DEDUP_FEW_SHOT = r"""
 - 「王大爷」和「王师傅」默认不是同一人
 - 姓相同但名完全不同（如「张伟」「张强」）默认不是同一人，除非上下文明确
 - canonical_name 选最完整/出现字数最多的那个
+- ⚠️ 尊称/头衔/昵称的消歧：
+  · 「师尊」「师父」「长老」「前辈」「阁主」「宗主」「师兄」「师姐」等——如果上下文中这些称呼明确指向某个已出场角色（如「师尊」只对应张羽一人），应判定为同一人
+  · 「燕儿」「雪儿」「灵儿」等昵称——如果上下文中有对应全名（如「周燕」），应判定为同一人，canonical_name 取全名
+  · 判断依据：称呼是否唯一指向某角色、且替换后句意不变
 
-【示例】
+【示例 1】
 上下文："林若雪推开门，妈妈在厨房喊：若雪，过来吃饭。"
 名字列表：["林若雪", "若雪", "妈妈"]
 输出：
@@ -55,6 +74,23 @@ DEDUP_FEW_SHOT = r"""
   {"name_a": "林若雪", "name_b": "若雪", "same_person": true, "canonical_name": "林若雪"},
   {"name_a": "林若雪", "name_b": "妈妈", "same_person": false, "canonical_name": null},
   {"name_a": "若雪", "name_b": "妈妈", "same_person": false, "canonical_name": null}
+]
+
+【示例 2】—— 尊称/昵称消歧
+上下文："师尊，您的伤不要紧吧！周燕扶起受伤的张羽。燕儿说：「师父，别担心。」"
+名字列表：["张羽", "师尊", "周燕", "燕儿", "师父"]
+输出：
+[
+  {"name_a": "张羽", "name_b": "师尊", "same_person": true, "canonical_name": "张羽"},
+  {"name_a": "张羽", "name_b": "周燕", "same_person": false, "canonical_name": null},
+  {"name_a": "张羽", "name_b": "燕儿", "same_person": false, "canonical_name": null},
+  {"name_a": "张羽", "name_b": "师父", "same_person": true, "canonical_name": "张羽"},
+  {"name_a": "师尊", "name_b": "周燕", "same_person": false, "canonical_name": null},
+  {"name_a": "师尊", "name_b": "燕儿", "same_person": false, "canonical_name": null},
+  {"name_a": "师尊", "name_b": "师父", "same_person": true, "canonical_name": "张羽"},
+  {"name_a": "周燕", "name_b": "燕儿", "same_person": true, "canonical_name": "周燕"},
+  {"name_a": "周燕", "name_b": "师父", "same_person": false, "canonical_name": null},
+  {"name_a": "燕儿", "name_b": "师父", "same_person": false, "canonical_name": null}
 ]
 """
 
@@ -161,9 +197,11 @@ def apply_dedup(
 
     def union(a: str, b: str, canonical: str):
         ra, rb = find(a), find(b)
-        target = canonical or rb
-        # 把 ra 合并到 target
-        name_map[ra] = target
+        target = find(canonical)
+        # 将 ra 和 rb 中不是 target 的一方合并到 target
+        for root in (ra, rb):
+            if root != target:
+                name_map[root] = target
         name_map[target] = target
 
     for r in dedup_results:
@@ -176,6 +214,61 @@ def apply_dedup(
             if r.canonical_name not in name_map:
                 name_map[r.canonical_name] = r.canonical_name
             union(r.name_a, r.name_b, r.canonical_name)
+
+    # 2) 兜底：自动合并常见尊称/昵称到全名（LLM 可能遗漏时的代码层补救）
+    _HONORIFICS = {
+        "师尊", "师父", "师傅", "长老", "前辈", "阁主", "宗主", "帮主",
+        "师兄", "师姐", "师弟", "师妹", "师叔", "师伯", "道友", "公子",
+        "姑娘", "小姐", "少爷", "老爷", "夫人", "太太",
+    }
+    _KINSHIP = {
+        "父亲", "母亲", "爸爸", "妈妈", "爹", "娘",
+        "哥哥", "姐姐", "弟弟", "妹妹",
+        "爷爷", "奶奶", "外公", "外婆",
+        "叔叔", "阿姨", "舅舅", "姑姑",
+        "儿子", "女儿", "孙子", "孙女",
+        "侄子", "侄女", "外甥", "外甥女",
+    }
+    _ALL_HONOR = _HONORIFICS | _KINSHIP
+    all_names = list(name_map.keys())
+
+    # 2a) 昵称兜底：去后缀后匹配全名
+    for name in all_names:
+        root = find(name)
+        if root == name and name not in _ALL_HONOR:
+            for suffix in ("儿", "子"):
+                if len(name) > 2 and name.endswith(suffix):
+                    base = name[:-1]
+                    if base in name_map:
+                        union(name, base, base)
+                        break
+
+    # 2b) 尊称兜底：收集未被合并的尊称，按性别匹配到唯一候选正式角色
+    all_names = list(name_map.keys())
+    honorif_left = [n for n in all_names if find(n) == n and n in _ALL_HONOR]
+    for hname in honorif_left:
+        real_roots = set()
+        for n in all_names:
+            r = find(n)
+            if r not in _ALL_HONOR:
+                real_roots.add(r)
+        if not real_roots:
+            continue
+        if len(real_roots) == 1:
+            target = next(iter(real_roots))
+            union(hname, target, target)
+        else:
+            h_char = next((c for c in characters if c.name == hname), None)
+            candidates = []
+            for rr in real_roots:
+                rc = next((c for c in characters if c.name == rr), None)
+                if not rc:
+                    continue
+                if h_char and rc.gender == h_char.gender:
+                    candidates.append(rr)
+            if len(candidates) == 1:
+                target = candidates[0]
+                union(hname, target, target)
 
     # 压缩路径
     for n in list(name_map.keys()):
