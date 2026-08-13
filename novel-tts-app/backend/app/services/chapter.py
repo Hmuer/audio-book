@@ -356,15 +356,18 @@ def _build_segments_for_chapter(
     idx = start_idx
 
     # 1. 标题段
-    segs.append(_Segment(
-        kind="title", chapter_idx=ch.idx, idx=idx,
-        voice_id=narrator_voice_id, text=f"第{ch.idx+1}章 {ch.title}",
-    ))
-    idx += 1
-    segs.append(_Segment(
-        kind="silence", chapter_idx=ch.idx, idx=idx, silence_ms=SILENCE_AFTER_TITLE_MS,
-    ))
-    idx += 1
+    # 仅在标题非占位（"正文"是 synthesize 阶段单章模式产生的默认值）时才朗读，
+    # 否则用户输入任何内容都会被先读一句"第1章 正文"，体验异常。
+    if ch.title and ch.title.strip() != "正文":
+        segs.append(_Segment(
+            kind="title", chapter_idx=ch.idx, idx=idx,
+            voice_id=narrator_voice_id, text=f"第{ch.idx+1}章 {ch.title}",
+        ))
+        idx += 1
+        segs.append(_Segment(
+            kind="silence", chapter_idx=ch.idx, idx=idx, silence_ms=SILENCE_AFTER_TITLE_MS,
+        ))
+        idx += 1
 
     # 2. 扫描 text，按对白 anchor 间隙切片
     cursor = 0
