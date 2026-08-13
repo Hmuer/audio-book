@@ -1,10 +1,12 @@
 """
-章节识别：从整本小说文本中切分出章节。
+章节识别：从整本小说文本中切分出章节。**完全不调用 LLM，零成本。**
 
 策略（按优先级）：
-1. 正则匹配常见章节格式（"第X章"、"Chapter X"、"卷X"等）—— 快、零成本、对结构化小说准确
-2. 正则识别失败（命中数过少）→ 退化为按字数硬切 + LLM 生成标题
-3. 兜底：当文本很短或正则完全无命中时，整本当作一章
+1. 正则匹配常见章节格式（"第X章 标题"、"Chapter X"、"楔子/序章" 等）
+   → 命中时直接复用**原文标题**，不改写
+2. 正则命中 < 2 章 → 按字数硬切（3 万字/块，尽量按句末切）
+   → 标题用「第 N 部分」占位（用户可在 UI 里手动编辑）
+3. 兜底：文本很短或正则无命中时，整本当作一章
 """
 from __future__ import annotations
 
@@ -12,7 +14,6 @@ import logging
 import re
 from typing import Optional
 
-from ..ai.factory import get_llm
 from .chapter import Chapter
 
 logger = logging.getLogger(__name__)
@@ -156,118 +157,40 @@ def split_chapters_by_size(text: str, max_chars: int = 30000) -> list[Chapter]:
     return chapters
 
 
-# LLM 标题优化：对硬切的章节，让 LLM 生成更有意义的标题（分批次，防超 context）
-async def refine_chapter_titles_with_llm(chapters: list[Chapter]) -> list[Chapter]:
-    """
-    对按字数硬切的章节，调 LLM 生成章节标题（基于内容摘要）。
-    原有正则命中的标题保持不变。
-    注意：一次最多 50 章一批，避免 prompt 超长（1000 章 × 200 字片段 = 20 万字 > LLM context）。
-    """
-    if not chapters:
-        return chapters
-    # 只对标题是「第 X 部分」的章节调 LLM
-    needs_refine = [
-        (i, c) for i, c in enumerate(chapters)
-        if c.title.startswith("第 ") and c.title.endswith(" 部分")
-    ]
-    if not needs_refine:
-        return chapters
-
-    BATCH_SIZE = 50  # 每批 50 章，单批 prompt 约 1.2 万字，留够余量
-    total_batches = (len(needs_refine) + BATCH_SIZE - 1) // BATCH_SIZE
-    logger.info(
-        f"[book_split] title_refine chapters={len(needs_refine)} batches={total_batches} "
-        f"batch_size={BATCH_SIZE}"
-    )
-
-    from pydantic import BaseModel
-
-    class _W(BaseModel):
-        data: list[dict]
-
-    llm = get_llm()
-
-    for batch_idx in range(total_batches):
-        batch = needs_refine[batch_idx * BATCH_SIZE:(batch_idx + 1) * BATCH_SIZE]
-        snippets = []
-        for i, c in batch:
-            snippet = c.text[:200].replace("\n", " ").strip()
-            snippets.append(f"[idx={i}] {snippet}...")
-        prompt = (
-            "你是一名小说编辑。下面是若干章节的开头片段，请为每章生成 4-12 字的标题，"
-            "概括章节核心内容。\n"
-            "输出格式：JSON { data: [{ idx, title }, ...] }。idx 必须与输入一致，"
-            "title 长度 4-12 字。\n\n"
-            + "\n".join(snippets)
-            + "\n\n输出 JSON："
-        )
-        try:
-            wrapped = await llm.chat_structured(
-                prompt=prompt,
-                output_schema=_W,
-                temperature=0.3,
-                max_tokens=2000,  # 50 章标题约 700 token
-            )
-            for item in wrapped.data:
-                try:
-                    ci = int(item["idx"])
-                    title = str(item["title"]).strip()[:50]
-                    if not title:
-                        continue
-                    # 反向映射：idx 在 chapters 里的真实位置
-                    for orig_i, c in needs_refine:
-                        if orig_i == ci:
-                            chapters[orig_i].title = title
-                            break
-                except (KeyError, ValueError, TypeError):
-                    continue
-            logger.info(
-                f"[book_split] title_refine batch {batch_idx+1}/{total_batches} "
-                f"ok size={len(batch)}"
-            )
-        except Exception as e:
-            logger.warning(
-                f"[book_split] title_refine batch {batch_idx+1}/{total_batches} "
-                f"fail: {type(e).__name__}: {e}（保留默认标题）"
-            )
-            # 单批失败不中断整批，继续下一批
-
-    return chapters
-
-
 async def split_book_chapters(text: str) -> list[Chapter]:
     """
     整本小说章节识别主入口。
 
-    流程：
-    1. 先用正则识别（快、零成本）
-    2. 正则命中 < 2 章 → 按字数硬切 + LLM 生成标题
-    3. 硬切也失败 → 单章
+    流程（**完全不调用 LLM**，零成本）：
+    1. 先用正则识别常见章节标题（"第X章 标题" / "序章" / "楔子" …）
+       → 命中时直接复用**原文标题**，不做任何改写
+    2. 正则命中 < 2 章 → 按字数硬切（3 万字/块，尽量按句末切）
+       → 标题用「第 N 部分」占位（后续用户可在 UI 里编辑，LLM 猜标题既费钱又不可靠）
+    3. 硬切也失败 → 单章兜底
     """
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     total_chars = len(text)
     logger.info(f"[book_split] START chars={total_chars}")
 
-    # 1. 正则
+    # 1. 正则 → 复用原文标题
     chapters = split_chapters_regex(text)
     if len(chapters) >= 2:
         logger.info(
             f"[book_split] regex ok: chapters={len(chapters)} "
             f"first={chapters[0].title!r} last={chapters[-1].title!r}"
         )
-        # 修正 idx（可能插入了序章）
         for i, c in enumerate(chapters):
             c.idx = i
         return chapters
 
-    # 2. 硬切 + LLM 标题
+    # 2. 硬切 → 占位标题「第 N 部分」；不调 LLM 猜标题（花钱且不准确，UI 里可编辑）
     logger.info(f"[book_split] regex 未命中（{len(chapters)} 章），退化为字数硬切")
     chapters = split_chapters_by_size(text, max_chars=30000)
     if len(chapters) >= 2:
-        chapters = await refine_chapter_titles_with_llm(chapters)
         logger.info(
             f"[book_split] size_split ok: chapters={len(chapters)} "
-            f"first={chapters[0].title!r} last={chapters[-1].title!r}"
+            f"first={chapters[0].title!r} last={chapters[-1].title!r} "
+            f"(标题保留「第 N 部分」占位，不调用 LLM 猜标题)"
         )
         return chapters
 
