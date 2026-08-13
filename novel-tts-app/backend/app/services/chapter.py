@@ -149,10 +149,23 @@ async def _split_50k_and_run(text: str, coro_fn) -> list:
     长文本按 50000 字切片，**串行**跑 coro_fn(slice)，再拼接。
     coro_fn: async (str) -> list
 
-    设计考虑：小说情节是串行的，并发跑多个切片会让 LLM 在不同切片间丢失
-    上下文（同一角色在不同切片里可能被识别成不同名字），且并发容易触发供应
-    商 RPM 限制（429）。串行更稳。provider 层有 semaphore 兜底。
+    设计考虑：
+    - 小说情节是串行的，并发跑多个切片会让 LLM 在不同切片间丢失上下文
+      （同一角色在不同切片里可能被识别成不同名字），且并发容易触发供应商
+      RPM 限制（429）。串行更稳。
+    - 超 LLM_CHAR_EXTRACT_LIMIT 时只抽样前 N 字：长篇小说前 50 万字通常已
+      出场几乎全部主要角色，对白归属够用。
     """
+    from ..core.config import settings
+    total_chars = len(text)
+    sample_limit = max(50000, int(settings.LLM_CHAR_EXTRACT_LIMIT))
+    if total_chars > sample_limit:
+        logger.warning(
+            f"[chars_split] total={total_chars} > LLM_CHAR_EXTRACT_LIMIT={sample_limit}, "
+            f"只抽样前 {sample_limit} 字"
+        )
+        text = text[:sample_limit]
+
     if len(text) <= MAX_CHAPTER_CHARS:
         return await coro_fn(text)
     # 按 50k 切片（按句子边界尽量对齐：这里直接切，LLM 自己会处理）
@@ -528,11 +541,12 @@ async def synthesize_chapter(
                 dlg_idx += 1
 
     # 4. 并发合成每个非 silence 段
+    from ..ai.factory import get_tts_sem
     tts = get_tts()
     audio_dir = Path(settings.AUDIO_DIR)
     audio_dir.mkdir(parents=True, exist_ok=True)
 
-    sem = asyncio.Semaphore(4)  # TTS 并发限制 4
+    sem = get_tts_sem()  # 全局共享 semaphore，多 worker 不叠加并发
 
     async def _synth_seg(s: _Segment) -> tuple[_Segment, bytes, int, str]:
         if s.kind == "silence":

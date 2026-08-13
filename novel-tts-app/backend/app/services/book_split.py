@@ -156,11 +156,12 @@ def split_chapters_by_size(text: str, max_chars: int = 30000) -> list[Chapter]:
     return chapters
 
 
-# LLM 标题优化：对硬切的章节，让 LLM 生成更有意义的标题
+# LLM 标题优化：对硬切的章节，让 LLM 生成更有意义的标题（分批次，防超 context）
 async def refine_chapter_titles_with_llm(chapters: list[Chapter]) -> list[Chapter]:
     """
     对按字数硬切的章节，调 LLM 生成章节标题（基于内容摘要）。
     原有正则命中的标题保持不变。
+    注意：一次最多 50 章一批，避免 prompt 超长（1000 章 × 200 字片段 = 20 万字 > LLM context）。
     """
     if not chapters:
         return chapters
@@ -172,50 +173,64 @@ async def refine_chapter_titles_with_llm(chapters: list[Chapter]) -> list[Chapte
     if not needs_refine:
         return chapters
 
-    # 一次性把所有章节的开头片段喂给 LLM，让它批量生成标题
-    snippets = []
-    for i, c in needs_refine:
-        snippet = c.text[:200].replace("\n", " ").strip()
-        snippets.append(f"[idx={i}] {snippet}...")
-
-    prompt = (
-        "你是一名小说编辑。下面是若干章节的开头片段，请为每章生成 4-12 字的标题，"
-        "概括章节核心内容。\n"
-        "输出格式：JSON 数组，每项 {idx, title}。idx 必须与输入一致。\n\n"
-        + "\n".join(snippets)
-        + "\n\n输出 JSON："
+    BATCH_SIZE = 50  # 每批 50 章，单批 prompt 约 1.2 万字，留够余量
+    total_batches = (len(needs_refine) + BATCH_SIZE - 1) // BATCH_SIZE
+    logger.info(
+        f"[book_split] title_refine chapters={len(needs_refine)} batches={total_batches} "
+        f"batch_size={BATCH_SIZE}"
     )
 
-    class _Item:
-        idx: int
-        title: str
+    from pydantic import BaseModel
 
-    class _Wrapper:
+    class _W(BaseModel):
         data: list[dict]
 
-    try:
-        from pydantic import BaseModel
-        class _W(BaseModel):
-            data: list[dict]
+    llm = get_llm()
 
-        llm = get_llm()
-        wrapped = await llm.chat_structured(
-            prompt=prompt,
-            output_schema=_W,
-            temperature=0.3,
-            max_tokens=4000,
+    for batch_idx in range(total_batches):
+        batch = needs_refine[batch_idx * BATCH_SIZE:(batch_idx + 1) * BATCH_SIZE]
+        snippets = []
+        for i, c in batch:
+            snippet = c.text[:200].replace("\n", " ").strip()
+            snippets.append(f"[idx={i}] {snippet}...")
+        prompt = (
+            "你是一名小说编辑。下面是若干章节的开头片段，请为每章生成 4-12 字的标题，"
+            "概括章节核心内容。\n"
+            "输出格式：JSON { data: [{ idx, title }, ...] }。idx 必须与输入一致，"
+            "title 长度 4-12 字。\n\n"
+            + "\n".join(snippets)
+            + "\n\n输出 JSON："
         )
-        title_map: dict[int, str] = {}
-        for item in wrapped.data:
-            try:
-                title_map[int(item["idx"])] = str(item["title"])[:50]
-            except (KeyError, ValueError, TypeError):
-                continue
-        for i, c in needs_refine:
-            if i in title_map and title_map[i].strip():
-                chapters[i].title = title_map[i].strip()
-    except Exception as e:
-        logger.warning(f"[book_split] LLM 标题优化失败，保留默认: {e}")
+        try:
+            wrapped = await llm.chat_structured(
+                prompt=prompt,
+                output_schema=_W,
+                temperature=0.3,
+                max_tokens=2000,  # 50 章标题约 700 token
+            )
+            for item in wrapped.data:
+                try:
+                    ci = int(item["idx"])
+                    title = str(item["title"]).strip()[:50]
+                    if not title:
+                        continue
+                    # 反向映射：idx 在 chapters 里的真实位置
+                    for orig_i, c in needs_refine:
+                        if orig_i == ci:
+                            chapters[orig_i].title = title
+                            break
+                except (KeyError, ValueError, TypeError):
+                    continue
+            logger.info(
+                f"[book_split] title_refine batch {batch_idx+1}/{total_batches} "
+                f"ok size={len(batch)}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[book_split] title_refine batch {batch_idx+1}/{total_batches} "
+                f"fail: {type(e).__name__}: {e}（保留默认标题）"
+            )
+            # 单批失败不中断整批，继续下一批
 
     return chapters
 

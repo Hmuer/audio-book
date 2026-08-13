@@ -452,12 +452,22 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
 
 async def _split_50k_and_run_chars_serial(text: str, coro_fn) -> list[Character]:
     """
-    长文本按 50k 切片**串行**跑角色识别，再合并返回原始列表（去重交给上层）。
-
-    设计考虑：小说情节是串行的，并发跑多个切片会让 LLM 在不同切片间
-    丢失上下文（同一角色在不同切片里可能被识别成不同名字），且并发
-    容易触发供应商 RPM 限制（429）。串行更稳，慢一点但识别更准。
+    长文本角色识别主入口：
+    - <= LLM_CHAR_EXTRACT_LIMIT（默认 50 万字）：逐 50k 切片串行 + 合并（准确）
+    - >  LLM_CHAR_EXTRACT_LIMIT：只抽样前 LLM_CHAR_EXTRACT_LIMIT 字跑一次
+      （长篇小说前 50 万字通常已出场几乎全部主要角色，对白归属够用；
+       1000 章 200 万字书从 40 次 LLM → 1 次）
     """
+    from ..core.config import settings
+    total_chars = len(text)
+    sample_limit = max(50000, int(settings.LLM_CHAR_EXTRACT_LIMIT))
+    if total_chars > sample_limit:
+        logger.warning(
+            f"[chars_split] total={total_chars} > LLM_CHAR_EXTRACT_LIMIT={sample_limit}, "
+            f"只抽样前 {sample_limit} 字识别角色（后续章节识别仍基于该角色库匹配）"
+        )
+        text = text[:sample_limit]
+
     MAX = 50000
     if len(text) <= MAX:
         return await coro_fn(text)

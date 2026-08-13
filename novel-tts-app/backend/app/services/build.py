@@ -379,10 +379,11 @@ async def _run_build_inner(
 
     logger.info(f"[build_worker] build_id={build_id[:8]}... total_chapters={total}")
 
+    from ..ai.factory import get_tts_sem
     tts = get_tts()
     audio_dir = Path(settings.AUDIO_DIR)
     audio_dir.mkdir(parents=True, exist_ok=True)
-    sem = asyncio.Semaphore(4)
+    sem = get_tts_sem()  # 全局共享 semaphore，多 worker 不叠加并发
 
     # chapter_outputs[i] = (audio_path, duration_ms)
     chapter_outputs: list[tuple[str | None, int | None]] = [(None, None)] * total

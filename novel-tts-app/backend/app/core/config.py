@@ -34,6 +34,18 @@ class Settings(BaseSettings):
     # 业务层可能并发调用（如每章对白归属 asyncio.gather），这里在 provider 层强制串行
     LLM_MAX_CONCURRENCY: int = 1
 
+    # 角色识别采样上限（字符）：整本小说角色识别时
+    # - <= LLM_CHAR_EXTRACT_LIMIT：逐 50k 切片跑角色识别 + 跨切片合并去重（准确）
+    # - >  LLM_CHAR_EXTRACT_LIMIT：只抽前 LLM_CHAR_EXTRACT_LIMIT 字跑一次角色识别
+    #   （前 50 万字通常已出场大部分主要角色，足以覆盖整本的对白归属需求；
+    #   这样 1000 章 × 2000 字 = 200 万字的书，从 40 次 LLM 降为 1 次）
+    LLM_CHAR_EXTRACT_LIMIT: int = 500_000
+
+    # TTS 并发限流（全局）：同时最多 N 个 TTS synthesize 调用在飞。
+    # 无论开几个整本合成 worker / 单章合成，都共用同一个 semaphore 计数，
+    # 防止多 worker 各自开 4 并发 → 实际并发叠加爆供应商 RPM 限制（429）。
+    TTS_MAX_CONCURRENCY: int = 4
+
     # Auth (JWT)
     JWT_SECRET: str = "change-me-in-production-please-use-a-long-random-string"
     JWT_ALGORITHM: str = "HS256"
