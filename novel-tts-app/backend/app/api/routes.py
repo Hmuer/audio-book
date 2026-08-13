@@ -2,7 +2,7 @@ from __future__ import annotations
 import logging
 import time as _time
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,15 @@ from ..services.chapter import (
     synthesize_chapter,
     PrepareResponse,
     SynthesizeResponse,
+)
+from ..services.book import (
+    upload_book,
+    prepare_book,
+    synthesize_book,
+    get_book_status,
+    BookPrepareResponse,
+    BookStatusResponse,
+    BookSynthResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -177,3 +186,149 @@ async def api_tts_preview(
             exc_info=True,
         )
         raise HTTPException(500, f"TTS 失败: {type(e).__name__}: {e}")
+
+
+# ---------- Book (整本小说) ----------
+
+class BookPrepareApiRequest(BaseModel):
+    file_id: str
+    filename: str = ""
+
+
+class BookSynthesizeRequest(BaseModel):
+    job_id: str
+    voice_assignments: dict[str, str] = Field(default_factory=dict)
+    narrator_voice_id: str
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+
+
+@router.post("/book/upload")
+async def api_book_upload(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """
+    上传整本小说 TXT 文件，返回 file_id。
+    后续用 /api/book/prepare 触发 prepare。
+    """
+    t0 = _time.perf_counter()
+    remote = request.client.host if request.client else "?"
+    # 限制 50MB（整本小说 txt 足够）
+    MAX_SIZE = 50 * 1024 * 1024
+    content = await file.read()
+    if len(content) > MAX_SIZE:
+        raise HTTPException(413, f"文件过大: {len(content)} > {MAX_SIZE}")
+    if not file.filename or not file.filename.lower().endswith((".txt", ".text", ".md")):
+        # 不强制终止，但记录警告
+        logger.warning(
+            f"[HTTP] POST /api/book/upload client={remote} "
+            f"unexpected filename={file.filename}"
+        )
+    logger.info(
+        f"[HTTP] POST /api/book/upload client={remote} "
+        f"filename={file.filename} size={len(content)}"
+    )
+    try:
+        file_id, saved_path = await upload_book(content, file.filename or "book.txt")
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.info(
+            f"[HTTP] 200 /api/book/upload file_id={file_id} total_ms={elapsed_ms}"
+        )
+        return {"file_id": file_id, "filename": file.filename, "size": len(content)}
+    except Exception as e:
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.error(
+            f"[HTTP] 500 /api/book/upload client={remote} total_ms={elapsed_ms} "
+            f"-> {type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(500, f"上传失败: {type(e).__name__}: {e}")
+
+
+@router.post("/book/prepare", response_model=BookPrepareResponse)
+async def api_book_prepare(
+    req: BookPrepareApiRequest,
+    request: Request,
+):
+    """整本 prepare：识别章节 + 角色 + 对白归属 + 音色推荐。"""
+    t0 = _time.perf_counter()
+    remote = request.client.host if request.client else "?"
+    logger.info(
+        f"[HTTP] POST /api/book/prepare client={remote} file_id={req.file_id} filename={req.filename}"
+    )
+    try:
+        resp = await prepare_book(req.file_id, original_filename=req.filename)
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.info(
+            f"[HTTP] 200 /api/book/prepare job_id={resp.job_id[:8]}... "
+            f"chapters={resp.total_chapters} chars={sum(c['text_len'] for c in resp.chapters)} "
+            f"total_ms={elapsed_ms}"
+        )
+        return resp
+    except Exception as e:
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.error(
+            f"[HTTP] 500 /api/book/prepare client={remote} file_id={req.file_id} "
+            f"total_ms={elapsed_ms} -> {type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(500, f"book prepare 失败: {type(e).__name__}: {e}")
+
+
+@router.post("/book/synthesize", response_model=BookSynthResponse)
+async def api_book_synthesize(
+    req: BookSynthesizeRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """整本合成：按章串行合成，最后合并所有章节 MP3。"""
+    t0 = _time.perf_counter()
+    remote = request.client.host if request.client else "?"
+    logger.info(
+        f"[HTTP] POST /api/book/synthesize client={remote} job_id={req.job_id[:8]}... "
+        f"voices={len(req.voice_assignments)} narrator={req.narrator_voice_id} "
+        f"speed={req.speed}"
+    )
+    try:
+        resp = await synthesize_book(
+            session=db,
+            job_id=req.job_id,
+            voice_assignments=req.voice_assignments,
+            narrator_voice_id=req.narrator_voice_id,
+            speed=req.speed,
+        )
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.info(
+            f"[HTTP] 200 /api/book/synthesize job_id={req.job_id[:8]}... "
+            f"duration_s={resp.duration_sec} total_ms={elapsed_ms}"
+        )
+        return resp
+    except Exception as e:
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.error(
+            f"[HTTP] 500 /api/book/synthesize client={remote} "
+            f"job_id={req.job_id[:8]}... total_ms={elapsed_ms} -> "
+            f"{type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(500, f"book synthesize 失败: {type(e).__name__}: {e}")
+
+
+@router.get("/book/{job_id}/status", response_model=BookStatusResponse)
+async def api_book_status(
+    job_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """查询整本进度（前端轮询）。"""
+    try:
+        resp = await get_book_status(db, job_id)
+        return resp
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        logger.error(
+            f"[HTTP] 500 /api/book/{job_id}/status -> {type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(500, f"status 查询失败: {type(e).__name__}: {e}")

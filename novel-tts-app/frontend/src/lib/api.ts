@@ -82,6 +82,52 @@ export interface SynthResp {
   segments: SynthSegment[];
 }
 
+// ---------- Book (整本小说) ----------
+
+export interface BookChapterMeta {
+  idx: number;
+  title: string;
+  text_len: number;
+}
+
+export interface BookPrepareResp {
+  job_id: string;
+  book_title: string | null;
+  total_chapters: number;
+  chapters: BookChapterMeta[];
+  characters: Character[];
+  voice_recommendations: VoiceRec[];
+  polish_warning: string | null;
+}
+
+export interface BookChapterResult {
+  chapter_idx: number;
+  title: string;
+  status: 'pending' | 'synthesizing' | 'done' | 'failed';
+  audio_url: string | null;
+  duration_ms: number | null;
+  error_msg: string | null;
+}
+
+export interface BookStatusResp {
+  job_id: string;
+  book_status: 'prepared' | 'synthesizing' | 'done' | 'failed';
+  total_chapters: number;
+  completed_chapters: number;
+  progress_msg: string | null;
+  final_audio_url: string | null;
+  final_duration_sec: number | null;
+  chapters: BookChapterResult[];
+}
+
+export interface BookSynthResp {
+  job_id: string;
+  final_audio_filename: string;
+  final_audio_url: string;
+  duration_sec: number;
+  chapters: BookChapterResult[];
+}
+
 export const api = {
   health: () => _fetch<{ status: string }>('/api/health'),
   voices: () =>
@@ -107,4 +153,35 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ text, voice_id, speed: speed ?? 1.0 }),
     }),
+  // ---------- Book ----------
+  bookUpload: (file: File) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    // 注意：FormData 不能预设 Content-Type，需要单独 fetch
+    return fetch(`${BASE}/api/book/upload`, { method: 'POST', body: fd }).then(async r => {
+      if (!r.ok) {
+        let msg = `HTTP ${r.status}`;
+        try { const j = await r.json(); if (j.detail) msg += `: ${j.detail}`; } catch {}
+        throw new Error(msg);
+      }
+      return r.json() as Promise<{ file_id: string; filename: string; size: number }>;
+    });
+  },
+  bookPrepare: (file_id: string, filename: string) =>
+    _fetch<BookPrepareResp>('/api/book/prepare', {
+      method: 'POST',
+      body: JSON.stringify({ file_id, filename }),
+    }),
+  bookSynthesize: (args: {
+    job_id: string;
+    voice_assignments: Record<string, string>;
+    narrator_voice_id: string;
+    speed?: number;
+  }) =>
+    _fetch<BookSynthResp>('/api/book/synthesize', {
+      method: 'POST',
+      body: JSON.stringify(args),
+    }),
+  bookStatus: (job_id: string) =>
+    _fetch<BookStatusResp>(`/api/book/${job_id}/status`),
 };

@@ -5,12 +5,15 @@ import { useTheme } from '@/components/ThemeContext';
 import StepInput from '@/components/StepInput';
 import StepRoles from '@/components/StepRoles';
 import StepGenerate from '@/components/StepGenerate';
+import BookFlow from '@/components/BookFlow';
 import { api, PrepareResp, SynthResp, Voice } from '@/lib/api';
 
 type Step = 1 | 2 | 3;
+type Mode = 'single' | 'book';
 
 export default function HomePage() {
   const { theme, toggle } = useTheme();
+  const [mode, setMode] = useState<Mode>('single');
   const [step, setStep] = useState<Step>(1);
   const [voices, setVoices] = useState<Voice[]>([]);
   const [prepareResult, setPrepareResult] = useState<PrepareResp | null>(null);
@@ -26,7 +29,7 @@ export default function HomePage() {
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 py-8">
       {/* header */}
-      <header className="flex items-center justify-between mb-8">
+      <header className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-brand-500 to-blue-500 shadow-lg shadow-brand-500/30 grid place-items-center font-bold text-lg">
@@ -41,44 +44,67 @@ export default function HomePage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Stepper step={step} setStep={setStep} />
+          {mode === 'single' && <Stepper step={step} setStep={setStep} />}
           <button className="btn-ghost" onClick={toggle} title="切换深色/浅色">
             {theme === 'dark' ? '🌙 深色' : '☀️ 浅色'}
           </button>
         </div>
       </header>
 
-      {/* steps */}
-      {step === 1 && (
-        <StepInput
-          voices={voices}
-          busy={busy}
-          setBusy={setBusy}
-          onDone={pr => {
-            setPrepareResult(pr);
-            setSynthResult(null);
-            setStep(2);
-          }}
-        />
-      )}
-      {step === 2 && prepareResult && (
-        <StepRoles
-          voices={voices}
-          prepareResult={prepareResult}
-          onBack={() => setStep(1)}
-          onNext={() => setStep(3)}
-        />
-      )}
-      {step === 3 && prepareResult && (
-        <StepGenerate
-          voices={voices}
-          prepareResult={prepareResult}
-          synthResult={synthResult}
-          setSynthResult={setSynthResult}
-          busy={busy}
-          setBusy={setBusy}
-          onBack={() => setStep(2)}
-        />
+      {/* 模式切换 */}
+      <div className="flex items-center gap-2 mb-6 p-1 rounded-xl bg-white/5 border border-white/10 max-w-md">
+        <button
+          className={`flex-1 chip h-9 justify-center ${mode === 'single' ? 'bg-brand-600 text-white' : 'text-white/60 hover:text-white'}`}
+          onClick={() => setMode('single')}
+        >
+          📝 单章模式
+        </button>
+        <button
+          className={`flex-1 chip h-9 justify-center ${mode === 'book' ? 'bg-brand-600 text-white' : 'text-white/60 hover:text-white'}`}
+          onClick={() => setMode('book')}
+        >
+          📚 整本模式
+        </button>
+      </div>
+
+      {/* 整本模式 */}
+      {mode === 'book' && <BookFlow voices={voices} />}
+
+      {/* 单章模式 */}
+      {mode === 'single' && (
+        <>
+          {step === 1 && (
+            <StepInput
+              voices={voices}
+              busy={busy}
+              setBusy={setBusy}
+              onDone={pr => {
+                setPrepareResult(pr);
+                setSynthResult(null);
+                setStep(2);
+              }}
+            />
+          )}
+          {step === 2 && prepareResult && (
+            <StepRoles
+              voices={voices}
+              prepareResult={prepareResult}
+              onBack={() => setStep(1)}
+              onNext={() => setStep(3)}
+            />
+          )}
+          {step === 3 && prepareResult && (
+            <StepGenerate
+              voices={voices}
+              prepareResult={prepareResult}
+              synthResult={synthResult}
+              setSynthResult={setSynthResult}
+              busy={busy}
+              setBusy={setBusy}
+              onBack={() => setStep(2)}
+            />
+          )}
+        </>
       )}
 
       <footer className="mt-16 text-center text-xs text-white/40">

@@ -20,10 +20,26 @@ class Job(Base):
     final_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    # ---------- 整本小说相关字段（is_book=False 时这些字段无意义）----------
+    is_book: Mapped[bool] = mapped_column(default=False)
+    source_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    book_title: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # 整本流程状态：uploading/preparing/prepared/synthesizing/done/failed
+    book_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 已完成章数（仅 synthesize 阶段递增，供前端轮询进度）
+    completed_chapters: Mapped[int] = mapped_column(Integer, default=0)
+    # 当前阶段的人类可读描述，例如 "正在合成第 3/20 章"
+    progress_msg: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # 整本 prepare 后的章节 JSON（[{idx,title,text},...]），合成时按此切分
+    chapters_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     characters: Mapped[list["Character"]] = relationship(
         back_populates="job", cascade="all, delete-orphan"
     )
     dialogues: Mapped[list["Dialogue"]] = relationship(
+        back_populates="job", cascade="all, delete-orphan"
+    )
+    chapter_results: Mapped[list["ChapterResult"]] = relationship(
         back_populates="job", cascade="all, delete-orphan"
     )
 
@@ -61,3 +77,22 @@ class Dialogue(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     job: Mapped[Job] = relationship(back_populates="dialogues")
+
+
+class ChapterResult(Base):
+    """整本合成时的每章结果记录（仅 is_book=True 的 Job 用）"""
+    __tablename__ = "chapter_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(String(64), ForeignKey("jobs.job_id", ondelete="CASCADE"))
+    chapter_idx: Mapped[int] = mapped_column(Integer, default=0)
+    title: Mapped[str] = mapped_column(String(256), default="")
+    # pending / synthesizing / done / failed
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    audio_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    audio_url: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    job: Mapped[Job] = relationship(back_populates="chapter_results")
