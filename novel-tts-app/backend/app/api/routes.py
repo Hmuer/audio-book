@@ -21,6 +21,8 @@ from ..services.auth import (
     get_user_by_username,
     LoginResp,
     UserInfo,
+    change_password,
+    login as auth_service_login,
 )
 from ..services.project import (
     create_project,
@@ -48,6 +50,9 @@ from ..services.build import (
     list_builds,
     get_build_status,
     delete_build,
+    cancel_build,
+    retry_failed_build,
+    _ensure_project_not_running,
     BuildResp,
     BuildDetailResp,
     BuildListItem,
@@ -143,32 +148,36 @@ async def api_auth_login(req: LoginRequest, request: Request):
         f"[HTTP] POST /api/auth/login client={remote} username={req.username!r}"
     )
     try:
-        user = await authenticate(req.username, req.password)
-        if not user:
-            logger.warning(
-                f"[HTTP] 401 /api/auth/login client={remote} "
-                f"username={req.username!r} -> invalid credentials"
-            )
-            raise HTTPException(401, "用户名或密码错误")
-        token, expires_at = create_access_token(user.username)
+        login_resp = await auth_service_login(req.username, req.password)
         elapsed_ms = int((_time.perf_counter() - t0) * 1000)
         logger.info(
             f"[HTTP] 200 /api/auth/login client={remote} "
-            f"username={user.username!r} total_ms={elapsed_ms}"
+            f"username={login_resp.user.username!r} "
+            f"must_change_password={login_resp.must_change_password} total_ms={elapsed_ms}"
         )
-        return LoginResp(
-            token=token,
-            token_type="Bearer",
-            expires_at=expires_at.isoformat(),
-            user=UserInfo(
-                id=user.id,
-                username=user.username,
-                is_active=user.is_active,
-                created_at=user.created_at.isoformat() if user.created_at else None,
-            ),
-        )
+        return login_resp
     except HTTPException:
         raise
+    except ValueError as e:
+        msg = str(e)
+        # prod 安全拦截（默认 admin/admin 默认密码 → 禁登）这类明确"权限/策略拒绝"，返回 403；
+        # 其余（用户名/密码错误等鉴权失败）返回 401（旧契约）
+        if any(x in msg for x in (
+            "生产环境需先修改默认",
+            "STRICT_PROD_SECURITY",
+            "请联系管理员",
+            "默认 admin 密码",
+        )):
+            logger.warning(
+                f"[HTTP] 403 /api/auth/login client={remote} "
+                f"username={req.username!r} -> {e}"
+            )
+            raise HTTPException(403, msg)
+        logger.warning(
+            f"[HTTP] 401 /api/auth/login client={remote} "
+            f"username={req.username!r} -> {e}"
+        )
+        raise HTTPException(401, msg)
     except Exception as e:
         logger.error(
             f"[HTTP] 500 /api/auth/login -> {type(e).__name__}: {e}",
@@ -193,22 +202,21 @@ async def api_auth_change_password(
     req: ChangePasswordRequest,
     current: User = Depends(get_current_user),
 ):
-    """修改自己的密码。"""
-    from ..services.auth import hash_password, verify_password
-    if not verify_password(req.old_password, current.password_hash):
-        raise HTTPException(400, "原密码不正确")
-    if req.new_password == req.old_password:
-        raise HTTPException(400, "新密码不能与原密码相同")
-
-    factory = get_session_factory()
-    async with factory() as s:
-        u = await s.get(User, current.id)
-        if not u:
-            raise HTTPException(404, "用户不存在")
-        u.password_hash = hash_password(req.new_password)
-        await s.commit()
-    logger.info(f"[auth] 用户 {current.username!r} 修改了密码")
-    return {"ok": True}
+    """修改自己的密码（admin 首次登录强制改密会在此接口把 must_change_password 置 False）。"""
+    try:
+        res = await change_password(
+            username=current.username,
+            old_password=req.old_password,
+            new_password=req.new_password,
+            is_admin_self_change=True,
+        )
+        logger.info(f"[auth] 用户 {current.username!r} 修改了密码")
+        return res
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error(f"[auth] 改密失败 user={current.username!r} -> {type(e).__name__}: {e}")
+        raise HTTPException(500, f"改密失败: {type(e).__name__}: {e}")
 
 
 @auth_router.post("/logout")
@@ -344,6 +352,15 @@ class StartBuildRequest(BaseModel):
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
 
 
+class CancelBuildRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=200)
+
+
+class RetryFailedBuildRequest(BaseModel):
+    """失败章重试。默认仅重跑失败章（失败章列表来源：failed_chapters_json 或 Artifact.status==failed）。"""
+    force_restart_failed_only: bool = True
+
+
 def _safe_download_name_build(book_title: str | None, build_id: str, ext: str) -> str:
     """构造 build 下载文件名（中文 + fallback 安全），ext 带点。"""
     base = (book_title or "").strip() or f"有声书_{build_id[:8]}"
@@ -427,10 +444,14 @@ async def api_update_project(
 
 @router.delete("/projects/{project_id}")
 async def api_delete_project(project_id: str, request: Request):
-    """删除项目（级联删除 DB + 磁盘文件）。"""
+    """删除项目（级联删除 DB + 磁盘文件）。项目正在合成（Build 运行中）时拒绝删除。"""
     try:
+        await _ensure_project_not_running(project_id, action="删除项目")
         await delete_project(project_id)
         return {"ok": True, "project_id": project_id}
+    except ValueError as e:
+        # 来自 _ensure_project_not_running 的"项目正在运行"错误 → 409 冲突
+        raise HTTPException(409, str(e))
     except Exception as e:
         logger.error(
             f"[HTTP] 500 DELETE /api/projects/{project_id} -> {type(e).__name__}: {e}",
@@ -790,8 +811,9 @@ async def api_build_download_all(
 
 @router.delete("/projects/{project_id}/builds/{build_id}")
 async def api_delete_build(project_id: str, build_id: str, request: Request):
-    """删除 build + 磁盘 MP3 文件。"""
+    """删除 build + 磁盘 MP3 文件。项目正在合成（Build 运行中）时拒绝删除。"""
     try:
+        await _ensure_project_not_running(project_id, action="删除 build")
         await delete_build(project_id, build_id)
         return {"ok": True, "build_id": build_id}
     except ValueError as e:
@@ -803,3 +825,73 @@ async def api_delete_build(project_id: str, build_id: str, request: Request):
             exc_info=True,
         )
         raise HTTPException(500, f"删除 build 失败: {type(e).__name__}: {e}")
+
+
+@router.post("/projects/{project_id}/builds/{build_id}/cancel", response_model=BuildResp)
+async def api_cancel_build(
+    project_id: str,
+    build_id: str,
+    request: Request,
+    req_body: CancelBuildRequest | None = None,
+):
+    """取消 Build（queued/running 可取消；终态则抛 409）。"""
+    try:
+        return await cancel_build(
+            project_id=project_id,
+            build_id=build_id,
+            reason=(req_body.reason if req_body else None),
+        )
+    except ValueError as e:
+        msg = str(e)
+        # 简单粗暴：服务里报『已是终态 / 不允许取消』的 ValueError 当作 409
+        if "已是终态" in msg or "已取消" in msg or "不可取消" in msg or "终态" in msg:
+            raise HTTPException(409, msg)
+        raise HTTPException(404, msg)
+    except Exception as e:
+        logger.error(
+            f"[HTTP] 500 POST /api/projects/{project_id[:8]}.../builds/{build_id[:8]}.../cancel -> "
+            f"{type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(500, f"取消失败: {type(e).__name__}: {e}")
+
+
+@router.post("/projects/{project_id}/builds/{build_id}/retry-failed", response_model=BuildResp)
+async def api_retry_failed_build(
+    project_id: str,
+    build_id: str,
+    request: Request,
+    req_body: RetryFailedBuildRequest | None = None,
+):
+    """创建一个 retry build：仅重跑 source build 中失败的章节，其余章节直接复用原 MP3（完整 ZIP）。"""
+    t0 = _time.perf_counter()
+    remote = request.client.host if request.client else "?"
+    logger.info(
+        f"[HTTP] POST /api/projects/{project_id[:8]}.../builds/{build_id[:8]}.../retry-failed "
+        f"client={remote}"
+    )
+    try:
+        resp = await retry_failed_build(
+            source_build_id=build_id,
+            force_restart_failed_only=(
+                req_body.force_restart_failed_only if req_body else True
+            ),
+        )
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.info(
+            f"[HTTP] 200 POST /api/projects/{project_id[:8]}.../builds/{build_id[:8]}.../retry-failed -> "
+            f"new_build_id={resp.build_id[:8]}... total_ms={elapsed_ms}"
+        )
+        return resp
+    except ValueError as e:
+        msg = str(e)
+        if "没有失败章可重试" in msg or "无失败章" in msg:
+            raise HTTPException(400, msg)
+        raise HTTPException(404, msg)
+    except Exception as e:
+        logger.error(
+            f"[HTTP] 500 POST /api/projects/{project_id[:8]}.../builds/{build_id[:8]}.../retry-failed -> "
+            f"{type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(500, f"失败章重试失败: {type(e).__name__}: {e}")

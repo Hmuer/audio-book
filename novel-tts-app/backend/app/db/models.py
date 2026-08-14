@@ -23,6 +23,8 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(256))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 默认密码（seed 的 admin/admin）需要首次登录后强制修改，避免被默认口令扫
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
@@ -129,10 +131,14 @@ class Build(Base):
     build_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     project_id: Mapped[str] = mapped_column(String(64), ForeignKey("projects.project_id", ondelete="CASCADE"))
     status: Mapped[str] = mapped_column(String(32), default="queued")
-    # queued / running / success / failed / cancelled
+    # queued / running / success / partial_success / failed / cancelled
     progress_msg: Mapped[str | None] = mapped_column(String(256), nullable=True)
     completed_chapters: Mapped[int] = mapped_column(Integer, default=0)
     total_chapters: Mapped[int] = mapped_column(Integer, default=0)
+    # 失败章节索引列表（JSON int list），retry-failed 接口只合成这里面的章
+    failed_chapters_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 是否是 retry-failed 产生的 build（用于前端展示"重试"标签）
+    is_retry: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # 本次配置快照
     narrator_voice_id: Mapped[str] = mapped_column(String(128), default="")

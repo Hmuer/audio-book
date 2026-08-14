@@ -1,6 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
-from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -17,6 +16,7 @@ class Settings(BaseSettings):
     LLM_MODEL_FAST: str = "MiniMax-M2.7-highspeed"
 
     # Server
+    ENV: str = "dev"  # dev / test / prod / stage
     BIND_HOST: str = "127.0.0.1"
     PORT: int = 8000
 
@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     # 会被 provider semaphore 串行，但大于 1 时可在多个"批"之间让 HTTP/响应解析
     # 和下一批的语义处理重叠，总体更快。
     DIALOGUE_BATCH_CONCURRENCY: int = 2
+    # 对白归属单批 LLM 调用失败后的业务层重试次数（0=不重试，provider 层另有兜底 3 次）
+    DIALOGUE_BATCH_RETRY_COUNT: int = 2
 
     # TTS 并发限流（全局，段级）：同时最多 N 个 TTS synthesize 调用在飞。
     # 现在已经改成 **段级** semaphore（不是"每章并发"），默认 100 段并行是
@@ -63,6 +65,15 @@ class Settings(BaseSettings):
     # TTS 段缓存：内存 LRU 上限（条）；超上限淘汰最旧。
     # 注：磁盘缓存不限制大小（AUDIO_DIR/_seg_cache/），重启后仍可命中。
     TTS_SEGMENT_CACHE_MAX_ENTRIES: int = 20_000
+    # TTS 段缓存磁盘过期天数（启动 GC 时 mtime 超过此天数字段被删）
+    TTS_SEGMENT_CACHE_TTL_DAYS: int = 30
+    # TTS 段缓存磁盘总大小上限（GB）；启动 GC 超上限时按 mtime 从旧到新删除
+    TTS_SEGMENT_CACHE_MAX_SIZE_GB: int = 20
+
+    # Build running 超时（小时）：如果 start_build 命中的 running build
+    # started_at 距离现在超过该值，认为是被 kill 的孤儿，直接改 status 回 queued
+    # 并起新 worker。避免"重启后端后 Build 永远合成中"。
+    BUILD_RUNNING_TIMEOUT_HOURS: int = 6
 
     # Auth (JWT)
     JWT_SECRET: str = "change-me-in-production-please-use-a-long-random-string"
@@ -72,6 +83,10 @@ class Settings(BaseSettings):
     SEED_ADMIN_PASS: str = "admin"
     # 测试/本地调试用：DISABLE_AUTH=1 时所有 /api/* 不校验 token
     DISABLE_AUTH: bool = False
+    # ENV=prod 时必须把默认 admin/admin 改掉；如果仍使用默认密码，则
+    # - 登录成功 must_change_password 强制 true
+    # - 或者（严格模式）直接拒绝登录
+    STRICT_PROD_SECURITY: bool = False
 
     # =====================================================================
     # 章节切分（正则驱动，完全不调 LLM）

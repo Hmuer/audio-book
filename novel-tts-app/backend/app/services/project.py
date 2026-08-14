@@ -107,7 +107,7 @@ class BuildBrief(BaseModel):
 
 
 class ProjectDetailResp(BaseModel):
-    """项目详情：基础信息 + 章节摘要 + 角色 + 最近 build。"""
+    """项目详情：基础信息 + 章节摘要 + 角色 + 最近 build + prepare progress。"""
     project_id: str
     name: str
     book_title: str | None
@@ -125,6 +125,8 @@ class ProjectDetailResp(BaseModel):
     chapters: list[ChapterSummary]
     characters: list[CharacterWithVoice]
     last_build: BuildBrief | None = None
+    # prepare 阶段进度（从 progress_json 解析），前端渲染子阶段进度条
+    prepare_progress: dict | None = None
 
 
 class ProjectListItem(BaseModel):
@@ -138,6 +140,8 @@ class ProjectListItem(BaseModel):
     cover_color: str | None
     created_at: str | None
     updated_at: str | None
+    # prepare 阶段当前 stage（用于列表页快速显示"正在识别角色/对白..."）
+    prepare_stage: str | None = None
 
 
 class ProjectPrepareResp(BaseModel):
@@ -532,34 +536,89 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
         # （如批A写 dialogue_completed_chapters=[0..13]，批B写[14..27]，不加锁的话
         #  as_completed 里会同时读-改-写 prog，出现 lost update）
         progress_write_lock = asyncio.Lock()
+        # 对白归属业务层重试（默认 DIALOGUE_BATCH_RETRY_COUNT=2，provider 层另有 3 次兜底）
+        dialogue_batch_retries = max(0, int(
+            getattr(settings, "DIALOGUE_BATCH_RETRY_COUNT", 2) or 0
+        ))
+        # 失败批 checkpoint：记录 {batch_idx: {"last_err": "...", "retries": N}}
+        failed_batches_by_idx: dict[int, dict] = {}
 
         async def _process_one_batch(
             batch: list[tuple[int, str]], batch_idx: int
-        ) -> list[tuple[int, list]]:
-            async with dialogue_batch_sem:
-                logger.info(
-                    f"[project_prepare] project_id={project_id[:8]}... "
-                    f"dialogue batch {batch_idx+1}/{len(batches)} chapters="
-                    f"{[c[0]+1 for c in batch]} start"
-                )
-                results = await attribute_dialogues_batch_with_llm(batch, characters)
-                out: list[tuple[int, list]] = []
-                for r in results:
-                    attrs = r.dialogues
-                    for a in attrs:
-                        a.speaker = name_map.get(a.speaker, a.speaker)
-                    out.append((r.chapter_idx, [a.model_dump() for a in attrs]))
-                return out
+        ) -> tuple[int, list[tuple[int, list]] | None, str | None]:
+            """
+            返回：
+              (batch_idx, list[(ch_idx, attrs_dict_list)] 或 None, err_msg 或 None)
+            - 成功：err_msg=None，第二项非 None
+            - 重试耗尽仍失败：第二项为 None，err_msg 有内容，调用方写入 failed_batches checkpoint
+            """
+            last_err: str | None = None
+            for attempt in range(dialogue_batch_retries + 1):
+                try:
+                    async with dialogue_batch_sem:
+                        logger.info(
+                            f"[project_prepare] project_id={project_id[:8]}... "
+                            f"dialogue batch {batch_idx+1}/{len(batches)} chapters="
+                            f"{[c[0]+1 for c in batch]} attempt={attempt+1}/"
+                            f"{dialogue_batch_retries+1} start"
+                        )
+                        results = await attribute_dialogues_batch_with_llm(batch, characters)
+                    out: list[tuple[int, list]] = []
+                    for r in results:
+                        attrs = r.dialogues
+                        for a in attrs:
+                            a.speaker = name_map.get(a.speaker, a.speaker)
+                        out.append((r.chapter_idx, [a.model_dump() for a in attrs]))
+                    return batch_idx, out, None
+                except Exception as e:
+                    last_err = f"{type(e).__name__}: {e}"
+                    logger.warning(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"dialogue batch {batch_idx+1}/{len(batches)} attempt={attempt+1} "
+                        f"FAIL: {last_err}"
+                    )
+                    # 失败先记一次 checkpoint，让用户/前端看到失败批
+                    async with progress_write_lock:
+                        failed_batches_by_idx[batch_idx] = {
+                            "retries": attempt + 1,
+                            "last_err": last_err,
+                            "chapters": [int(c[0]) for c in batch],
+                        }
+                        prog["dialogue_failed_batches"] = {
+                            str(k): v for k, v in failed_batches_by_idx.items()
+                        }
+                        prog["dialogue_completed_chapters"] = sorted(completed_ch_idxs)
+                        prog["dialogue_attrs_by_chapter_json"] = chapter_attrs_cache
+                        await _write_progress(prog)
+            # 所有重试都失败
+            logger.error(
+                f"[project_prepare] project_id={project_id[:8]}... "
+                f"dialogue batch {batch_idx+1}/{len(batches)} 全部重试耗尽，仍失败。"
+                f"后续 prepare 重跑会重跑该批。"
+            )
+            return batch_idx, None, last_err
 
         if batches:
             batch_tasks = [
                 asyncio.create_task(_process_one_batch(b, i))
                 for i, b in enumerate(batches)
             ]
-            for t in asyncio.as_completed(batch_tasks):
-                batch_results = await t
-                # === 整批结果一次性在 lock 内合并，避免并发覆盖 prog dict ===
-                async with progress_write_lock:
+            # 全部批跑完再汇总（避免中途 checkpoint 与最终状态不一致影响后续 dedup）
+            all_batch_results: list[tuple[int, list[tuple[int, list]] | None, str | None]] = (
+                await asyncio.gather(*batch_tasks, return_exceptions=False)
+            )
+            # 写结果（串行，避免并发覆盖 prog dict）
+            async with progress_write_lock:
+                for batch_idx, batch_results, err in all_batch_results:
+                    if batch_results is None:
+                        # 该批失败，保留到 failed_batches，后续 prepare 重跑
+                        failed_batches_by_idx.setdefault(batch_idx, {})
+                        failed_batches_by_idx[batch_idx]["retries_exhausted"] = True
+                        failed_batches_by_idx[batch_idx]["last_err"] = (
+                            err or failed_batches_by_idx[batch_idx].get("last_err") or "unknown"
+                        )
+                        continue
+                    # 成功：合并 per-chapter attrs
                     for ch_idx, attrs_dicts in batch_results:
                         if 0 <= ch_idx < len(all_attrs_per_chapter):
                             all_attrs_per_chapter[ch_idx] = attrs_dicts
@@ -571,11 +630,25 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
                             f"dialogue_attr chapter={ch_idx+1}/{len(chapters)} "
                             f"this_dialogues={len(attrs_dicts)} cum={total_dialogues}"
                         )
-                    # 合并完本 batch 所有章后，统一写一次 checkpoint（减少写 DB 次数）
-                    prog["stage"] = "dialogues"
-                    prog["dialogue_completed_chapters"] = sorted(completed_ch_idxs)
-                    prog["dialogue_attrs_by_chapter_json"] = chapter_attrs_cache
-                    await _write_progress(prog)
+                    # 该批成功就从失败集合里移除（支持重跑 prepare 时补跑失败批）
+                    failed_batches_by_idx.pop(batch_idx, None)
+                # 统一写一次 checkpoint
+                prog["stage"] = "dialogues"
+                prog["dialogue_completed_chapters"] = sorted(completed_ch_idxs)
+                prog["dialogue_attrs_by_chapter_json"] = chapter_attrs_cache
+                prog["dialogue_failed_batches"] = {
+                    str(k): v for k, v in failed_batches_by_idx.items()
+                }
+                prog["dialogue_total_batches"] = len(batches)
+                prog["dialogue_failed_batch_count"] = len(failed_batches_by_idx)
+                await _write_progress(prog)
+
+            if failed_batches_by_idx:
+                logger.warning(
+                    f"[project_prepare] project_id={project_id[:8]}... "
+                    f"对白归属完成但有 {len(failed_batches_by_idx)}/{len(batches)} 批仍失败。"
+                    f"重跑 prepare 可自动重跑这些失败批。"
+                )
 
         logger.info(
             f"[project_prepare] project_id={project_id[:8]}... "
@@ -829,6 +902,52 @@ async def get_project(project_id: str) -> ProjectDetailResp:
             else None
         )
 
+        # prepare_progress：从 progress_json 解析出的 dict（前端渲染 角色/对白 子阶段进度）
+        prepare_progress: dict | None = None
+        if p.progress_json:
+            try:
+                prog = json.loads(p.progress_json)
+                if isinstance(prog, dict):
+                    # 仅保留对前端有用的字段（避免把对白原始 JSON 全量返回给前端）
+                    prepare_progress = {}
+                    for k in (
+                        "version",
+                        "stage",
+                        "updated_at",
+                        "char_slice_total",
+                        "char_slice_completed",
+                        "char_extract_raw_json_count",
+                        "dedup_done",
+                        "dialogue_total_batches",
+                        "dialogue_completed_batches_count",
+                        "dialogue_failed_batch_count",
+                        "dialogue_completed_chapters",
+                        "dialogue_completed_chapters_count",
+                        "dialogue_total_chapters",
+                        "dialogue_failed_batches",
+                        "voice_recs_done",
+                        "voice_recs_count",
+                    ):
+                        if k in prog:
+                            prepare_progress[k] = prog[k]
+                    # 计数派生字段（前端方便用）
+                    if "char_slice_completed" in prog:
+                        prepare_progress.setdefault(
+                            "char_completed_n", len(prog["char_slice_completed"])
+                        )
+                    if prepare_progress.get("dialogue_completed_chapters") is not None:
+                        prepare_progress.setdefault(
+                            "dialogue_completed_chapters_n",
+                            len(prepare_progress["dialogue_completed_chapters"]),
+                        )
+                    if prepare_progress.get("dialogue_failed_batches") is not None:
+                        prepare_progress.setdefault(
+                            "dialogue_failed_batches_n",
+                            len(prepare_progress["dialogue_failed_batches"]),
+                        )
+            except Exception:
+                prepare_progress = None
+
         return ProjectDetailResp(
             project_id=p.project_id,
             name=p.name,
@@ -847,6 +966,7 @@ async def get_project(project_id: str) -> ProjectDetailResp:
             chapters=chapters,
             characters=characters,
             last_build=last_build,
+            prepare_progress=prepare_progress,
         )
 
 
@@ -856,8 +976,17 @@ async def list_projects() -> list[ProjectListItem]:
     async with factory() as session:
         stmt = select(Project).order_by(Project.created_at.desc())
         rows = list((await session.execute(stmt)).scalars().all())
-        return [
-            ProjectListItem(
+        result: list[ProjectListItem] = []
+        for p in rows:
+            prepare_stage: str | None = None
+            if p.progress_json:
+                try:
+                    prog = json.loads(p.progress_json)
+                    if isinstance(prog, dict):
+                        prepare_stage = prog.get("stage")
+                except Exception:
+                    prepare_stage = None
+            result.append(ProjectListItem(
                 project_id=p.project_id,
                 name=p.name,
                 book_title=p.book_title,
@@ -867,9 +996,9 @@ async def list_projects() -> list[ProjectListItem]:
                 cover_color=p.cover_color,
                 created_at=p.created_at.isoformat() if p.created_at else None,
                 updated_at=p.updated_at.isoformat() if p.updated_at else None,
-            )
-            for p in rows
-        ]
+                prepare_stage=prepare_stage,
+            ))
+        return result
 
 
 async def update_project(

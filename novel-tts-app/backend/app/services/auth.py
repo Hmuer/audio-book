@@ -8,8 +8,13 @@
 公开 API：
 - hash_password(plain) / verify_password(plain, hash)
 - create_access_token(username) -> (token, expires_at)
+- create_access_token_for_user(user) -> LoginResp
 - decode_token(token) -> username | None
 - authenticate(username, password) -> User | None
+- authenticate_user(username, password) -> User | None
+- verify_jwt(token) -> username | None
+- login(username, password) -> LoginResp
+- change_password(...) -> dict
 - seed_admin_user() 启动时调用，确保 admin 存在
 - get_user_by_username(username) -> User | None
 """
@@ -125,6 +130,27 @@ async def seed_admin_user() -> bool:
 
     返回 True 表示本次新建了 admin，False 表示已存在。
     """
+    if settings.ENV.lower() in ("prod", "production", "live"):
+        if settings.JWT_SECRET.startswith("change-me"):
+            if settings.STRICT_PROD_SECURITY:
+                raise RuntimeError(
+                    "ENV=prod 且 STRICT_PROD_SECURITY=true：请把 JWT_SECRET 改成非默认值（至少 32 字符随机串），否则启动失败。"
+                )
+            else:
+                logging.getLogger(__name__).warning(
+                    "⚠️ ENV=prod 且 JWT_SECRET 仍为默认 change-me* 弱密钥。请立刻修改；或设置 STRICT_PROD_SECURITY=true 强制拒绝启动。"
+                )
+        default_admin = settings.SEED_ADMIN_USER == "admin" and settings.SEED_ADMIN_PASS == "admin"
+        if default_admin:
+            if settings.STRICT_PROD_SECURITY:
+                raise RuntimeError(
+                    "ENV=prod 且 STRICT_PROD_SECURITY=true：请修改 SEED_ADMIN_PASS 为非默认 admin/admin 强密码，避免被默认口令扫。"
+                )
+            else:
+                logging.getLogger(__name__).warning(
+                    "⚠️ ENV=prod 且 SEED_ADMIN_PASS 仍为默认 admin/admin。请立刻修改密码；或设置 STRICT_PROD_SECURITY=true 强制拒绝启动。"
+                )
+
     factory = get_session_factory()
     async with factory() as session:
         existing = await session.get(User, 1) if False else None  # 占位，下面按 username 查
@@ -158,6 +184,7 @@ class LoginResp(BaseModel):
     token_type: str = "Bearer"
     expires_at: str  # ISO 8601
     user: "UserInfo"
+    must_change_password: bool
 
 
 class UserInfo(BaseModel):
@@ -170,3 +197,112 @@ class UserInfo(BaseModel):
 
 # 前向引用修复（LoginResp.user 引用了 UserInfo，但定义顺序在后）
 LoginResp.model_rebuild()
+
+
+# =====================================================================
+# 便捷别名（与文档注释中的 API 名对齐，不删）
+# =====================================================================
+
+async def authenticate_user(username: str, password: str) -> Optional[User]:
+    """authenticate 的别名。"""
+    return await authenticate(username, password)
+
+
+def verify_jwt(token: str) -> Optional[str]:
+    """decode_token 的别名（JWT 校验）。"""
+    return decode_token(token)
+
+
+async def get_user(username: str) -> Optional[User]:
+    """get_user_by_username 的别名。"""
+    return await get_user_by_username(username)
+
+
+# =====================================================================
+# 业务函数：签发 LoginResp、改密、登录
+# =====================================================================
+
+def create_access_token_for_user(user: User) -> LoginResp:
+    """
+    基于已存在的 User 对象签发 LoginResp。
+    must_change_password 直接读取 user.must_change_password 字段。
+    """
+    token, expires_at = create_access_token(user.username)
+    return LoginResp(
+        token=token,
+        token_type="Bearer",
+        expires_at=expires_at.isoformat(),
+        user=UserInfo(
+            id=user.id,
+            username=user.username,
+            is_active=user.is_active,
+            created_at=user.created_at.isoformat() if user.created_at else None,
+        ),
+        must_change_password=user.must_change_password,
+    )
+
+
+async def change_password(
+    username: str,
+    old_password: str | None,
+    new_password: str,
+    is_admin_self_change: bool = True,
+) -> dict:
+    """
+    修改密码。
+
+    - is_admin_self_change=True（用户登录后改自己密码）：old_password 必填，且必须校验旧密码。
+    - is_admin_self_change=False（管理员重置他人密码）：跳过旧密码校验。
+    """
+    if is_admin_self_change and old_password is None:
+        raise ValueError("请输入旧密码")
+
+    user = await get_user(username)
+    if not user:
+        raise ValueError("用户不存在")
+
+    if is_admin_self_change:
+        if not verify_password(old_password, user.password_hash):
+            raise ValueError("旧密码错误")
+
+    if len(new_password) < 8:
+        raise ValueError("新密码长度至少 8 位")
+    if new_password == username:
+        raise ValueError("新密码不能与用户名相同")
+    if username == settings.SEED_ADMIN_USER and new_password == "admin":
+        raise ValueError("默认 admin 账号的新密码不能是 admin")
+
+    factory = get_session_factory()
+    async with factory() as session:
+        u = await session.get(User, user.id)
+        if not u:
+            raise ValueError("用户不存在")
+        u.password_hash = hash_password(new_password)
+        u.must_change_password = False
+        await session.commit()
+
+    return {"ok": True, "username": username, "must_change_password_now": False}
+
+
+async def login(username: str, password: str) -> LoginResp:
+    """
+    登录服务：用户名密码校验 → LoginResp。
+
+    ENV=prod + STRICT_PROD_SECURITY=true 时，如果登录的是默认 SEED_ADMIN_USER 且
+    密码仍为 SEED_ADMIN_PASS（默认 admin/admin），直接拒绝。
+    """
+    user = await authenticate(username, password)
+    if not user:
+        raise ValueError("用户名或密码错误")
+
+    if (
+        settings.ENV.lower() in ("prod", "production", "live")
+        and settings.STRICT_PROD_SECURITY
+        and username == settings.SEED_ADMIN_USER
+        and verify_password(settings.SEED_ADMIN_PASS, user.password_hash)
+    ):
+        raise ValueError(
+            "生产环境需先修改默认 admin 密码，请联系管理员；STRICT_PROD_SECURITY 已开启。"
+        )
+
+    return create_access_token_for_user(user)
