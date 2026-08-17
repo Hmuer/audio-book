@@ -28,7 +28,7 @@ from ..services.project import (
     create_project,
     import_file as project_import_file,
     import_text as project_import_text,
-    prepare_project,
+    trigger_prepare_project,
     get_project,
     list_projects,
     update_project,
@@ -40,6 +40,7 @@ from ..services.project import (
     ProjectDetailResp,
     ProjectListItem,
     ProjectPrepareResp,
+    ProjectPrepareTriggerResp,
     ChapterSummary,
     CharacterWithVoice,
     CharacterResp,
@@ -537,20 +538,32 @@ async def api_project_import_text(
         raise HTTPException(500, f"导入失败: {type(e).__name__}: {e}")
 
 
-@router.post("/projects/{project_id}/prepare", response_model=ProjectPrepareResp)
+@router.post(
+    "/projects/{project_id}/prepare",
+    response_model=ProjectPrepareTriggerResp,
+    status_code=202,
+)
 async def api_project_prepare(project_id: str, request: Request):
-    """触发识别：章节 → 角色 → 对白 → 音色 → 落库。"""
+    """
+    触发识别（后台异步执行，HTTP 202 立即返回）。
+    执行路径：切章 → 角色识别（50k 切片）→ 角色 dedup → 对白归属（14 章/批）→ 音色推荐 → 落库。
+    进度/错误请轮询 GET /projects/{project_id}，读取 prepare_progress：
+      - stage: start / split / characters / dedup / dialogues / voice_recs / done
+      - last_error / last_error_at：失败时带具体原因（切章失败、LLM 429 等）
+      - char_slice_total / char_slice_completed_n / char_failed_slices：角色识别进度
+      - dialogue_total_batches / dialogue_completed_chapters_count / dialogue_failed_batches：对白归属进度
+    """
     t0 = _time.perf_counter()
     remote = request.client.host if request.client else "?"
     logger.info(
         f"[HTTP] POST /api/projects/{project_id[:8]}.../prepare client={remote}"
     )
     try:
-        resp = await prepare_project(project_id)
+        resp = await trigger_prepare_project(project_id)
         elapsed_ms = int((_time.perf_counter() - t0) * 1000)
         logger.info(
-            f"[HTTP] 200 /api/projects/{project_id[:8]}.../prepare "
-            f"chapters={resp.total_chapters} total_ms={elapsed_ms}"
+            f"[HTTP] 202 /api/projects/{project_id[:8]}.../prepare "
+            f"triggered total_ms={elapsed_ms}"
         )
         return resp
     except ValueError as e:
@@ -563,7 +576,11 @@ async def api_project_prepare(project_id: str, request: Request):
             f"{type(e).__name__}: {e}",
             exc_info=True,
         )
-        raise HTTPException(500, f"prepare 失败: {type(e).__name__}: {e}")
+        # 触发阶段异常（非后台执行期）返回具体错误，方便前端直接提示
+        raise HTTPException(
+            500,
+            f"触发识别失败: {type(e).__name__}: {e}",
+        )
 
 
 @router.get("/projects/{project_id}/chapters", response_model=list[ChapterSummary])

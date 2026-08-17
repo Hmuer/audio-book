@@ -71,19 +71,44 @@ async def test_http_project_full_flow(_isolate_data_dir, admin_token):
         assert r.json()["status"] == "imported"
         assert r.json()["source_filename"] == "小城.txt"
 
-        # 4. 触发 prepare
+        # 4. 触发 prepare（202 Accepted 异步后台执行）
         r = await client.post(f"/api/projects/{pid}/prepare")
-        assert r.status_code == 200, f"prepare 失败: {r.text}"
-        prep = r.json()
-        assert prep["total_chapters"] == 2
-        assert len(prep["characters"]) >= 3
+        assert r.status_code == 202, f"prepare 触发失败: {r.text}"
+        trigger = r.json()
+        assert trigger["status"] == "preparing"
+        assert trigger["project_id"] == pid
 
-        # 5. 详情
-        r = await client.get(f"/api/projects/{pid}")
-        assert r.status_code == 200
-        detail = r.json()
-        assert detail["status"] == "ready"
+        # 5. 轮询等待 prepare 后台任务完成（最多 10s，mock provider 跑很快）
+        detail: dict | None = None
+        for attempt in range(50):
+            r = await client.get(f"/api/projects/{pid}")
+            assert r.status_code == 200
+            detail = r.json()
+            status = detail["status"]
+            if status in ("ready", "failed"):
+                break
+            # 如果有 last_error，提前断言失败（带具体错误信息）
+            prog = detail.get("prepare_progress") or {}
+            if prog.get("last_error"):
+                raise AssertionError(
+                    f"prepare 后台失败: last_error={prog['last_error']}, "
+                    f"last_error_type={prog.get('last_error_type')}, "
+                    f"last_error_at={prog.get('last_error_at')}"
+                )
+            await asyncio.sleep(0.2)
+        else:
+            raise AssertionError(
+                f"prepare 后台任务超时未完成，当前 status={detail['status'] if detail else None}, "
+                f"progress={detail.get('prepare_progress') if detail else None}"
+            )
+        assert detail["status"] == "ready", (
+            f"prepare 未进入 ready 状态: status={detail['status']}, "
+            f"progress={detail.get('prepare_progress')}"
+        )
         assert detail["chapter_count"] == 2
+        # prepare_progress 应有必要字段
+        prog = detail.get("prepare_progress") or {}
+        assert prog.get("stage") == "done" or prog.get("voice_recs_done") or prog.get("dedup_done")
         # 至少一个角色有 assigned_voice_id（来自 Mock 推荐）
         assert any(c["assigned_voice_id"] for c in detail["characters"])
         # last_build 还没起，应为 null

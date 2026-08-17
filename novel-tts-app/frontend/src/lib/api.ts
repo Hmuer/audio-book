@@ -207,9 +207,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ text, filename_hint: filenameHint }),
     }),
-  // 触发后端识别（章节/角色/对白归属）
+  // 触发后端识别（章节/角色/对白归属）：202 Accepted，后台异步执行
   projectPrepare: (id: string) =>
-    _fetch<ProjectPrepareResp>(`/api/projects/${id}/prepare`, { method: 'POST' }),
+    _fetch<ProjectPrepareTriggerResp>(`/api/projects/${id}/prepare`, { method: 'POST' }),
   // 拉取章节列表
   projectChapters: (id: string) =>
     _fetch<ChapterSummary[]>(`/api/projects/${id}/chapters`),
@@ -304,6 +304,50 @@ export interface ProjectDetailResp {
   chapters: ChapterSummary[];
   characters: CharacterWithVoice[];
   last_build: BuildBrief | null;
+  // prepare 阶段进度（stage / last_error / 各子阶段计数），失败时带具体错误
+  prepare_progress: PrepareProgress | null;
+}
+
+// prepare 阶段进度（从 DB progress_json 透传，字段名与后端 progress_json 白名单对齐）
+export interface PrepareProgress {
+  version?: number;
+  stage?: string; // start / split / characters / dedup / dialogues / voice_recs / done
+  started_at?: string;
+  updated_at?: string;
+  // 失败时：具体错误类型 + 消息 + 时间
+  last_error?: string;
+  last_error_at?: string;
+  last_error_type?: string;
+  prev_error?: { at?: string; msg?: string };
+  // 角色识别进度
+  char_slice_total?: number;
+  char_slice_completed_n?: number;
+  char_current_slice?: { idx: number; slice_len?: number } | null;
+  char_failed_slices?: Record<string, { slice_idx: number; slice_len?: number; retries?: number; last_err?: string }>;
+  char_failed_slices_n?: number;
+  char_full_text_len?: number;
+  dedup_done?: boolean;
+  // 对白归属进度
+  dialogue_total_batches?: number;
+  dialogue_completed_batches_count?: number;
+  dialogue_failed_batch_count?: number;
+  dialogue_total_chapters?: number;
+  dialogue_completed_chapters_count?: number;
+  dialogue_completed_chapters_n?: number;
+  dialogue_failed_batches?: Record<string, any>;
+  dialogue_failed_batches_n?: number;
+  dialogue_total_dialogues?: number;
+  // 音色推荐进度
+  voice_recs_done?: boolean;
+  voice_recs_count?: number;
+}
+
+// prepare 触发立即返回（HTTP 202 Accepted）
+export interface ProjectPrepareTriggerResp {
+  project_id: string;
+  status: string;
+  message: string;
+  prepare_progress?: PrepareProgress | null;
 }
 
 // 章节摘要

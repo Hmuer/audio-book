@@ -111,6 +111,16 @@ export default function ProjectDetailPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
+  // 顶层自动轮询：项目 status === 'preparing' 时 2s 刷一次详情，显示识别进度/失败原因
+  const preparing = project?.status === 'preparing';
+  useEffect(() => {
+    if (!preparing) return;
+    const timer = setInterval(() => {
+      reload();
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [preparing, projectId]);
+
   // ---------- 试听播放管理 ----------
   const stopPlayback = () => {
     if (audioRef.current) {
@@ -282,23 +292,207 @@ function OverviewTab({
   onTab: (t: Tab) => void;
   onReload: () => void;
 }) {
+  const [prepareTip, setPrepareTip] = useState<string | null>(null);
+  const prog = project.prepare_progress;
+
   // 如果项目还没 prepare（status 为 draft 或 imported），显示引导
   const needsPrepare =
     project.status === 'draft' || (project.status === 'imported' && project.chapter_count === 0);
 
+  const isPreparing = project.status === 'preparing';
+  const hasPrepareError = Boolean(prog?.last_error);
+
+  // 失败的切片 / 失败的对白批，用于提示"可重跑补跑"
+  const failedCharSlicesN = prog?.char_failed_slices_n ?? 0;
+  const failedDialogueBatchesN = prog?.dialogue_failed_batch_count ?? 0;
+  const hasPartialFailures = failedCharSlicesN > 0 || failedDialogueBatchesN > 0;
+
   const handlePrepare = async () => {
+    setPrepareTip(null);
     try {
-      await api.projectPrepare(project.project_id);
+      const res = await api.projectPrepare(project.project_id);
+      setPrepareTip(res.message || '已开始后台识别，请稍候刷新查看进度。');
+      setTimeout(() => setPrepareTip(null), 8000);
+      // 立刻刷新一次，让用户看到 status=preparing
       await onReload();
     } catch (e: any) {
-      alert(`prepare 失败: ${e?.message || e}`);
+      alert(`识别触发失败: ${e?.message || e}`);
     }
   };
 
+  // 格式化进度条
+  function StageProgressBar(props: { label: string; done: number; total: number; failed?: number }) {
+    const { label, done, total, failed = 0 } = props;
+    if (total == null || total <= 0) {
+      return (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs text-white/60">
+            <span>{label}</span>
+            <span>等待中…</span>
+          </div>
+          <div className="h-2 rounded-full bg-white/5" />
+        </div>
+      );
+    }
+    const donePct = Math.min(100, Math.round((done / total) * 100));
+    const failedPct = Math.min(100 - donePct, Math.round((failed / total) * 100));
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center justify-between text-xs text-white/60 flex-wrap gap-2">
+          <span>{label}</span>
+          <span className="tabular-nums">
+            {done}/{total}
+            {failed > 0 && <span className="text-red-400 ml-2">失败 {failed}</span>}
+          </span>
+        </div>
+        <div className="h-2 rounded-full bg-white/5 overflow-hidden flex">
+          <div className="bg-gradient-to-r from-brand-500 to-blue-500 h-full" style={{ width: `${donePct}%` }} />
+          {failed > 0 && (
+            <div className="bg-red-500 h-full" style={{ width: `${failedPct}%` }} />
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // 把 stage 映射为中文标签（用户可读）
+  function stageLabel(s?: string): string {
+    switch (s) {
+      case 'start': return '🔧 初始化';
+      case 'split': return '📑 切分章节';
+      case 'characters': return '🧑 角色识别';
+      case 'dedup': return '🔀 角色去重';
+      case 'dialogues': return '💬 对白归属';
+      case 'voice_recs': return '🎙 音色推荐';
+      case 'done': return '✅ 已完成';
+      default: return s ? `运行中（${s}）` : '运行中';
+    }
+  }
+
   return (
     <div className="space-y-4">
-      {/* 引导：还没 prepare */}
-      {needsPrepare && (
+      {/* 触发成功的轻量提示 */}
+      {prepareTip && (
+        <div className="rounded-xl border border-blue-500/40 bg-blue-500/10 px-4 py-3 text-sm text-blue-200">
+          {prepareTip}
+        </div>
+      )}
+
+      {/* 识别失败：显示具体错误 + 一键重跑 */}
+      {hasPrepareError && (
+        <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-4 space-y-3">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div className="min-w-0">
+              <div className="font-semibold text-red-300 mb-1">❌ 识别失败</div>
+              <div className="text-sm text-red-200 break-words whitespace-pre-wrap">
+                {prog!.last_error}
+              </div>
+              {prog!.last_error_at && (
+                <div className="text-[11px] text-white/50 mt-1 tabular-nums">
+                  时间: {prog!.last_error_at}
+                  {prog!.last_error_type && ` · 类型: ${prog!.last_error_type}`}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button className="btn-ghost text-xs py-1" onClick={() => onReload()}>
+                刷新
+              </button>
+              <button className="btn bg-red-600 hover:bg-red-500 text-white text-xs py-1" onClick={handlePrepare}>
+                🔁 重新识别
+              </button>
+            </div>
+          </div>
+          {prog?.prev_error?.msg && (
+            <details className="text-[11px] text-white/50">
+              <summary className="cursor-pointer select-none">上次失败记录</summary>
+              <div className="mt-1 whitespace-pre-wrap break-words">
+                {prog.prev_error.at && `${prog.prev_error.at}  `}
+                {prog.prev_error.msg}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+
+      {/* preparing 阶段：显示 stage + 进度条 + 部分失败提示 */}
+      {isPreparing && (
+        <div className="card space-y-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="inline-block w-5 h-5 border-2 border-brand-500 border-t-transparent rounded-full animate-spin shrink-0" />
+              <div className="font-semibold truncate">{stageLabel(prog?.stage)}</div>
+            </div>
+            <div className="flex items-center gap-2">
+              {prog?.updated_at && (
+                <span className="text-[11px] text-white/50 tabular-nums">
+                  更新: {relativeTime(prog.updated_at)}
+                </span>
+              )}
+              <button className="btn-ghost text-xs py-1" onClick={() => onReload()}>
+                刷新
+              </button>
+              <button className="btn-ghost text-xs py-1" onClick={handlePrepare}>
+                🔁 重跑
+              </button>
+            </div>
+          </div>
+
+          {/* 各阶段进度（有值才显示） */}
+          <div className="space-y-3">
+            {(prog?.char_slice_total != null) && (
+              <StageProgressBar
+                label="角色识别（切片）"
+                done={prog?.char_slice_completed_n ?? 0}
+                total={prog.char_slice_total}
+                failed={failedCharSlicesN}
+              />
+            )}
+            {prog?.dedup_done && (
+              <div className="text-xs text-white/60 flex items-center gap-2">
+                <span className="text-green-400">✓</span> 角色去重完成
+              </div>
+            )}
+            {(prog?.dialogue_total_chapters != null || prog?.dialogue_total_batches != null) && (
+              <StageProgressBar
+                label={
+                  prog?.dialogue_total_batches != null
+                    ? `对白归属（${prog.dialogue_total_batches} 批）`
+                    : '对白归属（章节）'
+                }
+                done={
+                  prog?.dialogue_total_batches != null
+                    ? (prog?.dialogue_completed_batches_count ?? 0)
+                    : (prog?.dialogue_completed_chapters_count ?? 0)
+                }
+                total={
+                  prog?.dialogue_total_batches != null
+                    ? prog.dialogue_total_batches
+                    : (prog?.dialogue_total_chapters ?? 0)
+                }
+                failed={failedDialogueBatchesN}
+              />
+            )}
+            {prog?.voice_recs_done && (
+              <div className="text-xs text-white/60 flex items-center gap-2">
+                <span className="text-green-400">✓</span> 音色推荐完成
+              </div>
+            )}
+          </div>
+
+          {/* 切片/对白批级失败 → 提示用户可重跑补跑（非致命部分失败） */}
+          {hasPartialFailures && !hasPrepareError && (
+            <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-200">
+              ⚠️ 部分切片/批失败，将在重跑识别时自动补跑：
+              {failedCharSlicesN > 0 && <span className="ml-2">角色切片失败 {failedCharSlicesN} 个</span>}
+              {failedDialogueBatchesN > 0 && <span className="ml-2">对白批失败 {failedDialogueBatchesN} 个</span>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 引导：还没 prepare / prepare 失败过想重新开始 */}
+      {needsPrepare && !isPreparing && (
         <div className="card border-brand-500/40 bg-brand-500/5">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div>
@@ -306,7 +500,7 @@ function OverviewTab({
               <div className="text-sm text-white/60">
                 {project.source_filename
                   ? `已上传文件「${project.source_filename}」，点击右侧按钮开始识别章节、角色与对白归属。`
-                  : '请先到 Voices / Settings 上传源文件，然后开始识别。'}
+                  : '请先到 Settings 上传源文件或粘贴文本，然后开始识别。'}
               </div>
             </div>
             {project.source_filename && (
@@ -314,6 +508,25 @@ function OverviewTab({
                 🚀 开始识别
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* 已 ready 但有部分失败批可补跑 */}
+      {project.status === 'ready' && hasPartialFailures && !isPreparing && (
+        <div className="card border-orange-500/30 bg-orange-500/5">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="text-sm">
+              <span className="font-semibold">🔁 可补跑失败部分：</span>{' '}
+              <span className="text-white/70">
+                {failedCharSlicesN > 0 && <>角色识别失败切片 {failedCharSlicesN} 个</>}
+                {failedCharSlicesN > 0 && failedDialogueBatchesN > 0 && '，'}
+                {failedDialogueBatchesN > 0 && <>对白归属失败批 {failedDialogueBatchesN} 个</>}
+              </span>
+            </div>
+            <button className="btn-ghost text-xs py-1" onClick={handlePrepare}>
+              🔁 重新识别（自动补跑失败部分）
+            </button>
           </div>
         </div>
       )}

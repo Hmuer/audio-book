@@ -154,6 +154,20 @@ class ProjectPrepareResp(BaseModel):
     voice_recommendations: list[dict]
 
 
+class ProjectPrepareTriggerResp(BaseModel):
+    """prepare 触发立即返回（202 Accepted）：后台任务在跑，前端轮询 GET /projects/{id}。"""
+    project_id: str
+    status: str
+    message: str
+    prepare_progress: dict | None = None
+
+
+# 正在运行的后台 prepare 任务（进程内）：{project_id: asyncio.Task}
+#   - 用于：同一 project 重复触发时取消旧任务、日志查看
+#   - 注意：进程重启后任务丢失，但 checkpoint 在 DB，重跑 trigger_prepare_project 会跳过已完成阶段
+_prepare_running_tasks: dict[str, asyncio.Task] = {}
+
+
 # =====================================================================
 # 内部工具
 # =====================================================================
@@ -304,21 +318,185 @@ async def import_text(
         return _to_project_resp(p)
 
 
-async def prepare_project(project_id: str) -> ProjectPrepareResp:
+async def trigger_prepare_project(project_id: str) -> ProjectPrepareTriggerResp:
     """
-    触发识别：读文件 → 章节识别 → 角色识别 → 对白归属 → 音色推荐 → 落库。
-    status: imported → preparing → ready（失败时 → failed）
+    触发项目识别（202 Accepted 模式）：校验项目状态 → 把项目置为 preparing →
+    用 asyncio.create_task 后台启动 _run_prepare_project_in_background，立即返回。
+    前端通过轮询 GET /projects/{id} 读取 prepare_progress 看进度、stage、last_error。
     """
-    import time as _time
-    t0 = _time.perf_counter()
     factory = get_session_factory()
-
-    # 1. 取项目 + 校验源文件已导入；缺失时标记 failed
     async with factory() as session:
         p = await session.get(Project, project_id)
         if not p:
             raise ValueError(f"项目不存在: {project_id}")
         if not p.source_file_path or not os.path.isfile(p.source_file_path):
+            p.status = "failed"
+            await session.commit()
+            raise RuntimeError("项目尚未导入源文件，请先调用 /import")
+
+        # 防并发重复触发：若当前进程内已有该项目的后台任务，则先取消旧任务
+        old = _prepare_running_tasks.get(project_id)
+        if old is not None and not old.done():
+            logger.info(
+                f"[project_prepare] project_id={project_id[:8]}... "
+                f"已有正在运行的后台 prepare 任务，先取消旧任务再启动新任务"
+            )
+            old.cancel()
+            _prepare_running_tasks.pop(project_id, None)
+
+        p.status = "preparing"
+        # 触发时先清掉上次的 last_error，写一个初始化 progress（前端能立即看到 stage=start）
+        try:
+            prog = json.loads(p.progress_json) if p.progress_json else {}
+            if not isinstance(prog, dict):
+                prog = {}
+        except Exception:
+            prog = {}
+        prog.update({
+            "version": 1,
+            "stage": "start",
+            "started_at": _fmt_time_now(),
+            "updated_at": _fmt_time_now(),
+        })
+        # 保留 checkpoint 字段，让重跑能恢复；把上一次的 last_error 归档到 prev_error
+        if "last_error" in prog:
+            prog.setdefault("prev_error", {
+                "at": prog.get("last_error_at"),
+                "msg": prog.get("last_error"),
+            })
+        prog.pop("last_error", None)
+        prog.pop("last_error_at", None)
+        p.progress_json = json.dumps(prog, ensure_ascii=False)
+        await session.commit()
+
+    # 后台启动真正的 prepare；fire-and-forget，异常全部在内部写 DB
+    task = asyncio.create_task(_run_prepare_project_in_background(project_id))
+    _prepare_running_tasks[project_id] = task
+
+    # 返回 202，透传 progress 给前端
+    prepare_progress: dict | None = None
+    try:
+        prepare_progress = {k: v for k, v in prog.items() if k in (
+            "version", "stage", "started_at", "updated_at",
+        )}
+    except Exception:
+        prepare_progress = None
+    return ProjectPrepareTriggerResp(
+        project_id=project_id,
+        status="preparing",
+        message="已开始后台识别，请稍后刷新项目详情查看进度（阶段：切章 → 角色识别 → 对白归属 → 音色推荐 → 完成）。",
+        prepare_progress=prepare_progress,
+    )
+
+
+def _fmt_time_now() -> str:
+    import time as _time
+    return _time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+async def _write_prepare_last_error(project_id: str, err_type: str, err_msg: str) -> None:
+    """prepare 失败时写 last_error 到 progress_json（不覆盖 checkpoint），前端 GET /projects/{id} 可以看到具体错误。"""
+    factory = get_session_factory()
+    try:
+        async with factory() as sess:
+            proj = await sess.get(Project, project_id)
+            if not proj:
+                return
+            try:
+                prog = json.loads(proj.progress_json) if proj.progress_json else {}
+                if not isinstance(prog, dict):
+                    prog = {}
+            except Exception:
+                prog = {}
+            prog["last_error"] = f"{err_type}: {err_msg}"
+            prog["last_error_at"] = _fmt_time_now()
+            prog["last_error_type"] = err_type
+            prog["updated_at"] = _fmt_time_now()
+            proj.progress_json = json.dumps(prog, ensure_ascii=False)
+            await sess.commit()
+    except Exception as e:
+        logger.warning(
+            f"[project_prepare] project_id={project_id[:8]}... "
+            f"写 last_error 到 DB 失败: {type(e).__name__}: {e}"
+        )
+
+
+async def _run_prepare_project_in_background(project_id: str) -> None:
+    """
+    后台任务：真正执行 prepare。
+    - 所有异常不往外抛，全部：
+        1) logger.error(exc_info=True)
+        2) 写 last_error 到 progress_json
+        3) 把项目 status 置为 failed（若 stage 不在"有部分 checkpoint 可恢复"的阶段）
+    """
+    try:
+        await _do_prepare_project_async(project_id)
+    except (ValueError, RuntimeError, ChapterSplitError) as e:
+        logger.error(
+            f"[project_prepare] 业务失败 project_id={project_id[:8]}... "
+            f"{type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        await _write_prepare_last_error(project_id, type(e).__name__, str(e))
+        await _mark_project_failed(project_id)
+    except Exception as e:
+        logger.error(
+            f"[project_prepare] 未捕获异常 project_id={project_id[:8]}... "
+            f"{type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        await _write_prepare_last_error(project_id, type(e).__name__, str(e))
+        await _mark_project_failed(project_id)
+    finally:
+        # 从运行中任务集合里移除
+        t = _prepare_running_tasks.pop(project_id, None)
+        if t is not None:
+            # 清理 task 的异常（不然 asyncio 会报 Task exception was never retrieved）
+            try:
+                if not t.done():
+                    pass
+                else:
+                    _ = t.exception()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
+
+async def _mark_project_failed(project_id: str) -> None:
+    """把项目置为 failed，不抛异常。"""
+    factory = get_session_factory()
+    try:
+        async with factory() as sess:
+            proj = await sess.get(Project, project_id)
+            if proj and proj.status not in ("ready", "failed"):
+                proj.status = "failed"
+                await sess.commit()
+    except Exception as e:
+        logger.warning(
+            f"[project_prepare] project_id={project_id[:8]}... "
+            f"写 status=failed 失败: {type(e).__name__}: {e}"
+        )
+
+
+async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
+    """
+    prepare 真正执行逻辑（HTTP 后台任务模式下被 _run_prepare_project_in_background 调用；
+    测试可通过 prepare_project 别名同步等待，便于断言）。
+    触发识别：读文件 → 章节识别 → 角色识别 → 对白归属 → 音色推荐 → 落库。
+    status: imported → preparing → ready（失败时通过外层 try/except 置 failed）
+    """
+    import time as _time
+    t0 = _time.perf_counter()
+    factory = get_session_factory()
+
+    # 1. 取项目
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        if not p:
+            raise ValueError(f"项目不存在: {project_id}")
+        if not p.source_file_path or not os.path.isfile(p.source_file_path):
+            # 缺失导入：先把项目置 failed（便于测试/前端直接看到状态），再抛业务异常
             p.status = "failed"
             await session.commit()
             raise RuntimeError("项目尚未导入源文件，请先调用 /import")
@@ -400,29 +578,42 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
 
         prog = await _read_progress()
 
-        # 4b. 角色识别（50k 切片，逐片 checkpoint）
+        # 4b. 角色识别（50k 切片，逐片 checkpoint + 单切片级异常不崩整体）
         char_slice_size = max(10000, int(settings.LLM_CHAR_EXTRACT_SLICE_SIZE) or 50000)
         char_slices: list[tuple[int, str]] = [
             (i, full_text[i : i + char_slice_size])
             for i in range(0, len(full_text), char_slice_size)
         ]
         completed_slice_idxs: set[int] = set(prog.get("char_slice_completed", []))
+        failed_slice_idxs: dict[str, dict] = dict(prog.get("char_failed_slices", {}) or {})
         char_raw_list: list[dict] = list(prog.get("char_extract_raw_list", []) or [])
+
+        # 写总 slice 数，前端用 completed_n / total_n 做进度条
+        prog["char_slice_total"] = len(char_slices)
+        prog["char_slice_completed_n"] = len(completed_slice_idxs)
+        prog["char_full_text_len"] = len(full_text)
+        await _write_progress(prog)
 
         if prog.get("stage") in ("characters", "dedup", "dialogues", "voice_recs", "done") and char_raw_list:
             logger.info(
                 f"[project_prepare] project_id={project_id[:8]}... "
-                f"命中角色识别 checkpoint：已完成 {len(completed_slice_idxs)}/{len(char_slices)} 切片"
+                f"命中角色识别 checkpoint：已完成 {len(completed_slice_idxs)}/{len(char_slices)} 切片，"
+                f"失败 {len(failed_slice_idxs)} 切片"
             )
         else:
             # 从头开始，重置
             completed_slice_idxs = set()
+            failed_slice_idxs = {}
             char_raw_list = []
             prog = {
                 "version": 1,
                 "stage": "characters",
+                "char_slice_total": len(char_slices),
                 "char_slice_completed": [],
+                "char_slice_completed_n": 0,
+                "char_failed_slices": {},
                 "char_extract_raw_list": [],
+                "char_full_text_len": len(full_text),
                 "dialogue_completed_chapters": [],
             }
             await _write_progress(prog)
@@ -430,6 +621,7 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
         characters_merged: list[Character] = [
             Character(**d) for d in char_raw_list
         ]
+        char_extract_retries = max(0, int(getattr(settings, "CHAR_EXTRACT_RETRY_COUNT", 2) or 0))
         for slice_idx, slice_text in char_slices:
             if slice_idx in completed_slice_idxs:
                 logger.info(
@@ -437,23 +629,79 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
                     f"chars slice {slice_idx+1}/{len(char_slices)} 跳过（checkpoint）"
                 )
                 continue
-            logger.info(
-                f"[project_prepare] project_id={project_id[:8]}... "
-                f"chars slice {slice_idx+1}/{len(char_slices)} chars={len(slice_text)} start"
-            )
-            r = await extract_characters_with_llm(slice_text)
+            prog["stage"] = "characters"
+            prog["char_current_slice"] = {
+                "idx": slice_idx,
+                "start": slice_idx * char_slice_size,
+                "end": slice_idx * char_slice_size + len(slice_text),
+                "slice_len": len(slice_text),
+            }
+            await _write_progress(prog)
+
+            # 单切片重试：默认 2 次（provider 层另有 3 次总兜底），
+            # 仍失败则记入 char_failed_slices，后续重跑 prepare 可自动补跑
+            last_slice_err: str | None = None
+            r: list[Character] = []
+            for attempt in range(char_extract_retries + 1):
+                try:
+                    logger.info(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"chars slice {slice_idx+1}/{len(char_slices)} chars={len(slice_text)} "
+                        f"attempt={attempt+1}/{char_extract_retries+1} start"
+                    )
+                    r = await extract_characters_with_llm(slice_text)
+                    last_slice_err = None
+                    break
+                except Exception as e:
+                    last_slice_err = f"{type(e).__name__}: {e}"
+                    logger.warning(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"chars slice {slice_idx+1}/{len(char_slices)} attempt={attempt+1} "
+                        f"FAIL: {last_slice_err}"
+                    )
+                    # 每次失败都记 checkpoint，前端可看到当前哪片在失败重试
+                    failed_slice_idxs[str(slice_idx)] = {
+                        "slice_idx": int(slice_idx),
+                        "slice_len": len(slice_text),
+                        "retries": attempt + 1,
+                        "last_err": last_slice_err,
+                    }
+                    prog["char_failed_slices"] = failed_slice_idxs
+                    await _write_progress(prog)
+            if last_slice_err is not None:
+                # 重试耗尽：这片角色识别跳过，不写 char_slice_completed，保留在 failed_slices 里
+                # 重跑 prepare 时会自动重试该切片
+                logger.error(
+                    f"[project_prepare] project_id={project_id[:8]}... "
+                    f"chars slice {slice_idx+1}/{len(char_slices)} 全部重试耗尽仍失败，"
+                    f"暂时跳过该切片，重跑 prepare 会自动补跑。"
+                )
+                continue
+            # 该切片成功：从 failed 集合里移除，合并结果，写 checkpoint
+            failed_slice_idxs.pop(str(slice_idx), None)
             characters_merged.extend(r)
             completed_slice_idxs.add(slice_idx)
             char_raw_list.extend([c.model_dump() for c in r])
             prog["stage"] = "characters"
             prog["char_slice_completed"] = sorted(completed_slice_idxs)
+            prog["char_slice_completed_n"] = len(completed_slice_idxs)
             prog["char_extract_raw_list"] = char_raw_list
+            prog["char_failed_slices"] = failed_slice_idxs
+            prog.pop("char_current_slice", None)
             await _write_progress(prog)
             logger.info(
                 f"[project_prepare] project_id={project_id[:8]}... "
                 f"chars slice {slice_idx+1}/{len(char_slices)} done "
                 f"extracted={len(r)} cum_unique_chars={len({c.name for c in characters_merged})}"
             )
+
+        # 角色识别切片全部失败则抛业务异常，避免进入 dedup 阶段
+        if len(completed_slice_idxs) == 0 and len(char_slices) > 0:
+            bad = "; ".join(
+                f"slice {int(k)+1}/{len(char_slices)}: {v.get('last_err')}"
+                for k, v in failed_slice_idxs.items()
+            ) or "无详细错误"
+            raise RuntimeError(f"角色识别全部切片失败（{len(char_slices)} 片）：{bad}")
 
         # 4c. dedup（完成后 checkpoint 跳到 dedup=done）
         if prog.get("stage") in ("dedup", "dialogues", "voice_recs", "done") and prog.get("dedup_done"):
@@ -502,6 +750,11 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
 
         all_attrs_per_chapter: list[list] = [[] for _ in chapters]
         total_dialogues = 0
+
+        # 对白阶段开始：写总章数/总批数到 progress，前端能直接算进度条
+        prog["dialogue_total_chapters"] = len(chapters)
+        prog["dialogue_completed_chapters_count"] = len(completed_ch_idxs)
+        await _write_progress(prog)
 
         # 5a. 先把已完成章节的缓存填入
         for ch_idx in sorted(completed_ch_idxs):
@@ -635,12 +888,18 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
                 # 统一写一次 checkpoint
                 prog["stage"] = "dialogues"
                 prog["dialogue_completed_chapters"] = sorted(completed_ch_idxs)
+                prog["dialogue_completed_chapters_count"] = len(completed_ch_idxs)
+                prog["dialogue_total_chapters"] = len(chapters)
                 prog["dialogue_attrs_by_chapter_json"] = chapter_attrs_cache
                 prog["dialogue_failed_batches"] = {
                     str(k): v for k, v in failed_batches_by_idx.items()
                 }
                 prog["dialogue_total_batches"] = len(batches)
                 prog["dialogue_failed_batch_count"] = len(failed_batches_by_idx)
+                prog["dialogue_completed_batches_count"] = (
+                    len(batches) - len(failed_batches_by_idx)
+                )
+                prog["dialogue_total_dialogues"] = total_dialogues
                 await _write_progress(prog)
 
             if failed_batches_by_idx:
@@ -793,6 +1052,10 @@ async def prepare_project(project_id: str) -> ProjectPrepareResp:
         raise
 
 
+# 保持旧同步等待 API（测试/脚本使用）；HTTP 路由层改用 trigger_prepare_project（后台任务模式）
+prepare_project = _do_prepare_project_async
+
+
 async def _split_50k_and_run_chars_serial(text: str, coro_fn) -> list[Character]:
     """
     整本小说角色识别：**全量逐 50k 切片串行跑，不截断、不抽样。**
@@ -913,10 +1176,18 @@ async def get_project(project_id: str) -> ProjectDetailResp:
                     for k in (
                         "version",
                         "stage",
+                        "started_at",
                         "updated_at",
+                        "last_error",
+                        "last_error_at",
+                        "last_error_type",
+                        "prev_error",
                         "char_slice_total",
                         "char_slice_completed",
-                        "char_extract_raw_json_count",
+                        "char_slice_completed_n",
+                        "char_current_slice",
+                        "char_failed_slices",
+                        "char_full_text_len",
                         "dedup_done",
                         "dialogue_total_batches",
                         "dialogue_completed_batches_count",
@@ -925,25 +1196,37 @@ async def get_project(project_id: str) -> ProjectDetailResp:
                         "dialogue_completed_chapters_count",
                         "dialogue_total_chapters",
                         "dialogue_failed_batches",
+                        "dialogue_total_dialogues",
                         "voice_recs_done",
                         "voice_recs_count",
                     ):
                         if k in prog:
                             prepare_progress[k] = prog[k]
                     # 计数派生字段（前端方便用）
-                    if "char_slice_completed" in prog:
+                    if "char_slice_completed" in prog and "char_completed_n" not in prepare_progress:
                         prepare_progress.setdefault(
                             "char_completed_n", len(prog["char_slice_completed"])
                         )
-                    if prepare_progress.get("dialogue_completed_chapters") is not None:
+                    if (
+                        prepare_progress.get("dialogue_completed_chapters") is not None
+                        and "dialogue_completed_chapters_n" not in prepare_progress
+                    ):
                         prepare_progress.setdefault(
                             "dialogue_completed_chapters_n",
                             len(prepare_progress["dialogue_completed_chapters"]),
                         )
-                    if prepare_progress.get("dialogue_failed_batches") is not None:
+                    if (
+                        prepare_progress.get("dialogue_failed_batches") is not None
+                        and "dialogue_failed_batches_n" not in prepare_progress
+                    ):
                         prepare_progress.setdefault(
                             "dialogue_failed_batches_n",
                             len(prepare_progress["dialogue_failed_batches"]),
+                        )
+                    if isinstance(prepare_progress.get("char_failed_slices"), dict):
+                        prepare_progress.setdefault(
+                            "char_failed_slices_n",
+                            len(prepare_progress["char_failed_slices"]),
                         )
             except Exception:
                 prepare_progress = None
