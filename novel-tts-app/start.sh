@@ -19,7 +19,15 @@ fi
 
 BIND_HOST="${BIND_HOST:-127.0.0.1}"
 PORT="${PORT:-8000}"
+# ⚠️  UVICORN_TIMEOUT 语义：ASGI/uvicorn 侧 **TCP keep-alive 空闲超时**（秒）。
+#     它 ≠ 「一个 HTTP 请求允许跑多久」。想让一个接口撑 30 分钟，应走 202+后台任务+轮询
+#     （prepare / builds 已经是这种模式），不要靠把这里改成 0（无穷大）解决。
+#     设成 0 的副作用：半关闭/断网/NAT 超时后产生的僵尸 TCP 连接永远不回收，
+#     最终吃满文件句柄 / asyncio 事件循环负载。
 UVICORN_TIMEOUT="${UVICORN_TIMEOUT:-600}"
+if [ "$UVICORN_TIMEOUT" = "0" ]; then
+  echo "[WARNING] UVICORN_TIMEOUT=0（keep-alive 无穷大）会导致僵尸连接堆积，建议改为 300~3600。" >&2
+fi
 
 # 1. 目录
 mkdir -p data/audio
