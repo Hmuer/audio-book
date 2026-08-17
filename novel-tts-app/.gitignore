@@ -25,6 +25,9 @@ backend/.env
 data/app.db
 data/audio/*.mp3
 data/audio/*.wav
+# 运行时日志（RotatingFileHandler 写入）
+data/logs/
+backend/data/
 
 # OS
 .DS_Store

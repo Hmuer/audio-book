@@ -30,7 +30,7 @@ if [ "$UVICORN_TIMEOUT" = "0" ]; then
 fi
 
 # 1. 目录
-mkdir -p data/audio
+mkdir -p data/audio data/logs
 
 # 2. 前端构建（缓存）
 if [ ! -d frontend/out ] || [ ! -f frontend/out/index.html ]; then

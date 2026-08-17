@@ -89,6 +89,17 @@ class Settings(BaseSettings):
     STRICT_PROD_SECURITY: bool = False
 
     # =====================================================================
+    # 日志：默认同时输出到 stdout 和文件（RotatingFileHandler 10MB×5）
+    # - LOG_FILE 为相对路径时，相对进程工作目录（即 start.sh 的 PROJ_DIR）
+    # - 置空字符串 → 不落盘，只走 stdout
+    # - LOG_LEVEL 支持 DEBUG / INFO / WARNING / ERROR
+    # =====================================================================
+    LOG_FILE: str = "./data/logs/app.log"
+    LOG_LEVEL: str = "INFO"
+    LOG_MAX_BYTES: int = 10 * 1024 * 1024  # 10 MB
+    LOG_BACKUP_COUNT: int = 5
+
+    # =====================================================================
     # 章节切分（正则驱动，完全不调 LLM）
     # =====================================================================
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 import logging
+import os
 import re
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -12,11 +14,55 @@ from .db.session import init_db
 from .api.routes import router as api_router, auth_router, public_router
 from .services.auth import seed_admin_user
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-5s | %(name)s:%(lineno)d | %(message)s",
+# ---------------------------------------------------------------------------
+# 日志配置：同时输出到 stdout 和文件（RotatingFileHandler，10MB × 5 份）
+# - LOG_FILE="" 时只走 stdout，不落盘
+# - 文件 UTF-8，避免中文字符 ??? 替换
+# - 解决 502/prepare 异常时"关掉终端日志就丢"的问题
+# ---------------------------------------------------------------------------
+_LOG_FMT = logging.Formatter(
+    "%(asctime)s | %(levelname)-5s | %(name)s:%(lineno)d | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+_log_level = getattr(logging, (settings.LOG_LEVEL or "INFO").upper(), logging.INFO)
+
+# 根 logger：先清掉 uvicorn/pytest 可能预挂的 handler，避免重复行
+_root = logging.getLogger()
+for _h in list(_root.handlers):
+    _root.removeHandler(_h)
+_root.setLevel(_log_level)
+
+# 1) stdout handler
+_stream_h = logging.StreamHandler()
+_stream_h.setLevel(_log_level)
+_stream_h.setFormatter(_LOG_FMT)
+_root.addHandler(_stream_h)
+
+# 2) 文件 handler（默认 ./data/logs/app.log，10MB × 5 份滚动）
+if settings.LOG_FILE:
+    try:
+        _log_path = Path(settings.LOG_FILE)
+        # 相对路径相对进程 CWD 解析；父目录不存在则自动创建
+        _log_path.parent.mkdir(parents=True, exist_ok=True)
+        _file_h = RotatingFileHandler(
+            filename=str(_log_path),
+            maxBytes=settings.LOG_MAX_BYTES,
+            backupCount=settings.LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+        _file_h.setLevel(_log_level)
+        _file_h.setFormatter(_LOG_FMT)
+        _root.addHandler(_file_h)
+        # 用 print 不走 logging，避免首行自己被过滤；给部署者一个明确指向
+        print(
+            f"[logger] 文件日志已启用: {str(_log_path)} "
+            f"(level={logging.getLevelName(_log_level)}, "
+            f"maxBytes={settings.LOG_MAX_BYTES}, backupCount={settings.LOG_BACKUP_COUNT})",
+            flush=True,
+        )
+    except Exception as _e:  # 权限/路径不可写时，不能把整个 app 拖崩
+        print(f"[logger][WARN] 启用文件日志失败，回退仅 stdout: {_e}", flush=True)
+
 logger = logging.getLogger("novel-tts")
 
 # 屏蔽 httpx 内部 INFO 级别的请求日志（我们自己会在 provider 层打更有上下文的日志）
