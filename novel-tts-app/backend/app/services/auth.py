@@ -264,6 +264,8 @@ async def change_password(
     if is_admin_self_change:
         if not verify_password(old_password, user.password_hash):
             raise ValueError("旧密码错误")
+        if new_password == old_password:
+            raise ValueError("新密码不能与原密码相同")
 
     if len(new_password) < 8:
         raise ValueError("新密码长度至少 8 位")
