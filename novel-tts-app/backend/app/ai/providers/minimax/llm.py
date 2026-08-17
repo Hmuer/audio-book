@@ -76,11 +76,17 @@ class MiniMaxLLMProvider(BaseLLMProvider):
         )
 
         last_err: Optional[Exception] = None
+        # thinking 循环检测：M2.x 的 thinking 可能陷入重复循环耗尽 max_tokens，
+        # 导致 content 为空。检测到后重试时切换到 M3（可真正关闭 thinking）。
+        thinking_loop_detected = False
         for attempt in range(1, max_retries + 1):
             t0 = _time.perf_counter()
             req_id: Optional[str] = None
             http_status: Optional[int] = None
             is_rate_limited = False
+            # 检测到 thinking 循环时，重试切换到 M3（可真正关闭 thinking，不会循环）
+            use_model = self.model_pro if thinking_loop_detected else model
+            use_reasoning_split = not thinking_loop_detected
             try:
                 # 关键：在 semaphore 内发请求，限流同时并发的 HTTP 调用数
                 # 业务层 asyncio.gather 多个 LLM 调用时，这里会强制排队
@@ -93,7 +99,7 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                                 "Content-Type": "application/json",
                             },
                             json={
-                                "model": model,
+                                "model": use_model,
                                 "temperature": min(temperature + (attempt - 1) * 0.1, 1.0),
                                 "max_tokens": max_tokens,
                                 "messages": [
@@ -111,12 +117,12 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                                 # thinking 控制（参考官方文档 thinking 控制章节）：
                                 # - M3: thinking 默认 adaptive 开启，传 disabled 可关闭
                                 # - M2.x: 官方明确说明 thinking 无法关闭，disabled 不生效
-                                # 因此对 M2.x 改用 reasoning_split=true：把 thinking 内容
-                                # 拆分到 reasoning_content 字段，让 content 保持干净 JSON，
-                                # 从源头避免 thinking 污染 content 导致 JSON 解析失败。
-                                # 对 M3 无副作用（thinking 已 disabled，无 thinking 可拆）。
+                                # 对 M2.x 用 reasoning_split=true：把 thinking 拆分到
+                                # reasoning_content，让 content 保持干净 JSON。
+                                # 检测到 thinking 循环时切换到 M3 + 关闭 reasoning_split，
+                                # M3 可真正关 thinking，不会循环。
                                 "thinking": {"type": "disabled"},
-                                "reasoning_split": True,
+                                "reasoning_split": use_reasoning_split,
                             },
                         )
                     http_status = resp.status_code
@@ -148,10 +154,22 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                     completion_tokens = usage.get("completion_tokens")
                     total_tokens = usage.get("total_tokens")
                     msg_obj = data.get("choices", [{}])[0].get("message", {})
+                    finish_reason = data.get("choices", [{}])[0].get("finish_reason")
                     raw_content = msg_obj.get("content", "") or ""
                     content = raw_content
                     resp_chars = len(content)
                     if not content.strip():
+                        # thinking 循环检测：finish_reason='length' + content 空 +
+                        # reasoning_content 有内容 → M2.x thinking 陷入重复循环耗尽 token
+                        # 标记后重试切换到 M3（可真正关闭 thinking）
+                        reasoning_present = bool(msg_obj.get("reasoning_content"))
+                        if finish_reason == "length" and reasoning_present:
+                            thinking_loop_detected = True
+                            raise ValueError(
+                                f"LLM thinking 陷入循环耗尽 token "
+                                f"(finish_reason={finish_reason} reasoning_chars={len(msg_obj.get('reasoning_content', ''))}): "
+                                f"重试将切换到 {self.model_pro}"
+                            )
                         raise ValueError(f"Empty LLM response: {data}")
 
                     import re as _re
@@ -285,7 +303,7 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                         if total_tokens is not None else "tok=N/A"
                     )
                     logger.info(
-                        f"[LLM] ok model={model} schema={schema_name} attempt={attempt}/{max_retries} "
+                        f"[LLM] ok model={use_model} schema={schema_name} attempt={attempt}/{max_retries} "
                         f"req_id={req_id} status={http_status} {tok_str} "
                         f"resp_chars={resp_chars} this_ms={int(elapsed*1000)} total_ms={int(total_elapsed*1000)}"
                     )
@@ -297,7 +315,7 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                 is_last = attempt == max_retries
                 lvl = logging.ERROR if is_last else logging.WARNING
                 msg = (
-                    f"[LLM] FAIL model={model} schema={schema_name} attempt={attempt}/{max_retries} "
+                    f"[LLM] FAIL model={use_model} schema={schema_name} attempt={attempt}/{max_retries} "
                     f"req_id={req_id} status={http_status} this_ms={int(elapsed*1000)} "
                     f"{type(e).__name__}: {e}"
                 )
@@ -317,7 +335,7 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                         await asyncio.sleep(1.0 * attempt)
         total_elapsed = _time.perf_counter() - total_start
         logger.error(
-            f"[LLM] all {max_retries} attempts exhausted model={model} schema={schema_name} "
+            f"[LLM] all {max_retries} attempts exhausted model={use_model} schema={schema_name} "
             f"prompt_chars={prompt_chars} total_ms={int(total_elapsed*1000)}"
         )
         assert last_err is not None
