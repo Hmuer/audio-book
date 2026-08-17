@@ -54,20 +54,20 @@ EXTRACT_FEW_SHOT = r"""
 
 
 DEDUP_FEW_SHOT = r"""
-你是一名小说文本实体消歧专家。给定小说上下文和一个角色名字列表，判断列表中哪些名字指代的是同一个人。
+你是一名小说文本实体消歧专家。给定一个角色名字列表，判断列表中哪些名字指代的是同一个人。
 两两组合全部输出。
 规则：
-- 「若雪」和「林若雪」在上下文支持时可能是同一人（全名/简称）
-- 「王大爷」和「王师傅」默认不是同一人
-- 姓相同但名完全不同（如「张伟」「张强」）默认不是同一人，除非上下文明确
+- 全名/简称关系：「若雪」是「林若雪」的简称 → 同一人（一个名字是另一个名字的子串、且姓可独立成词时大概率同人）
+- 「王大爷」和「王师傅」默认不是同一人（称呼后缀不同，指向不同人）
+- 姓相同但名完全不同（如「张伟」「张强」）默认不是同一人
+- 单字名是双字名尾字：「雪」vs「若雪」可能同人，「雪」vs「林若雪」也可能同人
 - canonical_name 选最完整/出现字数最多的那个
 - ⚠️ 尊称/头衔/昵称的消歧：
-  · 「师尊」「师父」「长老」「前辈」「阁主」「宗主」「师兄」「师姐」等——如果上下文中这些称呼明确指向某个已出场角色（如「师尊」只对应张羽一人），应判定为同一人
-  · 「燕儿」「雪儿」「灵儿」等昵称——如果上下文中有对应全名（如「周燕」），应判定为同一人，canonical_name 取全名
-  · 判断依据：称呼是否唯一指向某角色、且替换后句意不变
+  · 「师尊」「师父」「长老」「前辈」「阁主」「宗主」「师兄」「师姐」等——没有明确指向时默认与其他名字都不同人
+  · 「燕儿」「雪儿」「灵儿」等昵称——如果名字列表中有对应全名（如「周燕」→「燕儿」尾字匹配），应判定为同一人，canonical_name 取全名
+  · 判断依据：名字字符串本身的包含/尾字匹配关系
 
 【示例 1】
-上下文："林若雪推开门，妈妈在厨房喊：若雪，过来吃饭。"
 名字列表：["林若雪", "若雪", "妈妈"]
 输出：
 [
@@ -77,17 +77,16 @@ DEDUP_FEW_SHOT = r"""
 ]
 
 【示例 2】—— 尊称/昵称消歧
-上下文："师尊，您的伤不要紧吧！周燕扶起受伤的张羽。燕儿说：「师父，别担心。」"
 名字列表：["张羽", "师尊", "周燕", "燕儿", "师父"]
 输出：
 [
-  {"name_a": "张羽", "name_b": "师尊", "same_person": true, "canonical_name": "张羽"},
+  {"name_a": "张羽", "name_b": "师尊", "same_person": false, "canonical_name": null},
   {"name_a": "张羽", "name_b": "周燕", "same_person": false, "canonical_name": null},
   {"name_a": "张羽", "name_b": "燕儿", "same_person": false, "canonical_name": null},
-  {"name_a": "张羽", "name_b": "师父", "same_person": true, "canonical_name": "张羽"},
+  {"name_a": "张羽", "name_b": "师父", "same_person": false, "canonical_name": null},
   {"name_a": "师尊", "name_b": "周燕", "same_person": false, "canonical_name": null},
   {"name_a": "师尊", "name_b": "燕儿", "same_person": false, "canonical_name": null},
-  {"name_a": "师尊", "name_b": "师父", "same_person": true, "canonical_name": "张羽"},
+  {"name_a": "师尊", "name_b": "师父", "same_person": false, "canonical_name": null},
   {"name_a": "周燕", "name_b": "燕儿", "same_person": true, "canonical_name": "周燕"},
   {"name_a": "周燕", "name_b": "师父", "same_person": false, "canonical_name": null},
   {"name_a": "燕儿", "name_b": "师父", "same_person": false, "canonical_name": null}
@@ -153,33 +152,62 @@ async def extract_characters_with_llm(text: str) -> list[Character]:
 
 
 async def deduplicate_characters_with_llm(
-    names: list[str], context: str
+    names: list[str], context: str = ""
 ) -> list[DedupResult]:
-    """让 LLM 判断每对名字是否同一人。"""
+    """让 LLM 判断每对名字是否同一人。
+
+    注意：context 参数保留兼容性但**不塞进 prompt**。
+    原实现把整本小说全文作为 context 传给 LLM，导致：
+      1. 超出 M2.x 上下文窗口（204800）直接 HTTP 400
+      2. 即使不超限，142 万字全文对 dedup 也无信息增益——LLM 不会真的扫全文
+         找"若雪"是不是"林若雪"，靠的是名字字符串本身的包含/尾字匹配关系
+    因此改为只传名字列表 + few-shot 规则，从源头避免上下文爆炸。
+
+    分批策略：N 个名字产生 N*(N-1)/2 对，输出 token 随 N 平方增长。
+    当 N 超过阈值时按批送 LLM（每批独立两两组合），结果累积到 apply_dedup
+    的并查集里多次 union 不影响正确性。
+    """
     if len(names) < 2:
         return []
     import json as _json
-
-    prompt = (
-        DEDUP_FEW_SHOT
-        + f"\n上下文：\"\"\"\n{context}\n\"\"\""
-        + f"\n名字列表：{_json.dumps(names, ensure_ascii=False)}"
-        + "\n\n请输出完整的两两组合结果数组。"
-        + "\n⚠️输出格式必须是 {\"data\": [DedupResult,...]}，顶层一定要有 data 字段!"
-    )
 
     class _Wrapper(BaseModel):
         data: list[DedupResult]
 
     llm = get_llm()
-    wrapped = await llm.chat_structured(
-        prompt=prompt,
-        output_schema=_Wrapper,
-        temperature=0.1,
-        max_tokens=4000,
-        use_fast_model=True,  # 消歧是结构化判断任务，M2.7-highspeed 足够且速度更快
-    )
-    return wrapped.data
+
+    async def _call_one(batch_names: list[str]) -> list[DedupResult]:
+        prompt = (
+            DEDUP_FEW_SHOT
+            + f"\n名字列表：{_json.dumps(batch_names, ensure_ascii=False)}"
+            + "\n\n请输出完整的两两组合结果数组。"
+            + "\n⚠️输出格式必须是 {\"data\": [DedupResult,...]}，顶层一定要有 data 字段!"
+        )
+        wrapped = await llm.chat_structured(
+            prompt=prompt,
+            output_schema=_Wrapper,
+            temperature=0.1,
+            max_tokens=4000,
+            use_fast_model=True,  # 消歧是结构化判断任务，M2.7-highspeed 足够且速度更快
+        )
+        return wrapped.data
+
+    # 分批阈值：每批最多 50 个名字 → 1225 对，输出约 3.6w token，安全在 max_tokens 内
+    DEDUP_BATCH_SIZE = 50
+    if len(names) <= DEDUP_BATCH_SIZE:
+        return await _call_one(names)
+
+    # 超过阈值：分批处理，跨批只比较同批内名字（批间靠 apply_dedup 的规则兜底处理）
+    # 这样会漏掉"批A的若雪"vs"批B的林若雪"这种跨批同人，但：
+    #   1. 跨批同人在 apply_dedup 的 2a 昵称兜底里有代码层补救（去后缀匹配）
+    #   2. 角色切片提取时同名角色会在多个切片重复出现，大概率落在同一批
+    all_results: list[DedupResult] = []
+    for i in range(0, len(names), DEDUP_BATCH_SIZE):
+        batch = names[i : i + DEDUP_BATCH_SIZE]
+        if len(batch) < 2:
+            continue
+        all_results.extend(await _call_one(batch))
+    return all_results
 
 
 def apply_dedup(

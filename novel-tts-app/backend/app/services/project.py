@@ -794,7 +794,9 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         else:
             if len(characters_merged) >= 2:
                 names = [c.name for c in characters_merged]
-                dedup_results = await deduplicate_characters_with_llm(names, full_text)
+                # dedup 不再传全文：原实现把 142 万字全文塞给 M2.x（204800 上下文）
+                # 直接 HTTP 400；且全文对 dedup 无信息增益，靠名字字符串本身判断即可
+                dedup_results = await deduplicate_characters_with_llm(names)
                 characters, name_map = apply_dedup(characters_merged, dedup_results)
             else:
                 characters = characters_merged
