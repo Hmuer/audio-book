@@ -141,7 +141,8 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                     completion_tokens = usage.get("completion_tokens")
                     total_tokens = usage.get("total_tokens")
                     msg_obj = data.get("choices", [{}])[0].get("message", {})
-                    content = msg_obj.get("content", "") or ""
+                    raw_content = msg_obj.get("content", "") or ""
+                    content = raw_content
                     resp_chars = len(content)
                     if not content.strip():
                         raise ValueError(f"Empty LLM response: {data}")
@@ -180,7 +181,12 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                             stripped = reasoning.strip()
 
                     if not stripped:
-                        raise ValueError(f"LLM 响应仅含 thinking 无有效内容: {content[:500]}")
+                        # 诊断盲点：打印原始 content（剥离前），便于看 LLM 实际返回了什么
+                        raise ValueError(
+                            f"LLM 响应仅含 thinking 无有效内容 "
+                            f"(resp_chars={resp_chars} reasoning_present={bool(msg_obj.get('reasoning_content'))}): "
+                            f"{raw_content[:500]}"
+                        )
 
                     # 3) 去掉 markdown 代码块包裹
                     if stripped.startswith("```"):
@@ -252,7 +258,7 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                         blob = _extract_json_blob(stripped)
                         if blob is None:
                             logger.error(
-                                f"[LLM] JSON parse failed, raw content (first 1000 chars): {content[:1000]}"
+                                f"[LLM] JSON parse failed, raw content (first 1000 chars): {raw_content[:1000]}"
                             )
                             raise
                         try:
@@ -260,7 +266,7 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                         except json.JSONDecodeError:
                             logger.error(
                                 f"[LLM] JSON parse failed after blob extraction, "
-                                f"raw content (first 1000 chars): {content[:1000]}"
+                                f"raw content (first 1000 chars): {raw_content[:1000]}"
                             )
                             raise
 
