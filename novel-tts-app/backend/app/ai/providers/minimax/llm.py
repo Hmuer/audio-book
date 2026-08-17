@@ -148,26 +148,29 @@ class MiniMaxLLMProvider(BaseLLMProvider):
 
                     import re as _re
 
-                    # 1) 剥离 thinking 标签（MiniMax M3/M2.x 可能嵌入 content）
-                    #    同时兼容 <think>…</think> 和 <thinking>…</thinking> 两种写法，
-                    #    支持大小写，支持 thinking 块出现在 JSON 之前/之后/多次
-                    _TAG_RE = _re.compile(
-                        r"</?t(?:hink|hinking)\b[^>]*>",
+                    # 1) 剥离 thinking / RichMediaReference 等非 JSON 内容块
+                    #    MiniMax M2.x/M3 即便请求里关了 thinking，仍可能把"思考过程"
+                    #    塞进 content：表现为 …、<thinking>…</thinking>
+                    #    或 <RichMediaReference>…</RichMediaReference>（M2.7-highspeed
+                    #    实测会把 prompt 复述包进 RichMediaReference），导致 JSON 解析失败。
+                    #    统一成对剥离 + 残留孤立标签清理；支持大小写、跨多行、多次出现。
+                    _LONE_TAG_RE = _re.compile(
+                        r"</?(?:t(?:hink|hinking)|RichMediaReference)\b[^>]*>",
                         flags=_re.IGNORECASE,
                     )
-                    # 先暴力把成对 think/thinking 内容整体去掉（含跨多行）
-                    for _tag_pair in (
+                    # 先暴力把成对标签块整体去掉（含跨多行）
+                    for _open, _close in (
                         (r"<think\b[^>]*>", r"</think\s*>"),
                         (r"<thinking\b[^>]*>", r"</thinking\s*>"),
+                        (r"<RichMediaReference\b[^>]*>", r"</RichMediaReference\s*>"),
                     ):
-                        _open, _close = _tag_pair
                         _p = _re.compile(
                             f"{_open}.*?{_close}",
                             flags=_re.DOTALL | _re.IGNORECASE,
                         )
                         content = _p.sub("", content)
                     # 再清掉任何残留的孤立标签（比如缺右标签的脏响应）
-                    content = _TAG_RE.sub("", content)
+                    content = _LONE_TAG_RE.sub("", content)
                     stripped = content.strip()
 
                     # 2) 若剥离后为空，尝试 reasoning_content 字段

@@ -765,6 +765,14 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 f"extracted={len(r)} cum_unique_chars={len({c.name for c in characters_merged})}"
             )
 
+        # 角色识别切片循环结束：若有失败切片，输出汇总 WARNING 便于排查
+        if len(failed_slice_idxs) > 0:
+            logger.warning(
+                f"[project_prepare] project_id={project_id[:8]}... "
+                f"角色识别阶段完成，但 {len(failed_slice_idxs)}/{len(char_slices)} 切片失败已跳过，"
+                f"重跑 prepare 会自动补跑这些切片。"
+            )
+
         # 角色识别切片全部失败则抛业务异常，避免进入 dedup 阶段
         if len(completed_slice_idxs) == 0 and len(char_slices) > 0:
             bad = "; ".join(
