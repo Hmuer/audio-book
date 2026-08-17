@@ -1,0 +1,18 @@
+# IDE / 插件临时文件
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Trae 浏览器插件生成的临时共享产物（不是源码，不应入库）
+.trae-html-share-packages/
+
+# 虚拟环境 & node 依赖
+**/.venv/
+**/node_modules/
+
+# 构建缓存
+**/.next/
+**/__pycache__/
+**/*.pyc
+frontend/tsconfig.tsbuildinfo
