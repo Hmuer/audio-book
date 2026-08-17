@@ -187,13 +187,15 @@ async def deduplicate_characters_with_llm(
             prompt=prompt,
             output_schema=_Wrapper,
             temperature=0.1,
-            max_tokens=4000,
+            max_tokens=16384,  # 配合 DEDUP_BATCH_SIZE=20：190 对×~60 token≈11.4k，安全在 16k 内
             use_fast_model=True,  # 消歧是结构化判断任务，M2.7-highspeed 足够且速度更快
         )
         return wrapped.data
 
-    # 分批阈值：每批最多 50 个名字 → 1225 对，输出约 3.6w token，安全在 max_tokens 内
-    DEDUP_BATCH_SIZE = 50
+    # token 预算：每对 DedupResult JSON 约 80 字符 ≈ 60 token（中文 ~1.3 字符/token）
+    #   max_tokens=16384 → 最多约 273 对 → N*(N-1)/2 ≤ 273 → N ≤ 23
+    #   保守取 20：20*19/2=190 对 × 60 token ≈ 11400，在 16k 内有安全余量
+    DEDUP_BATCH_SIZE = 20
     if len(names) <= DEDUP_BATCH_SIZE:
         return await _call_one(names)
 
