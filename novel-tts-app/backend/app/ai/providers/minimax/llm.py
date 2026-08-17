@@ -148,13 +148,27 @@ class MiniMaxLLMProvider(BaseLLMProvider):
 
                     import re as _re
 
-                    # 1) 剥离 thinking 标签（MiniMax M3/M2.x 默认在 content 内嵌入）
-                    stripped = _re.sub(
-                        r"<thinking>.*?</thinking>",
-                        "",
-                        content,
-                        flags=_re.DOTALL,
-                    ).strip()
+                    # 1) 剥离 thinking 标签（MiniMax M3/M2.x 可能嵌入 content）
+                    #    同时兼容 <think>…</think> 和 <thinking>…</thinking> 两种写法，
+                    #    支持大小写，支持 thinking 块出现在 JSON 之前/之后/多次
+                    _TAG_RE = _re.compile(
+                        r"</?t(?:hink|hinking)\b[^>]*>",
+                        flags=_re.IGNORECASE,
+                    )
+                    # 先暴力把成对 think/thinking 内容整体去掉（含跨多行）
+                    for _tag_pair in (
+                        (r"<think\b[^>]*>", r"</think\s*>"),
+                        (r"<thinking\b[^>]*>", r"</thinking\s*>"),
+                    ):
+                        _open, _close = _tag_pair
+                        _p = _re.compile(
+                            f"{_open}.*?{_close}",
+                            flags=_re.DOTALL | _re.IGNORECASE,
+                        )
+                        content = _p.sub("", content)
+                    # 再清掉任何残留的孤立标签（比如缺右标签的脏响应）
+                    content = _TAG_RE.sub("", content)
+                    stripped = content.strip()
 
                     # 2) 若剥离后为空，尝试 reasoning_content 字段
                     if not stripped:
@@ -172,18 +186,80 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                             stripped = stripped[4:]
                         stripped = stripped.strip()
 
+                    def _extract_json_blob(s: str) -> str | None:
+                        """用平衡花括号/方括号扫描，找第一个**合法可解析**的 JSON 对象或数组。
+                        比起 r'\{.*\}' 这种贪婪匹配，能避免 thinking 残留里包含
+                        单个 { 或 "xxx": "{" 这种导致的误匹配；同时会在多个平衡候选中
+                        逐个尝试 json.loads，跳过那些括号平衡但内容非法（缺逗号、引号）的片段。
+                        """
+                        n = len(s)
+                        candidates: list[tuple[int, int, str]] = []  # (start, end, first_char)
+                        i = 0
+                        while i < n:
+                            ch = s[i]
+                            if ch not in "[{":
+                                i += 1
+                                continue
+                            open_ch = ch
+                            close_ch = "]" if open_ch == "[" else "}"
+                            depth = 0
+                            in_str = False
+                            escape_next = False
+                            j = i
+                            while j < n:
+                                c = s[j]
+                                if in_str:
+                                    if escape_next:
+                                        escape_next = False
+                                    elif c == "\\":
+                                        escape_next = True
+                                    elif c == '"':
+                                        in_str = False
+                                else:
+                                    if c == '"':
+                                        in_str = True
+                                    elif c == open_ch:
+                                        depth += 1
+                                    elif c == close_ch:
+                                        depth -= 1
+                                        if depth == 0:
+                                            candidates.append((i, j, open_ch))
+                                            break
+                                j += 1
+                            i += 1
+                        if not candidates:
+                            return None
+                        # 起点升序，同起点按长度升序（越短越可能是完整 JSON）
+                        candidates.sort(key=lambda t: (t[0], t[1] - t[0]))
+                        # 逐个尝试，返回第一个真正能 parse 的 blob
+                        for start, end, _ in candidates:
+                            blob = s[start : end + 1]
+                            try:
+                                json.loads(blob)  # 仅验证可解析性
+                                return blob
+                            except (json.JSONDecodeError, ValueError):
+                                continue
+                        return None
+
                     # 4) 尝试解析 JSON
                     try:
                         parsed = json.loads(stripped)
                     except json.JSONDecodeError:
-                        # 5) 最后 fallback：用正则提取第一个 JSON 对象
-                        json_match = _re.search(r'\{.*\}', stripped, _re.DOTALL)
-                        if not json_match:
+                        # 5) fallback：用平衡括号扫描提取真实 JSON 块
+                        blob = _extract_json_blob(stripped)
+                        if blob is None:
                             logger.error(
                                 f"[LLM] JSON parse failed, raw content (first 1000 chars): {content[:1000]}"
                             )
                             raise
-                        parsed = json.loads(json_match.group(0))
+                        try:
+                            parsed = json.loads(blob)
+                        except json.JSONDecodeError:
+                            logger.error(
+                                f"[LLM] JSON parse failed after blob extraction, "
+                                f"raw content (first 1000 chars): {content[:1000]}"
+                            )
+                            raise
 
                     validated = output_schema.model_validate(parsed)
                     elapsed = _time.perf_counter() - t0
