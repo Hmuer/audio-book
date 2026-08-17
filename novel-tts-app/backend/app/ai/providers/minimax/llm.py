@@ -108,8 +108,15 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                                         "strict": False,
                                     },
                                 },
-                                # 关闭 thinking：json_schema 模式下 thinking 会污染 content 导致 JSON 解析失败
+                                # thinking 控制（参考官方文档 thinking 控制章节）：
+                                # - M3: thinking 默认 adaptive 开启，传 disabled 可关闭
+                                # - M2.x: 官方明确说明 thinking 无法关闭，disabled 不生效
+                                # 因此对 M2.x 改用 reasoning_split=true：把 thinking 内容
+                                # 拆分到 reasoning_content 字段，让 content 保持干净 JSON，
+                                # 从源头避免 thinking 污染 content 导致 JSON 解析失败。
+                                # 对 M3 无副作用（thinking 已 disabled，无 thinking 可拆）。
                                 "thinking": {"type": "disabled"},
+                                "reasoning_split": True,
                             },
                         )
                     http_status = resp.status_code
