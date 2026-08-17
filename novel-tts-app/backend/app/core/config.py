@@ -13,7 +13,9 @@ class Settings(BaseSettings):
     LLM_API_KEY: str
     LLM_BASE_URL: str = "https://api.minimaxi.com/v1"
     LLM_MODEL_PRO: str = "MiniMax-M3"
-    LLM_MODEL_FAST: str = "MiniMax-M2.7-highspeed"
+    # fast 模型也用 M3：M2.x 的 thinking 无法关闭，会偶发陷入循环耗尽 token；
+    # M3 可通过 thinking:{type:disabled} 真正关闭 thinking，反而更快更稳。
+    LLM_MODEL_FAST: str = "MiniMax-M3"
 
     # Server
     ENV: str = "dev"  # dev / test / prod / stage
