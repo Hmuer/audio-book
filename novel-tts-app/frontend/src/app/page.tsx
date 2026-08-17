@@ -1,14 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTheme } from '@/components/ThemeContext';
 import { useAuth } from '@/components/AuthContext';
-import ProjectListPage from '@/components/ProjectListPage';
+import ProjectListPage, { RunningTasksBar } from '@/components/ProjectListPage';
 import ProjectWizard from '@/components/ProjectWizard';
 import ProjectDetailPage from '@/components/ProjectDetailPage';
 import LoginPage from '@/components/LoginPage';
 import UserMenu from '@/components/UserMenu';
-import { api, Voice } from '@/lib/api';
+import { api, ProjectListItem, Voice } from '@/lib/api';
 
 // hash 路由解析后的路由对象（移除 single/book，只留项目制 + 登录）
 type Route =
@@ -37,6 +37,11 @@ export default function HomePage() {
   const [route, setRoute] = useState<Route>({ name: 'projects-list' });
   const [voices, setVoices] = useState<Voice[]>([]);
 
+  // 全局项目列表快照：用于 sticky 顶部条展示 N 个后台识别/合成任务
+  // （Wizard / 项目详情页不显示项目卡片，但用户仍可能想看到后台仍在跑）
+  const [globalProjects, setGlobalProjects] = useState<ProjectListItem[] | null>(null);
+  const globalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // 监听 hashchange + 初始化同步
   useEffect(() => {
     setRoute(parseHash());
@@ -49,10 +54,8 @@ export default function HomePage() {
   useEffect(() => {
     if (authLoading) return;
     if (!user && route.name !== 'login') {
-      // 未登录且当前不在登录页 → 跳登录
       window.location.hash = '/login';
     } else if (user && route.name === 'login') {
-      // 已登录但停留在登录页 → 跳默认页（项目工作台）
       window.location.hash = '/projects';
     }
   }, [user, authLoading, route.name]);
@@ -66,6 +69,32 @@ export default function HomePage() {
     api.voices()
       .then(setVoices)
       .catch(e => console.error('voices 加载失败:', e));
+  }, [user]);
+
+  // 全局：登录后每 5s 刷新一次项目快照（刷新/重开标签页仍会开始轮询，
+  // 顶部 sticky bar 能立刻显示后台识别进度；和列表页 3s 轮询独立，互不干扰）
+  useEffect(() => {
+    if (!user) {
+      setGlobalProjects(null);
+      return;
+    }
+    let alive = true;
+    const tick = async () => {
+      try {
+        const list = await api.projectList();
+        if (!alive) return;
+        setGlobalProjects(list);
+      } catch (e) {
+        // 全局轮询失败不弹 toast（ProjectListPage 自己会处理）
+        console.warn('全局项目快照刷新失败:', e);
+      }
+    };
+    tick();
+    globalPollRef.current = setInterval(tick, 5000);
+    return () => {
+      alive = false;
+      if (globalPollRef.current) clearInterval(globalPollRef.current);
+    };
   }, [user]);
 
   // 初始化 / 鉴权校验期间，显示 loading
@@ -85,12 +114,19 @@ export default function HomePage() {
     return <LoginPage />;
   }
 
+  // 有后台任务时：无论当前是 Wizard/列表/详情，顶部都先展示一个 sticky 跳转条
+  // 这样"识别开始后关掉 Wizard / 重开浏览器 / 跳到详情页"都随时能看到 & 跳转回对应进度页
+  const runningItems =
+    globalProjects && route.name !== 'projects-list' ? globalProjects : [];
+
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 py-8">
       {/* header */}
       <header className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 cursor-pointer select-none"
+               onClick={() => { window.location.hash = '#/projects'; }}
+               title="回到项目工作台">
             <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-brand-500 to-blue-500 shadow-lg shadow-brand-500/30 grid place-items-center font-bold text-lg">
               声
             </div>
@@ -109,6 +145,11 @@ export default function HomePage() {
           <UserMenu />
         </div>
       </header>
+
+      {/* 全局后台任务条：Wizard / 详情页也显示，跳转入口 */}
+      {route.name !== 'projects-list' && runningItems.length > 0 && (
+        <RunningTasksBar items={runningItems} />
+      )}
 
       {/* 项目工作台（唯一入口） */}
       {route.name === 'projects-list' && <ProjectListPage />}

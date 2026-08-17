@@ -75,6 +75,13 @@ async def lifespan(app: FastAPI):
     logger.info("DB initialized")
     # 启动时确保默认 admin 账号存在
     await seed_admin_user()
+    # 启动 prepare 的启动恢复 + 看门狗：
+    #   - 3s 后扫 DB 中 status=preparing 的项目，从 checkpoint 自动恢复
+    #     （解决服务重启 / uvicorn reload / 杀进程后 status 卡死 preparing）
+    #   - 15s 看门狗轮询：progress.updated_at 超过 PREPARE_STUCK_MINUTES 未更新，
+    #     视为卡死自动恢复
+    from .services.project import ensure_prepare_watchdog_started
+    ensure_prepare_watchdog_started()
     yield
 
 

@@ -283,6 +283,10 @@ export interface ProjectListItem {
   cover_color: string;
   created_at: string;
   updated_at: string;
+  /** prepare 阶段当前 stage（列表页快速显示）。也会同步出现在 prepare_progress.stage。 */
+  prepare_stage?: string | null;
+  /** prepare 进度白名单：刷新/重开标签页后列表直接显示进度条 & 阶段，无需进详情。 */
+  prepare_progress?: PrepareProgress | null;
 }
 
 // 项目详情
@@ -319,6 +323,8 @@ export interface PrepareProgress {
   last_error_at?: string;
   last_error_type?: string;
   prev_error?: { at?: string; msg?: string };
+  /** 服务重启/看门狗自动恢复次数（>0 时前端显示"♻ 自动恢复 × N"） */
+  restart_count?: number;
   // 角色识别进度
   char_slice_total?: number;
   char_slice_completed_n?: number;

@@ -142,6 +142,9 @@ class ProjectListItem(BaseModel):
     updated_at: str | None
     # prepare 阶段当前 stage（用于列表页快速显示"正在识别角色/对白..."）
     prepare_stage: str | None = None
+    # prepare 进度白名单（同 ProjectDetailResp.prepare_progress）—— 列表页直接显示进度条，
+    # 关闭标签页/刷新后用户仍能在项目工作台看到"角色切片 2/60 · 对白批 3/72"等。
+    prepare_progress: dict | None = None
 
 
 class ProjectPrepareResp(BaseModel):
@@ -162,10 +165,30 @@ class ProjectPrepareTriggerResp(BaseModel):
     prepare_progress: dict | None = None
 
 
-# 正在运行的后台 prepare 任务（进程内）：{project_id: asyncio.Task}
-#   - 用于：同一 project 重复触发时取消旧任务、日志查看
-#   - 注意：进程重启后任务丢失，但 checkpoint 在 DB，重跑 trigger_prepare_project 会跳过已完成阶段
-_prepare_running_tasks: dict[str, asyncio.Task] = {}
+# 正在运行的后台 prepare 任务（进程内）
+#   project_id -> {task, start_ts, token}
+#   - token 用来把『看门狗扫描出来的恢复启动』和『用户手动 /prepare 接口触发』区分开
+#     避免同一 pid 被两个入口各开一条 task。
+#   - 注意：进程重启 / uvicorn reload / gunicorn worker 切换 后本 dict 会空，
+#     因此 lifespan startup 会扫 DB status=preparing 的项目，从 checkpoint 恢复。
+_prepare_running_tasks: dict[str, dict] = {}
+
+# prepare 看门狗：如果 progress.updated_at 在 MINUTES 内没变化，且 status 仍为 preparing，
+# 视为任务卡死（可能进程 crash 中间断了），就从 checkpoint 自动恢复/或置 failed。
+PREPARE_STUCK_MINUTES: int = int(getattr(settings, "PREPARE_STUCK_MINUTES", 10) or 10)
+# 启动扫库延迟（秒）：让 DB/事件循环先就绪
+PREPARE_STARTUP_SCAN_DELAY_SECONDS: float = float(
+    getattr(settings, "PREPARE_STARTUP_SCAN_DELAY_SECONDS", 3.0) or 3.0
+)
+# 看门狗轮询间隔（秒）
+PREPARE_WATCHDOG_INTERVAL_SECONDS: float = float(
+    getattr(settings, "PREPARE_WATCHDOG_INTERVAL_SECONDS", 15.0) or 15.0
+)
+# 单项目启动恢复（startup/watchdog 触发）的并发上限，避免一次扫出 N 百个一起跑
+PREPARE_RECOVERY_CONCURRENCY: int = int(
+    getattr(settings, "PREPARE_RECOVERY_CONCURRENCY", 1) or 1
+)
+_watchdog_started = False
 
 
 # =====================================================================
@@ -335,14 +358,7 @@ async def trigger_prepare_project(project_id: str) -> ProjectPrepareTriggerResp:
             raise RuntimeError("项目尚未导入源文件，请先调用 /import")
 
         # 防并发重复触发：若当前进程内已有该项目的后台任务，则先取消旧任务
-        old = _prepare_running_tasks.get(project_id)
-        if old is not None and not old.done():
-            logger.info(
-                f"[project_prepare] project_id={project_id[:8]}... "
-                f"已有正在运行的后台 prepare 任务，先取消旧任务再启动新任务"
-            )
-            old.cancel()
-            _prepare_running_tasks.pop(project_id, None)
+        _cancel_running_prepare_task(project_id, reason="用户重新触发 prepare，取消旧任务")
 
         p.status = "preparing"
         # 触发时先清掉上次的 last_error，写一个初始化 progress（前端能立即看到 stage=start）
@@ -370,8 +386,7 @@ async def trigger_prepare_project(project_id: str) -> ProjectPrepareTriggerResp:
         await session.commit()
 
     # 后台启动真正的 prepare；fire-and-forget，异常全部在内部写 DB
-    task = asyncio.create_task(_run_prepare_project_in_background(project_id))
-    _prepare_running_tasks[project_id] = task
+    _enqueue_prepare_task(project_id, trigger="api")
 
     # 返回 202，透传 progress 给前端
     prepare_progress: dict | None = None
@@ -384,8 +399,56 @@ async def trigger_prepare_project(project_id: str) -> ProjectPrepareTriggerResp:
     return ProjectPrepareTriggerResp(
         project_id=project_id,
         status="preparing",
-        message="已开始后台识别，请稍后刷新项目详情查看进度（阶段：切章 → 角色识别 → 对白归属 → 音色推荐 → 完成）。",
+        message="已开始后台识别，请稍后刷新项目详情查看进度（阶段：切章 → 角色识别 → 对白归属 → 音色推荐 → 完成）。"
+                "关闭标签页/刷新/重新打开浏览器后任务仍继续，可回到『项目工作台』查看进度。",
         prepare_progress=prepare_progress,
+    )
+
+
+def _is_prepare_running_for(project_id: str) -> bool:
+    """当前进程内是否有某 pid 的 prepare 在真的跑着。"""
+    info = _prepare_running_tasks.get(project_id)
+    return bool(info and info["task"] and not info["task"].done())
+
+
+def _cancel_running_prepare_task(project_id: str, reason: str = "") -> None:
+    """取消（如果存在）某 pid 的本地 prepare task，不抛。"""
+    info = _prepare_running_tasks.get(project_id)
+    if info is None:
+        return
+    task = info.get("task")
+    if task and not task.done():
+        logger.info(
+            f"[project_prepare] project_id={project_id[:8]}... 取消正在运行的后台 prepare 任务。"
+            + (f" reason={reason}" if reason else "")
+        )
+        task.cancel()
+    _prepare_running_tasks.pop(project_id, None)
+
+
+def _enqueue_prepare_task(project_id: str, trigger: str) -> None:
+    """
+    启动后台 prepare task 并登记到 _prepare_running_tasks。
+    并发：PREPARE_RECOVERY_CONCURRENCY 目前只用于 startup/watchdog 扫出来的大量项目，
+    接口手动触发的优先级最高，直接并发启动（但每个 pid 至多 1 条）。
+    """
+    if _is_prepare_running_for(project_id):
+        return  # 已经在跑，不重复启动
+    token = f"{trigger}-{os.urandom(4).hex()}"
+    task = asyncio.create_task(
+        _run_prepare_project_in_background(project_id),
+        name=f"prepare:{project_id[:8]}:{trigger}",
+    )
+    import time as _time
+    _prepare_running_tasks[project_id] = {
+        "task": task,
+        "start_ts": _time.time(),
+        "token": token,
+        "trigger": trigger,
+    }
+    logger.info(
+        f"[project_prepare] project_id={project_id[:8]}... 后台任务启动 "
+        f"(trigger={trigger}, token={token})"
     )
 
 
@@ -449,14 +512,21 @@ async def _run_prepare_project_in_background(project_id: str) -> None:
         await _mark_project_failed(project_id)
     finally:
         # 从运行中任务集合里移除
-        t = _prepare_running_tasks.pop(project_id, None)
-        if t is not None:
+        info = _prepare_running_tasks.get(project_id)
+        task = info["task"] if info else None
+        # 只移除"和自己登记时同一条 token"的记录；防止刚清完、别的入口在同一事件循环 tick 里
+        # 又塞了一条新 task（token 不同）被我们误 pop。
+        if info is not None:
+            cur = _prepare_running_tasks.get(project_id)
+            if cur is info:
+                _prepare_running_tasks.pop(project_id, None)
+        if task is not None:
             # 清理 task 的异常（不然 asyncio 会报 Task exception was never retrieved）
             try:
-                if not t.done():
+                if not task.done():
                     pass
                 else:
-                    _ = t.exception()
+                    _ = task.exception()
             except asyncio.CancelledError:
                 pass
             except Exception:
@@ -1056,6 +1126,256 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
 prepare_project = _do_prepare_project_async
 
 
+# =====================================================================
+# 启动恢复 + 看门狗：解决『关闭前端/刷新/服务重启后 preparing 卡死/进度看不见』问题
+# =====================================================================
+
+def _parse_progress(proj: Project) -> dict:
+    try:
+        prog = json.loads(proj.progress_json) if proj.progress_json else {}
+        return prog if isinstance(prog, dict) else {}
+    except Exception:
+        return {}
+
+
+# prepare_progress 向前端透出的白名单字段 + 派生计数（避免把原始对白 checkpoint 的长列表直接拖到列表页）
+_PREPARE_PROGRESS_PUBLIC_KEYS: tuple[str, ...] = (
+    "version",
+    "stage",
+    "started_at",
+    "updated_at",
+    "last_error",
+    "last_error_at",
+    "last_error_type",
+    "prev_error",
+    "restart_count",
+    "char_slice_total",
+    "char_slice_completed",
+    "char_slice_completed_n",
+    "char_current_slice",
+    "char_failed_slices",
+    "char_full_text_len",
+    "dedup_done",
+    "dialogue_total_batches",
+    "dialogue_completed_batches_count",
+    "dialogue_failed_batch_count",
+    "dialogue_completed_chapters",
+    "dialogue_completed_chapters_count",
+    "dialogue_total_chapters",
+    "dialogue_failed_batches",
+    "dialogue_total_dialogues",
+    "voice_recs_done",
+    "voice_recs_count",
+)
+
+
+def _prepare_progress_public_view(prog: dict | None) -> dict | None:
+    if not isinstance(prog, dict):
+        return None
+    if not prog:
+        return None
+    out: dict = {k: prog[k] for k in _PREPARE_PROGRESS_PUBLIC_KEYS if k in prog}
+    # 前端友好的派生计数：如果用户在列表上直接看不用再 len(list)
+    if "char_slice_completed" in prog and "char_completed_n" not in out:
+        c = prog["char_slice_completed"]
+        out["char_completed_n"] = len(c) if isinstance(c, (list, dict, set, tuple)) else 0
+    if isinstance(prog.get("char_failed_slices"), dict):
+        out.setdefault("char_failed_slices_n", len(prog["char_failed_slices"]))
+    if isinstance(prog.get("dialogue_completed_chapters"), (list, dict, set, tuple)):
+        out.setdefault(
+            "dialogue_completed_chapters_n",
+            len(prog["dialogue_completed_chapters"]),
+        )
+    if isinstance(prog.get("dialogue_failed_batches"), (list, dict, set, tuple)):
+        out.setdefault(
+            "dialogue_failed_batches_n",
+            len(prog["dialogue_failed_batches"]),
+        )
+    return out or None
+
+
+async def _list_stuck_preparing_projects(stuck_minutes: int) -> list[tuple[Project, dict]]:
+    """
+    扫描 DB 中 status=preparing 的项目，按 updated_at 与内存 running_tasks 判断，
+    返回『需要被恢复/标记失败』的 (Project, progress_dict) 列表。
+    选择逻辑：
+      1) 本进程里已经 running 的项目 -> 不算卡住，跳过（让它继续跑）。
+      2) 本进程里没 task 记录，且 updated_at 距今超过 stuck_minutes 或 没有 updated_at
+         -> 视为卡住。
+      3) 还在 stuck_minutes 内且没有内存 task 的：也可以等，暂时不扫。
+    """
+    import time as _time
+    now = _time.time()
+    factory = get_session_factory()
+    result: list[tuple[Project, dict]] = []
+    async with factory() as sess:
+        q = select(Project).where(Project.status == "preparing").order_by(Project.updated_at.asc())
+        rows = (await sess.execute(q)).scalars().all()
+        for proj in rows:
+            if _is_prepare_running_for(proj.project_id):
+                continue
+            prog = _parse_progress(proj)
+            updated_s = prog.get("updated_at") or _fmt_time_from_dt(proj.updated_at)
+            stuck_seconds = _seconds_since(updated_s, now)
+            if stuck_seconds is None or stuck_seconds >= stuck_minutes * 60:
+                # 没有时间或明显超时，认为是『上次服务断了 / worker reload 把 task 丢了』的卡死
+                result.append((proj, prog))
+    return result
+
+
+def _fmt_time_from_dt(dt) -> str | None:
+    if dt is None:
+        return None
+    try:
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return str(dt)
+
+
+def _seconds_since(s: str | None, now: float) -> float | None:
+    if not s:
+        return None
+    import time as _time
+    try:
+        t = _time.mktime(_time.strptime(s, "%Y-%m-%d %H:%M:%S"))
+        return now - t
+    except Exception:
+        return None
+
+
+async def _recover_one_preparing_project(proj: Project, prog: dict, trigger: str) -> None:
+    """
+    把一个 DB 中 status=preparing 且卡死的项目恢复：
+    - 有 source_file → 从 checkpoint 继续（_do_prepare_project_async 内置 resume）
+    - 没有 source_file / 路径不存在 → 直接置 failed + last_error（不可能再恢复，避免循环卡死）
+    """
+    pid = proj.project_id
+    if _is_prepare_running_for(pid):
+        return
+    factory = get_session_factory()
+    async with factory() as sess:
+        p_latest = await sess.get(Project, pid)
+        if not p_latest:
+            return
+        # 重新读一遍最新状态（避免并发导致我们用旧快照）
+        if p_latest.status != "preparing":
+            return
+        if not p_latest.source_file_path or not os.path.isfile(p_latest.source_file_path):
+            # 没有源文件，不可能继续恢复；直接失败
+            await sess.execute(
+                __import__("sqlalchemy").text(
+                    "UPDATE projects SET status='failed' WHERE project_id=:pid"
+                ).bindparams(pid=pid)
+            )
+            await _write_prepare_last_error(
+                pid,
+                "SourceFileMissing",
+                "服务重启后检测到项目仍在识别中，但源文件丢失，无法恢复。请删除项目后重新导入。",
+            )
+            await sess.commit()
+            logger.warning(
+                f"[project_prepare][recover] project_id={pid[:8]}... 源文件缺失，已置为 failed。"
+            )
+            return
+        # 把 stage 重置成 "restarted"（前端可显示"正在恢复…"），保留 checkpoint 字段
+        latest_prog = _parse_progress(p_latest)
+        latest_prog.setdefault("restart_count", 0)
+        latest_prog["restart_count"] = int(latest_prog["restart_count"] or 0) + 1
+        latest_prog["stage"] = "start"
+        latest_prog["started_at"] = latest_prog.get("started_at") or _fmt_time_now()
+        latest_prog["updated_at"] = _fmt_time_now()
+        latest_prog.setdefault("prev_error", {}).update({
+            "at": prog.get("last_error_at") or prog.get("updated_at"),
+            "msg": prog.get("last_error") or f"服务中断，检测到 PREPARE_STUCK_MINUTES={PREPARE_STUCK_MINUTES} 未更新后自动恢复。",
+        })
+        latest_prog.pop("last_error", None)
+        latest_prog.pop("last_error_at", None)
+        p_latest.progress_json = json.dumps(latest_prog, ensure_ascii=False)
+        await sess.commit()
+    _enqueue_prepare_task(pid, trigger=trigger)
+    logger.info(
+        f"[project_prepare][recover] project_id={pid[:8]}... 已从 checkpoint 恢复 "
+        f"(trigger={trigger}, restart_count={latest_prog.get('restart_count', '?')})"
+    )
+
+
+async def _scan_preparing_and_recover(trigger: str) -> None:
+    """扫一圈 preparing 的卡死项目并恢复。"""
+    try:
+        stucks = await _list_stuck_preparing_projects(PREPARE_STUCK_MINUTES)
+        if not stucks:
+            return
+        logger.info(
+            f"[project_prepare][recover] 扫描到 {len(stucks)} 个 preparing 卡住的项目，"
+            f"trigger={trigger}，开始恢复（并发上限={PREPARE_RECOVERY_CONCURRENCY}）。"
+        )
+        sem = asyncio.Semaphore(max(1, PREPARE_RECOVERY_CONCURRENCY))
+
+        async def _do_one(item):
+            async with sem:
+                try:
+                    await _recover_one_preparing_project(item[0], item[1], trigger)
+                except Exception as e:
+                    logger.warning(
+                        f"[project_prepare][recover] 恢复 {item[0].project_id[:8]}... 失败: "
+                        f"{type(e).__name__}: {e}"
+                    )
+
+        await asyncio.gather(*[_do_one(it) for it in stucks])
+    except Exception as e:
+        logger.warning(
+            f"[project_prepare][recover] 扫描 preparing 异常，跳过本轮: "
+            f"{type(e).__name__}: {e}"
+        )
+
+
+async def _watchdog_loop() -> None:
+    """后台轮询：每 PREPARE_WATCHDOG_INTERVAL_SECONDS 扫一次 preparing 卡死的项目并恢复。"""
+    logger.info(
+        f"[project_prepare][watchdog] 启动 (interval={PREPARE_WATCHDOG_INTERVAL_SECONDS}s, "
+        f"stuck_minutes={PREPARE_STUCK_MINUTES}, recovery_concurrency={PREPARE_RECOVERY_CONCURRENCY})"
+    )
+    while True:
+        try:
+            await asyncio.sleep(PREPARE_WATCHDOG_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            logger.info("[project_prepare][watchdog] 被 Cancelled，退出。")
+            return
+        try:
+            await _scan_preparing_and_recover(trigger="watchdog")
+        except Exception as e:
+            logger.warning(
+                f"[project_prepare][watchdog] 轮询异常: {type(e).__name__}: {e}"
+            )
+
+
+def ensure_prepare_watchdog_started() -> None:
+    """
+    在 FastAPI lifespan startup 里调用一次：
+      1) 启动后 PREPARE_STARTUP_SCAN_DELAY_SECONDS 扫一次 preparing 卡死项目（服务重启/进程恢复）
+      2) 起一个 15s 轮询的看门狗协程
+    同一进程里保证只起一次（多 uvicorn worker 各起各的，没问题）。
+    """
+    global _watchdog_started
+    if _watchdog_started:
+        return
+    _watchdog_started = True
+
+    async def _delayed_startup_scan():
+        try:
+            await asyncio.sleep(PREPARE_STARTUP_SCAN_DELAY_SECONDS)
+        except asyncio.CancelledError:
+            return
+        await _scan_preparing_and_recover(trigger="startup")
+
+    asyncio.create_task(_delayed_startup_scan(), name="prepare-startup-scan")
+    asyncio.create_task(_watchdog_loop(), name="prepare-watchdog")
+    logger.info(
+        f"[project_prepare] 启动恢复/看门狗已安排: startup_delay={PREPARE_STARTUP_SCAN_DELAY_SECONDS}s, "
+        f"watchdog_interval={PREPARE_WATCHDOG_INTERVAL_SECONDS}s"
+    )
+
+
 async def _split_50k_and_run_chars_serial(text: str, coro_fn) -> list[Character]:
     """
     整本小说角色识别：**全量逐 50k 切片串行跑，不截断、不抽样。**
@@ -1165,71 +1485,15 @@ async def get_project(project_id: str) -> ProjectDetailResp:
             else None
         )
 
-        # prepare_progress：从 progress_json 解析出的 dict（前端渲染 角色/对白 子阶段进度）
-        prepare_progress: dict | None = None
+        # prepare_progress：从 progress_json 解析出的白名单 dict（前端渲染 角色/对白 子阶段进度）
+        prog_dict: dict | None = None
         if p.progress_json:
             try:
-                prog = json.loads(p.progress_json)
-                if isinstance(prog, dict):
-                    # 仅保留对前端有用的字段（避免把对白原始 JSON 全量返回给前端）
-                    prepare_progress = {}
-                    for k in (
-                        "version",
-                        "stage",
-                        "started_at",
-                        "updated_at",
-                        "last_error",
-                        "last_error_at",
-                        "last_error_type",
-                        "prev_error",
-                        "char_slice_total",
-                        "char_slice_completed",
-                        "char_slice_completed_n",
-                        "char_current_slice",
-                        "char_failed_slices",
-                        "char_full_text_len",
-                        "dedup_done",
-                        "dialogue_total_batches",
-                        "dialogue_completed_batches_count",
-                        "dialogue_failed_batch_count",
-                        "dialogue_completed_chapters",
-                        "dialogue_completed_chapters_count",
-                        "dialogue_total_chapters",
-                        "dialogue_failed_batches",
-                        "dialogue_total_dialogues",
-                        "voice_recs_done",
-                        "voice_recs_count",
-                    ):
-                        if k in prog:
-                            prepare_progress[k] = prog[k]
-                    # 计数派生字段（前端方便用）
-                    if "char_slice_completed" in prog and "char_completed_n" not in prepare_progress:
-                        prepare_progress.setdefault(
-                            "char_completed_n", len(prog["char_slice_completed"])
-                        )
-                    if (
-                        prepare_progress.get("dialogue_completed_chapters") is not None
-                        and "dialogue_completed_chapters_n" not in prepare_progress
-                    ):
-                        prepare_progress.setdefault(
-                            "dialogue_completed_chapters_n",
-                            len(prepare_progress["dialogue_completed_chapters"]),
-                        )
-                    if (
-                        prepare_progress.get("dialogue_failed_batches") is not None
-                        and "dialogue_failed_batches_n" not in prepare_progress
-                    ):
-                        prepare_progress.setdefault(
-                            "dialogue_failed_batches_n",
-                            len(prepare_progress["dialogue_failed_batches"]),
-                        )
-                    if isinstance(prepare_progress.get("char_failed_slices"), dict):
-                        prepare_progress.setdefault(
-                            "char_failed_slices_n",
-                            len(prepare_progress["char_failed_slices"]),
-                        )
+                pp = json.loads(p.progress_json)
+                prog_dict = pp if isinstance(pp, dict) else None
             except Exception:
-                prepare_progress = None
+                prog_dict = None
+        prepare_progress = _prepare_progress_public_view(prog_dict)
 
         return ProjectDetailResp(
             project_id=p.project_id,
@@ -1261,14 +1525,20 @@ async def list_projects() -> list[ProjectListItem]:
         rows = list((await session.execute(stmt)).scalars().all())
         result: list[ProjectListItem] = []
         for p in rows:
-            prepare_stage: str | None = None
+            prog: dict | None = None
             if p.progress_json:
                 try:
-                    prog = json.loads(p.progress_json)
-                    if isinstance(prog, dict):
-                        prepare_stage = prog.get("stage")
+                    pp = json.loads(p.progress_json)
+                    if isinstance(pp, dict):
+                        prog = pp
                 except Exception:
-                    prepare_stage = None
+                    prog = None
+            prepare_progress_pub = _prepare_progress_public_view(prog)
+            prepare_stage: str | None = None
+            if prepare_progress_pub and isinstance(prepare_progress_pub.get("stage"), str):
+                prepare_stage = prepare_progress_pub["stage"]
+            elif prog and isinstance(prog.get("stage"), str):
+                prepare_stage = prog["stage"]
             result.append(ProjectListItem(
                 project_id=p.project_id,
                 name=p.name,
@@ -1280,6 +1550,7 @@ async def list_projects() -> list[ProjectListItem]:
                 created_at=p.created_at.isoformat() if p.created_at else None,
                 updated_at=p.updated_at.isoformat() if p.updated_at else None,
                 prepare_stage=prepare_stage,
+                prepare_progress=prepare_progress_pub,
             ))
         return result
 
