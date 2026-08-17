@@ -34,12 +34,14 @@ class Settings(BaseSettings):
     TTS_TIMEOUT: int = 600
     UVICORN_TIMEOUT: int = 600
 
-    # LLM 限流：同时最多 N 个请求在飞（按量套餐 RPM 严格时建议 1=串行）
-    # 业务层可能并发调用（如每章对白归属 asyncio.gather），这里在 provider 层强制串行
-    LLM_MAX_CONCURRENCY: int = 1
+    # LLM 并发限流（充值用户 200 RPM）：同时最多 N 个请求在飞。
+    # 对白归属多批 asyncio.gather 时，这里控制同时发起的 HTTP 调用数。
+    # 付费 M3:200RPM / M2.x:500RPM，取保守并发 4 约 = (200RPM/60s)×~12s 单请求时长。
+    LLM_MAX_CONCURRENCY: int = 4
 
-    # 角色识别：每 50k 汉字切片，避免前 30 万字采样漏后期角色。
-    # 一本 1000 万字小说 ≈ 200 切片 × ~20s/切片 ≈ 1h 角色识别。
+    # 角色识别切片大小（字符）：整本小说角色识别时，按该大小切块后
+    # **全量串行**调用 LLM（不抽样、不截断），最后对所有切块结果做一次
+    # 跨切块合并 + dedup。50k 是 MiniMax 角色识别 prompt 的比较稳妥上限，
     CHAR_EXTRACT_SLICE_CHARS: int = 50_000
     # 单切片识别失败的重试次数（provider 层另有 3 次 HTTP 重试，这里是业务层切片级重试）
     CHAR_EXTRACT_RETRIES: int = 0
@@ -55,14 +57,17 @@ class Settings(BaseSettings):
     DIALOGUE_BATCH_RETRY_COUNT: int = 2
 
     # TTS 并发限流（全局，段级）：同时最多 N 个 TTS synthesize 调用在飞。
-    # 现在已经改成 **段级** semaphore（不是"每章并发"）。
-    # MiniMax TTS 官方 RPM 限制较低，默认 50 段并发是保守值；
-    # 如果遇到 429 rate limit exceeded(RPM)，可继续下调。
-    TTS_MAX_CONCURRENCY: int = 50
-    # TTS 分钟级 RPM 限流：60 秒窗口内最多 N 次 t2a_v2 请求。
-    # MiniMax 按量套餐 RPM 限制较严，默认 15/分钟 是保守值；
-    # 遇到 429 自动退避重试，避免整章失败。
-    TTS_RPM_LIMIT: int = 15
+    # 官方充值用户 T2A v2: 20 RPM（免费 10）。单次 TTS ~2-5s，
+    # 理论并发上限 = 20/60 × 3.5s ≈ 1.2；段缓存命中根本不走 HTTP。
+    # 这里 semaphore 主要防极端 gather 瞬时压爆连接池，默认 200 足够大不会是瓶颈。
+    # 真正的限流靠 TTS_RPM_LIMIT（滑动窗口）+ 429 自动退避重试。
+    # 如遇频繁 429，先调小 TTS_RPM_LIMIT，不用先动这个。
+    TTS_MAX_CONCURRENCY: int = 200
+    # TTS 分钟级 RPM 限流：60 秒滑动窗口内最多 N 次 t2a_v2 请求。
+    # 参考官方速率限制表：充值用户 T2A v2 为 20 RPM（免费 10），
+    # 默认 18 留约 10% 余量给网络抖动。provider 层遇到 429 还会指数退避
+    # 重试（最多 5 次，3/5/9/17s），双重保障避免整章失败。
+    TTS_RPM_LIMIT: int = 18
     # TTS 段缓存：内存 LRU 上限（条）；超上限淘汰最旧。
     # 注：磁盘缓存不限制大小（AUDIO_DIR/_seg_cache/），重启后仍可命中。
     TTS_SEGMENT_CACHE_MAX_ENTRIES: int = 20_000
