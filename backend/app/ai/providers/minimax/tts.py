@@ -6,7 +6,6 @@ import logging
 import wave
 import os
 import time as _time
-from collections import deque
 from pathlib import Path
 from typing import Any, Optional
 import httpx
@@ -20,112 +19,88 @@ logger = logging.getLogger(__name__)
 VOICES_FILE = Path(__file__).parent / "voices.json"
 
 
-# ---------- 全局 RPM 限流：滑动窗口（60s） ----------
-# MiniMax t2a_v2 是按 60 秒窗口计 RPM，官方充值用户 = 20 RPM，免费 = 10 RPM。
-# 做两层保障：
-#   1) 发请求前先走 _rpm_wait_acquire：窗口内还没达到 TTS_RPM_LIMIT 才放行；
-#      达到则精确等到"窗口内最老请求过期 + 缓冲"再继续。
-#   2) 即便如此官方仍可能 429（多个服务共享 key、官方自身统计偏移等），
-#      synthesize 层在捕获 "rate limit exceeded(RPM)" 后，
-#      按 _rpm_window[0] 精确算还要等多少秒（而不是短退避重试 5 次浪费次数）。
-_rpm_window: deque[float] = deque()
+# ---------- 全局 RPM 限流：固定间隔 token bucket ----------
+# 核心思路：把"60 秒内最多 N 次"转化为"每 60/N 秒放 1 次"，严格匀速。
+#
+# 为什么滑动窗口实现有 bug：
+#   多个协程通过 asyncio.gather 同时进入 _rpm_wait_acquire，
+#   前 N 个几乎在同一毫秒内通过 → 第 N+1 个等 60s → 窗口清空后
+#   所有等待协程瞬间涌入，形成"脉冲爆发"，MiniMax 按瞬时并发计 429。
+#
+# 固定间隔 token bucket 保证：
+#   任意两个相邻请求之间至少间隔 (60 / RPM_LIMIT) 秒，零脉冲，零突发。
+_rpm_next_allowed: float = 0.0
 _rpm_lock: Optional[asyncio.Lock] = None
+_rpm_interval: float = 0.0  # 延迟初始化
 
 
 def _get_rpm_lock() -> asyncio.Lock:
-    """懒初始化 asyncio.Lock：必须在事件循环存在之后创建（否则不同事件循环会死锁）。"""
     global _rpm_lock
     if _rpm_lock is None:
         _rpm_lock = asyncio.Lock()
     return _rpm_lock
 
 
-def _rpm_window_remaining_secs(now: float | None = None) -> float:
-    """返回还需要等多少秒，窗口才能释放出至少 1 个额度。若当前还有额度返回 0。
-
-    这个函数故意不拿锁，调用方必须自己持锁 / 或接受略脏读（在 429 兜底路径使用脏读没问题，
-    因为等久一点总比等短了又 429 强）。
-    """
-    if now is None:
-        now = _time.monotonic()
-    # 清理 60 秒之前的记录（不 popleft，只是检查逻辑上还在窗口内的请求数）
-    cut = now - 60.0
-    active_pending = 0
-    oldest_active_ts: Optional[float] = None
-    for ts in _rpm_window:
-        if ts >= cut:
-            active_pending += 1
-            if oldest_active_ts is None:
-                oldest_active_ts = ts
-    limit = max(1, int(settings.TTS_RPM_LIMIT))
-    if active_pending < limit:
-        return 0.0
-    # 额度满了：最老的请求再过 (60 - (now - oldest)) 秒 + 安全缓冲 0.1s 才会过期
-    assert oldest_active_ts is not None
-    wait = 60.0 - (now - oldest_active_ts) + 0.1
-    return max(0.05, wait)
+def _get_rpm_interval() -> float:
+    global _rpm_interval
+    if _rpm_interval <= 0:
+        limit = max(1, int(settings.TTS_RPM_LIMIT))
+        # 每 interval 秒放一个请求。RPM_LIMIT=12 → interval=5.0s
+        _rpm_interval = 60.0 / float(limit)
+        logger.info(
+            f"[TTS] RPM 限流初始化：RPM_LIMIT={limit}, interval={_rpm_interval:.2f}s"
+        )
+    return _rpm_interval
 
 
 async def _rpm_wait_acquire() -> None:
-    """发请求前调用：若窗口内请求数已达 TTS_RPM_LIMIT，则阻塞 sleep 到下一次窗口过期。"""
-    limit = max(1, int(settings.TTS_RPM_LIMIT))
-    lock = _get_rpm_lock()
-    async with lock:
-        now = _time.monotonic()
-        # 清理 60 秒之前的记录
-        while _rpm_window and now - _rpm_window[0] >= 60.0:
-            _rpm_window.popleft()
-        if len(_rpm_window) >= limit:
-            wait_s = 60.0 - (now - _rpm_window[0]) + 0.1
-            logger.debug(
-                f"[TTS] RPM 主动限流：等待 {wait_s:.1f}s (limit={limit}/60s pending={len(_rpm_window)})"
-            )
-            # 注意：sleep 时释放锁，让其他协程也能判断（他们都会算出相同的 wait_s，
-            # 然后依次串行地在各自的 acquire 里排队拿锁→清理→判断→放行→append）。
-            await asyncio.sleep(wait_s)
-            now2 = _time.monotonic()
-            while _rpm_window and now2 - _rpm_window[0] >= 60.0:
-                _rpm_window.popleft()
-        # 无论是否 sleep 过，最终 append 本次请求的开始时间戳
-        _rpm_window.append(_time.monotonic())
+    """发请求前调用：严格保证与上一次调用至少间隔 interval 秒。
 
-
-async def _rpm_mark_attempt() -> None:
-    """非 acquire 路径（429 重试）重发请求时也追加一次时间戳。
-
-    主动限流路径在 _rpm_wait_acquire 里已经 append 过了；重试之前这里再记一次，
-    保证"失败重试"也会占用自己的窗口额度，避免重试浪把官方额度打死。
+    算法（固定间隔 token bucket）：
+      interval = 60 / RPM_LIMIT
+      now = monotonic()
+      if now >= _next_allowed:
+          _next_allowed = now + interval
+          return  # 立即通过
+      else:
+          wait = _next_allowed - now
+          _next_allowed += interval  # 提前预约下一次放行时间
+          await asyncio.sleep(wait)
+          # sleep 结束即视为已"放行"，不再额外等待
     """
+    global _rpm_next_allowed
+    interval = _get_rpm_interval()
     lock = _get_rpm_lock()
     async with lock:
         now = _time.monotonic()
-        while _rpm_window and now - _rpm_window[0] >= 60.0:
-            _rpm_window.popleft()
-        _rpm_window.append(now)
+        if now >= _rpm_next_allowed:
+            _rpm_next_allowed = now + interval
+            return
+        wait_s = _rpm_next_allowed - now
+        _rpm_next_allowed += interval
+    # 释放锁后再 sleep，允许其他协程同时进入计算自己的 wait 时间
+    # 每个协程的 _rpm_next_allowed 已经被预排，所以会严格串行放行
+    logger.debug(
+        f"[TTS] RPM 限流：等待 {wait_s:.2f}s (interval={interval:.2f}s)"
+    )
+    await asyncio.sleep(wait_s)
+
+
+def _rpm_remaining_secs() -> float:
+    """距离下一次允许发请求还有多少秒（429 兜底路径用）。"""
+    global _rpm_next_allowed
+    now = _time.monotonic()
+    wait = _rpm_next_allowed - now
+    return max(0.0, wait)
 
 
 def _estimate_mp3_duration_ms(mp3_bytes: bytes) -> int:
-    """
-    简化版：按 128kbps 比特率估算 MP3 时长。
-    MiniMax TTS 返回的 MP3 多为 24kHz/单声道/约 32-128kbps；
-    用字节数 * 8 / 96000 * 1000 估算（偏保守中位 96kbps）。
-    """
     if len(mp3_bytes) < 128:
         return 0
     return int(len(mp3_bytes) * 8 / 96000 * 1000)
 
 
 def make_silent_mp3(duration_ms: int) -> bytes:
-    """
-    生成指定毫秒数的静音 MP3。
-    策略：用 8kHz/16bit/单声道 生成静音 PCM，写入 WAV 头后读取，
-    由于本项目不引入 lame/ffmpeg 依赖，这里生成一个合法的"静音帧堆"：
-    简化方案 —— 用 MPEG1 Layer3 128kbps 44.1kHz 静音帧模板拼接。
-
-    标准 MPEG1 L3 128kbps 44.1kHz 单帧 = 26ms，417 bytes。
-    """
-    # 单个静音帧（MPEG1 L3 44.1kHz 128kbps mono silent），共 417 bytes
-    # 来源：libavcodec ff_mp3_default_enc 静音帧头 + 填充
     SILENT_FRAME_417 = (
         b"\xff\xfb\x90\x00"
         + b"\x00" * 413
@@ -136,7 +111,6 @@ def make_silent_mp3(duration_ms: int) -> bytes:
 
 
 def concat_mp3_files(*parts: bytes) -> bytes:
-    """直接拼接 MP3 帧（MP3 支持流式拼接，大多数播放器都兼容）"""
     out = bytearray()
     for p in parts:
         if p:
@@ -174,21 +148,13 @@ class MiniMaxTTSProvider(BaseTTSProvider):
     ) -> bytes:
         t0 = _time.perf_counter()
         if not text.strip():
-            # 空文本返回短静音
             logger.debug(f"[TTS] empty text, return silence voice_id={voice_id}")
             return make_silent_mp3(50)
-        # 拟声词 → MiniMax Sound Tag（如"哈哈哈哈"→(laughs)）
-        # 仅对 MiniMax Speech 2.x 系列有效，放在此处统一覆盖合成 + 试听两路调用
         text = apply_onomatopoeia(text, voice_id=voice_id)
         text_chars = len(text)
-        # 官方文档模型名：speech-2.8-turbo / speech-2.8-hd / speech-02-turbo / speech-02-hd
         model = "speech-2.8-turbo"
-        # MiniMax 官方 speed 范围 [0.5, 2.0]，默认 1.0
         speed = max(0.5, min(2.0, float(speed)))
 
-        # 最大尝试次数：首次 + 4 次重试 = 共 5 次。
-        # 对 "rate limit exceeded(RPM)"，每次都精确等到窗口最老请求过期，
-        # 所以重试次数不用多，一般 1~2 次就能过。
         max_attempts = 5
         last_exc: Optional[BaseException] = None
         for attempt in range(1, max_attempts + 1):
@@ -196,12 +162,9 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             http_status: Optional[int] = None
             is_last_attempt = attempt == max_attempts
             try:
-                # ---------- 层 1：发请求前主动 RPM 限流 ----------
-                # 首次尝试走 _rpm_wait_acquire：窗口满则精确 sleep 到过期再放。
-                # 429 重试时也要再走一次（否则重试瞬间就又撞到窗口）。
+                # 固定间隔 token bucket：每次请求都严格等 interval 秒
                 await _rpm_wait_acquire()
 
-                # 真正发起 HTTP
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     resp = await client.post(
                         f"{self.base_url}/t2a_v2",
@@ -249,7 +212,6 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                         raise RuntimeError(
                             f"TTS HTTP {resp.status_code}: {err_msg}"
                         )
-                    # 官方 t2a_v2 非流式返回 JSON: data.audio = hex编码音频
                     try:
                         resp_json = resp.json()
                     except Exception as je:
@@ -283,7 +245,6 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             except Exception as e:
                 last_exc = e
                 elapsed = _time.perf_counter() - t0
-                # 不是最后一次尝试：按错误类型 sleep，再 retry
                 if is_last_attempt:
                     logger.error(
                         f"[TTS] FAIL (final attempt={attempt}) model={model} voice={voice_id} chars={text_chars} "
@@ -297,20 +258,18 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                     "rate limit exceeded" in err_str.lower()
                     and "(rpm)" in err_str.lower()
                 ) or (http_status == 429 and "rpm" in err_str.lower())
-                # ---------- 层 2：精确等窗口过期 / 指数退避 ----------
                 if is_rpm_limit:
-                    # RPM 耗尽：按窗口最老请求算剩余秒数，精确睡到窗口过期再试
-                    wait_s = _rpm_window_remaining_secs()
-                    # 官方自己的窗口统计和我们可能有几秒钟偏移，再额外加 2s 缓冲
-                    wait_s = max(wait_s + 2.0, 5.0)
+                    # RPM 超限：按 token bucket 下次放行时间精确等待
+                    # 再加 3s 官方统计偏移缓冲
+                    wait_s = _rpm_remaining_secs() + 3.0
+                    wait_s = max(wait_s, 5.0)
                     logger.warning(
                         f"[TTS] RPM 限流（attempt={attempt}/{max_attempts}）："
-                        f"精确等待 {wait_s:.1f}s 到下一个窗口 trace_id={trace_id}"
+                        f"等待 {wait_s:.1f}s trace_id={trace_id}"
                     )
                     await asyncio.sleep(wait_s)
                 else:
-                    # 其他错误（HTTP 5xx、网络超时等）：指数退避 3s/5s/9s/17s
-                    backoff_s = float(2 ** attempt + 1)  # attempt=1→3, 2→5, 3→9, 4→17
+                    backoff_s = float(2 ** attempt + 1)
                     logger.warning(
                         f"[TTS] 重试（attempt={attempt}/{max_attempts}）："
                         f"指数退避 {backoff_s:.1f}s {type(e).__name__}: {e}"
@@ -318,7 +277,6 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                     await asyncio.sleep(backoff_s)
                 continue
 
-        # 理论走不到这里（循环最后一次会 raise），兜底
         assert last_exc is not None
         raise last_exc
 
