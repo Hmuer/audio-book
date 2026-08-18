@@ -88,10 +88,15 @@ _bearer = HTTPBearer(auto_error=False)
 
 async def get_current_user(
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    token: str | None = None,
 ) -> User:
     """
     JWT 鉴权依赖。所有需要登录的 /api/* 路由通过 Depends(get_current_user) 强制校验。
     DISABLE_AUTH=True 时直接放行（仅本地调试/测试用）。
+
+    token 来源（优先级）：
+      1. Authorization: Bearer <token> 头（前端 fetch 默认走这里）
+      2. ?token=<jwt> 查询参数（浏览器 <a href download> / <audio src> 无法设头时的兜底）
     """
     if settings.DISABLE_AUTH:
         # 测试模式：放行。无 token 时返回一个虚拟 admin（保证非 None）
@@ -101,13 +106,19 @@ async def get_current_user(
             user = User(id=0, username="disabled-auth", password_hash="", is_active=True)
         return user
 
-    if creds is None or creds.scheme.lower() != "bearer":
+    # 解析原始 token：优先 header，回退到查询参数
+    raw_token: str | None = None
+    if creds and creds.scheme.lower() == "bearer":
+        raw_token = creds.credentials
+    elif token:
+        raw_token = token
+    if not raw_token:
         raise HTTPException(
             status_code=401,
             detail="未提供认证 token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    username = decode_token(creds.credentials)
+    username = decode_token(raw_token)
     if not username:
         raise HTTPException(
             status_code=401,
