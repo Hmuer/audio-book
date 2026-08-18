@@ -1,15 +1,13 @@
-from __future__ import annotations
-from functools import lru_cache
-from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pathlib import Path
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore",
     )
-
-    # API Keys
     TTS_API_KEY: str
     TTS_BASE_URL: str = "https://api.minimaxi.com/v1"
     LLM_API_KEY: str
@@ -34,40 +32,41 @@ class Settings(BaseSettings):
     TTS_TIMEOUT: int = 600
     UVICORN_TIMEOUT: int = 600
 
-    # LLM 并发限流（充值用户 200 RPM）：同时最多 N 个请求在飞。
-    # 对白归属多批 asyncio.gather 时，这里控制同时发起的 HTTP 调用数。
-    # 付费 M3:200RPM / M2.x:500RPM，取保守并发 4 约 = (200RPM/60s)×~12s 单请求时长。
-    LLM_MAX_CONCURRENCY: int = 4
+    # LLM 限流：同时最多 N 个请求在飞（按量套餐 RPM 严格时建议 1=串行）
+    # 业务层可能并发调用（如每章对白归属 asyncio.gather），这里在 provider 层强制串行
+    LLM_MAX_CONCURRENCY: int = 1
 
     # 角色识别切片大小（字符）：整本小说角色识别时，按该大小切块后
     # **全量串行**调用 LLM（不抽样、不截断），最后对所有切块结果做一次
     # 跨切块合并 + dedup。50k 是 MiniMax 角色识别 prompt 的比较稳妥上限，
-    CHAR_EXTRACT_SLICE_CHARS: int = 50_000
-    # 单切片识别失败的重试次数（provider 层另有 3 次 HTTP 重试，这里是业务层切片级重试）
-    CHAR_EXTRACT_RETRIES: int = 0
+    # 既保证上下文足够又不会因超长输出导致 JSON 解析失败。
+    # 估算：3000 字/章 × 1000 章 = 300 万字 → 60 个切片 × 串行 10s/个 ≈ 10 分钟
+    LLM_CHAR_EXTRACT_SLICE_SIZE: int = 50_000
 
-    # 对白归属批大小：14 章/批。按 3000 字/章 × 14 ≈ 4.2 万字符，
-    # 加上 system prompt + few shot 总共 ~4.5 万，远小于 M3 的 1M 上下文。
-    # 用 M2.7-highspeed 时更小的上下文（204.8k 字符），也足够。
+    # 注意：角色识别 **已移除"前 N 字抽样"策略**（LLM_CHAR_EXTRACT_LIMIT 已不再使用）。
+    # 现在无论小说多长，都会按 SLICE_SIZE 全量切片跑完后合并去重；
+    # 否则后半本书的新角色会被整本书漏掉，后续对白归属全部失败。
+
+    # 对白归属批大小（章/批）：一次 LLM 请求同时处理 N 章的对白归属，
+    # 能显著降低 HTTP 开销和 LLM 调度耗时。M2.7-highspeed 1M 上下文
+    # 3000 字/章 × 14 章 ≈ 42k 字 + prompt ≈ 50k，远低于上限。
     DIALOGUE_BATCH_CHAPTERS: int = 14
-    # 对白归属批并发：同时在飞的批数量。LLM_MAX_CONCURRENCY=1 时这里多高都
-    # 是串行，但设 >1 可以允许"准备下一批输入"与"上一批 LLM 调用"的流水线重叠。
+
+    # 对白归属批并发度：同时在飞的批数量。LLM_MAX_CONCURRENCY=1 时这里多高都
+    # 会被 provider semaphore 串行，但大于 1 时可在多个"批"之间让 HTTP/响应解析
+    # 和下一批的语义处理重叠，总体更快。
     DIALOGUE_BATCH_CONCURRENCY: int = 2
     # 对白归属单批 LLM 调用失败后的业务层重试次数（0=不重试，provider 层另有兜底 3 次）
     DIALOGUE_BATCH_RETRY_COUNT: int = 2
 
     # TTS 并发限流（全局，段级）：同时最多 N 个 TTS synthesize 调用在飞。
-    # 官方充值用户 T2A v2: 20 RPM（免费 10）。单次 TTS ~2-5s，
-    # 理论并发上限 = 20/60 × 3.5s ≈ 1.2；段缓存命中根本不走 HTTP。
-    # 这里 semaphore 主要防极端 gather 瞬时压爆连接池，默认 200 足够大不会是瓶颈。
-    # 真正的限流靠 TTS_RPM_LIMIT（滑动窗口）+ 429 自动退避重试。
-    # 如遇频繁 429，先调小 TTS_RPM_LIMIT，不用先动这个。
+    # 现在已经改成 **段级** semaphore（不是"每章并发"），默认 100 段并行是
+    # 相对保守的值：短对白 1s/TTS，100 并发 ≈ 100 段/秒的吞吐。
+    # 如果调用方遇到 TTS RPM 429，可下调到 50 / 20。
     TTS_MAX_CONCURRENCY: int = 200
-    # TTS 分钟级 RPM 限流：60 秒滑动窗口内最多 N 次 t2a_v2 请求。
-    # 参考官方速率限制表：充值用户 T2A v2 为 20 RPM（免费 10）。
-    # 默认 12（= 每 5 秒 1 个请求），给账号共享额度、子账号、缓存未命中
-    # 等意外情况留足余量。如 429 仍然频繁，继续下调到 10 或 8。
-    # provider 层遇到 429 还会：1) 精确等待到窗口过期再重试；2) 指数退避兜底。
+    # TTS 分钟级 RPM 限流：60 秒窗口内最多 N 次 t2a_v2 请求。
+    # 使用固定间隔 token bucket：每 (60/N) 秒放 1 个请求，严格匀速零脉冲。
+    # 充值用户官方 20 RPM，默认 12 留 40% 安全余量（账号共享/网络抖动）。
     TTS_RPM_LIMIT: int = 12
     # TTS 段缓存：内存 LRU 上限（条）；超上限淘汰最旧。
     # 注：磁盘缓存不限制大小（AUDIO_DIR/_seg_cache/），重启后仍可命中。
@@ -82,44 +81,62 @@ class Settings(BaseSettings):
     # 并起新 worker。避免"重启后端后 Build 永远合成中"。
     BUILD_RUNNING_TIMEOUT_HOURS: int = 6
 
-    # 切章正则模式：可在 .env 里用 CHAPTER_SPLIT_PATTERNS 覆盖扩展
-    # 每个模式独立按行匹配，命中任意模式算作章标题行。
-    # 默认覆盖中文小说常见格式：第x章/回/节/卷/集/话/篇、序、楔子、番外、后记、尾声、结局
-    CHAPTER_SPLIT_PATTERNS: list[str] = [
-        r"^\s*第[\s]*[零○一二三四五六七八九十百千万\d]+[\s]*[章节回节卷集话篇部卷][：:.．]?.*",
-        r"^\s*第[\s]*[零○一二三四五六七八九十百千万\d]+[\s]*部分[：:.．]?.*",
-        r"^\s*(序(章|言|之章)?|楔子|引子|卷首语|前记|前言|自序|开篇)[：:.．]?.*",
-        r"^\s*(番外|外传|后记|尾声|终章|结局|大结局|完结(记|章)?|终卷|终曲)[：:.．]?.*",
-        r"^\s*[上中下终末尾]+卷[：:.．]?.*",
-    ]
-
-    # 切章失败时是否回退到 LLM？False=直接抛错并提醒用户，避免 LLM 误切。
-    CHAPTER_SPLIT_FALLBACK_LLM: bool = False
-
-    # Auth
-    JWT_SECRET: str = "dev-secret-change-me-in-prod"
-    JWT_EXPIRE_HOURS: int = 24 * 7  # 默认 7 天过期
-    DISABLE_AUTH: bool = False
+    # Auth (JWT)
+    JWT_SECRET: str = "change-me-in-production-please-use-a-long-random-string"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXP_DAYS: int = 7
     SEED_ADMIN_USER: str = "admin"
     SEED_ADMIN_PASS: str = "admin"
-    # 生产安全：ENV=prod 时检测是否仍用默认 JWT_SECRET / 默认 admin 密码，
-    # 是则 WARN 或直接阻止启动（PROD_STRICT_SECURITY=true 时 BLOCK）
-    PROD_STRICT_SECURITY: bool = True
+    # 测试/本地调试用：DISABLE_AUTH=1 时所有 /api/* 不校验 token
+    DISABLE_AUTH: bool = False
+    # ENV=prod 时必须把默认 admin/admin 改掉；如果仍使用默认密码，则
+    # - 登录成功 must_change_password 强制 true
+    # - 或者（严格模式）直接拒绝登录
+    STRICT_PROD_SECURITY: bool = False
 
-    # 日志：路径相对 DATA_DIR，按大小轮转
-    LOG_FILE: str = "logs/app.log"
-    LOG_MAX_BYTES: int = 10 * 1024 * 1024  # 10MB
+    # =====================================================================
+    # 日志：默认同时输出到 stdout 和文件（RotatingFileHandler 10MB×5）
+    # - LOG_FILE 为相对路径时，相对进程工作目录（即 start.sh 的 PROJ_DIR）
+    # - 置空字符串 → 不落盘，只走 stdout
+    # - LOG_LEVEL 支持 DEBUG / INFO / WARNING / ERROR
+    # =====================================================================
+    LOG_FILE: str = "./data/logs/app.log"
+    LOG_LEVEL: str = "INFO"
+    LOG_MAX_BYTES: int = 10 * 1024 * 1024  # 10 MB
     LOG_BACKUP_COUNT: int = 5
 
-    # prepare_project 看门狗间隔/卡住阈值
-    WATCHDOG_INTERVAL_SEC: float = 15.0
-    WATCHDOG_STUCK_MINUTES: float = 10.0
-    WATCHDOG_RECOVERY_CONCURRENCY: int = 1
+    # =====================================================================
+    # 章节切分（正则驱动，完全不调 LLM）
+    # =====================================================================
+
+    # 章节标题正则列表：按顺序逐条匹配，每条均以 re.MULTILINE 编译。
+    # 命中后整行作为章节标题（原文不改动）；不同模式命中同一位置会自动去重。
+    # 可在 .env 中用 JSON 数组覆盖；也可直接在下方 DEFAULT 值里加自定义规则。
+    # 提示：行首请用 ^[ \t]* 匹配前导空格/制表，避免正文内同名短语误命中。
+    CHAPTER_SPLIT_PATTERNS: list[str] = [
+        # 中文常见：第X章 / 第X回 / 第X节 / 第X卷 / 第X篇 / 第X部
+        # X 支持汉字数字（一二三四五六七八九十百千万〇）、阿拉伯数字
+        r"^[ \t]*第[ \t]*([零〇一二三四五六七八九十百千0-9]+)[ \t]*(章|回|节|卷|篇|部)[ \t]*[:：、\.]*[ \t]*([^\n]*)$",
+        # 半角变体：Ep.X / Vol.X / Ch.X
+        r"^[ \t]*(Ep|Episode|Vol|Volume|Ch|Chapter)[ \t]*[\.\-:：]?[ \t]*([0-9IVXLCDM]+)[\.\t \-:：]*([^\n]*)$",
+        # 英文小说通用：Chapter X Title / CHAPTER I. Title
+        r"^[ \t]*Chapter[ \t]+([0-9IVXLCDM]+)[\.\t \-:：]*([^\n]*)$",
+        # 关键词标题：序章 / 楔子 / 引子 / 前言 / 序言 / 尾声 / 终章 / 后记 / 番外篇? / 番外 / 缘起 / 题辞 / 自叙
+        r"^[ \t]*(序章|楔子|引子|前言|序言|尾声|终章|后记|缘起|题辞|自叙|番外篇|番外|结尾语|写在最后|附录)[ \t]*[:：]?[ \t]*([^\n]*)$",
+    ]
+
+    # 正则命中的最少章节数：低于该数量判定为"切章失败"。
+    # 通常 2 即可（证明文本中至少存在两个独立标题段）。
+    CHAPTER_SPLIT_MIN_MATCHES: int = 2
+
+    # 切章失败时是否启用 3 万字/块 硬切兜底。
+    # - False（默认）：切章失败直接提醒用户，**不**调用 LLM 也不硬切，
+    #   用户可在配置 CHAPTER_SPLIT_PATTERNS 中补自定义正则后重试。
+    # - True：切章失败时仍按字数硬切（标题用「第 N 部分」占位），保留旧行为。
+    CHAPTER_SPLIT_HARD_FALLBACK_ENABLED: bool = False
+
+    # 硬切每块字符上限（CHAPTER_SPLIT_HARD_FALLBACK_ENABLED=True 时生效）
+    CHAPTER_SPLIT_HARD_FALLBACK_MAX_CHARS: int = 30_000
 
 
-@lru_cache
-def get_settings() -> Settings:
-    return Settings()
-
-
-settings = get_settings()
+settings = Settings()
