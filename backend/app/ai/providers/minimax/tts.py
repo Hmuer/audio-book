@@ -6,6 +6,7 @@ import logging
 import wave
 import os
 import time as _time
+import random
 from pathlib import Path
 from typing import Any, Optional
 import httpx
@@ -145,11 +146,16 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         *,
         emotion: str = "calm",
         speed: float = 1.0,
-    ) -> bytes:
+    ) -> tuple[bytes, int]:
+        """合成音频，返回 (MP3 bytes, duration_ms)。
+
+        duration_ms 优先使用 MiniMax 返回的 extra_info.audio_length（真实时长），
+        缺失时回退到字节估算。
+        """
         t0 = _time.perf_counter()
         if not text.strip():
             logger.debug(f"[TTS] empty text, return silence voice_id={voice_id}")
-            return make_silent_mp3(50)
+            return make_silent_mp3(50), 50
         text = apply_onomatopoeia(text, voice_id=voice_id)
         text_chars = len(text)
         model = "speech-2.8-turbo"
@@ -189,6 +195,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                                 "format": "mp3",
                                 "channel": 1,
                             },
+                            "language_boost": "Chinese",
                         },
                     )
                     http_status = resp.status_code
@@ -235,12 +242,14 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                     elapsed = _time.perf_counter() - t0
                     extra_info = resp_json.get("extra_info") or {}
                     audio_length_ms = extra_info.get("audio_length")
+                    # 优先用 API 返回的真实时长，缺失时回退到字节估算
+                    duration_ms = int(audio_length_ms) if audio_length_ms else _estimate_mp3_duration_ms(audio_bytes)
                     logger.info(
                         f"[TTS] ok model={model} voice={voice_id} chars={text_chars} "
                         f"speed={speed} size={kb:.1f}KB audio_len_ms={audio_length_ms} "
                         f"trace_id={trace_id} status={http_status} attempt={attempt} ms={int(elapsed*1000)}"
                     )
-                    return audio_bytes
+                    return audio_bytes, duration_ms
 
             except Exception as e:
                 last_exc = e
@@ -269,7 +278,8 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                     )
                     await asyncio.sleep(wait_s)
                 else:
-                    backoff_s = float(2 ** attempt + 1)
+                    # 指数退避 + jitter（random 0-0.6s）防"惊群"
+                    backoff_s = float(2 ** attempt + 1) + random.uniform(0, 0.6)
                     logger.warning(
                         f"[TTS] 重试（attempt={attempt}/{max_attempts}）："
                         f"指数退避 {backoff_s:.1f}s {type(e).__name__}: {e}"
@@ -289,9 +299,11 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         emotion: str = "calm",
         speed: float = 1.0,
     ) -> tuple[str, int]:
-        data = await self.synthesize_to_bytes(text, voice_id, emotion=emotion, speed=speed)
+        data, dur = await self.synthesize_to_bytes(text, voice_id, emotion=emotion, speed=speed)
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "wb") as f:
+        # 原子写：先写 .tmp 再 os.replace，避免崩溃留半成品
+        tmp_path = output_path + ".tmp"
+        with open(tmp_path, "wb") as f:
             f.write(data)
-        dur = _estimate_mp3_duration_ms(data)
+        os.replace(tmp_path, output_path)
         return output_path, dur
