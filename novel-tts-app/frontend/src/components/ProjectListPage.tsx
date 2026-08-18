@@ -407,7 +407,7 @@ export default function ProjectListPage() {
             return (
               <div
                 key={p.project_id}
-                className={`group card relative overflow-hidden cursor-pointer transition
+                className={`group card relative overflow-hidden cursor-pointer transition animate-fade-in
                   ${isRunning ? 'border-yellow-500/40 bg-yellow-500/5 hover:border-yellow-500/60 hover:bg-yellow-500/10' : 'hover:border-brand-500/50 hover:bg-brand-500/5'}`}
                 onClick={() => {
                   window.location.hash = `#/projects/${p.project_id}`;

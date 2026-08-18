@@ -250,11 +250,23 @@ export const api = {
       method: 'DELETE',
     }),
   // 整包 ZIP 下载 URL
-  buildDownloadAll: (projectId: string, buildId: string) =>
-    `/api/projects/${projectId}/builds/${buildId}/download-all`,
+  buildDownloadAll: (projectId: string, buildId: string) => {
+    const tok = getToken();
+    const base = `/api/projects/${projectId}/builds/${buildId}/download-all`;
+    return tok ? `${base}?token=${encodeURIComponent(tok)}` : base;
+  },
   // 单章 MP3 下载 URL
-  buildChapterDownload: (projectId: string, buildId: string, idx: number) =>
-    `/api/projects/${projectId}/builds/${buildId}/chapters/${idx}/download`,
+  buildChapterDownload: (projectId: string, buildId: string, idx: number) => {
+    const tok = getToken();
+    const base = `/api/projects/${projectId}/builds/${buildId}/chapters/${idx}/download`;
+    return tok ? `${base}?token=${encodeURIComponent(tok)}` : base;
+  },
+  // 单章 MP3 音频 URL（用于 <audio src> 试听，需要 token 认证）
+  buildChapterAudioUrl: (projectId: string, buildId: string, idx: number) => {
+    const tok = getToken();
+    const base = `/api/projects/${projectId}/builds/${buildId}/chapters/${idx}/download`;
+    return tok ? `${base}?token=${encodeURIComponent(tok)}` : base;
+  },
 };
 
 // ---------- Project 制类型定义 ----------

@@ -24,12 +24,29 @@ html.light body {
     radial-gradient(1000px 500px at 100% 0%, rgba(59, 130, 246, 0.08), transparent 60%);
 }
 
+/* ===== 借鉴 nispa 的玻璃态 + 光晕装饰 ===== */
 @layer components {
   .card {
     @apply rounded-2xl border border-white/10 bg-white/5 backdrop-blur-sm p-5 shadow-lg;
+    position: relative;
   }
   html.light .card {
     @apply border-gray-200 bg-white/90;
+  }
+  /* 玻璃态面板（深色更透明、更模糊）— 借鉴 nispa bg-slate-900/90 */
+  .glass-panel {
+    @apply rounded-2xl border border-white/10 bg-gray-900/80 backdrop-blur-md shadow-2xl;
+  }
+  html.light .glass-panel {
+    @apply border-gray-200 bg-white/80;
+  }
+  /* 光晕球装饰 — 借鉴 nispa blur-[64px] */
+  .glow-orb {
+    position: absolute;
+    border-radius: 9999px;
+    filter: blur(64px);
+    z-index: -1;
+    pointer-events: none;
   }
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed;
@@ -60,8 +77,38 @@ html.light body {
   }
 }
 
-/* scrollbar */
-::-webkit-scrollbar { width: 10px; height: 10px; }
+/* ===== 借鉴 nispa 的动画 ===== */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.animate-slide-in-right {
+  animation: slide-in-right 0.25s ease-out;
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(100%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out;
+}
+
+/* 自定义滚动条 — 借鉴 nispa custom-scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-thumb { @apply bg-white/15 rounded-full; }
 ::-webkit-scrollbar-track { background: transparent; }
 html.light ::-webkit-scrollbar-thumb { @apply bg-gray-300; }
+
+/* 响应式：移动端缩小卡片 padding */
+@media (max-width: 640px) {
+  .card { @apply p-3; }
+}

@@ -12,6 +12,7 @@ import {
   ChapterSummary,
 } from '@/lib/api';
 import VoicePicker from './VoicePicker';
+import WaveformPlayer from './WaveformPlayer';
 import { StatusBadge } from './ProjectListPage';
 
 type Tab = 'overview' | 'chapters' | 'voices' | 'builds' | 'settings';
@@ -195,7 +196,12 @@ export default function ProjectDetailPage({
       )}
 
       {/* ============ Header ============ */}
-      <div className="card relative overflow-hidden">
+      <div className="card relative overflow-hidden animate-fade-in">
+        {/* 光晕装饰 — 借鉴 nispa */}
+        <div
+          className="glow-orb w-64 h-64 bg-purple-500/10"
+          style={{ top: '-32px', right: '-32px' }}
+        />
         <div
           className="absolute left-0 top-0 bottom-0 w-2"
           style={{ backgroundColor: project!.cover_color || '#a855f7' }}
@@ -706,51 +712,56 @@ function ChaptersTab({
         <h3 className="font-semibold">章节列表（{chapters.length}）</h3>
         {hasAudio && (
           <span className="text-xs text-white/50">
-            ▶ 试听来自最近一次完成的 build
+            🎧 试听来自最近一次完成的 build
           </span>
         )}
       </div>
-      <div className="space-y-1 max-h-[640px] overflow-y-auto pr-1">
+      <div className="space-y-2 max-h-[640px] overflow-y-auto pr-1">
         {chapters.map(c => {
           const key = `ch_${c.idx}`;
           const playing = playingKey === key;
+          const audioUrl = hasAudio
+            ? api.buildChapterAudioUrl(project.project_id, lastBuild!.build_id, c.idx)
+            : null;
           return (
             <div
               key={c.idx}
-              className={`flex items-center gap-3 py-2 px-3 rounded-lg ${
-                playing ? 'bg-brand-500/10 ring-1 ring-brand-500/40' : 'hover:bg-white/5'
+              className={`rounded-lg py-2 px-3 transition ${
+                playing ? 'bg-brand-500/10 ring-1 ring-brand-500/30' : 'hover:bg-white/5'
               }`}
             >
-              <span className="text-white/40 text-xs w-10 shrink-0 font-mono">
-                #{c.idx + 1}
-              </span>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm truncate">{c.title || '(无标题)'}</div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-white/40 text-xs w-10 shrink-0 font-mono">
+                  #{c.idx + 1}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm truncate">{c.title || '(无标题)'}</div>
+                </div>
+                <span className="text-xs text-white/40 shrink-0">{c.text_len} 字</span>
               </div>
-              <span className="text-xs text-white/40 shrink-0">{c.text_len} 字</span>
-              {hasAudio && (
-                <div className="flex items-center gap-2 shrink-0">
-                  <a
-                    className="chip bg-white/10 hover:bg-white/20 text-xs"
-                    href={api.buildChapterDownload(
+              {hasAudio && audioUrl ? (
+                <WaveformPlayer
+                  src={audioUrl}
+                  compact
+                  onDownload={() => {
+                    const a = document.createElement('a');
+                    a.href = api.buildChapterDownload(
                       project.project_id,
                       lastBuild!.build_id,
                       c.idx
-                    )}
-                    download
-                    title="下载该章 MP3"
-                  >
-                    ⬇
-                  </a>
-                </div>
-              )}
+                    );
+                    a.download = '';
+                    a.click();
+                  }}
+                />
+              ) : null}
             </div>
           );
         })}
       </div>
       {!hasAudio && (
         <div className="text-xs text-white/40 pt-3 border-t border-white/5">
-          完成一次 build 后，此页面将显示每章的试听与下载按钮。
+          完成一次 build 后，此页面将显示每章的波形播放器与下载按钮。
         </div>
       )}
     </div>
@@ -887,8 +898,10 @@ function VoicesTab({
       <div className="card space-y-3">
         <h3 className="font-semibold">🧑‍🤝‍🧑 角色音色（{chars.length}）</h3>
         {chars.length === 0 ? (
-          <div className="text-sm text-white/50 py-4">
-            还没有识别到角色，请先到 Overview 触发识别。
+          <div className="rounded-xl border border-dashed border-white/15 p-8 text-center text-white/50">
+            <div className="text-3xl mb-2">🎭</div>
+            <div className="text-sm">还没有识别到角色</div>
+            <div className="text-xs mt-1">请先到 Overview 触发识别，或直接导入章节系统会自动识别角色</div>
           </div>
         ) : (
           <div className="grid md:grid-cols-2 gap-3">
@@ -897,7 +910,7 @@ function VoicesTab({
               return (
                 <div
                   key={c.id}
-                  className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3"
+                  className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3 hover:border-brand-500/30 hover:bg-white/[0.07] transition-all animate-fade-in"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
@@ -1119,19 +1132,36 @@ function BuildRow({
   };
 
   return (
-    <div className="card space-y-3">
+    <div className="card space-y-3 animate-fade-in">
       <div className="flex items-center gap-3 flex-wrap">
         <button
-          className="btn-ghost text-xs py-1 px-2 shrink-0"
+          className="inline-flex items-center gap-1 text-xs px-3 py-1 rounded-full bg-white/5 hover:bg-white/10 text-white/60 hover:text-white/80 transition-colors shrink-0 border border-white/10"
           onClick={onToggleExpand}
-          title={expanded ? '收起' : '展开查看章节'}
+          title={expanded ? '收起章节列表' : '展开查看章节'}
         >
-          {expanded ? '▼' : '▶'}
+          {expanded ? '收起章节' : '展开章节'}
+          <span className={`inline-block transition-transform ${expanded ? 'rotate-180' : ''}`}>
+            ⌄
+          </span>
         </button>
         <StatusBadge status={item.status} />
         <span className="text-sm text-white/70">
           {item.completed_chapters} / {item.total_chapters} 章 · {pct}%
         </span>
+        {isRunning && item.started_at && (
+          <span className="text-xs text-orange-300/80">
+            ⏱ {(() => {
+              const elapsed = (Date.now() - new Date(item.started_at).getTime()) / 1000;
+              const remaining = elapsed > 0 && pct > 0 ? (elapsed / pct) * (100 - pct) : 0;
+              if (remaining > 0) {
+                const m = Math.floor(remaining / 60);
+                const s = Math.round(remaining % 60);
+                return `预计剩余 ${m}分${s}秒`;
+              }
+              return '计算中…';
+            })()}
+          </span>
+        )}
         <span className="text-xs text-white/40 ml-auto">
           创建于 {relativeTime(item.created_at)}
         </span>
@@ -1235,56 +1265,49 @@ function BuildDetailContent({
         </div>
       )}
 
-      {/* 章节产物列表 */}
-      <div className="space-y-1 max-h-[400px] overflow-y-auto pr-1">
+      {/* 章节产物列表 — 用 WaveformPlayer 替代播放按钮 */}
+      <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
         {detail.artifacts.map(a => {
           const key = `art_${a.chapter_idx}`;
           const playing = playingKey === key;
           return (
             <div
               key={a.chapter_idx}
-              className={`flex items-center gap-3 py-2 px-3 rounded-lg ${
-                playing ? 'bg-brand-500/10 ring-1 ring-brand-500/40' : 'hover:bg-white/5'
+              className={`rounded-lg py-2 px-3 transition ${
+                playing ? 'bg-brand-500/10 ring-1 ring-brand-500/30' : 'hover:bg-white/5'
               }`}
             >
-              <span className="text-white/40 text-xs w-10 shrink-0 font-mono">
-                #{a.chapter_idx + 1}
-              </span>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm truncate">{a.title || '(无标题)'}</div>
-                {a.status === 'failed' && a.error_msg && (
-                  <div className="text-[11px] text-red-300/90 truncate" title={a.error_msg}>
-                    ❌ {a.error_msg.split('\n')[0]}
-                  </div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-white/40 text-xs w-10 shrink-0 font-mono">
+                  #{a.chapter_idx + 1}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm truncate">{a.title || '(无标题)'}</div>
+                </div>
+                <BuildArtifactStatusIcon status={a.status} />
+                {a.duration_ms != null && (
+                  <span className="text-xs text-white/40 shrink-0 w-12 text-right">
+                    {formatMs(a.duration_ms)}
+                  </span>
                 )}
               </div>
-              <BuildArtifactStatusIcon status={a.status} />
-              {a.duration_ms != null && (
-                <span className="text-xs text-white/40 shrink-0 w-12 text-right">
-                  {formatMs(a.duration_ms)}
-                </span>
+              {a.status === 'failed' && a.error_msg && (
+                <div className="text-[11px] text-red-300/90 truncate mb-1" title={a.error_msg}>
+                  ❌ {a.error_msg.split('\n')[0]}
+                </div>
               )}
               {a.status === 'done' && a.audio_url && (
-                <>
-                  <button
-                    className={`chip text-xs ${
-                      playing
-                        ? 'bg-brand-500 text-white'
-                        : 'bg-white/10 hover:bg-white/20'
-                    }`}
-                    onClick={() => onTogglePlay(key, a.audio_url)}
-                  >
-                    {playing ? '⏸' : '▶'}
-                  </button>
-                  <a
-                    className="chip bg-white/10 hover:bg-white/20 text-xs"
-                    href={api.buildChapterDownload(projectId, detail.build_id, a.chapter_idx)}
-                    download
-                    title="下载该章 MP3"
-                  >
-                    ⬇
-                  </a>
-                </>
+                <WaveformPlayer
+                  src={a.audio_url}
+                  compact
+                  onDownload={() => {
+                    // 触发浏览器下载
+                    const a_ = document.createElement('a');
+                    a_.href = api.buildChapterDownload(projectId, detail.build_id, a.chapter_idx);
+                    a_.download = '';
+                    a_.click();
+                  }}
+                />
               )}
             </div>
           );
@@ -1358,11 +1381,11 @@ function CreateBuildModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"
       onClick={onClose}
     >
       <div
-        className="card max-w-2xl w-full max-h-[90vh] overflow-y-auto"
+        className="glass-panel max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 animate-slide-up"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
