@@ -63,7 +63,11 @@ class Settings(BaseSettings):
     # 现在已经改成 **段级** semaphore（不是"每章并发"），默认 100 段并行是
     # 相对保守的值：短对白 1s/TTS，100 并发 ≈ 100 段/秒的吞吐。
     # 如果调用方遇到 TTS RPM 429，可下调到 50 / 20。
-    TTS_MAX_CONCURRENCY: int = 100
+    TTS_MAX_CONCURRENCY: int = 200
+    # TTS 分钟级 RPM 限流：60 秒窗口内最多 N 次 t2a_v2 请求。
+    # 使用固定间隔 token bucket：每 (60/N) 秒放 1 个请求，严格匀速零脉冲。
+    # 充值用户官方 20 RPM，默认 12 留 40% 安全余量（账号共享/网络抖动）。
+    TTS_RPM_LIMIT: int = 12
     # TTS 段缓存：内存 LRU 上限（条）；超上限淘汰最旧。
     # 注：磁盘缓存不限制大小（AUDIO_DIR/_seg_cache/），重启后仍可命中。
     TTS_SEGMENT_CACHE_MAX_ENTRIES: int = 20_000

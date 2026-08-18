@@ -1056,8 +1056,7 @@ async def _run_build_inner(
                     mp3_b, dur_ms = cached
                     return s, mp3_b, dur_ms
                 async with sem:
-                    data = await tts.synthesize_to_bytes(s.text, vid, speed=speed)
-                dur = _estimate_mp3_duration_ms(data)
+                    data, dur = await tts.synthesize_to_bytes(s.text, vid, speed=speed)
                 await tts_segment_cache_put(vid, speed, s.text, data, dur)
                 return s, data, dur
 
@@ -1067,8 +1066,11 @@ async def _run_build_inner(
             ch_bytes = concat_mp3_files(*[r[1] for r in results])
             ch_fname = _audio_filename(build_id, ch_idx, failed=False)
             ch_fpath = str(audio_dir / ch_fname)
-            with open(ch_fpath, "wb") as f:
+            # 原子写：先写 .tmp 再 os.replace，避免崩溃留半成品
+            tmp_fpath = ch_fpath + ".tmp"
+            with open(tmp_fpath, "wb") as f:
                 f.write(ch_bytes)
+            os.replace(tmp_fpath, ch_fpath)
             ch_dur_ms = _estimate_mp3_duration_ms(ch_bytes)
             chapter_outputs[ch_idx] = (ch_fpath, ch_dur_ms)
 
