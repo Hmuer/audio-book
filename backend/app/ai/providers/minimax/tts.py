@@ -19,42 +19,89 @@ logger = logging.getLogger(__name__)
 
 VOICES_FILE = Path(__file__).parent / "voices.json"
 
-# 全局 RPM 限流：滑动窗口，60 秒内最多 TTS_RPM_LIMIT 次请求。
-# 模块级单例，确保所有 TTS 调用共享同一计数。
+
+# ---------- 全局 RPM 限流：滑动窗口（60s） ----------
+# MiniMax t2a_v2 是按 60 秒窗口计 RPM，官方充值用户 = 20 RPM，免费 = 10 RPM。
+# 做两层保障：
+#   1) 发请求前先走 _rpm_wait_acquire：窗口内还没达到 TTS_RPM_LIMIT 才放行；
+#      达到则精确等到"窗口内最老请求过期 + 缓冲"再继续。
+#   2) 即便如此官方仍可能 429（多个服务共享 key、官方自身统计偏移等），
+#      synthesize 层在捕获 "rate limit exceeded(RPM)" 后，
+#      按 _rpm_window[0] 精确算还要等多少秒（而不是短退避重试 5 次浪费次数）。
 _rpm_window: deque[float] = deque()
-_rpm_lock: asyncio.Lock | None = None
+_rpm_lock: Optional[asyncio.Lock] = None
 
 
 def _get_rpm_lock() -> asyncio.Lock:
-    """惰性初始化 RPM 锁（事件循环内创建，避免跨循环报错）。"""
+    """懒初始化 asyncio.Lock：必须在事件循环存在之后创建（否则不同事件循环会死锁）。"""
     global _rpm_lock
     if _rpm_lock is None:
         _rpm_lock = asyncio.Lock()
     return _rpm_lock
 
 
+def _rpm_window_remaining_secs(now: float | None = None) -> float:
+    """返回还需要等多少秒，窗口才能释放出至少 1 个额度。若当前还有额度返回 0。
+
+    这个函数故意不拿锁，调用方必须自己持锁 / 或接受略脏读（在 429 兜底路径使用脏读没问题，
+    因为等久一点总比等短了又 429 强）。
+    """
+    if now is None:
+        now = _time.monotonic()
+    # 清理 60 秒之前的记录（不 popleft，只是检查逻辑上还在窗口内的请求数）
+    cut = now - 60.0
+    active_pending = 0
+    oldest_active_ts: Optional[float] = None
+    for ts in _rpm_window:
+        if ts >= cut:
+            active_pending += 1
+            if oldest_active_ts is None:
+                oldest_active_ts = ts
+    limit = max(1, int(settings.TTS_RPM_LIMIT))
+    if active_pending < limit:
+        return 0.0
+    # 额度满了：最老的请求再过 (60 - (now - oldest)) 秒 + 安全缓冲 0.1s 才会过期
+    assert oldest_active_ts is not None
+    wait = 60.0 - (now - oldest_active_ts) + 0.1
+    return max(0.05, wait)
+
+
 async def _rpm_wait_acquire() -> None:
-    """获取一个 RPM 令牌，必要时等待。滑动窗口：过去 60 秒内请求数 <= RPM_LIMIT。"""
-    rpm_limit = max(1, int(settings.TTS_RPM_LIMIT))
+    """发请求前调用：若窗口内请求数已达 TTS_RPM_LIMIT，则阻塞 sleep 到下一次窗口过期。"""
+    limit = max(1, int(settings.TTS_RPM_LIMIT))
     lock = _get_rpm_lock()
     async with lock:
         now = _time.monotonic()
         # 清理 60 秒之前的记录
         while _rpm_window and now - _rpm_window[0] >= 60.0:
             _rpm_window.popleft()
-        if len(_rpm_window) >= rpm_limit:
-            # 超过限制，等待直到最老的记录过期
-            wait_s = 60.0 - (now - _rpm_window[0]) + 0.05
+        if len(_rpm_window) >= limit:
+            wait_s = 60.0 - (now - _rpm_window[0]) + 0.1
             logger.debug(
-                f"[TTS] RPM 限流：等待 {wait_s:.1f}s "
-                f"(limit={rpm_limit}/60s pending={len(_rpm_window)})"
+                f"[TTS] RPM 主动限流：等待 {wait_s:.1f}s (limit={limit}/60s pending={len(_rpm_window)})"
             )
+            # 注意：sleep 时释放锁，让其他协程也能判断（他们都会算出相同的 wait_s，
+            # 然后依次串行地在各自的 acquire 里排队拿锁→清理→判断→放行→append）。
             await asyncio.sleep(wait_s)
-            # 等待后再次清理
             now2 = _time.monotonic()
             while _rpm_window and now2 - _rpm_window[0] >= 60.0:
                 _rpm_window.popleft()
+        # 无论是否 sleep 过，最终 append 本次请求的开始时间戳
         _rpm_window.append(_time.monotonic())
+
+
+async def _rpm_mark_attempt() -> None:
+    """非 acquire 路径（429 重试）重发请求时也追加一次时间戳。
+
+    主动限流路径在 _rpm_wait_acquire 里已经 append 过了；重试之前这里再记一次，
+    保证"失败重试"也会占用自己的窗口额度，避免重试浪把官方额度打死。
+    """
+    lock = _get_rpm_lock()
+    async with lock:
+        now = _time.monotonic()
+        while _rpm_window and now - _rpm_window[0] >= 60.0:
+            _rpm_window.popleft()
+        _rpm_window.append(now)
 
 
 def _estimate_mp3_duration_ms(mp3_bytes: bytes) -> int:
@@ -117,19 +164,6 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                 self._voices = json.load(f)
         return self._voices
 
-    def _is_rate_limit_error(self, e: Exception) -> bool:
-        """判断错误是否为速率限制类（RPM/TPM 429、rate limit exceeded 等），
-        这类错误应退避重试而非直接让整章失败。"""
-        msg = str(e).lower()
-        return any(kw in msg for kw in (
-            "rate limit exceeded",
-            "too many requests",
-            "429",
-            "rpm",
-            "tpm",
-            "quota",
-        ))
-
     async def synthesize_to_bytes(
         self,
         text: str,
@@ -152,16 +186,22 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         # MiniMax 官方 speed 范围 [0.5, 2.0]，默认 1.0
         speed = max(0.5, min(2.0, float(speed)))
 
-        last_err: Optional[Exception] = None
-        # 速率限制类错误最多重试 5 次，指数退避 2s/4s/8s/16s/32s
-        max_retries = 5
-        for attempt in range(1, max_retries + 1):
+        # 最大尝试次数：首次 + 4 次重试 = 共 5 次。
+        # 对 "rate limit exceeded(RPM)"，每次都精确等到窗口最老请求过期，
+        # 所以重试次数不用多，一般 1~2 次就能过。
+        max_attempts = 5
+        last_exc: Optional[BaseException] = None
+        for attempt in range(1, max_attempts + 1):
             trace_id: Optional[str] = None
             http_status: Optional[int] = None
+            is_last_attempt = attempt == max_attempts
             try:
-                # 先获取 RPM 令牌（全局滑动窗口限流）
+                # ---------- 层 1：发请求前主动 RPM 限流 ----------
+                # 首次尝试走 _rpm_wait_acquire：窗口满则精确 sleep 到过期再放。
+                # 429 重试时也要再走一次（否则重试瞬间就又撞到窗口）。
                 await _rpm_wait_acquire()
 
+                # 真正发起 HTTP
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     resp = await client.post(
                         f"{self.base_url}/t2a_v2",
@@ -186,7 +226,6 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                                 "format": "mp3",
                                 "channel": 1,
                             },
-                            # output_format 默认 hex，非流式下 data.audio 是 hex 编码音频
                         },
                     )
                     http_status = resp.status_code
@@ -221,8 +260,6 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                     data = resp_json.get("data") or {}
                     hex_audio = data.get("audio")
                     if not hex_audio:
-                        # fallback: output_format=url 可能返回 URL 而非 hex
-                        # 若 data 为 null 或缺失 audio 再尝试从 base_resp 看错误
                         base_resp = resp_json.get("base_resp") or {}
                         if base_resp.get("status_code", 0) != 0:
                             raise RuntimeError(
@@ -239,40 +276,51 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                     logger.info(
                         f"[TTS] ok model={model} voice={voice_id} chars={text_chars} "
                         f"speed={speed} size={kb:.1f}KB audio_len_ms={audio_length_ms} "
-                        f"trace_id={trace_id} status={http_status} attempt={attempt}/{max_retries} "
-                        f"ms={int(elapsed*1000)}"
+                        f"trace_id={trace_id} status={http_status} attempt={attempt} ms={int(elapsed*1000)}"
                     )
                     return audio_bytes
+
             except Exception as e:
-                last_err = e
+                last_exc = e
                 elapsed = _time.perf_counter() - t0
-                is_rate_limit = self._is_rate_limit_error(e)
-                is_last = attempt == max_retries
-                if is_rate_limit and not is_last:
-                    # 速率限制：指数退避后重试
-                    backoff_s = 2 ** attempt + 1  # 3s / 5s / 9s / 17s
-                    lvl = logging.WARNING
-                    msg = (
-                        f"[TTS] RATE LIMIT model={model} voice={voice_id} chars={text_chars} "
-                        f"attempt={attempt}/{max_retries} status={http_status} "
-                        f"ms={int(elapsed*1000)} backoff={backoff_s}s "
-                        f"{type(e).__name__}: {e}"
+                # 不是最后一次尝试：按错误类型 sleep，再 retry
+                if is_last_attempt:
+                    logger.error(
+                        f"[TTS] FAIL (final attempt={attempt}) model={model} voice={voice_id} chars={text_chars} "
+                        f"trace_id={trace_id} status={http_status} ms={int(elapsed*1000)} "
+                        f"{type(e).__name__}: {e}",
+                        exc_info=True,
                     )
-                    logger.log(lvl, msg)
+                    raise
+                err_str = str(e)
+                is_rpm_limit = (
+                    "rate limit exceeded" in err_str.lower()
+                    and "(rpm)" in err_str.lower()
+                ) or (http_status == 429 and "rpm" in err_str.lower())
+                # ---------- 层 2：精确等窗口过期 / 指数退避 ----------
+                if is_rpm_limit:
+                    # RPM 耗尽：按窗口最老请求算剩余秒数，精确睡到窗口过期再试
+                    wait_s = _rpm_window_remaining_secs()
+                    # 官方自己的窗口统计和我们可能有几秒钟偏移，再额外加 2s 缓冲
+                    wait_s = max(wait_s + 2.0, 5.0)
+                    logger.warning(
+                        f"[TTS] RPM 限流（attempt={attempt}/{max_attempts}）："
+                        f"精确等待 {wait_s:.1f}s 到下一个窗口 trace_id={trace_id}"
+                    )
+                    await asyncio.sleep(wait_s)
+                else:
+                    # 其他错误（HTTP 5xx、网络超时等）：指数退避 3s/5s/9s/17s
+                    backoff_s = float(2 ** attempt + 1)  # attempt=1→3, 2→5, 3→9, 4→17
+                    logger.warning(
+                        f"[TTS] 重试（attempt={attempt}/{max_attempts}）："
+                        f"指数退避 {backoff_s:.1f}s {type(e).__name__}: {e}"
+                    )
                     await asyncio.sleep(backoff_s)
-                    continue
-                # 非速率限制 / 最后一次：记录并抛出
-                lvl = logging.ERROR if is_last else logging.WARNING
-                logger.log(
-                    lvl,
-                    f"[TTS] FAIL model={model} voice={voice_id} chars={text_chars} "
-                    f"trace_id={trace_id} status={http_status} attempt={attempt}/{max_retries} "
-                    f"ms={int(elapsed*1000)} {type(e).__name__}: {e}",
-                    exc_info=is_last,
-                )
-                raise
-        # 理论上不会到这里（循环内要么 return 要么 raise），兜底抛最后一次错误
-        raise last_err or RuntimeError("TTS synthesize failed")
+                continue
+
+        # 理论走不到这里（循环最后一次会 raise），兜底
+        assert last_exc is not None
+        raise last_exc
 
     async def synthesize_to_file(
         self,

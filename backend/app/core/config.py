@@ -64,10 +64,11 @@ class Settings(BaseSettings):
     # 如遇频繁 429，先调小 TTS_RPM_LIMIT，不用先动这个。
     TTS_MAX_CONCURRENCY: int = 200
     # TTS 分钟级 RPM 限流：60 秒滑动窗口内最多 N 次 t2a_v2 请求。
-    # 参考官方速率限制表：充值用户 T2A v2 为 20 RPM（免费 10），
-    # 默认 18 留约 10% 余量给网络抖动。provider 层遇到 429 还会指数退避
-    # 重试（最多 5 次，3/5/9/17s），双重保障避免整章失败。
-    TTS_RPM_LIMIT: int = 18
+    # 参考官方速率限制表：充值用户 T2A v2 为 20 RPM（免费 10）。
+    # 默认 12（= 每 5 秒 1 个请求），给账号共享额度、子账号、缓存未命中
+    # 等意外情况留足余量。如 429 仍然频繁，继续下调到 10 或 8。
+    # provider 层遇到 429 还会：1) 精确等待到窗口过期再重试；2) 指数退避兜底。
+    TTS_RPM_LIMIT: int = 12
     # TTS 段缓存：内存 LRU 上限（条）；超上限淘汰最旧。
     # 注：磁盘缓存不限制大小（AUDIO_DIR/_seg_cache/），重启后仍可命中。
     TTS_SEGMENT_CACHE_MAX_ENTRIES: int = 20_000
