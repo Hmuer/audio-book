@@ -122,15 +122,28 @@ def split_chapters_regex(text: str, *, min_matches: Optional[int] = None) -> lis
         chapter_text = text[chapter_start:chapter_end].strip()
         if not chapter_text:
             continue
+        # 去掉标题行本身，只保留正文：
+        # 标题段会在 chapter.py 里单独朗读（f"第{idx+1}章 {title}"），
+        # 若 text 里仍保留标题行，narrator 段会再读一遍 → "第7章 第六章 第六章"双重朗读。
+        # 仅当首行确为标题行时才剥离，避免误伤正文（序章/硬切章首行非标题）。
+        title_norm = title_line.strip()
+        nl = chapter_text.find("\n")
+        if nl != -1 and chapter_text[:nl].strip() == title_norm:
+            chapter_text = chapter_text[nl + 1:].lstrip()
+        elif chapter_text.strip() == title_norm:
+            # 整章只有标题行（极罕见），正文留空
+            chapter_text = ""
         chapters.append(Chapter(
             idx=len(chapters),
             title=title_line,
             text=chapter_text,
         ))
 
-    # 如果第一章标题前还有内容（如版权页、简介，> 50 字），合并为"序"章
+    # 如果第一章标题前还有内容（如版权页、简介、短序、题记），合并为"序"章。
+    # 阈值 10：太短的残片（如孤立的 ISBN/排版残留）不值得单独成章，
+    # 但短序/题记通常 > 10 字，需保留以免丢内容。
     leading = text[: matches[0][0]].strip()
-    if leading and len(leading) > 50:
+    if leading and len(leading) > 10:
         chapters.insert(0, Chapter(idx=0, title="序", text=leading))
         for i, c in enumerate(chapters):
             c.idx = i
