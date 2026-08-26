@@ -2,113 +2,369 @@
 @tailwind components;
 @tailwind utilities;
 
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
 :root {
   color-scheme: dark light;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 24px;
 }
 
 html {
   scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
 
 body {
-  @apply bg-gray-950 text-gray-100 antialiased;
+  @apply bg-ink-50 text-ink-700 antialiased;
   background-image:
-    radial-gradient(1200px 600px at 10% -10%, rgba(168, 85, 247, 0.18), transparent 60%),
-    radial-gradient(1000px 500px at 100% 0%, rgba(59, 130, 246, 0.12), transparent 60%);
+    radial-gradient(1400px 800px at 0% -10%, rgba(139,92,246,0.14), transparent 55%),
+    radial-gradient(1000px 600px at 100% 0%, rgba(45,212,191,0.06), transparent 60%),
+    radial-gradient(1200px 700px at 50% 120%, rgba(198,244,74,0.04), transparent 60%);
+  background-attachment: fixed;
+  min-height: 100vh;
+  letter-spacing: 0.01em;
 }
 
 html.light body {
-  @apply bg-gray-50 text-gray-900;
+  @apply bg-cream-50 text-gray-800;
   background-image:
-    radial-gradient(1200px 600px at 10% -10%, rgba(168, 85, 247, 0.10), transparent 60%),
-    radial-gradient(1000px 500px at 100% 0%, rgba(59, 130, 246, 0.08), transparent 60%);
+    radial-gradient(1400px 800px at 0% -10%, rgba(139,92,246,0.08), transparent 55%),
+    radial-gradient(1000px 600px at 100% 0%, rgba(45,212,191,0.05), transparent 60%);
 }
 
-/* ===== 借鉴 nispa 的玻璃态 + 光晕装饰 ===== */
+/* ========== Design System（ElevenLabs 风格） ========== */
 @layer components {
+  /* ------ 容器 / 卡片 ------ */
+  .shell {
+    @apply max-w-[1240px] mx-auto px-4 sm:px-6 lg:px-8 w-full;
+  }
+
   .card {
-    @apply rounded-2xl border border-white/10 bg-white/5 backdrop-blur-sm p-5 shadow-lg;
-    position: relative;
+    @apply relative rounded-3xl p-5 sm:p-6 border border-ink-300/70 bg-ink-100/60 backdrop-blur-xl shadow-el;
+    transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+  }
+  .card:hover {
+    @apply border-ink-400/90 shadow-el-lg;
   }
   html.light .card {
-    @apply border-gray-200 bg-white/90;
+    @apply border-gray-200/80 bg-white/80 shadow-el;
   }
-  /* 玻璃态面板（深色更透明、更模糊）— 借鉴 nispa bg-slate-900/90 */
+  html.light .card:hover {
+    @apply border-gray-300 shadow-el-lg;
+  }
+
+  .surface {
+    @apply rounded-2xl border border-ink-300/60 bg-ink-100/80;
+  }
+  html.light .surface {
+    @apply border-gray-200 bg-white;
+  }
+
+  /* 玻璃态面板：Eleven 那种「悬浮浮岛」感 */
   .glass-panel {
-    @apply rounded-2xl border border-white/10 bg-gray-900/80 backdrop-blur-md shadow-2xl;
+    @apply relative rounded-3xl border border-white/[0.06] bg-ink-100/70 backdrop-blur-2xl shadow-el-xl overflow-hidden;
   }
   html.light .glass-panel {
-    @apply border-gray-200 bg-white/80;
+    @apply border-gray-200/80 bg-white/90;
   }
-  /* 光晕球装饰 — 借鉴 nispa blur-[64px] */
+
+  /* 光晕装饰：Eleven 常用品牌紫+青柠的 corner glows（注意 z-index -1） */
   .glow-orb {
     position: absolute;
     border-radius: 9999px;
-    filter: blur(64px);
+    filter: blur(72px);
     z-index: -1;
     pointer-events: none;
+    opacity: 0.55;
   }
+
+  /* 顶部细条（卡片左侧状态色条——Eleven 风格用 2px 细条而非粗条） */
+  .stripe {
+    @apply absolute left-0 top-0 bottom-0 w-[2px] h-full;
+  }
+
+  /* ------ 按钮（Eleven 克制风） ------ */
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center justify-center gap-2 rounded-[10px] px-4 py-2 text-sm font-medium
+      transition-all duration-200 select-none
+      disabled:opacity-40 disabled:cursor-not-allowed
+      active:scale-[0.98];
+    letter-spacing: -0.005em;
   }
+
+  /* 主 CTA：品牌紫渐变 + 阴影外发光 */
   .btn-primary {
-    @apply btn bg-brand-600 hover:bg-brand-500 text-white shadow;
+    @apply btn text-white shadow-brand;
+    background-image: linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0) 50%),
+      linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
   }
+  .btn-primary:hover {
+    @apply shadow-brand-lg -translate-y-[1px];
+    background-image: linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0) 50%),
+      linear-gradient(135deg, #9b6bff 0%, #8b5cf6 100%);
+  }
+  .btn-primary:active {
+    @apply shadow-brand;
+    transform: translateY(0) scale(0.99);
+  }
+
+  /* 次按钮：玻璃态白边 */
   .btn-ghost {
-    @apply btn bg-white/10 hover:bg-white/20;
+    @apply btn;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: rgba(255,255,255,0.82);
+  }
+  .btn-ghost:hover {
+    background: rgba(255,255,255,0.07);
+    border-color: rgba(255,255,255,0.14);
+    color: #fff;
   }
   html.light .btn-ghost {
-    @apply bg-gray-100 hover:bg-gray-200 text-gray-800;
+    background: rgba(15,15,18,0.02);
+    border-color: rgba(15,15,18,0.08);
+    color: rgba(15,15,18,0.78);
   }
+  html.light .btn-ghost:hover {
+    background: rgba(15,15,18,0.04);
+    border-color: rgba(15,15,18,0.14);
+    color: #0f0f12;
+  }
+
+  /* 描边按钮：深色细线 */
   .btn-outline {
-    @apply btn border border-white/15 hover:bg-white/5;
+    @apply btn text-ink-800;
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.1);
   }
-  html.light .btn-outline {
-    @apply border-gray-300 hover:bg-gray-100;
+  .btn-outline:hover {
+    background: rgba(255,255,255,0.04);
+    border-color: rgba(255,255,255,0.2);
   }
-  .chip {
-    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
+
+  /* 破坏性操作 */
+  .btn-danger {
+    @apply btn text-white;
+    background-image: linear-gradient(180deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0) 50%),
+      linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+    box-shadow: 0 0 0 1px rgba(239,68,68,0.35), 0 10px 30px -8px rgba(239,68,68,0.45);
   }
+  .btn-danger:hover {
+    filter: brightness(1.08);
+  }
+
+  /* ------ 输入框 / 文本框 / 下拉 ------ */
   .input, .textarea, select {
-    @apply w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 placeholder-white/30;
+    @apply w-full rounded-[10px] px-3.5 py-2.5 text-sm outline-none
+      transition-all duration-150
+      placeholder:text-ink-500;
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: rgba(255,255,255,0.92);
+    box-shadow: 0 1px 0 0 rgba(255,255,255,0.03) inset;
+  }
+  .input:focus, .textarea:focus, select:focus {
+    background: rgba(255,255,255,0.035);
+    border-color: rgba(168,85,247,0.55);
+    box-shadow:
+      0 0 0 4px rgba(168,85,247,0.14),
+      0 0 0 1px rgba(168,85,247,0.5) inset;
+  }
+  .input:hover, .textarea:hover, select:hover {
+    border-color: rgba(255,255,255,0.14);
   }
   html.light .input, html.light .textarea, html.light select {
-    @apply bg-white border-gray-300 focus:border-brand-500 text-gray-900 placeholder-gray-400;
+    background: #fff;
+    border-color: rgba(15,15,18,0.10);
+    color: #0f0f12;
+    box-shadow: 0 1px 2px 0 rgba(0,0,0,0.04);
+  }
+  html.light .input:focus, html.light .textarea:focus, html.light select:focus {
+    border-color: rgba(139,92,246,0.55);
+    box-shadow:
+      0 0 0 4px rgba(139,92,246,0.12),
+      0 1px 2px 0 rgba(0,0,0,0.04);
+  }
+  .textarea {
+    @apply resize-y min-h-[120px] leading-6;
+  }
+
+  /* 对遗留的 input-base 别名做兼容 */
+  .input-base { @apply input; }
+
+  /* ------ Chip / Badge ------ */
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium;
+    letter-spacing: 0.01em;
+  }
+  .chip-soft {
+    @apply chip;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.70);
+  }
+  html.light .chip-soft {
+    background: rgba(15,15,18,0.03);
+    border-color: rgba(15,15,18,0.06);
+    color: rgba(15,15,18,0.62);
+  }
+
+  .badge-dot {
+    @apply inline-block w-2 h-2 rounded-full;
+  }
+
+  /* ------ 分隔 ------ */
+  .hr-divider {
+    @apply border-t border-ink-300/60;
+  }
+  html.light .hr-divider {
+    @apply border-gray-200;
+  }
+
+  /* ------ 进度条 ------ */
+  .progress-track {
+    @apply h-1.5 w-full rounded-full overflow-hidden;
+    background: rgba(255,255,255,0.05);
+  }
+  .progress-fill {
+    @apply h-full rounded-full transition-all duration-300 ease-out;
+    background-image: linear-gradient(90deg, #8b5cf6 0%, #6366f1 60%, #2dd4bf 100%);
+  }
+
+  /* ------ 步骤条（Wizard 用） ------ */
+  .step-dot {
+    @apply grid place-items-center w-8 h-8 rounded-full text-xs font-semibold;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: rgba(255,255,255,0.5);
+  }
+  .step-dot.active {
+    color: #fff;
+    background-image: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+    border-color: transparent;
+    box-shadow: 0 0 0 4px rgba(139,92,246,0.14);
+  }
+  .step-dot.done {
+    color: #0f0f12;
+    background: #c6f44a;
+    border-color: transparent;
   }
 }
 
-/* ===== 借鉴 nispa 的动画 ===== */
-@keyframes fade-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-.animate-fade-in {
-  animation: fade-in 0.3s ease-out;
+/* ========== 通用动画 ========== */
+@layer utilities {
+  @keyframes fade-in-up {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .animate-fade-in {
+    animation: fade-in-up 0.38s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+  }
+
+  @keyframes slide-in-right {
+    from { opacity: 0; transform: translateX(16px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+  .animate-slide-in-right {
+    animation: slide-in-right 0.28s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+  }
+
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-3px); }
+    75% { transform: translateX(3px); }
+  }
+  .animate-shake { animation: shake 0.4s ease; }
+
+  /* Skeleton 加载 */
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      rgba(255,255,255,0.035) 0%,
+      rgba(255,255,255,0.085) 50%,
+      rgba(255,255,255,0.035) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 2.2s linear infinite;
+    border-radius: 10px;
+  }
+  html.light .skeleton {
+    background: linear-gradient(
+      90deg,
+      rgba(15,15,18,0.04) 0%,
+      rgba(15,15,18,0.10) 50%,
+      rgba(15,15,18,0.04) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 2.2s linear infinite;
+  }
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+
+  /* Tab 切换时的小指示器：pill-shaped */
+  .tab-indicator {
+    @apply rounded-xl px-3.5 py-2 text-sm font-medium transition-all duration-200;
+  }
+
+  /* 粗体、标题、品牌强调色字体 */
+  .headline {
+    @apply font-display font-semibold tracking-tight text-ink-900;
+    letter-spacing: -0.02em;
+  }
+  html.light .headline {
+    @apply text-ink-0;
+  }
+
+  /* focus ring：Eleven 统一用 4px 外发光而不是 outline */
+  .focus-ring {
+    @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-0;
+    --tw-ring-color: rgba(139,92,246,0.45);
+  }
 }
 
-@keyframes slide-in-right {
-  from { opacity: 0; transform: translateX(20px); }
-  to { opacity: 1; transform: translateX(0); }
+/* ========== 滚动条：Eleven 细、柔和 ========== */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.10);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
-.animate-slide-in-right {
-  animation: slide-in-right 0.25s ease-out;
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.18);
+  background-clip: content-box;
+  border: 2px solid transparent;
 }
-
-@keyframes slide-up {
-  from { opacity: 0; transform: translateY(100%); }
-  to { opacity: 1; transform: translateY(0); }
-}
-.animate-slide-up {
-  animation: slide-up 0.3s ease-out;
-}
-
-/* 自定义滚动条 — 借鉴 nispa custom-scrollbar */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-thumb { @apply bg-white/15 rounded-full; }
 ::-webkit-scrollbar-track { background: transparent; }
-html.light ::-webkit-scrollbar-thumb { @apply bg-gray-300; }
+html.light ::-webkit-scrollbar-thumb {
+  background: rgba(15,15,18,0.14);
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+html.light ::-webkit-scrollbar-thumb:hover {
+  background: rgba(15,15,18,0.24);
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
 
-/* 响应式：移动端缩小卡片 padding */
+/* ========== 响应式微调 ========== */
 @media (max-width: 640px) {
-  .card { @apply p-3; }
+  .card { @apply p-4; }
+  .btn { @apply px-3.5 py-2; }
+}
+
+/* 高对比模式（辅助）：ElevenLabs 无此需求，但保证无障碍 */
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }

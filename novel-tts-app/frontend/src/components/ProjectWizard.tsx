@@ -11,6 +11,14 @@ const STEP_LABELS = ['填写项目名', '导入小说', '识别中', '完成'];
 // Step2 导入方式：文件上传 / 粘贴文本
 type ImportMode = 'file' | 'text';
 
+/**
+ * ElevenLabs 风格新建项目向导
+ *  - 顶部步骤：step-dot + 连接线 + 当前渐变光晕
+ *  - 卡片：玻璃态 + 角标光晕（左上紫 / 右下青柠）
+ *  - 文件拖入区：虚线圆角 + 大图标 + 激活紫色发光
+ *  - 进度条：Eleven 三色渐变（紫→蓝→青）
+ */
+
 export default function ProjectWizard() {
   const [step, setStep] = useState<WizardStep>(1);
   const [err, setErr] = useState<string | null>(null);
@@ -18,27 +26,20 @@ export default function ProjectWizard() {
   // Step 1
   const [name, setName] = useState<string>('我的有声书');
 
-  // Step 2: 支持上传文件 + 粘贴文本两种模式
+  // Step 2
   const [importMode, setImportMode] = useState<ImportMode>('file');
-  // 文件上传
   const [file, setFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
-  // 粘贴文本
   const [pastedText, setPastedText] = useState<string>('');
   const [textFilenameHint, setTextFilenameHint] = useState<string>('');
 
   // Step 3 / 4 共享
   const [projectId, setProjectId] = useState<string | null>(null);
   const [prepareMsg, setPrepareMsg] = useState<string>('正在上传文件…');
-  // 原 prepareResult 不再保存旧版 ProjectPrepareResp（接口已改成 202+后台任务），
-  // 统一改成轮询拿到的 ProjectDetailResp（含 chapters/characters/prepare_progress）
   const [detail, setDetail] = useState<ProjectDetailResp | null>(null);
-  // 防止用户离开/出错后轮询仍继续跑
   const pollAbortRef = useRef<{ aborted: boolean }>({ aborted: false });
-  // 轮询计时器
   const pollTimerRef = useRef<number | null>(null);
 
-  // ---------- Step 1 → 2 ----------
   const goStep2 = () => {
     if (!name.trim()) {
       setErr('请填写项目名');
@@ -48,7 +49,6 @@ export default function ProjectWizard() {
     setStep(2);
   };
 
-  // ---------- 文件选择（点击 + 拖拽） ----------
   const onPickFile = (f: File | null) => {
     setErr(null);
     if (!f) return;
@@ -59,7 +59,6 @@ export default function ProjectWizard() {
     setFile(f);
   };
 
-  // stage 中文名（给 Step3 文案更新用）
   const stageLabel = (stg?: string | null, prog?: ProjectDetailResp['prepare_progress']) => {
     if (!stg) return '正在启动识别任务…';
     switch (stg) {
@@ -82,7 +81,6 @@ export default function ProjectWizard() {
     }
   };
 
-  // 停止轮询
   const stopPoll = useCallback(() => {
     pollAbortRef.current.aborted = true;
     if (pollTimerRef.current !== null) {
@@ -91,10 +89,8 @@ export default function ProjectWizard() {
     }
   }, []);
 
-  // 卸载时清理
   useEffect(() => () => stopPoll(), [stopPoll]);
 
-  // ---------- Step 2 → 3：创建项目 + 导入（文件/文本二选一） + 触发 prepare（202） + 轮询 ----------
   const goStep3 = async () => {
     let valid = true;
     if (importMode === 'file' && !file) {
@@ -115,12 +111,10 @@ export default function ProjectWizard() {
 
     let pid: string | null = null;
     try {
-      // 1. 创建项目
       const proj = await api.projectCreate(name.trim());
       pid = proj.project_id;
       setProjectId(pid);
 
-      // 2. 导入（文件 / 文本二选一）
       if (importMode === 'file' && file) {
         setPrepareMsg('项目已创建，正在上传文件…');
         await api.projectImport(pid, file);
@@ -134,11 +128,7 @@ export default function ProjectWizard() {
       }
 
       setPrepareMsg('导入完成，正在启动后台识别…');
-
-      // 3. 触发 prepare（HTTP 202 Accepted，立即返回，真实执行在后台 asyncio.create_task）
       await api.projectPrepare(pid);
-
-      // 4. 轮询 project 详情：status 变成 ready/failed，或 last_error 非空
       setPrepareMsg('后台任务已启动，首次识别可能需 1-10 分钟，请勿关闭页面…');
 
       const tick = async () => {
@@ -147,7 +137,6 @@ export default function ProjectWizard() {
           const d = await api.projectGet(pid);
           setDetail(d);
           const prog = d.prepare_progress ?? null;
-          // 失败：优先按 last_error
           if (prog?.last_error) {
             stopPoll();
             const t = prog.last_error_type ? `[${prog.last_error_type}] ` : '';
@@ -168,11 +157,8 @@ export default function ProjectWizard() {
             setStep(4);
             return;
           }
-          // preparing / imported / draft：按 stage 更新文案
           setPrepareMsg(stageLabel(prog?.stage, prog));
         } catch (e: any) {
-          // 轮询单次失败不直接退出，记日志；连续 15 次（~30s）都失败再报错
-          // 这里简化：直接吞掉继续轮询
           console.warn('[wizard] poll projectGet fail', e);
         }
         if (!pollAbortRef.current.aborted) {
@@ -184,135 +170,167 @@ export default function ProjectWizard() {
     } catch (e: any) {
       stopPoll();
       setErr(String(e?.message || e));
-      // 出错回退到 step 2 让用户重试（已创建项目的话保留 projectId，可后续在列表里删）
       setStep(2);
     }
   };
 
-  // ---------- Step 4：进入项目 ----------
   const enterProject = () => {
     if (projectId) {
       window.location.hash = `#/projects/${projectId}`;
     }
   };
 
-  // ---------- 取消，返回列表 ----------
   const cancel = () => {
     window.location.hash = '#/projects';
   };
 
   return (
-    <section className="space-y-6 max-w-3xl mx-auto">
-      {/* 顶部进度条 */}
-      <div className="card">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold">✨ 新建项目向导</h2>
-          <button className="btn-ghost" onClick={cancel}>取消</button>
+    <section className="space-y-6 max-w-3xl mx-auto animate-fade-in">
+      {/* 顶部步骤条 — Eleven 风格：step-dot + 状态色 + 连线 */}
+      <div className="glass-panel p-5 sm:p-6 relative overflow-hidden">
+        <div className="glow-orb w-48 h-48 bg-brand-500/15" style={{ top: '-30px', left: '-30px' }} />
+        <div className="glow-orb w-56 h-56 bg-accent-lime/5" style={{ bottom: '-40px', right: '-40px' }} />
+
+        <div className="flex items-center justify-between mb-5 relative">
+          <div>
+            <h2 className="headline text-xl sm:text-2xl">新建有声书项目</h2>
+            <p className="text-[13px] text-ink-600 mt-1">
+              四步即可把小说转换为可听的 MP3 有声书
+            </p>
+          </div>
+          <button className="btn-ghost !px-3 !py-1.5 text-sm" onClick={cancel}>取消</button>
         </div>
-        <div className="flex items-center gap-2">
+
+        {/* Step dots */}
+        <div className="flex items-center w-full relative">
           {STEP_LABELS.map((label, i) => {
             const n = (i + 1) as WizardStep;
             const isCurrent = step === n;
             const isDone = step > n;
             return (
-              <div key={n} className="flex items-center gap-2 flex-1">
-                <div
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm flex-1 ${
-                    isCurrent
-                      ? 'bg-brand-600 text-white'
-                      : isDone
-                      ? 'bg-white/10 text-white/80'
-                      : 'bg-white/5 text-white/40'
-                  }`}
-                >
-                  <span className="w-5 h-5 rounded-full grid place-items-center text-xs font-mono">
-                    {isDone ? '✓' : n}
-                  </span>
-                  <span className="truncate">{label}</span>
+              <div key={n} className="flex items-center flex-1 last:flex-none">
+                <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+                  <div
+                    className={`step-dot shrink-0 ${isDone ? 'done' : ''} ${isCurrent ? 'active' : ''}`}
+                  >
+                    {isDone ? (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>
+                    ) : n}
+                  </div>
+                  <div className="min-w-0 hidden sm:block">
+                    <div className={`text-[13px] font-medium leading-tight ${isCurrent ? 'text-ink-900' : isDone ? 'text-ink-700' : 'text-ink-600'}`}>
+                      {label}
+                    </div>
+                    <div className={`text-[11px] mt-0.5 ${isCurrent ? 'text-brand-300' : 'text-ink-500/80'}`}>
+                      Step {n} / 4
+                    </div>
+                  </div>
                 </div>
                 {i < STEP_LABELS.length - 1 && (
-                  <span className="w-3 h-px bg-white/20 shrink-0" />
+                  <div className="flex-1 mx-2 sm:mx-4 h-px rounded-full overflow-hidden bg-ink-300/70">
+                    <div
+                      className="h-full transition-all duration-500"
+                      style={{
+                        width: step > n ? '100%' : '0%',
+                        backgroundImage: 'linear-gradient(90deg, #8b5cf6, #2dd4bf)',
+                      }}
+                    />
+                  </div>
                 )}
               </div>
             );
           })}
         </div>
-        {/* 进度条 */}
-        <div className="mt-3 w-full h-1 bg-white/10 rounded-full overflow-hidden">
-          <div
-            className="h-full bg-gradient-to-r from-brand-500 to-blue-500 transition-all duration-300"
-            style={{ width: `${(step / 4) * 100}%` }}
-          />
-        </div>
       </div>
 
       {err && (
-        <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+        <div className="rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200 backdrop-blur-sm shadow-el animate-shake">
           {err}
         </div>
       )}
 
       {/* ============ Step 1: 项目名 ============ */}
       {step === 1 && (
-        <div className="card space-y-4">
+        <div className="glass-panel p-5 sm:p-6 space-y-5 animate-slide-in-right">
           <div>
-            <label className="block text-sm text-white/70 mb-2">项目名称</label>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="chip-soft !py-0.5 !px-2">📚 基本信息</span>
+              <span className="text-xs text-ink-500">给你的有声书一个名字</span>
+            </div>
+            <label className="block text-sm text-ink-700 mb-2">项目名称</label>
             <input
               type="text"
-              className="input"
+              className="input !py-3 !text-[15px]"
               value={name}
               onChange={e => setName(e.target.value)}
               placeholder="例如：三体 · 第一部"
               maxLength={80}
               autoFocus
             />
-            <p className="text-xs text-white/40 mt-2">
+            <p className="text-[11px] text-ink-500 mt-2">
               项目名仅作为本地标识，不影响最终生成的 MP3 文件名。
             </p>
           </div>
-          <div className="flex justify-end gap-2">
+          <div className="flex justify-end gap-2 pt-1">
             <button className="btn-ghost" onClick={cancel}>取消</button>
             <button className="btn-primary" onClick={goStep2}>下一步 →</button>
           </div>
         </div>
       )}
 
-      {/* ============ Step 2: 导入小说（支持文件上传 + 粘贴文本） ============ */}
+      {/* ============ Step 2: 导入小说 ============ */}
       {step === 2 && (
-        <div className="card space-y-4">
-          {/* 模式切换：文件 / 粘贴文本 */}
-          <div className="flex gap-1 p-1 rounded-xl bg-white/5 border border-white/10 w-fit">
-            <button
-              className={`px-4 py-1.5 rounded-lg text-sm transition ${
-                importMode === 'file'
-                  ? 'bg-brand-600 text-white shadow-sm'
-                  : 'text-white/60 hover:text-white/90'
-              }`}
-              onClick={() => { setImportMode('file'); setErr(null); }}
-            >
-              📁 上传 TXT 文件
-            </button>
-            <button
-              className={`px-4 py-1.5 rounded-lg text-sm transition ${
-                importMode === 'text'
-                  ? 'bg-brand-600 text-white shadow-sm'
-                  : 'text-white/60 hover:text-white/90'
-              }`}
-              onClick={() => { setImportMode('text'); setErr(null); }}
-            >
-              📝 粘贴文本内容
-            </button>
+        <div className="glass-panel p-5 sm:p-6 space-y-5 animate-slide-in-right relative overflow-hidden">
+          <div className="glow-orb w-48 h-48 bg-accent-teal/10" style={{ bottom: '-40px', right: '-30px' }} />
+
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <span className="chip-soft !py-0.5 !px-2">📥 导入小说</span>
+            </div>
+
+            {/* 模式切换：pill-tab */}
+            <div className="inline-flex p-1 rounded-2xl bg-white/[0.04] border border-white/[0.06]">
+              <button
+                className={`px-4 py-2 rounded-xl text-sm transition-all duration-200 flex items-center gap-2 ${
+                  importMode === 'file'
+                    ? 'bg-brand-500 text-white shadow-brand'
+                    : 'text-ink-600 hover:text-ink-800'
+                }`}
+                onClick={() => { setImportMode('file'); setErr(null); }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <path d="M14 2v6h6" />
+                </svg>
+                上传 TXT 文件
+              </button>
+              <button
+                className={`px-4 py-2 rounded-xl text-sm transition-all duration-200 flex items-center gap-2 ${
+                  importMode === 'text'
+                    ? 'bg-brand-500 text-white shadow-brand'
+                    : 'text-ink-600 hover:text-ink-800'
+                }`}
+                onClick={() => { setImportMode('text'); setErr(null); }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                </svg>
+                粘贴文本内容
+              </button>
+            </div>
           </div>
 
-          {/* 文件上传模式 */}
           {importMode === 'file' && (
             <div>
-              <label className="block text-sm text-white/70 mb-2">上传 TXT 小说文件</label>
+              <label className="block text-sm text-ink-700 mb-2">上传 TXT 小说文件</label>
               <label
-                className={`block border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition ${
+                className={`relative block rounded-3xl border-2 border-dashed p-8 sm:p-12 text-center cursor-pointer transition-all duration-200 overflow-hidden ${
                   dragOver
-                    ? 'border-brand-500 bg-brand-500/10'
-                    : 'border-white/20 hover:border-brand-500/60 hover:bg-brand-500/5'
+                    ? 'border-brand-500/80 bg-brand-500/10 shadow-brand'
+                    : 'border-ink-300/80 hover:border-brand-500/60 hover:bg-brand-500/[0.04]'
                 }`}
                 onDragOver={e => {
                   e.preventDefault();
@@ -325,6 +343,9 @@ export default function ProjectWizard() {
                   onPickFile(e.dataTransfer.files?.[0] || null);
                 }}
               >
+                {dragOver && (
+                  <div className="absolute inset-0 bg-brand-500/5 pointer-events-none animate-pulse-soft" />
+                )}
                 <input
                   type="file"
                   accept=".txt,.text,.md"
@@ -332,32 +353,46 @@ export default function ProjectWizard() {
                   onChange={e => onPickFile(e.target.files?.[0] || null)}
                 />
                 {file ? (
-                  <div className="space-y-1">
-                    <div className="text-3xl">📄</div>
-                    <div className="font-medium">{file.name}</div>
-                    <div className="text-xs text-white/50">{(file.size / 1024).toFixed(1)} KB</div>
+                  <div className="space-y-2 relative">
+                    <div className="mx-auto w-14 h-14 rounded-2xl grid place-items-center bg-brand-500/15 border border-brand-500/30">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#c4b5fd" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                        <path d="M14 2v6h6" />
+                      </svg>
+                    </div>
+                    <div className="text-base font-semibold text-ink-800">{file.name}</div>
+                    <div className="text-xs text-ink-500">{(file.size / 1024).toFixed(1)} KB · 已就绪</div>
                   </div>
                 ) : (
-                  <div className="space-y-2 text-white/60">
-                    <div className="text-3xl">📁</div>
-                    <div>点击或拖拽 TXT 文件到这里</div>
-                    <div className="text-xs">支持 .txt / .md，最大 50MB</div>
+                  <div className="space-y-3 relative">
+                    <div className="mx-auto w-16 h-16 rounded-2xl grid place-items-center bg-white/[0.03] border border-white/[0.07]">
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-ink-600">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="17 8 12 3 7 8" />
+                        <line x1="12" y1="3" x2="12" y2="15" />
+                      </svg>
+                    </div>
+                    <div className="text-ink-700 text-[15px] font-medium">
+                      点击或拖拽 TXT / Markdown 文件到这里
+                    </div>
+                    <div className="text-xs text-ink-500">
+                      推荐 UTF-8 编码，最大 50MB
+                    </div>
                   </div>
                 )}
               </label>
               {file && (
-                <div className="mt-2 text-xs text-white/50">
+                <div className="mt-2 text-xs text-ink-500">
                   文件名将自动用作书名，可在项目详情中修改。
                 </div>
               )}
             </div>
           )}
 
-          {/* 粘贴文本模式 */}
           {importMode === 'text' && (
-            <div className="space-y-3">
+            <div className="space-y-4">
               <div>
-                <label className="block text-sm text-white/70 mb-2">书名（可选）</label>
+                <label className="block text-sm text-ink-700 mb-2">书名（可选）</label>
                 <input
                   type="text"
                   className="input"
@@ -369,31 +404,31 @@ export default function ProjectWizard() {
               </div>
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <label className="block text-sm text-white/70">粘贴小说正文内容</label>
+                  <label className="block text-sm text-ink-700">粘贴小说正文内容</label>
                   <span
                     className={`chip ${
-                      pastedText.length > 50 * 1024 * 1024 / 3  // 约 50MB UTF-8 中文上限
+                      pastedText.length > 50 * 1024 * 1024 / 3
                         ? 'bg-red-500/20 text-red-300'
-                        : 'bg-white/10 text-white/60'
-                    } text-xs`}
+                        : 'bg-white/[0.05] text-ink-600'
+                    } text-[11px] border border-white/[0.06]`}
                   >
-                    {pastedText.length} 字
+                    {pastedText.length.toLocaleString()} 字
                   </span>
                 </div>
                 <textarea
                   value={pastedText}
                   onChange={e => setPastedText(e.target.value)}
                   placeholder="在此粘贴整本小说正文（支持中文自动识别章节，推荐带「第一章」「第1章」等标题标记）…"
-                  className="textarea min-h-[380px] font-mono text-sm leading-relaxed"
+                  className="textarea min-h-[380px] font-mono text-[13px] leading-relaxed"
                 />
-                <p className="text-xs text-white/50 mt-2">
+                <p className="text-[11px] text-ink-500 mt-2">
                   支持从浏览器/记事本/WPS 直接全选复制粘贴，内容会自动保存到项目中。
                 </p>
               </div>
             </div>
           )}
 
-          <div className="flex justify-between gap-2 pt-2">
+          <div className="flex justify-between gap-2 pt-1">
             <button className="btn-ghost" onClick={() => setStep(1)}>← 上一步</button>
             <button
               className="btn-primary"
@@ -416,43 +451,79 @@ export default function ProjectWizard() {
 
       {/* ============ Step 3: 识别中 ============ */}
       {step === 3 && (
-        <div className="card text-center py-12 space-y-3">
-          <div className="inline-block w-12 h-12 border-4 border-brand-500 border-t-transparent rounded-full animate-spin" />
-          <div className="text-lg font-medium">{prepareMsg}</div>
-          <div className="text-sm text-white/50">
-            首次处理整本小说可能需要 1-5 分钟（取决于字数和章节数）<br />
+        <div className="glass-panel text-center py-14 sm:py-16 space-y-5 relative overflow-hidden">
+          <div className="glow-orb w-64 h-64 bg-brand-500/20" style={{ top: '-40px', left: '50%', transform: 'translateX(-50%)' }} />
+          <div className="relative mx-auto w-16 h-16 grid place-items-center">
+            <span className="absolute inset-0 rounded-full animate-ping bg-brand-500/25" style={{ animationDuration: '2.2s' }} />
+            <div className="relative w-14 h-14 grid place-items-center rounded-full shadow-brand"
+              style={{
+                backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+              }}
+            >
+              <span className="inline-block w-6 h-6 border-[3px] border-white/40 border-t-white rounded-full animate-spin" />
+            </div>
+          </div>
+          <div className="relative text-lg sm:text-xl font-semibold text-ink-800">{prepareMsg}</div>
+          <div className="relative text-sm text-ink-500 max-w-md mx-auto">
+            首次处理整本小说可能需要 1-10 分钟（取决于字数和章节数）<br />
             请勿关闭页面
+          </div>
+          {/* 进度骨架条 */}
+          <div className="relative max-w-sm mx-auto mt-3">
+            <div className="progress-track"><div className="progress-fill animate-shimmer" style={{ width: '60%' }} /></div>
           </div>
         </div>
       )}
 
       {/* ============ Step 4: 完成 ============ */}
       {step === 4 && detail && (
-        <div className="card space-y-4">
-          <div className="text-center py-4">
-            <div className="text-5xl mb-3">🎉</div>
-            <h3 className="text-lg font-semibold">识别完成</h3>
-            <p className="text-sm text-white/60 mt-1">
+        <div className="glass-panel p-5 sm:p-6 space-y-5 animate-slide-in-right relative overflow-hidden">
+          <div className="glow-orb w-60 h-60 bg-accent-lime/10" style={{ bottom: '-50px', right: '-40px' }} />
+
+          <div className="text-center py-4 relative">
+            <div className="mx-auto mb-4 w-20 h-20 rounded-full grid place-items-center animate-scale-in"
+              style={{
+                background: 'linear-gradient(135deg, #c6f44a 0%, #2dd4bf 100%)',
+                boxShadow: '0 16px 40px -10px rgba(45,212,191,0.45)',
+              }}
+            >
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#0f0f12" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20 6 9 17l-5-5" />
+              </svg>
+            </div>
+            <h3 className="headline text-2xl">识别完成</h3>
+            <p className="text-sm text-ink-600 mt-2 max-w-md mx-auto">
               「{detail.book_title || name}」已就绪，可以进入项目配置音色并开始生成
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-xl bg-white/5 border border-white/10 p-4 text-center">
-              <div className="text-2xl font-bold text-brand-300">
-                {detail.chapter_count}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 relative">
+            {[
+              { label: '章节数', value: detail.chapter_count, color: '#8b5cf6', icon: '📜' },
+              { label: '角色数', value: detail.characters.length, color: '#ec4899', icon: '🧑' },
+              { label: '字数（约）', value: detail.source_file_size ? `${Math.round(detail.source_file_size / 2 / 1000)}K` : '—', color: '#0ea5e9', icon: '✍️' },
+              { label: '识别耗时', value: detail.updated_at ? '就绪' : '—', color: '#c6f44a', icon: '⚡' },
+            ].map((it, i) => (
+              <div key={i} className="rounded-2xl p-4 border border-white/[0.06] bg-white/[0.025] hover:bg-white/[0.05] transition-colors">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs text-ink-500">{it.label}</span>
+                  <span className="text-base opacity-70">{it.icon}</span>
+                </div>
+                <div
+                  className="text-2xl font-bold font-display tracking-tight"
+                  style={{
+                    background: `linear-gradient(135deg, ${it.color} 0%, ${it.color}aa 100%)`,
+                    WebkitBackgroundClip: 'text',
+                    WebkitTextFillColor: 'transparent',
+                  }}
+                >
+                  {it.value}
+                </div>
               </div>
-              <div className="text-xs text-white/50 mt-1">章节数</div>
-            </div>
-            <div className="rounded-xl bg-white/5 border border-white/10 p-4 text-center">
-              <div className="text-2xl font-bold text-brand-300">
-                {detail.characters.length}
-              </div>
-              <div className="text-xs text-white/50 mt-1">角色数</div>
-            </div>
+            ))}
           </div>
 
-          <div className="flex justify-end gap-2 pt-2">
+          <div className="flex justify-end gap-2 pt-2 relative">
             <button className="btn-ghost" onClick={cancel}>
               返回项目列表
             </button>
