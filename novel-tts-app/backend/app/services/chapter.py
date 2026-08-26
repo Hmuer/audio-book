@@ -8,10 +8,49 @@
 """
 from __future__ import annotations
 
+import re
 from pydantic import BaseModel
 
 SILENCE_AFTER_TITLE_MS = 1500
 SILENCE_BETWEEN_SEGMENTS_MS = 250
+
+# 判定 ch.title 本身是否已经带了"第X章/序章/楔子"等章节标识前缀。
+# 如果已经带了，标题段就直接读 ch.title，不再重复拼 f"第{idx+1}章 {title}"，
+# 否则会出现"第2章 第一章 林轩"这种双重章节号朗读。
+# 注意：字符组里不含"部"，因为硬切兜底标题『第 N 部分』中的"部"不是真正的章节前缀；
+# 如需要『第一部 XXX』这种册级命中，用户可在 config.py CHAPTER_SPLIT_PATTERNS 中自定义。
+_TITLE_HAS_CH_PREFIX_NUM = re.compile(
+    r"^\s*第[ \t]*[零〇一二三四五六七八九十百千0-9]+[ \t]*(章|回|节|卷|篇)(?!分)"
+)
+_TITLE_HAS_CH_PREFIX_SPECIAL = re.compile(
+    r"^\s*(序章|楔子|引子|前言|序言|尾声|终章|后记|缘起|题辞|自叙|番外篇?|番外|结尾语|写在最后|附录)"
+)
+# 英文标题前缀兜底（Chapter / Vol / Ep. 等）
+_TITLE_HAS_CH_PREFIX_EN = re.compile(
+    r"^\s*(Chapter|Episode|Ep|Volume|Vol|Ch)[\s\.\-:：]",
+    re.IGNORECASE,
+)
+
+
+def _title_tts_text(ch: "Chapter") -> str:
+    """根据标题内容生成 TTS 朗读文本，避免"第X章 第一章 XXX"双重章节号。
+
+    规则：
+    - 标题本身已是『第X章 XXX』/『序章 XXX』/『Chapter X』→ 直接读原文
+    - 否则（兜底占位标题如『序』『正文』『第 N 部分』等）才拼上章节序号
+    """
+    title = (ch.title or "").strip()
+    if not title:
+        return ""
+    if (
+        _TITLE_HAS_CH_PREFIX_NUM.match(title)
+        or _TITLE_HAS_CH_PREFIX_SPECIAL.match(title)
+        or _TITLE_HAS_CH_PREFIX_EN.match(title)
+    ):
+        # 原文已带章节标识，直接用
+        return title
+    # 占位标题才加前缀
+    return f"第{ch.idx + 1}章 {title}"
 
 
 class Chapter(BaseModel):
@@ -48,12 +87,13 @@ def _build_segments_for_chapter(
     idx = start_idx
 
     # 1. 标题段
-    # 仅在标题非占位（"正文"是旧单章模式 synthesize 产生的默认值）时才朗读，
-    # 否则用户输入任何内容都会被先读一句"第1章 正文"，体验异常。
-    if ch.title and ch.title.strip() != "正文":
+    # - "正文"：旧单章 synthesize 默认值，不读
+    # - 其他情况用 _title_tts_text() 智能拼，避免"第2章 第一章 林轩"双重章节号
+    title_tts = _title_tts_text(ch)
+    if title_tts:
         segs.append(_Segment(
             kind="title", chapter_idx=ch.idx, idx=idx,
-            voice_id=narrator_voice_id, text=f"第{ch.idx+1}章 {ch.title}",
+            voice_id=narrator_voice_id, text=title_tts,
         ))
         idx += 1
         segs.append(_Segment(

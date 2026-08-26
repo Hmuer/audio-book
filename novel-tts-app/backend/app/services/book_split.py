@@ -88,12 +88,17 @@ def split_chapters_regex(text: str, *, min_matches: Optional[int] = None) -> lis
     """
     用配置里的正则识别章节。命中数 >= min_matches 才认为识别成功。
 
+    关于开头内容（广告/书名/作者/简介/卷头）：
+    - **一律忽略**。只有明确命中标题正则的行（第X章 / 序章 / 楔子 等）才算章节。
+    - 『【第一卷 XXX】』这种卷分隔如果用户自己没在正则里匹配，不作为章节。
+    - 不再把第一章前面的非标题内容自动合并成一个"序"章。
+
     Args:
         text: 全文（已归一化换行符）
         min_matches: 最少命中章节数；None 时读 settings.CHAPTER_SPLIT_MIN_MATCHES
 
     Returns:
-        chapters: list[Chapter]，每章 text 包含从该标题到下一个标题之间的全部内容
+        chapters: list[Chapter]，每章 text 包含从该标题到下一个标题之间的正文内容（不含标题行本身）
         若命中数不足返回 []（不是抛异常，由主入口决定是否进入硬切/报错分支）。
     """
     min_matches = int(min_matches if min_matches is not None else settings.CHAPTER_SPLIT_MIN_MATCHES)
@@ -123,9 +128,9 @@ def split_chapters_regex(text: str, *, min_matches: Optional[int] = None) -> lis
         if not chapter_text:
             continue
         # 去掉标题行本身，只保留正文：
-        # 标题段会在 chapter.py 里单独朗读（f"第{idx+1}章 {title}"），
-        # 若 text 里仍保留标题行，narrator 段会再读一遍 → "第7章 第六章 第六章"双重朗读。
-        # 仅当首行确为标题行时才剥离，避免误伤正文（序章/硬切章首行非标题）。
+        # 标题段会在 chapter.py 里单独朗读，
+        # 若 text 里仍保留标题行，narrator 段会再读一遍 → 双重朗读。
+        # 仅当首行确为标题行时才剥离，避免误伤正文（硬切章首行非标题）。
         title_norm = title_line.strip()
         nl = chapter_text.find("\n")
         if nl != -1 and chapter_text[:nl].strip() == title_norm:
@@ -139,14 +144,8 @@ def split_chapters_regex(text: str, *, min_matches: Optional[int] = None) -> lis
             text=chapter_text,
         ))
 
-    # 如果第一章标题前还有内容（如版权页、简介、短序、题记），合并为"序"章。
-    # 阈值 10：太短的残片（如孤立的 ISBN/排版残留）不值得单独成章，
-    # 但短序/题记通常 > 10 字，需保留以免丢内容。
-    leading = text[: matches[0][0]].strip()
-    if leading and len(leading) > 10:
-        chapters.insert(0, Chapter(idx=0, title="序", text=leading))
-        for i, c in enumerate(chapters):
-            c.idx = i
+    # 注意：第一章前的广告/书名/作者/简介/卷头/版权页一律丢弃，不再合并为"序"章。
+    # 如果原文里真的有"序章/楔子"这类标题行，CONFIG 正则本身已经能命中为独立章节。
 
     return chapters
 
