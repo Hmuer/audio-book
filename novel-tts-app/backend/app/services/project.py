@@ -79,6 +79,23 @@ class ChapterSummary(BaseModel):
     text_len: int
 
 
+class DialogueLine(BaseModel):
+    """章节内的一条对白归属（前端渲染角色/旁白行用）。"""
+    segment_index: int
+    anchor_text: str
+    speaker: str
+    text: str
+    confidence: float = 1.0
+
+
+class ChapterDetail(BaseModel):
+    """单章详情：正文 + 逐行对白归属。"""
+    idx: int
+    title: str
+    text: str
+    dialogues: list[DialogueLine] = []
+
+
 class CharacterWithVoice(BaseModel):
     """角色 + 已分配音色。"""
     id: int
@@ -1672,6 +1689,52 @@ async def get_project_chapters(project_id: str) -> list[ChapterSummary]:
             )
             for c in ch_list
         ]
+
+
+async def get_project_chapter_detail(
+    project_id: str, chapter_idx: int
+) -> ChapterDetail:
+    """单章详情：正文 + ProjectDialogue 逐行归属。"""
+    factory = get_session_factory()
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        if not p:
+            raise ValueError(f"项目不存在: {project_id}")
+        if not p.chapters_json:
+            raise ValueError("项目未识别章节")
+        try:
+            ch_list = json.loads(p.chapters_json)
+        except Exception:
+            raise ValueError("章节数据损坏")
+
+        ch = next((c for c in ch_list if c.get("idx") == chapter_idx), None)
+        if not ch:
+            raise ValueError(f"章节 {chapter_idx} 不存在")
+
+        # 加载该章的 dialogue
+        stmt = select(ProjectDialogue).where(
+            ProjectDialogue.project_id == project_id,
+            ProjectDialogue.chapter_idx == chapter_idx,
+        ).order_by(ProjectDialogue.segment_index)
+        rows = list((await session.execute(stmt)).scalars().all())
+
+        dialogues = [
+            DialogueLine(
+                segment_index=d.segment_index,
+                anchor_text=d.anchor_text or "",
+                speaker=d.speaker or "",
+                text=d.text or "",
+                confidence=d.confidence,
+            )
+            for d in rows
+        ]
+
+        return ChapterDetail(
+            idx=chapter_idx,
+            title=ch.get("title", ""),
+            text=ch.get("text", ""),
+            dialogues=dialogues,
+        )
 
 
 async def get_project_characters(project_id: str) -> list[CharacterWithVoice]:

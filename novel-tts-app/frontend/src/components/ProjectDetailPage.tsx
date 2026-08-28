@@ -10,6 +10,7 @@ import {
   Voice,
   CharacterWithVoice,
   ChapterSummary,
+  ChapterDetail,
 } from '@/lib/api';
 import VoicePicker from './VoicePicker';
 import WaveformPlayer from './WaveformPlayer';
@@ -188,19 +189,19 @@ export default function ProjectDetailPage({
   }
 
   return (
-    <section className="space-y-5">
+    <section className="animate-fade-in">
       <audio ref={audioRef} className="hidden" />
 
       {err && (
-        <div className="rounded-2xl border border-red-500/40 bg-red-500/10 backdrop-blur px-4 py-3 text-sm text-red-200 flex items-center gap-3">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <div className="rounded-2xl border border-red-500/40 bg-red-500/10 backdrop-blur px-4 py-3 text-sm text-red-200 flex items-center gap-3 mb-5">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12" y2="16"/></svg>
           <span className="flex-1 min-w-0">{err}</span>
           <button className="btn-ghost !py-1 !px-2.5 text-xs" onClick={reload}>重试</button>
         </div>
       )}
 
       {/* ============ Header ============ */}
-      <div className="glass-panel p-5 sm:p-6 relative overflow-hidden animate-fade-in">
+      <div className="glass-panel p-5 sm:p-6 relative overflow-hidden mb-5">
         <div className="glow-orb w-72 h-72 bg-brand-500/15" style={{ top: '-40px', right: '-40px' }} />
         <div className="glow-orb w-64 h-64 bg-accent-teal/10" style={{ bottom: '-60px', left: '-30px' }} />
         <div
@@ -225,8 +226,8 @@ export default function ProjectDetailPage({
               </div>
               <div className="text-xs text-ink-500 mt-1 flex flex-wrap items-center gap-x-2">
                 <span>{project!.name}</span>
-                {project!.source_filename && <span>· {project!.source_filename}</span>}
-                {project!.chapter_count > 0 && <span>· {project!.chapter_count} 章</span>}
+                {project!.source_filename && <span> · {project!.source_filename}</span>}
+                {project!.chapter_count > 0 && <span> · {project!.chapter_count} 章</span>}
               </div>
             </div>
           </div>
@@ -239,69 +240,100 @@ export default function ProjectDetailPage({
         </div>
       </div>
 
-      {/* ============ Tab 切换条（pill 风格） ============ */}
-      <div className="glass-panel !p-1.5 relative overflow-hidden">
-        <div className="flex items-center gap-1 overflow-x-auto py-0.5">
-          {TAB_LABELS.map(t => {
-            const active = tab === t.key;
-            return (
-              <button
-                key={t.key}
-                onClick={() => setTab(t.key)}
-                className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all duration-200
-                  ${active
-                    ? 'text-white shadow-brand'
-                    : 'text-ink-600 hover:text-ink-800 hover:bg-white/[0.04]'
-                  }`}
-                style={active ? {
-                  backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
-                } : {}}
-              >
-                <span className={active ? 'text-white/90' : ''}>{t.icon}</span>
-                <span>{t.label}</span>
-              </button>
-            );
-          })}
+      {/* ============ 左侧竖排 Tab + 右侧内容 ============ */}
+      <div className="flex gap-5 items-start">
+        {/* 左侧竖排导航（md 及以上显示） */}
+        <nav className="glass-panel !p-2 shrink-0 w-[148px] sm:w-[168px] sticky top-4 hidden md:block">
+          <div className="space-y-1">
+            {TAB_LABELS.map(t => {
+              const active = tab === t.key;
+              return (
+                <button
+                  key={t.key}
+                  onClick={() => setTab(t.key)}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200
+                    ${active
+                      ? 'text-white shadow-brand'
+                      : 'text-ink-600 hover:text-ink-800 hover:bg-white/[0.04]'
+                    }`}
+                  style={active ? {
+                    backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+                  } : {}}
+                >
+                  <span className={active ? 'text-white/90' : ''}>{t.icon}</span>
+                  <span>{t.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </nav>
+
+        {/* 小屏 pill-tab fallback */}
+        <div className="md:hidden glass-panel !p-1.5 mb-5 overflow-x-auto">
+          <div className="flex items-center gap-1 py-0.5">
+            {TAB_LABELS.map(t => {
+              const active = tab === t.key;
+              return (
+                <button
+                  key={t.key}
+                  onClick={() => setTab(t.key)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all duration-200
+                    ${active
+                      ? 'text-white shadow-brand'
+                      : 'text-ink-600 hover:text-ink-800 hover:bg-white/[0.04]'
+                    }`}
+                  style={active ? {
+                    backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+                  } : {}}
+                >
+                  <span className={active ? 'text-white/90' : ''}>{t.icon}</span>
+                  <span>{t.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* 右侧内容区 */}
+        <div className="flex-1 min-w-0 space-y-5">
+          {tab === 'overview' && (
+            <OverviewTab project={project!} onTab={setTab} onReload={reload} />
+          )}
+          {tab === 'chapters' && (
+            <ChaptersTab
+              project={project!}
+              playingKey={playingKey}
+              onTogglePlay={togglePlay}
+            />
+          )}
+          {tab === 'voices' && (
+            <VoicesTab
+              project={project!}
+              voices={voices}
+              narratorDefault={narratorDefault}
+              playingKey={playingKey}
+              loadingVoice={loadingVoice}
+              onPreviewVoice={togglePreviewVoice}
+              onReload={reload}
+            />
+          )}
+          {tab === 'builds' && (
+            <BuildsTab
+              projectId={projectId}
+              project={project!}
+              builds={builds}
+              voices={voices}
+              narratorDefault={narratorDefault}
+              playingKey={playingKey}
+              onTogglePlay={togglePlay}
+              onReload={reload}
+            />
+          )}
+          {tab === 'settings' && (
+            <SettingsTab project={project!} voices={voices} onReload={reload} />
+          )}
         </div>
       </div>
-
-      {/* ============ Tab 内容 ============ */}
-      {tab === 'overview' && (
-        <OverviewTab project={project!} onTab={setTab} onReload={reload} />
-      )}
-      {tab === 'chapters' && (
-        <ChaptersTab
-          project={project!}
-          playingKey={playingKey}
-          onTogglePlay={togglePlay}
-        />
-      )}
-      {tab === 'voices' && (
-        <VoicesTab
-          project={project!}
-          voices={voices}
-          narratorDefault={narratorDefault}
-          playingKey={playingKey}
-          loadingVoice={loadingVoice}
-          onPreviewVoice={togglePreviewVoice}
-          onReload={reload}
-        />
-      )}
-      {tab === 'builds' && (
-        <BuildsTab
-          projectId={projectId}
-          project={project!}
-          builds={builds}
-          voices={voices}
-          narratorDefault={narratorDefault}
-          playingKey={playingKey}
-          onTogglePlay={togglePlay}
-          onReload={reload}
-        />
-      )}
-      {tab === 'settings' && (
-        <SettingsTab project={project!} voices={voices} onReload={reload} />
-      )}
     </section>
   );
 }
@@ -717,6 +749,43 @@ function LastBuildSummary({
 }
 
 // =================== Chapters Tab ===================
+// =================== 角色颜色工具 ===================
+const CHARACTER_COLORS: { bg: string; fg: string; border: string }[] = [
+  { bg: 'rgba(139,92,246,0.14)', fg: '#c4b5fd', border: 'rgba(139,92,246,0.30)' },   // 紫
+  { bg: 'rgba(244,114,182,0.14)', fg: '#f9a8d4', border: 'rgba(244,114,182,0.30)' },   // 粉
+  { bg: 'rgba(34,211,238,0.14)',  fg: '#67e8f9', border: 'rgba(34,211,238,0.30)' },   // 青
+  { bg: 'rgba(74,222,128,0.14)',  fg: '#86efac', border: 'rgba(74,222,128,0.30)' },   // 绿
+  { bg: 'rgba(251,191,36,0.14)',  fg: '#fde047', border: 'rgba(251,191,36,0.30)' },   // 黄
+  { bg: 'rgba(96,165,250,0.14)',  fg: '#93c5fd', border: 'rgba(96,165,250,0.30)' },   // 蓝
+  { bg: 'rgba(251,113,133,0.14)', fg: '#fda4af', border: 'rgba(251,113,133,0.30)' },  // 红
+  { bg: 'rgba(45,212,191,0.14)',  fg: '#5eead4', border: 'rgba(45,212,191,0.30)' },   // 薄荷
+];
+
+function charColor(name: string): typeof CHARACTER_COLORS[number] {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return CHARACTER_COLORS[h % CHARACTER_COLORS.length];
+}
+
+function Avatar({ name, size = 28 }: { name: string; size?: number }) {
+  const c = charColor(name);
+  const ch = name.trim()[0] || '?';
+  return (
+    <div
+      className="shrink-0 grid place-items-center rounded-full text-xs font-bold select-none"
+      style={{
+        width: size, height: size,
+        background: c.bg,
+        color: c.fg,
+        border: `1px solid ${c.border}`,
+      }}
+    >
+      {ch}
+    </div>
+  );
+}
+
+// =================== Chapters Tab ===================
 function ChaptersTab({
   project,
   playingKey,
@@ -728,14 +797,73 @@ function ChaptersTab({
 }) {
   const chapters: ChapterSummary[] = project.chapters;
   const lastBuild = project.last_build;
-  const hasAudio = lastBuild && lastBuild.status === 'done';
+  const hasAudio = !!(lastBuild && (lastBuild.status === 'success' || lastBuild.status === 'done' || lastBuild.status === 'partial_success'));
+  const characters = project.characters || [];
+
+  // 展开的章节 idx
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const [chapterDetail, setChapterDetail] = useState<ChapterDetail | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+
+  // speaker 归属 map（dialogue 里 anchor_text → speaker）
+  const speakerMap = useMemo(() => {
+    const m = new Map<string, string>();
+    if (chapterDetail?.dialogues) {
+      for (const d of chapterDetail.dialogues) {
+        if (d.speaker && d.speaker !== '旁白' && d.speaker !== 'narrator') {
+          if (d.anchor_text) m.set(d.anchor_text, d.speaker);
+          if (d.text && !m.has(d.text)) m.set(d.text, d.speaker);
+        }
+      }
+    }
+    return m;
+  }, [chapterDetail]);
+
+  // 展开章节 → 拉取详情
+  useEffect(() => {
+    if (expandedIdx === null) { setChapterDetail(null); return; }
+    let cancelled = false;
+    setLoadingDetail(true);
+    api.projectChapterDetail(project.project_id, expandedIdx)
+      .then(d => { if (!cancelled) setChapterDetail(d); })
+      .catch(err => { console.error('load chapter detail:', err); if (!cancelled) setChapterDetail(null); })
+      .finally(() => { if (!cancelled) setLoadingDetail(false); });
+    return () => { cancelled = true; };
+  }, [expandedIdx, project.project_id]);
+
+  const onExpand = (idx: number) => {
+    setExpandedIdx(prev => (prev === idx ? null : idx));
+  };
+
+  // 把 chapter.text 按行分，每行关联 speaker
+  const lines = useMemo(() => {
+    if (!chapterDetail) return [];
+    const raw = chapterDetail.text.split('\n').map(s => s.trimEnd());
+    return raw.map((line, i) => {
+      if (!line.trim()) return { key: i, text: line, speaker: null as string | null };
+      // 优先精确匹配 anchor_text
+      let speaker: string | null = null;
+      for (const [anchor, sp] of speakerMap) {
+        if (line.includes(anchor) || anchor.includes(line.trim())) {
+          speaker = sp;
+          break;
+        }
+      }
+      return { key: i, text: line, speaker };
+    });
+  }, [chapterDetail, speakerMap]);
+
+  // 角色（有对话的）
+  const usedSpeakers = useMemo(() => {
+    const set = new Set<string>();
+    for (const l of lines) if (l.speaker) set.add(l.speaker);
+    return Array.from(set);
+  }, [lines]);
 
   if (chapters.length === 0) {
     return (
       <div className="glass-panel text-center py-16 text-ink-500">
-        <div className="mx-auto mb-3 w-14 h-14 rounded-2xl grid place-items-center bg-white/[0.04] border border-white/[0.07] text-3xl">
-          📭
-        </div>
+        <div className="mx-auto mb-3 w-14 h-14 rounded-2xl grid place-items-center bg-white/[0.04] border border-white/[0.07] text-3xl">📭</div>
         <div className="text-sm font-medium text-ink-700">还没有章节</div>
         <div className="text-xs text-ink-500 mt-1">请先到「概览」触发识别</div>
       </div>
@@ -743,76 +871,164 @@ function ChaptersTab({
   }
 
   return (
-    <div className="glass-panel space-y-3">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <h3 className="font-semibold text-ink-800 flex items-center gap-2">
-          <span className="chip-soft">章节</span>
-          <span className="text-sm text-ink-500">{chapters.length} 章</span>
-        </h3>
-        {hasAudio && (
-          <span className="chip-soft">🎧 试听来自最近一次完成的构建</span>
+    <div className="space-y-4">
+      {/* 章节列表面板 */}
+      <div className="glass-panel space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <h3 className="font-semibold text-ink-800 flex items-center gap-2">
+            <span className="chip-soft">📖 章节</span>
+            <span className="text-sm text-ink-500">{chapters.length} 章</span>
+          </h3>
+          {hasAudio && (
+            <span className="chip-soft">🎧 试听来自最近一次完成的构建</span>
+          )}
+        </div>
+
+        <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+          {chapters.map(c => {
+            const isOpen = expandedIdx === c.idx;
+            const key = `ch_${c.idx}`;
+            const playing = playingKey === key;
+            const audioUrl = hasAudio
+              ? api.buildChapterAudioUrl(project.project_id, lastBuild!.build_id, c.idx)
+              : null;
+            return (
+              <div key={c.idx} className="rounded-2xl border bg-white/[0.02] border-white/[0.04] overflow-hidden transition-all duration-200">
+                {/* 章首行（始终可见） */}
+                <button
+                  onClick={() => onExpand(c.idx)}
+                  className="w-full p-3 text-left flex items-center gap-3 hover:bg-white/[0.04] transition-colors"
+                >
+                  <span
+                    className="text-[11px] font-mono tabular-nums shrink-0 rounded-lg px-2 py-1 border"
+                    style={{
+                      background: playing ? 'rgba(139,92,246,0.15)' : 'rgba(255,255,255,0.04)',
+                      color: playing ? '#c4b5fd' : 'rgba(255,255,255,0.5)',
+                      borderColor: playing ? 'rgba(139,92,246,0.3)' : 'rgba(255,255,255,0.05)',
+                    }}
+                  >
+                    #{String(c.idx + 1).padStart(3, '0')}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-ink-800 truncate">{c.title || '(无标题)'}</div>
+                  </div>
+                  <span className="text-[11px] text-ink-500 tabular-nums shrink-0">{c.text_len} 字</span>
+                  <span className={`shrink-0 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-ink-500"><path d="m6 9 6 6 6-6"/></svg>
+                  </span>
+                </button>
+
+                {/* 波形 + 下载（始终可见如果有音频） */}
+                {hasAudio && audioUrl && (
+                  <div className="px-3 pb-3">
+                    <WaveformPlayer
+                      src={audioUrl}
+                      compact
+                      onDownload={() => {
+                        const a = document.createElement('a');
+                        a.href = api.buildChapterDownload(project.project_id, lastBuild!.build_id, c.idx);
+                        a.download = '';
+                        a.click();
+                      }}
+                    />
+                  </div>
+                )}
+
+                {/* 展开：逐行文本标注 */}
+                {isOpen && (
+                  <div className="border-t border-white/[0.05] px-3 py-3 bg-white/[0.015]">
+                    {loadingDetail && (
+                      <div className="text-center py-6 text-sm text-ink-500">
+                        <span className="inline-block w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin mr-2 align-middle" />
+                        加载章节正文 + 对白归属…
+                      </div>
+                    )}
+                    {!loadingDetail && chapterDetail && (
+                      <>
+                        {/* 角色图例 */}
+                        {usedSpeakers.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1.5 mb-3">
+                            <span className="text-[11px] text-ink-500 mr-1">角色:</span>
+                            {usedSpeakers.map(sp => {
+                              const c = charColor(sp);
+                              return (
+                                <span key={sp}
+                                  className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border"
+                                  style={{ background: c.bg, color: c.fg, borderColor: c.border }}
+                                >
+                                  <span className="font-bold">{sp.trim()[0] || '?'}</span> {sp}
+                                </span>
+                              );
+                            })}
+                            <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border border-white/[0.07] bg-white/[0.03] text-ink-500">
+                              N 旁白
+                            </span>
+                          </div>
+                        )}
+
+                        {/* 逐行渲染 */}
+                        <div className="space-y-1 max-h-[360px] overflow-y-auto pr-1 text-[13.5px] leading-relaxed">
+                          {lines.map(l => {
+                            if (!l.text.trim()) {
+                              return <div key={l.key} className="h-2" />;
+                            }
+                            const isSpeech = !!l.speaker;
+                            const c = isSpeech ? charColor(l.speaker!) : null;
+                            return (
+                              <div
+                                key={l.key}
+                                className="flex gap-2 items-start py-1.5 px-2 rounded-lg transition-colors hover:bg-white/[0.02]"
+                                style={isSpeech && c ? { background: c.bg, borderLeft: `2px solid ${c.border}` } : {}}
+                              >
+                                {isSpeech ? (
+                                  <div className="w-6 shrink-0 text-right pt-0.5">
+                                    <span
+                                      className="text-[10px] font-bold rounded px-1 py-0.5 border"
+                                      style={{ background: c!.bg, color: c!.fg, borderColor: c!.border }}
+                                      title={l.speaker ?? undefined}
+                                    >
+                                      {l.speaker!.trim()[0]}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <div className="w-6 shrink-0 text-right pt-0.5">
+                                    <span className="text-[10px] font-bold text-ink-500">N</span>
+                                  </div>
+                                )}
+                                <div className="flex-1 min-w-0">
+                                  {isSpeech ? (
+                                    <>
+                                      <span className="text-[11px] font-semibold mr-1" style={{ color: c!.fg }}>{l.speaker}</span>
+                                      <span className="text-ink-800">{l.text}</span>
+                                    </>
+                                  ) : (
+                                    <span className="text-ink-700">{l.text}</span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                    {!loadingDetail && !chapterDetail && (
+                      <div className="text-center py-6 text-xs text-ink-500">
+                        该章节暂无对白归属数据（可能识别阶段未跑完）
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {!hasAudio && (
+          <div className="text-xs text-ink-500 pt-2 border-t border-white/[0.05]">
+            完成一次构建后，此页面将显示每章的波形播放器与下载按钮。点击章节可展开查看逐行角色归属。
+          </div>
         )}
       </div>
-
-      <div className="space-y-2 max-h-[640px] overflow-y-auto pr-1">
-        {chapters.map(c => {
-          const key = `ch_${c.idx}`;
-          const playing = playingKey === key;
-          const audioUrl = hasAudio
-            ? api.buildChapterAudioUrl(project.project_id, lastBuild!.build_id, c.idx)
-            : null;
-          return (
-            <div
-              key={c.idx}
-              className={`rounded-2xl p-3 transition-all duration-150 border
-                ${playing
-                  ? 'bg-brand-500/10 border-brand-500/40 shadow-brand/30'
-                  : 'bg-white/[0.02] border-white/[0.04] hover:bg-white/[0.045] hover:border-white/[0.10]'
-                }`}
-            >
-              <div className="flex items-center gap-2 mb-2">
-                <span
-                  className="text-[11px] font-mono tabular-nums shrink-0 rounded-lg px-2 py-1"
-                  style={{
-                    background: 'rgba(255,255,255,0.04)',
-                    color: playing ? '#c4b5fd' : 'rgba(255,255,255,0.45)',
-                    border: '1px solid rgba(255,255,255,0.05)',
-                  }}
-                >
-                  #{String(c.idx + 1).padStart(3, '0')}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-ink-800 truncate">{c.title || '(无标题)'}</div>
-                </div>
-                <span className="text-[11px] text-ink-500 tabular-nums shrink-0 chip-soft">
-                  {c.text_len} 字
-                </span>
-              </div>
-              {hasAudio && audioUrl ? (
-                <WaveformPlayer
-                  src={audioUrl}
-                  compact
-                  onDownload={() => {
-                    const a = document.createElement('a');
-                    a.href = api.buildChapterDownload(
-                      project.project_id,
-                      lastBuild!.build_id,
-                      c.idx
-                    );
-                    a.download = '';
-                    a.click();
-                  }}
-                />
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
-      {!hasAudio && (
-        <div className="text-xs text-ink-500 pt-3 border-t border-white/[0.05]">
-          完成一次构建后，此页面将显示每章的波形播放器与下载按钮。
-        </div>
-      )}
     </div>
   );
 }

@@ -34,6 +34,7 @@ from ..services.project import (
     update_project,
     delete_project,
     get_project_chapters,
+    get_project_chapter_detail,
     get_project_characters,
     update_character_voice,
     ProjectResp,
@@ -42,6 +43,7 @@ from ..services.project import (
     ProjectPrepareResp,
     ProjectPrepareTriggerResp,
     ChapterSummary,
+    ChapterDetail,
     CharacterWithVoice,
     CharacterResp,
 )
@@ -609,6 +611,27 @@ async def api_project_chapters(project_id: str, request: Request):
             exc_info=True,
         )
         raise HTTPException(500, f"章节查询失败: {type(e).__name__}: {e}")
+
+
+@router.get(
+    "/projects/{project_id}/chapters/{chapter_idx}",
+    response_model=ChapterDetail,
+)
+async def api_project_chapter_detail(
+    project_id: str, chapter_idx: int, request: Request
+):
+    """单章详情：正文 + 逐行对白归属（用于前端角色-行标注视图）。"""
+    try:
+        return await get_project_chapter_detail(project_id, chapter_idx)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        logger.error(
+            f"[HTTP] 500 /api/projects/{project_id[:8]}.../chapters/{chapter_idx} -> "
+            f"{type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(500, f"章节详情查询失败: {type(e).__name__}: {e}")
 
 
 @router.get(

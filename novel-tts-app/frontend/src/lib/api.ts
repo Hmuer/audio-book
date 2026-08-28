@@ -213,6 +213,9 @@ export const api = {
   // 拉取章节列表
   projectChapters: (id: string) =>
     _fetch<ChapterSummary[]>(`/api/projects/${id}/chapters`),
+  // 拉取单章详情（正文 + 逐行对白归属）
+  projectChapterDetail: (id: string, idx: number) =>
+    _fetch<ChapterDetail>(`/api/projects/${id}/chapters/${idx}`),
   // 拉取角色列表
   projectCharacters: (id: string) =>
     _fetch<CharacterWithVoice[]>(`/api/projects/${id}/characters`),
@@ -373,6 +376,21 @@ export interface ChapterSummary {
   idx: number;
   title: string;
   text_len: number;
+}
+
+export interface DialogueLine {
+  segment_index: number;
+  anchor_text: string;
+  speaker: string;
+  text: string;
+  confidence: number;
+}
+
+export interface ChapterDetail {
+  idx: number;
+  title: string;
+  text: string;
+  dialogues: DialogueLine[];
 }
 
 // 角色（含已分配音色）
