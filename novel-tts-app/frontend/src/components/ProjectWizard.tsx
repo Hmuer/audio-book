@@ -94,7 +94,7 @@ export default function ProjectWizard() {
   const goStep3 = async () => {
     let valid = true;
     if (importMode === 'file' && !file) {
-      setErr('请先选择 TXT 文件');
+      setErr('请先选择 .txt / .md / .epub 文件');
       valid = false;
     }
     if (importMode === 'text' && !pastedText.trim()) {
@@ -304,7 +304,7 @@ export default function ProjectWizard() {
                   <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                   <path d="M14 2v6h6" />
                 </svg>
-                上传 TXT 文件
+                上传文件
               </button>
               <button
                 className={`px-4 py-2 rounded-xl text-sm transition-all duration-200 flex items-center gap-2 ${
@@ -325,7 +325,7 @@ export default function ProjectWizard() {
 
           {importMode === 'file' && (
             <div>
-              <label className="block text-sm text-ink-700 mb-2">上传 TXT 小说文件</label>
+              <label className="block text-sm text-ink-700 mb-2">上传小说文件（TXT / MD / EPUB）</label>
               <label
                 className={`relative block rounded-3xl border-2 border-dashed p-8 sm:p-12 text-center cursor-pointer transition-all duration-200 overflow-hidden ${
                   dragOver
@@ -373,7 +373,7 @@ export default function ProjectWizard() {
                       </svg>
                     </div>
                     <div className="text-ink-700 text-[15px] font-medium">
-                      点击或拖拽 TXT / Markdown 文件到这里
+                      点击或拖拽 TXT / Markdown / EPUB 文件到这里
                     </div>
                     <div className="text-xs text-ink-500">
                       推荐 UTF-8 编码，最大 50MB
