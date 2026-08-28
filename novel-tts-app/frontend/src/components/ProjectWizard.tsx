@@ -368,12 +368,12 @@ export default function ProjectWizard() {
 
   const enterProject = () => {
     if (projectId) {
-      window.location.hash = `#/projects/${projectId}`;
+      window.location.hash = `#/audiobooks/${projectId}`;
     }
   };
 
   const cancel = () => {
-    window.location.hash = '#/projects';
+    window.location.hash = '#/audiobooks';
   };
 
   return (

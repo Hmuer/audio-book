@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, PrepareProgress, ProjectListItem } from '@/lib/api';
+import CreateAudiobookDialog from './CreateAudiobookDialog';
 
 // ===== 常量 =====
 const POLL_INTERVAL_MS = 3000;
@@ -218,7 +219,7 @@ export function RunningTasksBar({ items }: { items: ProjectListItem[] }) {
           {preparing.length > 0 && (
             <button
               className="btn-ghost !px-3 !py-1.5 text-xs"
-              onClick={() => { window.location.hash = `#/projects/${preparing[0].project_id}`; }}
+              onClick={() => { window.location.hash = `#/audiobooks/${preparing[0].project_id}`; }}
               title={preparing.map(p => p.book_title || p.name).join(' · ')}
             >
               查看识别 · {(preparing[0].book_title || preparing[0].name).slice(0, 12)}
@@ -228,7 +229,7 @@ export function RunningTasksBar({ items }: { items: ProjectListItem[] }) {
           {synthesizing.length > 0 && (
             <button
               className="btn-ghost !px-3 !py-1.5 text-xs"
-              onClick={() => { window.location.hash = `#/projects/${synthesizing[0].project_id}`; }}
+              onClick={() => { window.location.hash = `#/audiobooks/${synthesizing[0].project_id}`; }}
             >
               查看合成 · {(synthesizing[0].book_title || synthesizing[0].name).slice(0, 12)}
               {synthesizing.length > 1 ? ` 等 ${synthesizing.length} 本` : ''}
@@ -243,7 +244,7 @@ export function RunningTasksBar({ items }: { items: ProjectListItem[] }) {
             return (
               <button
                 key={p.project_id}
-                onClick={() => { window.location.hash = `#/projects/${p.project_id}`; }}
+                onClick={() => { window.location.hash = `#/audiobooks/${p.project_id}`; }}
                 className="text-left surface !p-3 hover:!border-ink-400 transition"
               >
                 <div className="flex items-center justify-between gap-2 mb-1.5">
@@ -272,6 +273,7 @@ export default function ProjectListPage() {
   const [items, setItems] = useState<ProjectListItem[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const reload = async () => {
@@ -311,37 +313,30 @@ export default function ProjectListPage() {
   );
 
   return (
-    <section className="space-y-6">
-      {/* ===== 顶部操作栏：Eleven 风格 — 大标题 + 右侧操作区 ===== */}
+    <section className="space-y-5 p-6">
+      {/* ===== 顶部操作栏 ===== */}
       <div className="flex items-end justify-between gap-4 flex-wrap animate-fade-in">
         <div className="min-w-0">
-          <div className="inline-flex items-center gap-2 chip-soft mb-3">
-            <span className="badge-dot" style={{ background: '#8b5cf6' }} />
-            工作台 · 有声书项目
-          </div>
-          <h2 className="headline text-[26px] sm:text-3xl leading-tight">
-            你的有声书
+          <h2 className="text-[22px] font-semibold text-white leading-tight">
+            我的有声书
           </h2>
-          <p className="mt-2 text-sm text-ink-600">
-            每个项目独立保存章节识别结果、角色音色与构建历史
-            {hasRunning ? <> · <span style={{ color: '#fcd34d' }}>后台任务进行中</span></> : null}
+          <p className="mt-1 text-sm text-white/50">
+            管理你的 AI 有声书项目
+            {hasRunning ? <> · <span className="text-amber-300">后台任务进行中</span></> : null}
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <button className="btn-ghost" onClick={reload} title="立即刷新项目列表">
+          <button className="btn-ghost" onClick={reload} title="立即刷新">
             <span className="opacity-80">⟳</span> 刷新
           </button>
-          <button
-            className="btn-primary"
-            onClick={() => { window.location.hash = '#/projects/new'; }}
-          >
-            <span className="text-base leading-none">＋</span> 新建项目
+          <button className="btn-primary" onClick={() => setShowCreateDialog(true)}>
+            <span className="text-base leading-none">＋</span> 新建有声书
           </button>
         </div>
       </div>
 
       {err && (
-        <div className="rounded-2xl px-4 py-3 text-sm"
+        <div className="rounded-xl px-4 py-3 text-sm"
           style={{
             border: '1px solid rgba(251,113,133,0.28)',
             background: 'rgba(251,113,133,0.06)',
@@ -354,16 +349,16 @@ export default function ProjectListPage() {
 
       {/* 加载中 */}
       {loading && (
-        <div className="card text-center py-16">
+        <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] text-center py-16">
           <div className="mx-auto w-9 h-9 rounded-full border-2 border-brand-500/30 border-t-brand-500 animate-spin mb-4" />
-          <div className="text-sm text-ink-600">加载项目列表…</div>
+          <div className="text-sm text-white/50">加载项目列表…</div>
         </div>
       )}
 
-      {/* 空状态（Eleven 风格：插画式 icon + 明确 CTA） */}
+      {/* 空状态 */}
       {!loading && items && items.length === 0 && (
-        <div className="relative card text-center py-20 overflow-hidden">
-          <div className="glow-orb w-[360px] h-[360px] bg-brand-500/20" style={{ left: '50%', top: '-80px', transform: 'translateX(-50%)' }} />
+        <div className="relative rounded-2xl border border-white/[0.06] bg-white/[0.02] text-center py-20 overflow-hidden">
+          <div className="glow-orb w-[320px] h-[320px] bg-brand-500/15" style={{ left: '50%', top: '-80px', transform: 'translateX(-50%)' }} />
           <div className="relative mx-auto w-20 h-20 rounded-3xl grid place-items-center mb-6"
             style={{
               background: 'linear-gradient(135deg, rgba(139,92,246,0.18), rgba(45,212,191,0.10))',
@@ -378,149 +373,198 @@ export default function ProjectListPage() {
               <span className="w-1.5 rounded-full bg-brand-400/65" style={{ height: '45%' }} />
             </div>
           </div>
-          <h3 className="headline text-xl mb-2">还没有项目</h3>
-          <p className="text-sm text-ink-600 max-w-md mx-auto mb-7">
-            上传一本 TXT 小说，系统会自动识别章节切分、角色名单与对白归属，
-            为每个角色分配音色后即可一键生成整本多音色 MP3 有声书。
+          <h3 className="text-lg font-semibold mb-2">还没有有声书</h3>
+          <p className="text-sm text-white/50 max-w-md mx-auto mb-6">
+            上传 TXT/EPUB 小说，自动识别章节切分、角色名单与对白归属，
+            为每个角色分配音色后即可一键生成多音色 MP3 有声书。
           </p>
-          <button
-            className="btn-primary !px-6 !py-2.5"
-            onClick={() => { window.location.hash = '#/projects/new'; }}
-          >
-            ＋ 创建第一个项目
+          <button className="btn-primary !px-6 !py-2.5" onClick={() => setShowCreateDialog(true)}>
+            ＋ 创建第一个有声书
           </button>
         </div>
       )}
 
-      {/* 卡片网格（Eleven 风格：浮岛 + 细条 + 左侧色条 2px + hover lift） */}
+      {/* 表格视图 */}
       {!loading && items && items.length > 0 && (
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
-          {items.map((p, i) => {
-            const isRunning = p.status === 'preparing' || p.status === 'synthesizing';
-            const def = STATUS_DEFS[p.status];
-            return (
-              <div
-                key={p.project_id}
-                className={`group card cursor-pointer animate-fade-in overflow-hidden !p-0`}
-                style={{ animationDelay: `${i * 40}ms` }}
-                onClick={() => { window.location.hash = `#/projects/${p.project_id}`; }}
-              >
-                {/* 细色条（Eleven 风格） */}
-                <div
-                  className="stripe"
-                  style={{
-                    backgroundColor: isRunning ? def.dot : (p.cover_color || '#8b5cf6'),
-                    opacity: isRunning ? 1 : 0.85,
-                  }}
-                />
-                {isRunning && (
-                  <div className="absolute top-0 bottom-0 left-0 w-[2px] animate-pulse-soft bg-white/50" />
-                )}
-
-                <div className="pl-4 pr-5 py-5 h-full flex flex-col gap-3">
-                  {/* 顶行：标题 + 状态 */}
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="font-semibold truncate text-ink-900 text-[15px] leading-snug">
-                        {p.book_title || p.name}
-                      </div>
-                      {p.book_title && p.book_title !== p.name && (
-                        <div className="text-[11px] text-ink-500 truncate mt-1">{p.name}</div>
-                      )}
-                    </div>
-                    <StatusBadge status={p.status} />
-                  </div>
-
-                  {/* Meta 行 */}
-                  <div className="flex items-center gap-3 text-[12px] text-ink-600">
-                    <span>📜 {p.chapter_count} 章</span>
-                    <span className="truncate">
-                      {p.source_filename ? `📄 ${p.source_filename}` : '📄 未上传'}
-                    </span>
-                  </div>
-
-                  {/* 进度 / 提示 */}
-                  <div className="flex-1 min-h-[0]">
-                    {p.status === 'preparing' && (
-                      <PrepareProgressInline prog={p.prepare_progress} chapterCount={p.chapter_count} />
-                    )}
-                    {p.status === 'synthesizing' && (
-                      <div className="text-xs" style={{ color: '#fdba74' }}>
-                        🔊 合成中…点击卡片进入详情查看章节级进度
-                      </div>
-                    )}
-                    {p.status === 'failed' && p.prepare_progress?.last_error && (
-                      <div className="text-xs break-words whitespace-pre-wrap line-clamp-3"
-                        style={{ color: '#fda4af' }}>
-                        ❌ {p.prepare_progress.last_error}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* 底行：时间 + 心跳 */}
-                  <div className="flex items-center justify-between text-[11px] text-ink-500 pt-1">
-                    <span>更新于 {relativeTime(p.updated_at)}</span>
-                    {isRunning && (
-                      <span className="inline-flex items-center gap-1.5">
-                        <span className="badge-dot animate-pulse-soft" style={{ background: def.dot }} />
-                        自动刷新中
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                {/* hover 删除按钮（Eleven 风格：右上小圆点展开式） */}
-                <button
-                  className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition chip"
-                  style={{
-                    background: 'rgba(251,113,133,0.08)',
-                    border: '1px solid rgba(251,113,133,0.22)',
-                    color: '#fda4af',
-                  }}
-                  onClick={e => { e.stopPropagation(); setConfirmDeleteId(p.project_id); }}
-                  title="删除项目"
-                >
-                  🗑 删除
-                </button>
-
-                {/* 删除确认 overlay（Eleven 风格：半透明蒙层 + 居中卡片） */}
-                {confirmDeleteId === p.project_id && (
-                  <div
-                    className="absolute inset-0 z-10 flex items-center justify-center p-5"
-                    style={{ background: 'rgba(9,9,11,0.78)', backdropFilter: 'blur(6px)' }}
-                    onClick={e => e.stopPropagation()}
+        <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[11px] text-white/40 uppercase tracking-wider border-b border-white/[0.06]">
+                <th className="px-5 py-3 font-medium">有声书</th>
+                <th className="px-4 py-3 font-medium w-[100px]">状态</th>
+                <th className="px-4 py-3 font-medium w-[200px]">进度</th>
+                <th className="px-4 py-3 font-medium w-[80px] text-right">章节</th>
+                <th className="px-4 py-3 font-medium w-[140px]">更新时间</th>
+                <th className="px-5 py-3 font-medium w-[140px] text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((p, i) => {
+                const isRunning = ['preparing', 'synthesizing', 'importing'].includes(p.status);
+                const detailHref = `#/audiobooks/${p.project_id}`;
+                return (
+                  <tr
+                    key={p.project_id}
+                    className="border-b border-white/[0.04] hover:bg-white/[0.03] transition-colors cursor-pointer animate-fade-in"
+                    style={{ animationDelay: `${i * 25}ms` }}
+                    onClick={() => { window.location.hash = detailHref; }}
                   >
-                    <div className="surface p-5 max-w-xs w-full text-center animate-scale-in">
-                      <div className="mx-auto w-11 h-11 rounded-2xl grid place-items-center mb-3"
-                        style={{ background: 'rgba(251,113,133,0.12)' }}>
-                        <span className="text-xl">⚠️</span>
-                      </div>
-                      <div className="font-semibold text-ink-900 mb-1.5">确认删除该项目？</div>
-                      <div className="text-xs text-ink-600 mb-5 leading-relaxed">
-                        删除后无法恢复，所有章节、角色识别、音色配置与构建历史都会丢失。
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          className="btn-ghost flex-1"
-                          onClick={e => { e.stopPropagation(); setConfirmDeleteId(null); }}
+                    {/* 名称 */}
+                    <td className="px-5 py-4 min-w-0">
+                      <div className="flex items-center gap-3">
+                        <div
+                          className="w-9 h-9 rounded-lg grid place-items-center text-base shrink-0"
+                          style={{
+                            background: `linear-gradient(135deg, ${p.cover_color || '#8b5cf6'}33, ${p.cover_color || '#8b5cf6'}11)`,
+                            border: `1px solid ${p.cover_color || '#8b5cf6'}33`,
+                          }}
                         >
-                          取消
-                        </button>
+                          <span>📖</span>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-medium text-white truncate">
+                            {p.book_title || p.name}
+                          </div>
+                          {p.source_filename && (
+                            <div className="text-[11px] text-white/40 truncate mt-0.5">
+                              📄 {p.source_filename}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+
+                    {/* 状态 */}
+                    <td className="px-4 py-4">
+                      <StatusBadge status={p.status} />
+                    </td>
+
+                    {/* 进度 */}
+                    <td className="px-4 py-4">
+                      {p.status === 'preparing' && (
+                        <div onClick={e => e.stopPropagation()}>
+                          <PrepareProgressInline prog={p.prepare_progress} chapterCount={p.chapter_count} compact />
+                        </div>
+                      )}
+                      {p.status === 'synthesizing' && (
+                        <div className="text-xs text-orange-300">
+                          🔊 合成中…
+                        </div>
+                      )}
+                      {p.status === 'importing' && (
+                        <div className="text-xs text-blue-300">
+                          📥 导入中…
+                        </div>
+                      )}
+                      {p.status === 'failed' && p.prepare_progress?.last_error && (
+                        <div className="text-xs text-rose-300 truncate" title={p.prepare_progress.last_error}>
+                          ❌ {p.prepare_progress.last_error.slice(0, 40)}
+                        </div>
+                      )}
+                      {['ready', 'done', 'success', 'partial_success'].includes(p.status) && (
+                        <div className="text-xs text-white/40">—</div>
+                      )}
+                    </td>
+
+                    {/* 章节数 */}
+                    <td className="px-4 py-4 text-right tabular-nums text-white/70">
+                      {p.chapter_count}
+                    </td>
+
+                    {/* 更新时间 */}
+                    <td className="px-4 py-4 text-xs text-white/40">
+                      {relativeTime(p.updated_at)}
+                      {isRunning && (
+                        <span className="ml-1 inline-flex items-center gap-1 text-[10px] text-amber-300/70">
+                          <span className="badge-dot animate-pulse-soft !w-1 !h-1" style={{ background: '#f59e0b' }} />
+                          自动刷新
+                        </span>
+                      )}
+                    </td>
+
+                    {/* 操作 */}
+                    <td className="px-5 py-4 text-right">
+                      <div className="inline-flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                        <a href={detailHref} className="btn-ghost !px-2.5 !py-1 text-xs" title="进入工作台">
+                          详情
+                        </a>
+                        {['ready', 'done', 'success', 'partial_success'].includes(p.status) && (
+                          <a href={detailHref} className="btn-ghost !px-2.5 !py-1 text-xs" title="构建有声书">
+                            构建
+                          </a>
+                        )}
+                        {p.status === 'failed' && (
+                          <a href={detailHref} className="btn-ghost !px-2.5 !py-1 text-xs" title="重试">
+                            重试
+                          </a>
+                        )}
                         <button
-                          className="btn-danger flex-1"
-                          onClick={e => { e.stopPropagation(); onDelete(p.project_id); }}
+                          className="btn-ghost !px-2.5 !py-1 text-xs hover:text-rose-300"
+                          style={{ color: 'rgba(251,113,133,0.7)' }}
+                          onClick={() => setConfirmDeleteId(p.project_id)}
+                          title="删除"
                         >
-                          🗑 确认
+                          🗑
                         </button>
                       </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
+      )}
+
+      {/* 删除确认 Modal */}
+      {confirmDeleteId && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setConfirmDeleteId(null)}
+        >
+          <div
+            className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-sm mx-4 text-center animate-scale-in"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="mx-auto w-11 h-11 rounded-2xl grid place-items-center mb-3"
+              style={{ background: 'rgba(251,113,133,0.12)' }}>
+              <span className="text-xl">⚠️</span>
+            </div>
+            <div className="font-semibold text-white mb-1.5">确认删除？</div>
+            <div className="text-xs text-white/50 mb-5 leading-relaxed">
+              删除后无法恢复，所有章节、角色识别、音色配置与构建历史都会丢失。
+            </div>
+            <div className="flex gap-2">
+              <button className="btn-ghost flex-1" onClick={() => setConfirmDeleteId(null)}>
+                取消
+              </button>
+              <button
+                className="flex-1 rounded-lg text-sm font-medium transition-all"
+                style={{
+                  background: 'rgba(251,113,133,0.15)',
+                  color: '#fda4af',
+                  border: '1px solid rgba(251,113,133,0.3)',
+                }}
+                onClick={() => onDelete(confirmDeleteId)}
+              >
+                🗑 确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 创建有声书弹窗 */}
+      {showCreateDialog && (
+        <CreateAudiobookDialog
+          onClose={() => setShowCreateDialog(false)}
+          onCreated={(id) => {
+            setShowCreateDialog(false);
+            window.location.hash = `#/audiobooks/${id}`;
+          }}
+        />
       )}
     </section>
   );
 }
+// cache-bust at 1787940057

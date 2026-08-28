@@ -176,7 +176,7 @@ export default function ProjectDetailPage({
   };
 
   const goBack = () => {
-    window.location.hash = '#/projects';
+    window.location.hash = '#/audiobooks';
   };
 
   const loading = project === null;
@@ -2204,7 +2204,7 @@ function SettingsTab({
     setDeleting(true);
     try {
       await api.projectDelete(project.project_id);
-      window.location.hash = '#/projects';
+      window.location.hash = '#/audiobooks';
     } catch (e: any) {
       setErr(`删除失败: ${e?.message || e}`);
       setConfirmDelete(false);

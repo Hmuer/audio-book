@@ -3,104 +3,110 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTheme } from '@/components/ThemeContext';
 import { useAuth } from '@/components/AuthContext';
+import AppSidebar from '@/components/AppSidebar';
 import ProjectListPage, { RunningTasksBar } from '@/components/ProjectListPage';
-import ProjectWizard from '@/components/ProjectWizard';
 import ProjectDetailPage from '@/components/ProjectDetailPage';
 import LoginPage from '@/components/LoginPage';
-import UserMenu from '@/components/UserMenu';
 import { api, ProjectListItem, Voice } from '@/lib/api';
 
-// hash 路由解析后的路由对象（移除 single/book，只留项目制 + 登录）
+// ---- 新路由结构 ----
 type Route =
   | { name: 'login' }
-  | { name: 'projects-list' }
-  | { name: 'projects-new' }
-  | { name: 'projects-detail'; id: string };
+  | { name: 'ab-list' }                  // #/audiobooks         列表
+  | { name: 'ab-detail'; id: string }    // #/audiobooks/:id     工作台
+  | { name: 'ab-voices' }                // #/audiobooks/voices  音色库
+  | { name: 'settings' }                 // #/settings           设置
+  | { name: 'unknown' };                 // fallback
 
-// 解析当前 hash，返回 Route
-function parseHash(): Route {
-  if (typeof window === 'undefined') return { name: 'projects-list' };
-  const h = window.location.hash.replace(/^#/, '');
-  if (h === '/login') return { name: 'login' };
-  if (h === '' || h === '/' || h === '/projects' || h === '/projects/') return { name: 'projects-list' };
-  if (h === '/projects/new') return { name: 'projects-new' };
-  // /projects/{id}（id 不能是 new）
-  const m = h.match(/^\/projects\/([^/]+)$/);
-  if (m && m[1] !== 'new') return { name: 'projects-detail', id: decodeURIComponent(m[1]) };
-  // 其他未知 hash → 列表页（兼容旧 single/book 书签，不显示 404）
-  return { name: 'projects-list' };
+// 旧路由 → 新路由重定向表
+const LEGACY_REDIRECTS: Record<string, string> = {
+  '/projects':     '/audiobooks',
+  '/projects/':    '/audiobooks',
+  '/projects/new': '/audiobooks',
+};
+
+function parseHash(): { route: Route; path: string } {
+  if (typeof window === 'undefined') return { route: { name: 'ab-list' }, path: '/audiobooks' };
+  let h = window.location.hash.replace(/^#/, '');
+
+  // 旧路由重定向
+  if (LEGACY_REDIRECTS[h]) {
+    window.location.hash = LEGACY_REDIRECTS[h];
+    // 先按旧 hash 解析，让下一轮渲染用新值
+    return { route: { name: 'ab-list' }, path: LEGACY_REDIRECTS[h] };
+  }
+  const mLegacyDetail = h.match(/^\/projects\/([^/]+)$/);
+  if (mLegacyDetail && mLegacyDetail[1] !== 'new') {
+    window.location.hash = `/audiobooks/${mLegacyDetail[1]}`;
+    return { route: { name: 'ab-detail', id: mLegacyDetail[1] }, path: `/audiobooks/${mLegacyDetail[1]}` };
+  }
+
+  // 登录
+  if (h === '/login') return { route: { name: 'login' }, path: '/login' };
+  // 一级路由
+  if (h === '' || h === '/' || h === '/audiobooks' || h === '/audiobooks/')
+    return { route: { name: 'ab-list' }, path: '/audiobooks' };
+  if (h === '/audiobooks/voices') return { route: { name: 'ab-voices' }, path: '/audiobooks/voices' };
+  if (h === '/settings')          return { route: { name: 'settings' }, path: '/settings' };
+  // 详情
+  const m = h.match(/^\/audiobooks\/([^/]+)$/);
+  if (m) return { route: { name: 'ab-detail', id: decodeURIComponent(m[1]) }, path: h };
+
+  return { route: { name: 'unknown' }, path: h };
 }
 
 export default function HomePage() {
   const { theme, toggle } = useTheme();
   const { user, loading: authLoading } = useAuth();
-  const [route, setRoute] = useState<Route>({ name: 'projects-list' });
+  const [routeInfo, setRouteInfo] = useState(() => parseHash());
   const [voices, setVoices] = useState<Voice[]>([]);
 
-  // 全局项目列表快照：用于 sticky 顶部条展示 N 个后台识别/合成任务
-  // （Wizard / 项目详情页不显示项目卡片，但用户仍可能想看到后台仍在跑）
+  // 全局项目快照（侧栏 badge + 详情页进度条）
   const [globalProjects, setGlobalProjects] = useState<ProjectListItem[] | null>(null);
   const globalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // 监听 hashchange + 初始化同步
+  // hash 监听
   useEffect(() => {
-    setRoute(parseHash());
-    const onHash = () => setRoute(parseHash());
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
+    const sync = () => setRouteInfo(parseHash());
+    sync();
+    window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
   }, []);
 
-  // 登录态变化时，做必要的跳转
+  // 登录态变化跳转
   useEffect(() => {
     if (authLoading) return;
-    if (!user && route.name !== 'login') {
+    if (!user && routeInfo.route.name !== 'login') {
       window.location.hash = '/login';
-    } else if (user && route.name === 'login') {
-      window.location.hash = '/projects';
+    } else if (user && routeInfo.route.name === 'login') {
+      window.location.hash = '/audiobooks';
     }
-  }, [user, authLoading, route.name]);
+  }, [user, authLoading, routeInfo.route.name]);
 
-  // 已登录才拉音色列表
+  // 拉音色
   useEffect(() => {
-    if (!user) {
-      setVoices([]);
-      return;
-    }
-    api.voices()
-      .then(setVoices)
-      .catch(e => console.error('voices 加载失败:', e));
+    if (!user) { setVoices([]); return; }
+    api.voices().then(setVoices).catch(e => console.error('voices 加载失败:', e));
   }, [user]);
 
-  // 全局：登录后每 5s 刷新一次项目快照（刷新/重开标签页仍会开始轮询，
-  // 顶部 sticky bar 能立刻显示后台识别进度；和列表页 3s 轮询独立，互不干扰）
+  // 全局项目轮询（5s）
   useEffect(() => {
-    if (!user) {
-      setGlobalProjects(null);
-      return;
-    }
+    if (!user) { setGlobalProjects(null); return; }
     let alive = true;
     const tick = async () => {
       try {
         const list = await api.projectList();
-        if (!alive) return;
-        setGlobalProjects(list);
-      } catch (e) {
-        // 全局轮询失败不弹 toast（ProjectListPage 自己会处理）
-        console.warn('全局项目快照刷新失败:', e);
-      }
+        if (alive) setGlobalProjects(list);
+      } catch {}
     };
     tick();
     globalPollRef.current = setInterval(tick, 5000);
-    return () => {
-      alive = false;
-      if (globalPollRef.current) clearInterval(globalPollRef.current);
-    };
+    return () => { alive = false; if (globalPollRef.current) clearInterval(globalPollRef.current); };
   }, [user]);
 
-  // 初始化 / 鉴权校验期间，显示 loading
   if (authLoading) {
     return (
-      <div className="min-h-[60vh] flex items-center justify-center text-white/40">
+      <div className="min-h-[60vh] grid place-items-center text-white/40">
         <div className="text-center">
           <div className="inline-block w-8 h-8 border-2 border-white/20 border-t-brand-500 rounded-full animate-spin mb-3" />
           <div className="text-sm">加载中…</div>
@@ -109,58 +115,73 @@ export default function HomePage() {
     );
   }
 
-  // 未登录只展示登录页
-  if (!user) {
-    return <LoginPage />;
-  }
+  if (!user) return <LoginPage />;
 
-  // 有后台任务时：无论当前是 Wizard/列表/详情，顶部都先展示一个 sticky 跳转条
-  // 这样"识别开始后关掉 Wizard / 重开浏览器 / 跳到详情页"都随时能看到 & 跳转回对应进度页
-  const runningItems =
-    globalProjects && route.name !== 'projects-list' ? globalProjects : [];
+  // ---- 计算运行中项目数（侧栏 badge 用）----
+  const runningCount = (globalProjects ?? []).filter(
+    p => ['importing', 'preparing', 'building'].includes(p.status)
+  ).length;
+
+  // ---- 运行中任务条（详情页显示）----
+  const runningItems = routeInfo.route.name === 'ab-detail' ? (globalProjects ?? []) : [];
+
+  const R = routeInfo.route;
 
   return (
-    <div className="mx-auto max-w-7xl px-4 sm:px-6 py-8">
-      {/* header */}
-      <header className="flex items-center justify-between mb-6 flex-wrap gap-3">
-        <div>
-          <div className="flex items-center gap-3 cursor-pointer select-none"
-               onClick={() => { window.location.hash = '#/projects'; }}
-               title="回到项目工作台">
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-brand-500 to-blue-500 shadow-lg shadow-brand-500/30 grid place-items-center font-bold text-lg">
-              声
-            </div>
-            <div>
-              <h1 className="text-xl sm:text-2xl font-bold">AI 有声小说生成器</h1>
-              <p className="text-xs text-white/50 mt-0.5">
-                项目工作台 · 导入小说 → AI 识别角色与对白 → 多音色合成 → 导出 MP3
-              </p>
-            </div>
+    <div className="flex min-h-screen">
+      {/* 左侧全局侧栏 */}
+      <AppSidebar currentPath={routeInfo.path} runningCount={runningCount} />
+
+      {/* 右侧主内容 */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        {/* 顶部小条：主题切换（品牌名已在侧栏） */}
+        <header className="h-14 border-b border-white/[0.06] px-6 flex items-center justify-between shrink-0">
+          <div className="text-xs text-white/40">
+            {R.name === 'ab-list' && 'AI有声书 · 我的有声书'}
+            {R.name === 'ab-detail' && 'AI有声书 · 工作台'}
+            {R.name === 'ab-voices' && 'AI有声书 · 音色库'}
+            {R.name === 'settings' && '设置'}
+            {R.name === 'unknown' && ''}
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="btn-ghost" onClick={toggle} title="切换深色/浅色">
+          <button className="btn-ghost h-8 text-xs" onClick={toggle}>
             {theme === 'dark' ? '🌙 深色' : '☀️ 浅色'}
           </button>
-          <UserMenu />
-        </div>
-      </header>
+        </header>
 
-      {/* 全局后台任务条：Wizard / 详情页也显示，跳转入口 */}
-      {route.name !== 'projects-list' && runningItems.length > 0 && (
-        <RunningTasksBar items={runningItems} />
-      )}
+        {/* 运行中任务条（详情页顶部） */}
+        {runningItems.length > 0 && <RunningTasksBar items={runningItems} />}
 
-      {/* 项目工作台（唯一入口） */}
-      {route.name === 'projects-list' && <ProjectListPage />}
-      {route.name === 'projects-new' && <ProjectWizard />}
-      {route.name === 'projects-detail' && (
-        <ProjectDetailPage projectId={route.id} voices={voices} />
-      )}
+        {/* 主内容 */}
+        <main className="flex-1 min-w-0">
+          {R.name === 'ab-list' && <ProjectListPage />}
+          {R.name === 'ab-detail' && <ProjectDetailPage projectId={R.id} voices={voices} />}
+          {R.name === 'ab-voices' && <PlaceholderPage title="音色库" desc="音色库功能即将上线" icon="🎙️" />}
+          {R.name === 'settings' && <PlaceholderPage title="设置" desc="设置功能即将上线" icon="⚙️" />}
+          {R.name === 'unknown' && (
+            <PlaceholderPage title="页面不存在" desc="该路由暂未实现" icon="🤔" actionHref="#/audiobooks" actionLabel="返回有声书列表" />
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
 
-      <footer className="mt-16 text-center text-xs text-white/40">
-        ⚠ 仅供本地使用 · 所有 AI 调用都会产生 API 费用
-      </footer>
+// ---- 占位页（音色库 / 设置）----
+function PlaceholderPage({
+  title, desc, icon, actionHref, actionLabel,
+}: { title: string; desc: string; icon: string; actionHref?: string; actionLabel?: string }) {
+  return (
+    <div className="h-full grid place-items-center py-20">
+      <div className="text-center">
+        <div className="text-5xl mb-4">{icon}</div>
+        <h2 className="text-xl font-semibold mb-1">{title}</h2>
+        <p className="text-sm text-white/50 mb-6">{desc}</p>
+        {actionHref && actionLabel && (
+          <a href={actionHref} className="btn-primary inline-flex justify-center">
+            {actionLabel}
+          </a>
+        )}
+      </div>
     </div>
   );
 }
