@@ -8,13 +8,16 @@ const POLL_INTERVAL_MS = 3000;
 
 // 状态定义（Eleven 风格：柔和、克制，不是浓重的半透明块）
 const STATUS_DEFS: Record<string, { label: string; bg: string; color: string; dot: string; pulse?: boolean }> = {
-  draft:        { label: '草稿',      bg: 'rgba(255,255,255,0.04)', color: 'rgba(255,255,255,0.62)', dot: '#71717a' },
-  imported:     { label: '已导入',    bg: 'rgba(59,130,246,0.10)',  color: '#93c5fd', dot: '#3b82f6' },
-  preparing:    { label: '识别中',    bg: 'rgba(245,158,11,0.12)',  color: '#fcd34d', dot: '#f59e0b', pulse: true },
-  ready:        { label: '就绪',      bg: 'rgba(45,212,191,0.10)',  color: '#5eead4', dot: '#2dd4bf' },
-  synthesizing: { label: '合成中',    bg: 'rgba(251,146,60,0.12)',  color: '#fdba74', dot: '#fb923c', pulse: true },
-  done:         { label: '已完成',    bg: 'rgba(74,222,128,0.10)',  color: '#86efac', dot: '#4ade80' },
-  failed:       { label: '失败',      bg: 'rgba(251,113,133,0.10)', color: '#fda4af', dot: '#fb7185' },
+  draft:           { label: '草稿',      bg: 'rgba(255,255,255,0.04)', color: 'rgba(255,255,255,0.62)', dot: '#71717a' },
+  imported:        { label: '已导入',    bg: 'rgba(59,130,246,0.10)',  color: '#93c5fd', dot: '#3b82f6' },
+  preparing:       { label: '识别中',    bg: 'rgba(245,158,11,0.12)',  color: '#fcd34d', dot: '#f59e0b', pulse: true },
+  ready:           { label: '就绪',      bg: 'rgba(45,212,191,0.10)',  color: '#5eead4', dot: '#2dd4bf' },
+  synthesizing:    { label: '合成中',    bg: 'rgba(251,146,60,0.12)',  color: '#fdba74', dot: '#fb923c', pulse: true },
+  done:            { label: '已完成',    bg: 'rgba(74,222,128,0.10)',  color: '#86efac', dot: '#4ade80' },
+  success:         { label: '已完成',    bg: 'rgba(74,222,128,0.10)',  color: '#86efac', dot: '#4ade80' },
+  partial_success: { label: '部分成功',  bg: 'rgba(250,204,21,0.10)',  color: '#fde68a', dot: '#facc15' },
+  failed:          { label: '失败',      bg: 'rgba(251,113,133,0.10)', color: '#fda4af', dot: '#fb7185' },
+  cancelled:       { label: '已取消',    bg: 'rgba(161,161,170,0.12)', color: '#d4d4d8', dot: '#a1a1aa' },
 };
 
 function relativeTime(iso: string): string {

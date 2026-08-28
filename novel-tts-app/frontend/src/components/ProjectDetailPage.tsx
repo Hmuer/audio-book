@@ -1273,6 +1273,20 @@ function BuildRow({
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
         </button>
+        {!isRunning && (
+          <a
+            className="inline-flex items-center justify-center shrink-0 rounded-xl
+              border border-brand-500/25 bg-brand-500/10 text-brand-200
+              hover:border-brand-500/50 hover:bg-brand-500/20 hover:text-brand-100
+              transition-all duration-150"
+            style={{ width: 34, height: 34 }}
+            href={api.buildDownloadAll(projectId, item.build_id)}
+            download
+            title="打包下载全部 MP3 (ZIP)"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </a>
+        )}
       </div>
 
       <div className="progress-track h-2">
@@ -1333,7 +1347,7 @@ function BuildDetailContent({
         <span className="chip-soft">语速 {detail.speed?.toFixed(1) ?? '1.0'}x</span>
         <span className="chip-soft">总时长 {formatDuration(detail.total_duration_sec)}</span>
         <span className="chip-soft">总大小 {formatSize(detail.total_size_kb ? detail.total_size_kb * 1024 : null)}</span>
-        {detail.zip_url && detail.status === 'done' && (
+        {detail.zip_url && (detail.status === 'success' || detail.status === 'partial_success' || detail.status === 'done') && (
           <a
             className="btn-primary !py-1.5 !px-3 text-xs ml-auto"
             href={api.buildDownloadAll(projectId, detail.build_id)}
