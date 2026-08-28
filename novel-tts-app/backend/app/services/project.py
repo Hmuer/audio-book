@@ -30,6 +30,7 @@ from ..db.models import (
 )
 from ..db.session import get_session_factory
 from .book_split import ChapterSplitError, split_book_chapters
+from .epub_reader import read_epub as _read_epub
 from .character import (
     Character,
     extract_characters_with_llm,
@@ -286,28 +287,62 @@ async def create_project(name: str) -> ProjectResp:
 
 async def import_file(project_id: str, file_content: bytes, filename: str) -> ProjectResp:
     """
-    上传/替换项目源文件：保存到磁盘 → 检测编码 → 更新 source_* 字段 → status=imported。
+    上传/替换项目源文件。
+
+    支持 .txt / .md / .epub — EPUB 会先被解析成有序章节，拼成纯文本 .txt 落盘，
+    后续 prepare_project 完全复用既有 TXT 流程。
     """
     factory = get_session_factory()
+    ext = Path(filename).suffix.lower() or ".txt"
+    saved_path_ext = ext
+
+    book_title_hint = Path(filename).stem if filename else None
+    author_hint = None
+
+    # ---- EPUB 预处理 ----
+    if ext == ".epub":
+        logger.info(f"[project_import] 检测到 EPUB，开始解析 project_id={project_id[:8]}...")
+        try:
+            book = _read_epub(file_content)
+            chapter_lines = []
+            for i, ch in enumerate(book.chapters):
+                chapter_lines.append(f"第{i+1}章 {ch.title or ''}")
+                chapter_lines.append("")
+                chapter_lines.append(ch.text)
+                chapter_lines.append("")
+            txt_content = "\n".join(chapter_lines)
+            file_content = txt_content.encode("utf-8")
+            saved_path_ext = ".txt"
+            book_title_hint = book.title or book_title_hint
+            author_hint = book.author or None
+            logger.info(
+                f"[project_import] EPUB 解析完成 chapters={len(book.chapters)} "
+                f"title={book.title!r} author={book.author!r} → 已转为 .txt 落盘"
+            )
+        except ValueError as e:
+            logger.warning(f"[project_import] EPUB 解析失败（会尝试按 TXT 解读）: {e}")
+        except Exception as e:
+            logger.warning(
+                f"[project_import] EPUB 解析异常（会尝试按 TXT 解读）"
+                f": {type(e).__name__}: {e}"
+            )
+
     async with factory() as session:
         p = await session.get(Project, project_id)
         if not p:
             raise ValueError(f"项目不存在: {project_id}")
 
-        # 旧文件若存在则覆盖（同一路径写覆盖即可）
-        ext = Path(filename).suffix or ".txt"
-        saved_path = _project_source_path(project_id, ext)
+        saved_path = _project_source_path(project_id, saved_path_ext)
         Path(saved_path).write_bytes(file_content)
 
-        # 检测编码
         charset = _detect_encoding(file_content)
 
         p.source_file_path = saved_path
-        p.source_filename = filename or f"proj_{project_id[:8]}{ext}"
+        p.source_filename = filename or f"proj_{project_id[:8]}{saved_path_ext}"
         p.source_file_size = len(file_content)
         p.source_charset = charset
-        # 推断 book_title：取文件名 stem
-        p.book_title = Path(filename).stem if filename else p.book_title
+        if book_title_hint:
+            p.book_title = book_title_hint
         p.status = "imported"
         await session.commit()
         await session.refresh(p)

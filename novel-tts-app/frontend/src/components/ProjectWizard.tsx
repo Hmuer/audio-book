@@ -348,7 +348,7 @@ export default function ProjectWizard() {
                 )}
                 <input
                   type="file"
-                  accept=".txt,.text,.md"
+                  accept=".txt,.text,.md,.epub"
                   className="hidden"
                   onChange={e => onPickFile(e.target.files?.[0] || null)}
                 />
