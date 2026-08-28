@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   api,
   ProjectDetailResp,
@@ -11,6 +11,8 @@ import {
   CharacterWithVoice,
   ChapterSummary,
   ChapterDetail,
+  PronunciationRule,
+  PronunciationRuleInput,
 } from '@/lib/api';
 import VoicePicker from './VoicePicker';
 import WaveformPlayer from './WaveformPlayer';
@@ -1059,6 +1061,83 @@ function VoicesTab({
     setChars(project.characters);
   }, [project.project_id, project.default_narrator_voice_id, project.default_speed, project.characters, narratorDefault]);
 
+  // ====== 发音规则 ======
+  const [rules, setRules] = useState<PronunciationRule[]>([]);
+  const [loadingRules, setLoadingRules] = useState(false);
+  const [editingCharForRule, setEditingCharForRule] = useState<number | null | undefined>(undefined);
+  const [rulePattern, setRulePattern] = useState('');
+  const [ruleReplacement, setRuleReplacement] = useState('');
+  const [ruleError, setRuleError] = useState('');
+
+  const loadRules = useCallback(async () => {
+    setLoadingRules(true);
+    try {
+      const list = await api.pronunciationRules(project.project_id);
+      setRules(list);
+    } catch (e: any) {
+      console.error('load rules:', e);
+    } finally {
+      setLoadingRules(false);
+    }
+  }, [project.project_id]);
+
+  useEffect(() => {
+    loadRules();
+  }, [loadRules]);
+
+  const addRule = async (characterId: number | null) => {
+    if (!rulePattern.trim() || !ruleReplacement.trim()) {
+      setRuleError('请填写要替换的文本和替换为');
+      return;
+    }
+    setRuleError('');
+    try {
+      const body: PronunciationRuleInput = {
+        character_id: characterId,
+        rule_type: 'alias',
+        pattern: rulePattern.trim(),
+        replacement: ruleReplacement.trim(),
+        priority: 0,
+        enabled: true,
+        note: '',
+      };
+      await api.createPronunciationRule(project.project_id, body);
+      setRulePattern('');
+      setRuleReplacement('');
+      setEditingCharForRule(undefined);
+      await loadRules();
+    } catch (e: any) {
+      setRuleError(e?.message || '添加失败');
+    }
+  };
+
+  const toggleRule = async (rule: PronunciationRule) => {
+    try {
+      await api.updatePronunciationRule(project.project_id, rule.id, {
+        character_id: rule.character_id,
+        rule_type: rule.rule_type,
+        pattern: rule.pattern,
+        replacement: rule.replacement,
+        priority: rule.priority,
+        enabled: !rule.enabled,
+        note: rule.note,
+      });
+      await loadRules();
+    } catch (e: any) {
+      console.error(e);
+    }
+  };
+
+  const delRule = async (ruleId: number) => {
+    if (!confirm('删除这条发音规则？')) return;
+    try {
+      await api.deletePronunciationRule(project.project_id, ruleId);
+      await loadRules();
+    } catch (e: any) {
+      console.error(e);
+    }
+  };
+
   const saveDefaults = async () => {
     setSavingDefault(true);
     try {
@@ -1255,6 +1334,204 @@ function VoicesTab({
           </div>
         )}
       </div>
+
+      {/* ====== 发音规则面板 ====== */}
+      <div className="glass-panel space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-ink-800 flex items-center gap-2">
+            <div className="w-8 h-8 rounded-xl grid place-items-center bg-brand-500/20 text-brand-300">🔊</div>
+            <div>
+              <div>发音规则 <span className="text-xs text-ink-500 font-normal">（避免生僻字/多音字念错）</span></div>
+            </div>
+            {loadingRules && <span className="text-xs text-ink-500">加载中…</span>}
+          </h3>
+          <button
+            className="text-xs px-2.5 py-1.5 rounded-lg border border-white/[0.07] text-ink-600 hover:text-ink-800 hover:bg-white/[0.04] transition-colors"
+            onClick={loadRules}
+            title="刷新"
+          >
+            ↻
+          </button>
+        </div>
+
+        {/* 全局规则 */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-ink-500">全局规则（所有角色生效）</span>
+            {editingCharForRule === null ? (
+              <div className="flex items-center gap-1.5">
+                <input
+                  className="w-28 text-[12px] px-2 py-1 rounded-lg bg-white/[0.03] border border-white/[0.07] text-ink-800 placeholder:text-ink-400 focus:outline-none focus:border-brand-500/40"
+                  placeholder="原文本"
+                  value={rulePattern}
+                  onChange={e => setRulePattern(e.target.value)}
+                />
+                <span className="text-ink-500 text-xs">→</span>
+                <input
+                  className="w-28 text-[12px] px-2 py-1 rounded-lg bg-white/[0.03] border border-white/[0.07] text-ink-800 placeholder:text-ink-400 focus:outline-none focus:border-brand-500/40"
+                  placeholder="替换为"
+                  value={ruleReplacement}
+                  onChange={e => setRuleReplacement(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && addRule(null)}
+                />
+                <button
+                  className="text-[12px] px-2 py-1 rounded-lg bg-brand-500/20 text-brand-200 hover:bg-brand-500/30 transition-colors"
+                  onClick={() => addRule(null)}
+                >
+                  + 添加
+                </button>
+                <button
+                  className="text-[11px] px-1.5 py-1 rounded text-ink-500 hover:text-ink-700"
+                  onClick={() => { setEditingCharForRule(undefined); setRulePattern(''); setRuleReplacement(''); setRuleError(''); }}
+                >
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <button
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-brand-500/15 text-brand-200 border border-brand-500/30 hover:bg-brand-500/25 transition-colors"
+                onClick={() => { setEditingCharForRule(null); setRulePattern(''); setRuleReplacement(''); setRuleError(''); }}
+              >
+                + 新增全局规则
+              </button>
+            )}
+          </div>
+          {ruleError && editingCharForRule === null && (
+            <div className="text-[11px] text-accent-rose mb-1.5">⚠ {ruleError}</div>
+          )}
+          <div className="space-y-1.5">
+            {rules.filter(r => r.character_id === null).length === 0 ? (
+              <div className="text-[11px] text-ink-500 italic">暂无全局规则</div>
+            ) : rules.filter(r => r.character_id === null).map(r => (
+              <RuleRow key={r.id} rule={r} onToggle={toggleRule} onDelete={delRule} />
+            ))}
+          </div>
+        </div>
+
+        {/* 按角色分组 */}
+        {chars.length > 0 && chars.map(c => {
+          const charRules = rules.filter(r => r.character_id === c.id);
+          const genderColor =
+            c.gender === '男' ? '#3b82f6'
+            : c.gender === '女' ? '#ec4899'
+            : '#8b5cf6';
+          const isEditing = editingCharForRule === c.id;
+          return (
+            <div key={c.id} className="rounded-2xl border border-white/[0.05] bg-white/[0.015] p-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div
+                    className="w-6 h-6 rounded-lg grid place-items-center text-[11px] font-bold text-white shrink-0"
+                    style={{ background: `linear-gradient(135deg, ${genderColor}, ${genderColor}aa)` }}
+                  >{c.name?.trim()?.[0] || '?'}</div>
+                  <span className="text-sm text-ink-800 font-medium truncate">{c.name}</span>
+                  <span className="text-[11px] text-ink-500">{charRules.length} 条规则</span>
+                </div>
+                {isEditing ? (
+                  <button
+                    className="text-[11px] px-1.5 py-0.5 rounded text-ink-500 hover:text-ink-700"
+                    onClick={() => { setEditingCharForRule(undefined); setRulePattern(''); setRuleReplacement(''); setRuleError(''); }}
+                  >
+                    ✕
+                  </button>
+                ) : (
+                  <button
+                    className="text-[11px] px-2 py-1 rounded-lg bg-white/[0.03] text-ink-600 border border-white/[0.06] hover:text-ink-800 hover:bg-white/[0.06] transition-colors"
+                    onClick={() => { setEditingCharForRule(c.id); setRulePattern(''); setRuleReplacement(''); setRuleError(''); }}
+                  >
+                    + 添加
+                  </button>
+                )}
+              </div>
+              {isEditing && (
+                <div className="flex items-center gap-1.5 mt-2">
+                  <input
+                    className="flex-1 min-w-0 text-[12px] px-2 py-1 rounded-lg bg-white/[0.03] border border-white/[0.07] text-ink-800 placeholder:text-ink-400 focus:outline-none focus:border-brand-500/40"
+                    placeholder={`在「${c.name}」的台词里：`}
+                    value={rulePattern}
+                    onChange={e => setRulePattern(e.target.value)}
+                  />
+                  <span className="text-ink-500 text-xs shrink-0">→</span>
+                  <input
+                    className="flex-1 min-w-0 text-[12px] px-2 py-1 rounded-lg bg-white/[0.03] border border-white/[0.07] text-ink-800 placeholder:text-ink-400 focus:outline-none focus:border-brand-500/40"
+                    placeholder="替换为"
+                    value={ruleReplacement}
+                    onChange={e => setRuleReplacement(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && addRule(c.id)}
+                  />
+                  <button
+                    className="text-[12px] px-2 py-1 rounded-lg bg-brand-500/20 text-brand-200 hover:bg-brand-500/30 transition-colors shrink-0"
+                    onClick={() => addRule(c.id)}
+                  >
+                    添加
+                  </button>
+                </div>
+              )}
+              {ruleError && isEditing && (
+                <div className="text-[11px] text-accent-rose mt-1">⚠ {ruleError}</div>
+              )}
+              {charRules.length > 0 && (
+                <div className="space-y-1 mt-2">
+                  {charRules.map(r => (
+                    <RuleRow key={r.id} rule={r} onToggle={toggleRule} onDelete={delRule} />
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {/* 规则作用说明 */}
+        <div className="text-[11px] text-ink-500 leading-relaxed pt-1 border-t border-white/[0.05]">
+          💡 构建时，TTS 合成前会把文本里匹配到的「原文本」替换为「替换为」。
+          常用于：生僻字加空格（如 <span className="text-brand-300">李～軒</span>）、
+          多音字固定读法（如 <span className="text-brand-300">重 新</span>）、
+          角色名简称补全（如 <span className="text-brand-300">老 头 子</span>）。
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =================== 发音规则子组件 ===================
+function RuleRow({
+  rule, onToggle, onDelete,
+}: {
+  rule: PronunciationRule;
+  onToggle: (r: PronunciationRule) => void;
+  onDelete: (id: number) => void;
+}) {
+  return (
+    <div
+      className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-[12px] border transition-colors ${
+        rule.enabled
+          ? 'bg-white/[0.02] border-white/[0.05] text-ink-800'
+          : 'bg-white/[0.01] border-white/[0.03] text-ink-500 line-through'
+      }`}
+    >
+      <span className="shrink-0 text-xs">🔄</span>
+      <code className="px-1.5 py-0.5 rounded bg-white/[0.04] border border-white/[0.06] font-mono text-[11px] truncate max-w-[120px]" title={rule.pattern}>
+        {rule.pattern}
+      </code>
+      <span className="text-ink-500">→</span>
+      <code className="px-1.5 py-0.5 rounded bg-brand-500/10 border border-brand-500/20 font-mono text-[11px] text-brand-200 truncate max-w-[120px]" title={rule.replacement}>
+        {rule.replacement}
+      </code>
+      <div className="flex-1" />
+      <button
+        className="shrink-0 text-[11px] px-1.5 py-0.5 rounded hover:bg-white/[0.05] transition-colors"
+        onClick={() => onToggle(rule)}
+        title={rule.enabled ? '禁用' : '启用'}
+      >
+        {rule.enabled ? '✅' : '⬜'}
+      </button>
+      <button
+        className="shrink-0 text-[11px] px-1.5 py-0.5 rounded text-accent-rose hover:bg-accent-rose/10 transition-colors"
+        onClick={() => onDelete(rule.id)}
+        title="删除"
+      >
+        🗑
+      </button>
     </div>
   );
 }

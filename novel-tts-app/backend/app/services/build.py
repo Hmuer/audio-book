@@ -36,6 +36,8 @@ from ..db.models import (
     Build,
     BuildArtifact,
     ProjectDialogue,
+    ProjectCharacter,
+    ProjectPronunciationRule,
 )
 from ..db.session import get_session_factory
 from ..ai.factory import get_tts
@@ -46,6 +48,10 @@ from ..ai.providers.minimax.tts import (
 )
 from .chapter import Chapter, _Segment, _build_segments_for_chapter
 from .book_split import strip_chapter_prefix
+from .project import (
+    PronunciationRule as _PronunciationRule,
+    apply_pronunciation_rules,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -862,6 +868,25 @@ async def _run_build_inner(
         job_title: str | None = p.book_title or p.source_filename or None
         stmt_d = select(ProjectDialogue).where(ProjectDialogue.project_id == project_id)
         all_dialogues_rows = list((await s.execute(stmt_d)).scalars().all())
+        # 发音规则
+        stmt_r = select(ProjectPronunciationRule).where(
+            ProjectPronunciationRule.project_id == project_id
+        )
+        rules_rows = list((await s.execute(stmt_r)).scalars().all())
+        pronunciation_rules: list[_PronunciationRule] = [
+            _PronunciationRule.model_validate(r, from_attributes=True) for r in rules_rows
+        ]
+        if pronunciation_rules:
+            logger.info(
+                f"[build_worker] 加载 {len(pronunciation_rules)} 条发音规则"
+            )
+        # 角色表 → speaker_name → character_id 映射
+        stmt_c = select(ProjectCharacter).where(ProjectCharacter.project_id == project_id)
+        char_rows = list((await s.execute(stmt_c)).scalars().all())
+        speaker_to_char_id: dict[str, int] = {
+            c.name: c.id for c in char_rows if c.name
+        }
+
 
     dialogues_by_chapter: dict[int, list[ProjectDialogue]] = {}
     for d in all_dialogues_rows:
@@ -1052,6 +1077,10 @@ async def _run_build_inner(
                 if s.kind == "silence":
                     return s, make_silent_mp3(max(s.silence_ms, 1)), s.silence_ms
                 vid = s.voice_id or narrator_voice_id
+                # 应用发音规则
+                if pronunciation_rules:
+                    char_id = speaker_to_char_id.get(s.speaker or "")
+                    s.text = apply_pronunciation_rules(s.text, pronunciation_rules, character_id=char_id)
                 cached = await tts_segment_cache_get(vid, speed, s.text)
                 if cached is not None:
                     mp3_b, dur_ms = cached

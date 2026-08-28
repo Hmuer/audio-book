@@ -37,6 +37,10 @@ from ..services.project import (
     get_project_chapter_detail,
     get_project_characters,
     update_character_voice,
+    list_pronunciation_rules,
+    create_pronunciation_rule,
+    update_pronunciation_rule,
+    delete_pronunciation_rule,
     ProjectResp,
     ProjectDetailResp,
     ProjectListItem,
@@ -46,6 +50,8 @@ from ..services.project import (
     ChapterDetail,
     CharacterWithVoice,
     CharacterResp,
+    PronunciationRule,
+    PronunciationRuleInput,
 )
 from ..services.build import (
     start_build,
@@ -675,6 +681,53 @@ async def api_update_character_voice(
             exc_info=True,
         )
         raise HTTPException(500, f"更新音色失败: {type(e).__name__}: {e}")
+
+
+# =================== 发音规则 ===================
+@router.get(
+    "/projects/{project_id}/pronunciation-rules",
+    response_model=list[PronunciationRule],
+)
+async def api_list_pronunciation_rules(project_id: str):
+    return await list_pronunciation_rules(project_id)
+
+
+@router.post(
+    "/projects/{project_id}/pronunciation-rules",
+    response_model=PronunciationRule,
+)
+async def api_create_pronunciation_rule(
+    project_id: str, body: PronunciationRuleInput
+):
+    try:
+        return await create_pronunciation_rule(project_id, body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.put(
+    "/projects/{project_id}/pronunciation-rules/{rule_id}",
+    response_model=PronunciationRule,
+)
+async def api_update_pronunciation_rule(
+    project_id: str, rule_id: int, body: PronunciationRuleInput
+):
+    try:
+        return await update_pronunciation_rule(project_id, rule_id, body)
+    except ValueError as e:
+        msg = str(e)
+        if "不存在" in msg:
+            raise HTTPException(404, msg)
+        raise HTTPException(400, msg)
+
+
+@router.delete("/projects/{project_id}/pronunciation-rules/{rule_id}")
+async def api_delete_pronunciation_rule(project_id: str, rule_id: int):
+    try:
+        await delete_pronunciation_rule(project_id, rule_id)
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(404, str(e))
 
 
 # ---------- Build 任务 ----------

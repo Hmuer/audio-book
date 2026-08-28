@@ -216,6 +216,23 @@ export const api = {
   // 拉取单章详情（正文 + 逐行对白归属）
   projectChapterDetail: (id: string, idx: number) =>
     _fetch<ChapterDetail>(`/api/projects/${id}/chapters/${idx}`),
+  // 发音规则 CRUD
+  pronunciationRules: (id: string) =>
+    _fetch<PronunciationRule[]>(`/api/projects/${id}/pronunciation-rules`),
+  createPronunciationRule: (id: string, body: PronunciationRuleInput) =>
+    _fetch<PronunciationRule>(`/api/projects/${id}/pronunciation-rules`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updatePronunciationRule: (id: string, ruleId: number, body: PronunciationRuleInput) =>
+    _fetch<PronunciationRule>(`/api/projects/${id}/pronunciation-rules/${ruleId}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deletePronunciationRule: (id: string, ruleId: number) =>
+    _fetch<{ ok: boolean }>(`/api/projects/${id}/pronunciation-rules/${ruleId}`, {
+      method: 'DELETE',
+    }),
   // 拉取角色列表
   projectCharacters: (id: string) =>
     _fetch<CharacterWithVoice[]>(`/api/projects/${id}/characters`),
@@ -391,6 +408,28 @@ export interface ChapterDetail {
   title: string;
   text: string;
   dialogues: DialogueLine[];
+}
+
+export interface PronunciationRule {
+  id: number;
+  project_id: string;
+  character_id: number | null;
+  rule_type: 'alias' | 'regex';
+  pattern: string;
+  replacement: string;
+  priority: number;
+  enabled: boolean;
+  note: string;
+}
+
+export interface PronunciationRuleInput {
+  character_id: number | null;
+  rule_type: 'alias' | 'regex';
+  pattern: string;
+  replacement: string;
+  priority: number;
+  enabled: boolean;
+  note: string;
 }
 
 // 角色（含已分配音色）

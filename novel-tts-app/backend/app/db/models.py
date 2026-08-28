@@ -122,6 +122,9 @@ class Project(Base):
     project_dialogues: Mapped[list["ProjectDialogue"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    pronunciation_rules: Mapped[list["ProjectPronunciationRule"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 class Build(Base):
@@ -216,6 +219,30 @@ class ProjectDialogue(Base):
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
 
     project: Mapped[Project] = relationship(back_populates="project_dialogues")
+
+
+class ProjectPronunciationRule(Base):
+    """项目级发音规则（别名替换 / 正则替换）。
+
+    - type=alias  : 简单字符串替换（pattern → replacement）
+    - type=regex  : 正则替换（pattern 为正则，replacement 支持 \1 等回引）
+    - character_id: 关联到 project_characters.id；为 NULL 时表示全局规则
+    """
+    __tablename__ = "project_pronunciation_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(String(64), ForeignKey("projects.project_id", ondelete="CASCADE"))
+    character_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("project_characters.id", ondelete="CASCADE"), nullable=True)
+    rule_type: Mapped[str] = mapped_column(String(16), default="alias")   # alias | regex
+    pattern: Mapped[str] = mapped_column(String(512))
+    replacement: Mapped[str] = mapped_column(String(512))
+    priority: Mapped[int] = mapped_column(Integer, default=0)            # 越小越先执行
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    note: Mapped[str] = mapped_column(String(256), default="")
+    created_at: Mapped[str] = mapped_column(String(32), default=lambda: datetime.now().isoformat(timespec="seconds"))
+    updated_at: Mapped[str] = mapped_column(String(32), default=lambda: datetime.now().isoformat(timespec="seconds"))
+
+    project: Mapped[Project] = relationship(back_populates="pronunciation_rules")
 
 
 # =====================================================================
