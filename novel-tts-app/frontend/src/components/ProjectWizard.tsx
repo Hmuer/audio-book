@@ -1,10 +1,202 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, ProjectDetailResp } from '@/lib/api';
+import { api, PrepareProgress, ProjectDetailResp } from '@/lib/api';
 
 // 4 步向导
 type WizardStep = 1 | 2 | 3 | 4;
+
+// ---------- Step 3: 识别中进度面板 ----------
+
+// 7 个识别阶段的顺序 + 中文名 + emoji
+const PREPARE_STAGES: Array<{ key: string; label: string; icon: string }> = [
+  { key: 'start',       label: '启动',       icon: '🚀' },
+  { key: 'split',       label: '章节切分',   icon: '📖' },
+  { key: 'characters',  label: '角色识别',   icon: '🧑' },
+  { key: 'dedup',       label: '角色去重',   icon: '🔗' },
+  { key: 'dialogues',   label: '对白归属',   icon: '💬' },
+  { key: 'voice_recs',  label: '音色推荐',   icon: '🎙️' },
+  { key: 'done',        label: '完成',       icon: '✅' },
+];
+
+/** 根据 stage + 子进度算 0~100 的综合百分比。 */
+function computeOverallPercent(prog: PrepareProgress | null | undefined): number {
+  if (!prog || !prog.stage) return 5;
+  const idx = PREPARE_STAGES.findIndex(s => s.key === prog.stage);
+  if (idx < 0) return 5;
+  // 每个阶段权重：start=0, split=5, characters=20, dedup=5, dialogues=25, voice_recs=15, done=30
+  const weights: Record<string, number> = {
+    start: 5, split: 10, characters: 25, dedup: 5,
+    dialogues: 25, voice_recs: 15, done: 15,
+  };
+  // 已完成阶段权重之和
+  let done = 0;
+  for (let i = 0; i < idx; i++) done += weights[PREPARE_STAGES[i].key] ?? 0;
+  // 当前阶段内部进度
+  let sub = 0;
+  switch (prog.stage) {
+    case 'characters':
+      if (prog.char_slice_total && prog.char_slice_completed_n != null)
+        sub = prog.char_slice_completed_n / prog.char_slice_total;
+      break;
+    case 'dialogues':
+      if (prog.dialogue_completed_batches_count != null && prog.dialogue_total_batches)
+        sub = prog.dialogue_completed_batches_count / prog.dialogue_total_batches;
+      else if (prog.dialogue_completed_chapters_count != null && prog.dialogue_total_chapters)
+        sub = prog.dialogue_completed_chapters_count / prog.dialogue_total_chapters;
+      break;
+    case 'voice_recs':
+      if (prog.voice_recs_done) sub = 1;
+      else sub = 0.3; // 正在进行但无细粒度进度，给个中间值
+      break;
+    case 'done':
+      sub = 1; break;
+  }
+  const totalWeight = PREPARE_STAGES.reduce((s, st) => s + (weights[st.key] ?? 0), 0);
+  return Math.min(99, Math.round((done + sub * (weights[prog.stage] ?? 10)) / totalWeight * 100));
+}
+
+function Step3ProgressPanel({ detail, prepareMsg }: { detail: ProjectDetailResp | null; prepareMsg: string }) {
+  const prog = detail?.prepare_progress ?? null;
+  const currentStage = prog?.stage ?? 'start';
+  const overallPct = computeOverallPercent(prog);
+  const currentIdx = PREPARE_STAGES.findIndex(s => s.key === currentStage);
+
+  return (
+    <div className="glass-panel p-5 sm:p-6 space-y-5 relative overflow-hidden">
+      {/* 背景光晕 */}
+      <div className="glow-orb w-72 h-72 bg-brand-500/15" style={{ top: '-60px', right: '-40px' }} />
+      <div className="glow-orb w-48 h-48 bg-accent-lime/10" style={{ bottom: '-40px', left: '-30px' }} />
+
+      {/* 顶部标题 */}
+      <div className="relative flex items-center gap-3">
+        <div className="w-10 h-10 grid place-items-center rounded-xl shadow-brand shrink-0"
+          style={{
+            backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+          }}
+        >
+          <span className="inline-block w-5 h-5 border-[2.5px] border-white/30 border-t-white rounded-full animate-spin" />
+        </div>
+        <div className="min-w-0">
+          <div className="text-base font-semibold text-ink-800 truncate">{prepareMsg}</div>
+          <div className="text-xs text-ink-500 mt-0.5">
+            首次处理整本小说可能需要 1-10 分钟 · 请勿关闭页面
+          </div>
+        </div>
+        <div className="ml-auto shrink-0 text-right">
+          <div className="text-2xl font-bold font-display tabular-nums text-brand-500">{overallPct}%</div>
+        </div>
+      </div>
+
+      {/* 整体进度条 */}
+      <div className="relative">
+        <div className="progress-track h-2">
+          <div className="progress-fill animate-shimmer" style={{ width: `${overallPct}%` }} />
+        </div>
+      </div>
+
+      {/* 分阶段时间线 */}
+      <div className="relative pt-2">
+        <div className="grid grid-cols-7 gap-1 sm:gap-2">
+          {PREPARE_STAGES.map((s, i) => {
+            const isDone = i < currentIdx;
+            const isActive = i === currentIdx;
+            const isPending = i > currentIdx;
+            return (
+              <div key={s.key} className="flex flex-col items-center gap-1.5">
+                {/* 图标圈 */}
+                <div className={[
+                  'w-9 h-9 rounded-xl grid place-items-center text-sm transition-all duration-300 relative',
+                  isDone    ? 'bg-accent-lime/20 text-accent-lime shadow-[0_0_20px_-5px_rgba(198,244,74,0.6)]' :
+                  isActive  ? 'shadow-brand text-white' :
+                              'bg-white/[0.04] text-ink-500',
+                ].join(' ')} style={
+                  isActive ? {
+                    backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+                  } : {}
+                }>
+                  {isDone ? (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                  ) : isActive ? (
+                    <span className="inline-block w-4 h-4 border-[2.5px] border-white/40 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <span className="text-[11px] opacity-50">{s.icon}</span>
+                  )}
+                </div>
+                {/* 阶段名 */}
+                <span className={[
+                  'text-[10px] sm:text-xs font-medium leading-tight text-center transition-colors',
+                  isActive ? 'text-ink-800' : isDone ? 'text-ink-600' : 'text-ink-400',
+                ].join(' ')}>{s.label}</span>
+              </div>
+            );
+          })}
+        </div>
+        {/* 阶段间连接线 */}
+        <div className="absolute top-[18px] left-[calc(100%/14)] right-[calc(100%/14)] h-[2px] bg-white/[0.06] -z-0" />
+        <div
+          className="absolute top-[18px] left-[calc(100%/14)] h-[2px] bg-accent-lime transition-all duration-500 -z-0"
+          style={{ width: `${Math.max(0, currentIdx) * (100 / 7)}%` }}
+        />
+      </div>
+
+      {/* 当前阶段的详细子进度（小卡片） */}
+      {prog && (
+        <Step3SubProgress prog={prog} />
+      )}
+    </div>
+  );
+}
+
+/** 当前阶段内部的精细进度展示。 */
+function Step3SubProgress({ prog }: { prog: PrepareProgress }) {
+  const [label, subPct, extraLine] = (() => {
+    switch (prog.stage) {
+      case 'characters': {
+        const total = prog.char_slice_total ?? 0;
+        const done = prog.char_slice_completed_n ?? 0;
+        const pct = total ? Math.round(done / total * 100) : 0;
+        return [`角色识别：切片 ${done}/${total}`, pct, prog.char_failed_slices_n ? `⚠ ${prog.char_failed_slices_n} 个切片失败` : null];
+      }
+      case 'dedup':
+        return ['角色去重中…', 50, null];
+      case 'dialogues': {
+        if (prog.dialogue_total_batches) {
+          const done = prog.dialogue_completed_batches_count ?? 0;
+          const pct = Math.round(done / prog.dialogue_total_batches * 100);
+          return [`对白归属：批次 ${done}/${prog.dialogue_total_batches}`, pct, prog.dialogue_total_dialogues ? `已归属 ${prog.dialogue_total_dialogues} 条对白` : null];
+        }
+        const total = prog.dialogue_total_chapters ?? 0;
+        const doneCh = prog.dialogue_completed_chapters_count ?? 0;
+        const pct = total ? Math.round(doneCh / total * 100) : 0;
+        return [`对白归属：章节 ${doneCh}/${total}`, pct, null];
+      }
+      case 'voice_recs':
+        return [prog.voice_recs_done ? '音色推荐完成' : '音色推荐中…', prog.voice_recs_done ? 100 : 30, null];
+      case 'split':
+        return ['章节切分中…', 30, null];
+      case 'start':
+        return ['启动识别任务…', 10, null];
+      default:
+        return ['处理中…', 0, null];
+    }
+  })();
+
+  return (
+    <div className="relative rounded-2xl p-4 border border-white/[0.06] bg-white/[0.025]">
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <span className="text-sm font-medium text-ink-800">{label}</span>
+        <span className="text-xs tabular-nums text-ink-500 shrink-0">{subPct}%</span>
+      </div>
+      <div className="progress-track h-1.5">
+        <div className="progress-fill" style={{ width: `${subPct}%` }} />
+      </div>
+      {extraLine && (
+        <div className="mt-2 text-[11px] text-ink-500">{extraLine}</div>
+      )}
+    </div>
+  );
+}
 
 const STEP_LABELS = ['填写项目名', '导入小说', '识别中', '完成'];
 
@@ -449,30 +641,9 @@ export default function ProjectWizard() {
         </div>
       )}
 
-      {/* ============ Step 3: 识别中 ============ */}
+      {/* ============ Step 3: 识别中 — 分阶段可视化 ============ */}
       {step === 3 && (
-        <div className="glass-panel text-center py-14 sm:py-16 space-y-5 relative overflow-hidden">
-          <div className="glow-orb w-64 h-64 bg-brand-500/20" style={{ top: '-40px', left: '50%', transform: 'translateX(-50%)' }} />
-          <div className="relative mx-auto w-16 h-16 grid place-items-center">
-            <span className="absolute inset-0 rounded-full animate-ping bg-brand-500/25" style={{ animationDuration: '2.2s' }} />
-            <div className="relative w-14 h-14 grid place-items-center rounded-full shadow-brand"
-              style={{
-                backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
-              }}
-            >
-              <span className="inline-block w-6 h-6 border-[3px] border-white/40 border-t-white rounded-full animate-spin" />
-            </div>
-          </div>
-          <div className="relative text-lg sm:text-xl font-semibold text-ink-800">{prepareMsg}</div>
-          <div className="relative text-sm text-ink-500 max-w-md mx-auto">
-            首次处理整本小说可能需要 1-10 分钟（取决于字数和章节数）<br />
-            请勿关闭页面
-          </div>
-          {/* 进度骨架条 */}
-          <div className="relative max-w-sm mx-auto mt-3">
-            <div className="progress-track"><div className="progress-fill animate-shimmer" style={{ width: '60%' }} /></div>
-          </div>
-        </div>
+        <Step3ProgressPanel detail={detail} prepareMsg={prepareMsg} />
       )}
 
       {/* ============ Step 4: 完成 ============ */}
