@@ -59,6 +59,7 @@ from ..services.build import (
     BuildListItem,
     BuildStatusResp,
 )
+from ..services.book_split import strip_chapter_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -785,7 +786,8 @@ async def api_build_chapter_download(
     fpath = audio_dir / audio_filename
     if not fpath.is_file():
         raise HTTPException(404, f"章节 {idx} 音频文件不存在")
-    fname = f"第{idx+1:03d}章 {art_title or '章节'}.mp3"
+    clean_title = strip_chapter_prefix(art_title or '')
+    fname = f"第{idx+1:03d}章 {clean_title or '章节'}.mp3"
     for ch in '\\/:*?"<>|\r\n\t':
         fname = fname.replace(ch, "_")
     ascii_name = urllib.parse.quote(fname.encode("utf-8"), safe="")

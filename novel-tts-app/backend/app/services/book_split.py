@@ -28,6 +28,31 @@ class ChapterSplitError(RuntimeError):
     """章节切分失败：用户可通过补 CHAPTER_SPLIT_PATTERNS 解决。"""
 
 
+# 章节编号前缀正则：用于从标题中去掉 "第X章"/"Chapter X" 等编号前缀，只保留标题正文
+_CHAPTER_PREFIX_RE = re.compile(
+    r'^\s*第\s*[零〇一二三四五六七八九十百千0-9]+\s*'
+    r'(?:章|回|节|卷|篇|部)\s*[:：、\.]*\s*'
+    r'|^\s*(?:Ep|Episode|Vol|Volume|Ch|Chapter)\s*[\.\-:：]?\s*'
+    r'[0-9IVXLCDM]+[\.\t \-:：]*'
+    r'|^\s*Chapter\s+[0-9IVXLCDM]+[\.\t \-:：]*',
+    re.IGNORECASE,
+)
+
+
+def strip_chapter_prefix(title: str) -> str:
+    """去掉章节标题中的 '第X章'/'Chapter X' 等编号前缀，只保留标题正文。
+
+    例: "第六章 神秘峡谷" → "神秘峡谷"
+        "第6章 深海" → "深海"
+        "Chapter 1 The Beginning" → "The Beginning"
+        "序章" → "序章"（不匹配，原样返回）
+    """
+    if not title:
+        return title
+    stripped = _CHAPTER_PREFIX_RE.sub('', title).strip()
+    return stripped or title
+
+
 # 中文数字 → 阿拉伯，用于章节序号归一化（仅前 99）
 _CN_NUM_MAP = {
     "零": 0, "〇": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,

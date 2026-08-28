@@ -45,6 +45,7 @@ from ..ai.providers.minimax.tts import (
     _estimate_mp3_duration_ms,
 )
 from .chapter import Chapter, _Segment, _build_segments_for_chapter
+from .book_split import strip_chapter_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +80,8 @@ def _build_book_zip(
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
         for i, (path, _dur) in enumerate(chapter_outputs):
             raw_title = chapter_titles[i] if i < len(chapter_titles) else ""
-            clean_title = _sanitize_zip_entry(raw_title, f"章节{i+1}")
-            base = f"{i+1:03d}_{clean_title}"
+            clean_title = _sanitize_zip_entry(strip_chapter_prefix(raw_title), f"章节{i+1}")
+            base = f"第{i+1:03d}章_{clean_title}"
             entry_name = f"{book_dir}/{base}.mp3"
             if path and os.path.isfile(path):
                 zf.write(path, arcname=entry_name)
