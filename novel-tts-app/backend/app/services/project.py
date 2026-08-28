@@ -304,13 +304,10 @@ async def import_file(project_id: str, file_content: bytes, filename: str) -> Pr
         logger.info(f"[project_import] 检测到 EPUB，开始解析 project_id={project_id[:8]}...")
         try:
             book = _read_epub(file_content)
-            chapter_lines = []
-            for i, ch in enumerate(book.chapters):
-                chapter_lines.append(f"第{i+1}章 {ch.title or ''}")
-                chapter_lines.append("")
-                chapter_lines.append(ch.text)
-                chapter_lines.append("")
-            txt_content = "\n".join(chapter_lines)
+            # 直接拼章节文本，章节间用两个空行分隔。
+            # bs4 提取 EPUB 时已把 h1 标题（如「第一章 下山」）保留在每章开头，
+            # split_book_chapters 的 ^第.+章 正则能完美识别。
+            txt_content = "\n\n\n".join(ch.text for ch in book.chapters)
             file_content = txt_content.encode("utf-8")
             saved_path_ext = ".txt"
             book_title_hint = book.title or book_title_hint
