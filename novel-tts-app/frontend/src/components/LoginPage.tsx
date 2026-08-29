@@ -252,7 +252,7 @@ export default function LoginPage() {
                     autoFocus
                     autoComplete="username"
                     disabled={busy}
-                    placeholder="admin"
+                    placeholder=""
                     className="input !pl-11"
                   />
                 </div>
@@ -276,7 +276,7 @@ export default function LoginPage() {
                     onChange={e => setPassword(e.target.value)}
                     autoComplete="current-password"
                     disabled={busy}
-                    placeholder="********"
+                    placeholder=""
                     className="input !pl-11 !pr-11"
                   />
                   <button
@@ -336,18 +336,8 @@ export default function LoginPage() {
               </button>
             </form>
 
-            {/* 默认账号提示 */}
-            <div className="mt-6 pt-5 border-t border-white/[0.05]">
-              <div className="text-center text-xs text-ink-600 space-y-2">
-                <div className="flex items-center justify-center gap-2">
-                  <span>默认账号</span>
-                  <code className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/[0.06] text-ink-700 font-mono text-[11px]">admin</code>
-                  <span className="text-ink-500">/</span>
-                  <code className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/[0.06] text-ink-700 font-mono text-[11px]">admin</code>
-                </div>
-                <div className="text-ink-500/70">登录后请尽快修改密码</div>
-              </div>
-            </div>
+            {/* 占位分隔：保持卡片视觉节奏 */}
+            <div className="mt-6 pt-5 border-t border-white/[0.05]" />
           </div>
 
           {/* 底部品牌语 */}
