@@ -240,6 +240,48 @@ html.light body {
     background-image: linear-gradient(90deg, #8b5cf6 0%, #6366f1 60%, #2dd4bf 100%);
   }
 
+  /* ------ 音量滑条（WaveformPlayer 用）：去除原生轨道/thumb，仅用背景渐变填充 ------ */
+  .volume-slider {
+    @apply appearance-none rounded-full cursor-pointer outline-none;
+  }
+  .volume-slider::-webkit-slider-runnable-track {
+    @apply rounded-full border-0;
+    background: transparent;
+    height: 6px;
+  }
+  .volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 9999px;
+    background: #ffffff;
+    margin-top: -2px;
+    border: 0;
+    box-shadow: 0 0 0 3px rgba(139,92,246,0.25), 0 1px 3px rgba(0,0,0,0.4);
+    cursor: pointer;
+    transition: transform 0.15s ease;
+  }
+  .volume-slider:hover::-webkit-slider-thumb {
+    transform: scale(1.15);
+  }
+  .volume-slider::-moz-range-track {
+    background: transparent;
+    height: 6px;
+    border-radius: 9999px;
+    border: 0;
+  }
+  .volume-slider::-moz-range-thumb {
+    width: 10px;
+    height: 10px;
+    border-radius: 9999px;
+    background: #ffffff;
+    border: 0;
+    box-shadow: 0 0 0 3px rgba(139,92,246,0.25), 0 1px 3px rgba(0,0,0,0.4);
+    cursor: pointer;
+  }
+  .volume-slider:focus { outline: none; }
+
   /* ------ 步骤条（Wizard 用） ------ */
   .step-dot {
     @apply grid place-items-center w-8 h-8 rounded-full text-xs font-semibold;
