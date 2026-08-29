@@ -307,10 +307,6 @@ export default function ProjectListPage() {
   };
 
   const loading = items === null;
-  const hasRunning = useMemo(
-    () => !!items && items.some(p => p.status === 'preparing' || p.status === 'synthesizing'),
-    [items],
-  );
 
   return (
     <section className="space-y-5 p-6">
@@ -322,7 +318,6 @@ export default function ProjectListPage() {
           </h2>
           <p className="mt-1 text-sm text-white/50">
             管理你的有声书项目
-            {hasRunning ? <> · <span className="text-amber-300">后台任务进行中</span></> : null}
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -344,8 +339,6 @@ export default function ProjectListPage() {
           }}
         >{err}</div>
       )}
-
-      {!loading && items && <RunningTasksBar items={items} />}
 
       {/* 加载中 */}
       {loading && (

@@ -64,11 +64,9 @@ const SETTINGS_ITEM: MenuItem = {
 interface Props {
   /** 当前 hash 路径（不含 # 前缀），用来高亮 */
   currentPath: string;
-  /** 运行中项目数，可选 */
-  runningCount?: number;
 }
 
-export default function AppSidebar({ currentPath, runningCount = 0 }: Props) {
+export default function AppSidebar({ currentPath }: Props) {
   const { user, logout } = useAuth();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [pwdModal, setPwdModal] = useState(false);
@@ -133,11 +131,6 @@ export default function AppSidebar({ currentPath, runningCount = 0 }: Props) {
                 >
                   <span className="text-[15px]">{m.icon}</span>
                   <span className="flex-1">{m.label}</span>
-                  {runningCount > 0 && m.key === 'audiobooks' && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-brand-500/25 text-brand-200">
-                      {runningCount}
-                    </span>
-                  )}
                 </a>
 
                 {/* 二级 */}

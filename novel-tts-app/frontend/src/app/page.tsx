@@ -1,14 +1,14 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTheme } from '@/components/ThemeContext';
 import { useAuth } from '@/components/AuthContext';
 import AppSidebar from '@/components/AppSidebar';
-import ProjectListPage, { RunningTasksBar } from '@/components/ProjectListPage';
+import ProjectListPage from '@/components/ProjectListPage';
 import ProjectDetailPage from '@/components/ProjectDetailPage';
 import SettingsPage from '@/components/SettingsPage';
 import LoginPage from '@/components/LoginPage';
-import { api, ProjectListItem, Voice } from '@/lib/api';
+import { api, Voice } from '@/lib/api';
 
 // ---- 新路由结构 ----
 type Route =
@@ -62,10 +62,6 @@ export default function HomePage() {
   const [routeInfo, setRouteInfo] = useState(() => parseHash());
   const [voices, setVoices] = useState<Voice[]>([]);
 
-  // 全局项目快照（侧栏 badge + 详情页进度条）
-  const [globalProjects, setGlobalProjects] = useState<ProjectListItem[] | null>(null);
-  const globalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
   // hash 监听
   useEffect(() => {
     const sync = () => setRouteInfo(parseHash());
@@ -90,21 +86,6 @@ export default function HomePage() {
     api.voices().then(setVoices).catch(e => console.error('voices 加载失败:', e));
   }, [user]);
 
-  // 全局项目轮询（5s）
-  useEffect(() => {
-    if (!user) { setGlobalProjects(null); return; }
-    let alive = true;
-    const tick = async () => {
-      try {
-        const list = await api.projectList();
-        if (alive) setGlobalProjects(list);
-      } catch {}
-    };
-    tick();
-    globalPollRef.current = setInterval(tick, 5000);
-    return () => { alive = false; if (globalPollRef.current) clearInterval(globalPollRef.current); };
-  }, [user]);
-
   if (authLoading) {
     return (
       <div className="min-h-[60vh] grid place-items-center text-white/40">
@@ -118,20 +99,12 @@ export default function HomePage() {
 
   if (!user) return <LoginPage />;
 
-  // ---- 计算运行中项目数（侧栏 badge 用）----
-  const runningCount = (globalProjects ?? []).filter(
-    p => ['importing', 'preparing', 'building'].includes(p.status)
-  ).length;
-
-  // ---- 运行中任务条（详情页显示）----
-  const runningItems = routeInfo.route.name === 'ab-detail' ? (globalProjects ?? []) : [];
-
   const R = routeInfo.route;
 
   return (
     <div className="flex min-h-screen">
       {/* 左侧全局侧栏 */}
-      <AppSidebar currentPath={routeInfo.path} runningCount={runningCount} />
+      <AppSidebar currentPath={routeInfo.path} />
 
       {/* 右侧主内容 */}
       <div className="flex-1 min-w-0 flex flex-col">
@@ -148,9 +121,6 @@ export default function HomePage() {
             {theme === 'dark' ? '🌙 深色' : '☀️ 浅色'}
           </button>
         </header>
-
-        {/* 运行中任务条（详情页顶部） */}
-        {runningItems.length > 0 && <RunningTasksBar items={runningItems} />}
 
         {/* 主内容 */}
         <main className="flex-1 min-w-0">
