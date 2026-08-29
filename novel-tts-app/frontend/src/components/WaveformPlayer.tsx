@@ -43,7 +43,14 @@ export default function WaveformPlayer({
   // 进度条拖动
   const [dragging, setDragging] = useState(false);
   const dragPercentRef = useRef<number | null>(null);
+  const durationRef = useRef(0);              // 避免 useCallback 闭包陈旧
+  const wasPlayingBeforeDragRef = useRef(false);
   const trackRef = useRef<HTMLDivElement | null>(null);
+
+  // 同步 durationRef（seek 时只读 ref，避免依赖 state 造成陈旧闭包）
+  useEffect(() => {
+    durationRef.current = duration;
+  }, [duration]);
 
   // 进入可视区才加载 audio DOM（性能 + 可支持 autoPlay）
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -103,13 +110,25 @@ export default function WaveformPlayer({
     }
   }, [inView, autoPlay, isPlaying, src]);
 
-  // seek：把百分比转为实际位置
+  // seek：把百分比转为实际位置。注意：必须直接从 audioRef.duration / durationRef 读取，
+  // 避免 useCallback(duration) 陈旧闭包，否则 pointer 事件捕获的 duration=0 会让 seek 被 early return。
   const seekByPercent = useCallback((pct: number) => {
-    if (!audioRef.current || duration <= 0) return;
+    const audio = audioRef.current;
+    if (!audio) return;
+    const dur = Number.isFinite(audio.duration) && audio.duration > 0
+      ? audio.duration
+      : durationRef.current;
+    if (!dur || dur <= 0) return;
     const clamped = Math.max(0, Math.min(1, pct));
-    audioRef.current.currentTime = clamped * duration;
-    setCurrentTime(clamped * duration);
-  }, [duration]);
+    const target = clamped * dur;
+    try {
+      audio.currentTime = target;
+    } catch (err) {
+      // 某些浏览器在元数据未加载完写 currentTime 会抛错（DOM Exception），吞掉不影响体验
+      console.warn('[WaveformPlayer] seek 失败', err);
+    }
+    setCurrentTime(target);
+  }, []);
 
   // 进度条拖动处理
   const computePercentFromClientX = useCallback((clientX: number): number => {
@@ -126,8 +145,15 @@ export default function WaveformPlayer({
     (e.target as Element).setPointerCapture?.(e.pointerId);
     const pct = computePercentFromClientX(e.clientX);
     dragPercentRef.current = pct;
+    wasPlayingBeforeDragRef.current = !!audioRef.current && !audioRef.current.paused;
     setDragging(true);
-    seekByPercent(pct);
+    // 按下时先更新 UI 预览；是否 seek 立即执行交给 seekByPercent（内部已经能正确处理 duration 未知场景）
+    // 但这里不 seek，按下只是进入拖动态；短按（未移动）的 seek 交给 pointerUp 统一提交，
+    // 这样可以避免"在 duration 还是 0 时 seek"造成的错觉。
+    const dur = durationRef.current || (audioRef.current?.duration as number);
+    if (Number.isFinite(dur) && dur > 0) {
+      setCurrentTime(pct * dur);
+    }
   };
 
   const onTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -135,7 +161,10 @@ export default function WaveformPlayer({
     const pct = computePercentFromClientX(e.clientX);
     dragPercentRef.current = pct;
     // 拖动过程里，只更新显示位置（避免反复 seek 卡顿）
-    setCurrentTime(pct * duration);
+    const dur = durationRef.current || (audioRef.current?.duration as number);
+    if (Number.isFinite(dur) && dur > 0) {
+      setCurrentTime(pct * dur);
+    }
   };
 
   const onTrackPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -144,6 +173,7 @@ export default function WaveformPlayer({
     const pct = dragPercentRef.current ?? computePercentFromClientX(e.clientX);
     dragPercentRef.current = null;
     setDragging(false);
+    // 真正的 seek 只在释放时提交一次
     seekByPercent(pct);
   };
 
