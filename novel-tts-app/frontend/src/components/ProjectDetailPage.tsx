@@ -440,46 +440,6 @@ function OverviewTab({
     if (f) handleUpload(f);
   };
 
-  function StageProgressBar(props: { label: string; done: number; total: number; failed?: number }) {
-    const { label, done, total, failed = 0 } = props;
-    if (total == null || total <= 0) {
-      return (
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between text-xs text-ink-500">
-            <span>{label}</span>
-            <span>等待中…</span>
-          </div>
-          <div className="progress-track" />
-        </div>
-      );
-    }
-    const donePct = Math.min(100, Math.round((done / total) * 100));
-    const failedPct = Math.min(100 - donePct, Math.round((failed / total) * 100));
-    return (
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between text-xs text-ink-500 flex-wrap gap-2">
-          <span>{label}</span>
-          <span className="tabular-nums">
-            {done}/{total}
-            {failed > 0 && <span className="text-red-400 ml-2">失败 {failed}</span>}
-          </span>
-        </div>
-        <div className="progress-track flex">
-          <div
-            className="h-full rounded-full"
-            style={{
-              width: `${donePct}%`,
-              backgroundImage: 'linear-gradient(90deg, #8b5cf6 0%, #6366f1 60%, #2dd4bf 100%)',
-            }}
-          />
-          {failed > 0 && (
-            <div className="bg-red-500 h-full rounded-full" style={{ width: `${failedPct}%` }} />
-          )}
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-4">
       {prepareTip && (
@@ -567,24 +527,18 @@ function OverviewTab({
         </div>
       )}
 
-      {/* ===== 识别中：7阶段时间线 + 进度条 ===== */}
+      {/* ===== 识别中：7阶段时间线 ===== */}
       {isPreparing && (
         <div className="glass-panel space-y-4 relative overflow-hidden">
           <div className="glow-orb w-48 h-48 bg-brand-500/10" style={{ top: '-30px', right: '-20px' }} />
           <div className="flex items-center justify-between gap-3 flex-wrap relative">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-10 h-10 rounded-md grid place-items-center shrink-0 shadow-brand"
-                style={{ backgroundImage: 'linear-gradient(135deg, #8b5cf6, #7c3aed)' }}>
-                <span className="w-4 h-4 border-[2.5px] border-white/40 border-t-white rounded-full animate-spin" />
-              </div>
-              <div className="min-w-0">
-                <div className="font-semibold text-ink-800 truncate">{stageLabel(prog?.stage)}</div>
-                {prog?.updated_at && (
-                  <div className="text-[11px] text-ink-500 tabular-nums mt-0.5">
-                    更新于 {relativeTime(prog.updated_at)}
-                  </div>
-                )}
-              </div>
+            <div className="min-w-0 flex-1">
+              <div className="font-semibold text-ink-800 truncate">{stageLabel(prog?.stage)}</div>
+              {prog?.updated_at && (
+                <div className="text-[11px] text-ink-500 tabular-nums mt-0.5">
+                  更新于 {relativeTime(prog.updated_at)}
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <button className="btn-ghost text-xs !py-1.5" onClick={() => onReload()}>刷新</button>
@@ -593,49 +547,8 @@ function OverviewTab({
           </div>
 
           {/* 7阶段时间线 */}
-          <PipelineTimeline prog={prog} />
-
-          <div className="space-y-3 relative">
-            {(prog?.char_slice_total != null) && (
-              <StageProgressBar
-                label="角色识别（切片）"
-                done={prog?.char_slice_completed_n ?? 0}
-                total={prog.char_slice_total}
-                failed={failedCharSlicesN}
-              />
-            )}
-            {prog?.dedup_done && (
-              <div className="text-xs text-ink-500 flex items-center gap-2">
-                <span className="inline-flex w-4 h-4 rounded-full bg-accent-lime/20 text-accent-lime items-center justify-center text-[10px]">✓</span>
-                角色去重完成
-              </div>
-            )}
-            {(prog?.dialogue_total_chapters != null || prog?.dialogue_total_batches != null) && (
-              <StageProgressBar
-                label={
-                  prog?.dialogue_total_batches != null
-                    ? `对白归属（${prog.dialogue_total_batches} 批）`
-                    : '对白归属（章节）'
-                }
-                done={
-                  prog?.dialogue_total_batches != null
-                    ? (prog?.dialogue_completed_batches_count ?? 0)
-                    : (prog?.dialogue_completed_chapters_count ?? 0)
-                }
-                total={
-                  prog?.dialogue_total_batches != null
-                    ? prog.dialogue_total_batches
-                    : (prog?.dialogue_total_chapters ?? 0)
-                }
-                failed={failedDialogueBatchesN}
-              />
-            )}
-            {prog?.voice_recs_done && (
-              <div className="text-xs text-ink-500 flex items-center gap-2">
-                <span className="inline-flex w-4 h-4 rounded-full bg-accent-lime/20 text-accent-lime items-center justify-center text-[10px]">✓</span>
-                音色推荐完成
-              </div>
-            )}
+          <div className="relative">
+            <PipelineTimeline prog={prog} />
           </div>
 
           {hasPartialFailures && !hasPrepareError && (
@@ -733,7 +646,7 @@ function OverviewTab({
             onGotoBuilds={() => onTab('builds')}
           />
         ) : (
-          <div className="text-sm text-ink-500 py-3">
+          <div className="text-sm text-ink-500">
             还没有构建记录，到「构建」Tab 启动第一次生成。
           </div>
         )}
