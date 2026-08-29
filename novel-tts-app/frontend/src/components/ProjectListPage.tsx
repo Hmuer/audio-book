@@ -310,10 +310,10 @@ export default function ProjectListPage() {
       {/* ===== 顶部操作栏 ===== */}
       <div className="flex items-end justify-between gap-4 flex-wrap animate-fade-in">
         <div className="min-w-0">
-          <div className="eyebrow mb-2">workspace · audiobooks</div>
+          <div className="eyebrow mb-2">AUDIOBOOKS · 模块 01</div>
           <h2 className="headline-lg text-[26px] sm:text-[28px]">我的有声书</h2>
           <p className="mt-1.5 text-sm text-white/50">
-            管理你的有声书项目
+            上传小说 · AI 识别角色 · 一键合成有声书
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">

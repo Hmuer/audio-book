@@ -69,20 +69,19 @@ module.exports = {
           'Microsoft YaHei',
           'sans-serif',
         ],
-        // 大标题/杂志衬线：Fraunces（英文）+ Noto Serif SC（中文）
+        // Display/大标题：Sora — 几何锐度、强张力、AI引擎感
         display: [
-          'Fraunces',
-          'Noto Serif SC',
+          'Sora',
+          'Geist',
           'PingFang SC',
-          'ui-serif',
-          'serif',
+          'ui-sans-serif',
+          'sans-serif',
         ],
         serif: [
-          'Fraunces',
-          'Noto Serif SC',
-          'ui-serif',
-          'Georgia',
-          'serif',
+          'Sora',
+          'PingFang SC',
+          'ui-sans-serif',
+          'sans-serif',
         ],
         mono: [
           'Geist Mono',

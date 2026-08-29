@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,600&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&family=Noto+Serif+SC:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap');
 
 /* ============ 主题颜色 Tokens ============
  * 所有 CSS 颜色用 RGB 三通道变量，Tailwind 通过 rgb(var(--x) / <alpha-value>) 自动组合 opacity。
@@ -184,35 +184,64 @@ html {
 
 body {
   @apply bg-ink-50 text-ink-700 antialiased;
+  /* AI 引擎 glow mesh：紫→青→柠，三团发光，品牌链表达 AI 生成语义 */
   background-image:
-    radial-gradient(1400px 800px at 0% -10%, rgba(139,92,246,0.14), transparent 55%),
-    radial-gradient(1000px 600px at 100% 0%, rgba(45,212,191,0.06), transparent 60%),
-    radial-gradient(1200px 700px at 50% 120%, rgba(198,244,74,0.04), transparent 60%);
+    radial-gradient(1100px 700px at -10% -10%, rgba(139,92,246,0.20), transparent 55%),
+    radial-gradient(900px 650px at 110% 10%,  rgba(45,212,191,0.14), transparent 55%),
+    radial-gradient(1000px 700px at 50%  115%, rgba(198,244,74,0.10), transparent 58%);
   background-attachment: fixed;
   min-height: 100vh;
-  letter-spacing: 0.01em;
+  letter-spacing: -0.002em;
   position: relative;
+  overflow-x: hidden;
 }
-/* 颗粒噪声层（给整站增加胶片/杂志质感，非常 subtle） */
+/* Glow mesh 呼吸动画（背景三团光缓慢移动，表达 AI 持续生成感） */
+body::after {
+  content: '';
+  position: fixed;
+  inset: -20%;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    radial-gradient(520px 520px at 15% 20%,   rgba(139,92,246,0.18), transparent 70%),
+    radial-gradient(480px 480px at 85% 30%,   rgba(45,212,191,0.12), transparent 70%),
+    radial-gradient(600px 600px at 50% 100%,  rgba(198,244,74,0.08), transparent 70%);
+  filter: blur(60px);
+  animation: mesh-drift 24s ease-in-out infinite alternate;
+  opacity: 0.9;
+}
+@keyframes mesh-drift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  50%  { transform: translate3d(-1.2%, 1.8%, 0) scale(1.05); }
+  100% { transform: translate3d(1.2%, -1.2%, 0) scale(1.02); }
+}
+/* 极低 alpha 的 grain，避免塑料感（不再是杂志颗粒，只是微深度） */
 body::before {
   content: '';
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 1;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.035 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
-  opacity: 0.85;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.022 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  opacity: 0.7;
   mix-blend-mode: overlay;
-}
-html.light body::before {
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.025 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
 }
 html.light body {
   background-image:
-    radial-gradient(1400px 800px at 0% -10%, rgba(139,92,246,0.08), transparent 55%),
-    radial-gradient(1000px 600px at 100% 0%, rgba(45,212,191,0.05), transparent 60%);
+    radial-gradient(1100px 700px at -10% -10%, rgba(139,92,246,0.12), transparent 55%),
+    radial-gradient(900px 650px at 110% 10%,  rgba(45,212,191,0.08), transparent 55%),
+    radial-gradient(1000px 700px at 50%  115%, rgba(198,244,74,0.07), transparent 58%);
 }
-/* body 内所有内容都在 noise 之上 */
+html.light body::after {
+  opacity: 0.55;
+  background-image:
+    radial-gradient(520px 520px at 15% 20%,   rgba(139,92,246,0.10), transparent 70%),
+    radial-gradient(480px 480px at 85% 30%,   rgba(45,212,191,0.08), transparent 70%),
+    radial-gradient(600px 600px at 50% 100%,  rgba(198,244,74,0.06), transparent 70%);
+}
+html.light body::before {
+  opacity: 0.4;
+}
 body > * { position: relative; z-index: 2; }
 
 /* ========== Design System ========== */
@@ -224,30 +253,69 @@ body > * { position: relative; z-index: 2; }
 
   .card {
     @apply relative rounded-lg p-5 sm:p-6 border border-ink-300/70 bg-ink-100/60 backdrop-blur-xl shadow-el;
-    transition: border-color 0.24s cubic-bezier(0.2, 0.8, 0.2, 1),
-                transform 0.24s cubic-bezier(0.2, 0.8, 0.2, 1),
+    transition: border-color 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
                 box-shadow 0.24s cubic-bezier(0.2, 0.8, 0.2, 1),
-                background-color 0.24s ease;
+                background-color 0.22s ease,
+                filter 0.24s ease;
+    isolation: isolate;
+  }
+  .card::before {
+    /* AI glow：hover 时品牌紫+青外溢发光层 */
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(135deg,
+      rgba(139,92,246,0) 0%,
+      rgba(139,92,246,0.35) 40%,
+      rgba(45,212,191,0.25) 100%);
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+            mask-composite: exclude;
+    opacity: 0;
+    transition: opacity 0.28s ease;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .card::after {
+    /* Glow 外溢（柔和径向） */
+    content: '';
+    position: absolute;
+    inset: -40%;
+    background:
+      radial-gradient(400px 180px at 20% 0%,  rgba(139,92,246,0.18), transparent 60%),
+      radial-gradient(320px 160px at 100% 50%, rgba(45,212,191,0.10), transparent 60%);
+    opacity: 0;
+    filter: blur(20px);
+    transition: opacity 0.28s ease;
+    pointer-events: none;
+    z-index: -1;
   }
   .card:hover {
-    @apply border-ink-400/90 shadow-el-lg;
-    transform: translateY(-2px);
+    @apply shadow-el-lg;
+    border-color: rgba(139,92,246,0.30);
   }
-  /* 卡片进入动画，加 stagger-index 做错位 */
+  .card:hover::before { opacity: 1; }
+  .card:hover::after  { opacity: 1; }
+  .card > * { position: relative; z-index: 1; }
+
+  /* 卡片进入动画（staggered rise） */
   .card.in-view {
     animation: card-rise 0.5s cubic-bezier(0.2, 0.9, 0.3, 1) both;
   }
   @keyframes card-rise {
-    from { opacity: 0; transform: translateY(12px); }
-    to   { opacity: 1; transform: translateY(0); }
+    from { opacity: 0; transform: translateY(12px); filter: blur(4px); }
+    to   { opacity: 1; transform: translateY(0);   filter: blur(0); }
   }
-  /* 子元素用 style="--i: 0..N" 产生错位 */
   .stagger-item {
     animation: stagger-rise 0.48s cubic-bezier(0.2, 0.9, 0.3, 1) both;
-    animation-delay: calc(var(--i, 0) * 60ms);
+    animation-delay: calc(var(--i, 0) * 50ms);
   }
   @keyframes stagger-rise {
-    from { opacity: 0; transform: translateY(10px); }
+    from { opacity: 0; transform: translateY(8px); }
     to   { opacity: 1; transform: translateY(0); }
   }
 
@@ -549,36 +617,30 @@ body > * { position: relative; z-index: 2; }
     border-radius: var(--radius-sm);
   }
 
-  /* ——— 排版系统：杂志编辑感 ——— */
+  /* ——— 排版系统：AI 引擎 · Sora 几何张力 ——— */
   .eyebrow {
-    @apply font-mono text-[10px] uppercase tracking-[0.32em] text-ink-500;
-    letter-spacing: 0.32em;
+    @apply font-mono text-[10px] uppercase text-ink-500;
+    letter-spacing: 0.2em;
   }
   .headline {
-    @apply font-display font-semibold tracking-tight text-ink-900;
+    @apply font-display font-semibold text-ink-900;
     letter-spacing: -0.022em;
-    font-optical-sizing: auto;
-    font-variation-settings: "opsz" 36;
+    line-height: 1.2;
   }
   .headline-lg {
     @apply font-display font-semibold text-ink-900;
-    letter-spacing: -0.032em;
-    line-height: 1.05;
-    font-optical-sizing: auto;
-    font-variation-settings: "opsz" 48;
+    letter-spacing: -0.028em;
+    line-height: 1.12;
   }
   .headline-hero {
     @apply font-display font-bold text-ink-900;
-    letter-spacing: -0.04em;
-    line-height: 1;
-    font-optical-sizing: auto;
-    font-variation-settings: "opsz" 72;
+    letter-spacing: -0.034em;
+    line-height: 1.02;
   }
   .subtle-quote {
-    @apply italic;
-    font-family: 'Fraunces', 'Noto Serif SC', serif;
-    font-variation-settings: "opsz" 24;
-    letter-spacing: -0.005em;
+    @apply text-ink-500;
+    font-family: 'Geist', 'PingFang SC', sans-serif;
+    letter-spacing: -0.003em;
   }
 
   .focus-ring {
