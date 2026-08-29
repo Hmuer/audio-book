@@ -220,9 +220,9 @@ export function RunningTasksBar({ items }: { items: ProjectListItem[] }) {
             <button
               className="btn-ghost !px-3 !py-1.5 text-xs"
               onClick={() => { window.location.hash = `#/audiobooks/${preparing[0].project_id}`; }}
-              title={preparing.map(p => p.book_title || p.name).join(' · ')}
+              title={preparing.map(p => p.name).join(' · ')}
             >
-              查看识别 · {(preparing[0].book_title || preparing[0].name).slice(0, 12)}
+              查看识别 · {preparing[0].name.slice(0, 12)}
               {preparing.length > 1 ? ` 等 ${preparing.length} 本` : ''}
             </button>
           )}
@@ -231,7 +231,7 @@ export function RunningTasksBar({ items }: { items: ProjectListItem[] }) {
               className="btn-ghost !px-3 !py-1.5 text-xs"
               onClick={() => { window.location.hash = `#/audiobooks/${synthesizing[0].project_id}`; }}
             >
-              查看合成 · {(synthesizing[0].book_title || synthesizing[0].name).slice(0, 12)}
+              查看合成 · {synthesizing[0].name.slice(0, 12)}
               {synthesizing.length > 1 ? ` 等 ${synthesizing.length} 本` : ''}
             </button>
           )}
@@ -247,9 +247,16 @@ export function RunningTasksBar({ items }: { items: ProjectListItem[] }) {
                 onClick={() => { window.location.hash = `#/audiobooks/${p.project_id}`; }}
                 className="text-left surface !p-3 hover:!border-ink-400 transition"
               >
-                <div className="flex items-center justify-between gap-2 mb-1.5">
-                  <div className="font-medium truncate text-sm text-ink-800">
-                    {p.book_title || p.name}
+                <div className="flex items-start justify-between gap-2 mb-1.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium truncate text-sm text-ink-800">
+                      {p.name}
+                    </div>
+                    {p.book_title && p.book_title !== p.name && (
+                      <div className="text-[11px] text-white/40 truncate mt-0.5">
+                        📚 {p.book_title}
+                      </div>
+                    )}
                   </div>
                   <StatusBadge status={p.status} />
                 </div>
@@ -416,8 +423,13 @@ export default function ProjectListPage() {
                         </div>
                         <div className="min-w-0">
                           <div className="font-medium text-white truncate">
-                            {p.book_title || p.name}
+                            {p.name}
                           </div>
+                          {p.book_title && p.book_title !== p.name && (
+                            <div className="text-[11px] text-white/40 truncate mt-0.5">
+                              📚 {p.book_title}
+                            </div>
+                          )}
                           {p.source_filename && (
                             <div className="text-[11px] text-white/40 truncate mt-0.5">
                               📄 {p.source_filename}

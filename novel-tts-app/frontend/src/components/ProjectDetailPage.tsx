@@ -220,14 +220,26 @@ export default function ProjectDetailPage({
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="headline text-xl sm:text-2xl truncate">
-                  {project!.book_title || project!.name}
+                  {project!.name}
                 </h2>
                 <StatusBadge status={project!.status} />
               </div>
               <div className="text-xs text-ink-500 mt-1 flex flex-wrap items-center gap-x-2">
-                <span>{project!.name}</span>
-                {project!.source_filename && <span> · {project!.source_filename}</span>}
-                {project!.chapter_count > 0 && <span> · {project!.chapter_count} 章</span>}
+                {project!.book_title && project!.book_title !== project!.name && (
+                  <span>{project!.book_title}</span>
+                )}
+                {project!.source_filename && (
+                  <span>
+                    {(project!.book_title && project!.book_title !== project!.name) ? ' · ' : ''}
+                    📄 {project!.source_filename}
+                  </span>
+                )}
+                {(!project!.book_title || project!.book_title === project!.name) && !project!.source_filename && project!.chapter_count > 0 && (
+                  <span>{project!.chapter_count} 章</span>
+                )}
+                {((project!.book_title && project!.book_title !== project!.name) || project!.source_filename) && project!.chapter_count > 0 && (
+                  <span> · {project!.chapter_count} 章</span>
+                )}
               </div>
             </div>
           </div>
@@ -706,7 +718,7 @@ function OverviewTab({
         <OverviewStat label="章节数" value={String(project.chapter_count)} icon="📜" color="#8b5cf6" />
         <OverviewStat label="角色数" value={String(project.characters.length)} icon="🧑" color="#ec4899" />
         <OverviewStat label="文件大小" value={formatSize(project.source_file_size)} icon="📄" color="#0ea5e9" />
-        <OverviewStat label="创建时间" value={new Date(project.created_at).toLocaleDateString('zh-CN')} icon="🗓" color="#c6f44a" />
+        <OverviewStat label="创建时间" value={project.created_at ? new Date(project.created_at).toLocaleDateString('zh-CN') : '—'} icon="🗓" color="#c6f44a" />
       </div>
 
       {(project.description || (project.tags && project.tags.length > 0)) && (
@@ -2178,7 +2190,7 @@ function SettingsTab({
         ) : (
           <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 space-y-3 relative">
             <div className="text-sm text-red-200">
-              确认要删除项目「{project.book_title || project.name}」吗？
+              确认要删除项目「{project.name}」吗？
             </div>
             <div className="flex gap-2">
               <button
