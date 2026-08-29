@@ -341,6 +341,59 @@ export default function ProjectDetailPage({
 }
 
 // =================== Overview Tab ===================
+const PIPELINE_STAGES = [
+  { key: 'start',       label: '初始化',    icon: '🔧' },
+  { key: 'split',       label: '切分章节',  icon: '📑' },
+  { key: 'characters',  label: '角色识别',  icon: '🧑' },
+  { key: 'dedup',       label: '角色去重',  icon: '🔀' },
+  { key: 'dialogues',   label: '对白归属',  icon: '💬' },
+  { key: 'voice_recs',  label: '音色推荐',  icon: '🎙️' },
+  { key: 'done',        label: '完成',      icon: '✅' },
+] as const;
+
+function stageLabel(s?: string): string {
+  const found = PIPELINE_STAGES.find(st => st.key === s);
+  if (found) return `${found.icon} ${found.label}`;
+  return s ? `运行中（${s}）` : '运行中';
+}
+
+function PipelineTimeline({ prog }: { prog: ProjectDetailResp['prepare_progress'] }) {
+  const currentIdx = prog?.stage
+    ? PIPELINE_STAGES.findIndex(s => s.key === prog.stage)
+    : -1;
+  return (
+    <div className="flex items-center gap-0 overflow-x-auto pb-1">
+      {PIPELINE_STAGES.map((st, i) => {
+        const isDone = currentIdx > i || (prog?.stage === 'done' && i === PIPELINE_STAGES.length - 1);
+        const isCurrent = currentIdx === i;
+        const isFailed = isCurrent && !!prog?.last_error;
+        return (
+          <div key={st.key} className="flex items-center shrink-0">
+            <div className="flex flex-col items-center gap-1.5 px-2">
+              <div
+                className={`w-8 h-8 rounded-full grid place-items-center text-sm transition-all ${
+                  isFailed ? 'bg-red-500/20 text-red-300 border border-red-500/40'
+                  : isDone ? 'bg-lime-500/20 text-lime-300 border border-lime-500/30'
+                  : isCurrent ? 'bg-brand-500/20 text-brand-300 border border-brand-500/40 animate-pulse-soft'
+                  : 'bg-white/[0.03] text-white/30 border border-white/[0.06]'
+                }`}
+              >
+                {isFailed ? '❌' : isDone ? '✓' : st.icon}
+              </div>
+              <span className={`text-[10px] whitespace-nowrap ${
+                isDone || isCurrent ? 'text-white/70' : 'text-white/30'
+              }`}>{st.label}</span>
+            </div>
+            {i < PIPELINE_STAGES.length - 1 && (
+              <div className={`h-px w-6 ${isDone ? 'bg-lime-500/40' : 'bg-white/[0.08]'}`} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function OverviewTab({
   project,
   onTab,
@@ -351,8 +404,13 @@ function OverviewTab({
   onReload: () => void;
 }) {
   const [prepareTip, setPrepareTip] = useState<string | null>(null);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadErr, setUploadErr] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const prog = project.prepare_progress;
 
+  const needsImport = !project.source_filename;
   const needsPrepare =
     project.status === 'draft' || (project.status === 'imported' && project.chapter_count === 0);
 
@@ -373,6 +431,26 @@ function OverviewTab({
     } catch (e: any) {
       alert(`识别触发失败: ${e?.message || e}`);
     }
+  };
+
+  const handleUpload = async (file: File) => {
+    setUploadBusy(true);
+    setUploadErr(null);
+    try {
+      await api.projectImport(project.project_id, file);
+      await onReload();
+    } catch (e: any) {
+      setUploadErr(String(e?.message || e));
+    } finally {
+      setUploadBusy(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const f = e.dataTransfer.files?.[0];
+    if (f) handleUpload(f);
   };
 
   function StageProgressBar(props: { label: string; done: number; total: number; failed?: number }) {
@@ -415,19 +493,6 @@ function OverviewTab({
     );
   }
 
-  function stageLabel(s?: string): string {
-    switch (s) {
-      case 'start': return '🔧 初始化';
-      case 'split': return '📑 切分章节';
-      case 'characters': return '🧑 角色识别';
-      case 'dedup': return '🔀 角色去重';
-      case 'dialogues': return '💬 对白归属';
-      case 'voice_recs': return '🎙 音色推荐';
-      case 'done': return '✅ 已完成';
-      default: return s ? `运行中（${s}）` : '运行中';
-    }
-  }
-
   return (
     <div className="space-y-4">
       {prepareTip && (
@@ -437,6 +502,47 @@ function OverviewTab({
         </div>
       )}
 
+      {/* ===== 上传区（draft 且无文件时）===== */}
+      {needsImport && !isPreparing && (
+        <div
+          onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+          onClick={() => !uploadBusy && fileInputRef.current?.click()}
+          className={`rounded-2xl border-2 border-dashed transition-all text-center py-10 px-4 cursor-pointer ${
+            dragOver
+              ? 'border-brand-400 bg-brand-500/10'
+              : 'border-white/10 hover:border-white/20 hover:bg-white/[0.02]'
+          }`}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".txt,.md,.epub"
+            onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(f); }}
+            className="hidden"
+          />
+          {uploadBusy ? (
+            <div>
+              <div className="inline-block w-8 h-8 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin mb-3" />
+              <div className="text-sm text-white/70">导入中…</div>
+            </div>
+          ) : (
+            <div>
+              <div className="text-3xl mb-3">📖</div>
+              <div className="text-sm text-white/70 font-medium">拖拽文件到这里，或点击选择</div>
+              <div className="text-xs text-white/40 mt-2">支持 TXT、Markdown、EPUB 格式</div>
+            </div>
+          )}
+          {uploadErr && (
+            <div className="mt-3 text-xs text-rose-300 bg-rose-500/10 rounded-lg px-3 py-2 inline-block">
+              {uploadErr}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ===== 识别失败 Banner ===== */}
       {hasPrepareError && (
         <div className="glass-panel border-red-500/40 !bg-red-500/5 space-y-3">
           <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -474,6 +580,7 @@ function OverviewTab({
         </div>
       )}
 
+      {/* ===== 识别中：7阶段时间线 + 进度条 ===== */}
       {isPreparing && (
         <div className="glass-panel space-y-4 relative overflow-hidden">
           <div className="glow-orb w-48 h-48 bg-brand-500/10" style={{ top: '-30px', right: '-20px' }} />
@@ -497,6 +604,9 @@ function OverviewTab({
               <button className="btn-ghost text-xs !py-1.5" onClick={handlePrepare}>🔁 重跑</button>
             </div>
           </div>
+
+          {/* 7阶段时间线 */}
+          <PipelineTimeline prog={prog} />
 
           <div className="space-y-3 relative">
             {(prog?.char_slice_total != null) && (
@@ -552,7 +662,8 @@ function OverviewTab({
         </div>
       )}
 
-      {needsPrepare && !isPreparing && (
+      {/* ===== 已导入但未识别 Banner ===== */}
+      {needsPrepare && !isPreparing && project.source_filename && (
         <div className="glass-panel !border-brand-500/40 !bg-brand-500/[0.06] relative overflow-hidden">
           <div className="glow-orb w-48 h-48 bg-brand-500/20" style={{ bottom: '-40px', right: '-30px' }} />
           <div className="flex items-center justify-between gap-3 flex-wrap relative">
@@ -561,19 +672,15 @@ function OverviewTab({
                 🚀
               </div>
               <div className="min-w-0">
-                <div className="font-semibold text-ink-800 mb-0.5">还没识别章节与角色</div>
+                <div className="font-semibold text-ink-800 mb-0.5">已就绪，开始识别</div>
                 <div className="text-sm text-ink-600">
-                  {project.source_filename
-                    ? `已上传文件「${project.source_filename}」，点击右侧按钮开始识别章节、角色与对白归属。`
-                    : '请先到「设置」上传源文件或粘贴文本，然后开始识别。'}
+                  已上传文件「{project.source_filename}」，点击开始识别章节、角色与对白归属。
                 </div>
               </div>
             </div>
-            {project.source_filename && (
-              <button className="btn-primary shrink-0" onClick={handlePrepare}>
-                🚀 开始识别
-              </button>
-            )}
+            <button className="btn-primary shrink-0" onClick={handlePrepare}>
+              🚀 开始识别
+            </button>
           </div>
         </div>
       )}
