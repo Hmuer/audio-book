@@ -125,9 +125,9 @@ export function PrepareProgressInline({
           )}
           {prog.last_error && (
             <span className="chip" style={{
-              background: 'rgba(251,113,133,0.08)',
+              background: 'rgb(var(--status-error-bg) / 0.08)',
               color: 'rgb(var(--status-error-fg))',
-              border: '1px solid rgba(251,113,133,0.22)',
+              border: '1px solid rgb(var(--status-error-bg) / 0.22)',
             }}>
               ❌ {prog.last_error}
             </span>
@@ -187,15 +187,15 @@ export function RunningTasksBar({ items }: { items: ProjectListItem[] }) {
     <div
       className="sticky top-2 z-30 rounded-lg backdrop-blur-xl px-5 py-4 mb-5 animate-fade-in"
       style={{
-        border: '1px solid rgba(139,92,246,0.22)',
+        border: '1px solid rgb(var(--brand-500) / 0.22)',
         background:
-          'linear-gradient(180deg, rgba(139,92,246,0.10) 0%, rgba(139,92,246,0.04) 100%)',
-        boxShadow: '0 0 0 1px rgba(139,92,246,0.10), 0 12px 32px -8px rgba(139,92,246,0.25)',
+          'linear-gradient(180deg, rgb(var(--brand-500) / 0.10) 0%, rgb(var(--brand-500) / 0.04) 100%)',
+        boxShadow: '0 0 0 1px rgb(var(--brand-500) / 0.10), 0 12px 32px -8px rgb(var(--brand-500) / 0.25)',
       }}
     >
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3 min-w-0">
-          <span className="badge-dot animate-pulse-soft" style={{ background: '#8b5cf6', transform: 'scale(1.4)' }} />
+          <span className="badge-dot animate-pulse-soft" style={{ background: 'rgb(var(--brand-500))', transform: 'scale(1.4)' }} />
           <div className="min-w-0">
             <div className="font-semibold truncate text-brand-300">
               {summary.join(' · ')}
@@ -329,8 +329,8 @@ export default function ProjectListPage() {
       {err && (
         <div className="rounded-md px-4 py-3 text-sm"
           style={{
-            border: '1px solid rgba(251,113,133,0.28)',
-            background: 'rgba(251,113,133,0.06)',
+            border: '1px solid rgb(var(--status-error-bg) / 0.28)',
+            background: 'rgb(var(--status-error-bg) / 0.06)',
             color: 'rgb(var(--status-error-fg))',
           }}
         >{err}</div>
@@ -350,7 +350,7 @@ export default function ProjectListPage() {
           <div className="glow-orb w-[320px] h-[320px] bg-brand-500/15" style={{ left: '50%', top: '-80px', transform: 'translateX(-50%)' }} />
           <div className="relative mx-auto w-20 h-20 rounded-lg grid place-items-center mb-6"
             style={{
-              background: 'linear-gradient(135deg, rgba(139,92,246,0.18), rgba(45,212,191,0.10))',
+              background: 'linear-gradient(135deg, rgb(var(--brand-500) / 0.18), rgb(var(--status-ready-bg) / 0.10))',
               border: '1px solid rgb(var(--color-white) / 0.08)',
             }}
           >
@@ -404,8 +404,8 @@ export default function ProjectListPage() {
                         <div
                           className="w-9 h-9 rounded-lg grid place-items-center text-base shrink-0"
                           style={{
-                            background: `linear-gradient(135deg, ${p.cover_color || '#8b5cf6'}33, ${p.cover_color || '#8b5cf6'}11)`,
-                            border: `1px solid ${p.cover_color || '#8b5cf6'}33`,
+                            background: `linear-gradient(135deg, ${p.cover_color || 'rgb(var(--brand-500))'}33, ${p.cover_color || 'rgb(var(--brand-500))'}11)`,
+                            border: `1px solid ${p.cover_color || 'rgb(var(--brand-500))'}33`,
                           }}
                         >
                           <span>📖</span>
@@ -539,9 +539,9 @@ export default function ProjectListPage() {
               <button
                 className="flex-1 rounded-lg text-sm font-medium transition-all"
                 style={{
-                  background: 'rgba(251,113,133,0.15)',
+                  background: 'rgb(var(--status-error-bg) / 0.15)',
                   color: 'rgb(var(--status-error-fg))',
-                  border: '1px solid rgba(251,113,133,0.3)',
+                  border: '1px solid rgb(var(--status-error-bg) / 0.3)',
                 }}
                 onClick={() => onDelete(confirmDeleteId)}
               >

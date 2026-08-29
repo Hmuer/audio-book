@@ -218,7 +218,7 @@ export default function ProjectDetailPage({
         <div className="glow-orb w-64 h-64 bg-accent-teal/10" style={{ bottom: '-60px', left: '-30px' }} />
         <div
           className="stripe rounded-l-3xl"
-          style={{ backgroundColor: project!.cover_color || '#8b5cf6' }}
+          style={{ backgroundColor: project!.cover_color || 'rgb(var(--brand-500))' }}
         />
         <div className="pl-3 flex items-center justify-between gap-3 flex-wrap relative">
           <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -283,7 +283,7 @@ export default function ProjectDetailPage({
                   style={{
                     borderRadius: 'var(--radius-sm)',
                     ...(active ? {
-                      backgroundImage: 'linear-gradient(180deg, rgb(var(--color-white) / 0.14) 0%, rgb(var(--color-white) / 0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+                      backgroundImage: 'linear-gradient(180deg, rgb(var(--color-white) / 0.14) 0%, rgb(var(--color-white) / 0) 50%), linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 100%)',
                     } : {}),
                   }}
                 >
@@ -617,10 +617,10 @@ function OverviewTab({
 
       {/* 概览 4 卡 */}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        <OverviewStat label="章节数" value={String(project.chapter_count)} icon="📜" color="#8b5cf6" />
-        <OverviewStat label="角色数" value={String(project.characters.length)} icon="🧑" color="#ec4899" />
-        <OverviewStat label="文件大小" value={formatSize(project.source_file_size)} icon="📄" color="#0ea5e9" />
-        <OverviewStat label="创建时间" value={project.created_at ? parseTime(project.created_at).toLocaleDateString('zh-CN') : '—'} icon="🗓" color="#c6f44a" />
+        <OverviewStat label="章节数" value={String(project.chapter_count)} icon="📜" color="rgb(var(--brand-500))" />
+        <OverviewStat label="角色数" value={String(project.characters.length)} icon="🧑" color="rgb(var(--palette-purple-bg))" />
+        <OverviewStat label="文件大小" value={formatSize(project.source_file_size)} icon="📄" color="rgb(var(--status-info-bg))" />
+        <OverviewStat label="创建时间" value={project.created_at ? parseTime(project.created_at).toLocaleDateString('zh-CN') : '—'} icon="🗓" color="rgb(var(--accent-soft))" />
       </div>
 
       {(project.description || (project.tags && project.tags.length > 0)) && (
@@ -666,9 +666,9 @@ function OverviewTab({
 
       <div className="grid sm:grid-cols-3 gap-3">
         {[
-          { key: 'chapters' as Tab, title: '查看章节', sub: `共 ${project.chapter_count} 章 · 试听下载`, icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>, color: '#8b5cf6' },
-          { key: 'voices' as Tab, title: '配置音色', sub: `${project.characters.length} 个角色 · 旁白与语速`, icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>, color: '#ec4899' },
-          { key: 'settings' as Tab, title: '项目设置', sub: '名称 · 描述 · 标签 · 默认配置', icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6M7 12H1m15.5-7.5-4.2 4.2M11.7 12.3 7.5 16.5m0-9 4.2 4.2m4.8 4.8 4.2 4.2"/></svg>, color: '#0ea5e9' },
+          { key: 'chapters' as Tab, title: '查看章节', sub: `共 ${project.chapter_count} 章 · 试听下载`, icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>, color: 'rgb(var(--brand-500))' },
+          { key: 'voices' as Tab, title: '配置音色', sub: `${project.characters.length} 个角色 · 旁白与语速`, icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>, color: 'rgb(var(--status-error-bg))' },
+          { key: 'settings' as Tab, title: '项目设置', sub: '名称 · 描述 · 标签 · 默认配置', icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6M7 12H1m15.5-7.5-4.2 4.2M11.7 12.3 7.5 16.5m0-9 4.2 4.2m4.8 4.8 4.2 4.2"/></svg>, color: 'rgb(var(--status-info-bg))' },
         ].map(it => (
           <button
             key={it.key}
@@ -753,12 +753,12 @@ function LastBuildSummary({
             width: `${pct}%`,
             backgroundImage:
               build.status === 'done'
-                ? 'linear-gradient(90deg, #c6f44a 0%, #2dd4bf 100%)'
+                ? 'linear-gradient(90deg, rgb(var(--accent-soft)) 0%, rgb(var(--status-ready-bg)) 100%)'
                 : build.status === 'failed'
-                ? 'linear-gradient(90deg, #ef4444, #dc2626)'
+                ? 'linear-gradient(90deg, rgb(var(--status-error-bg)), rgb(var(--status-error-fg))'
                 : build.status === 'synthesizing' || build.status === 'preparing'
-                ? 'linear-gradient(90deg, #f59e0b, #fbbf24)'
-                : 'linear-gradient(90deg, #8b5cf6, #6366f1)',
+                ? 'linear-gradient(90deg, rgb(var(--status-warn-bg)), rgb(var(--status-warn-dot))'
+                : 'linear-gradient(90deg, rgb(var(--brand-500)), rgb(var(--brand-600))',
           }}
         />
       </div>
@@ -923,9 +923,9 @@ function ChaptersTab({
                   <span
                     className="text-[11px] font-mono tabular-nums shrink-0 rounded-lg px-2 py-1 border"
                     style={{
-                      background: playing ? 'rgba(139,92,246,0.15)' : 'rgb(var(--color-white) / 0.04)',
-                      color: playing ? '#8b5cf6' : 'rgb(var(--color-white) / 0.5)',
-                      borderColor: playing ? 'rgba(139,92,246,0.3)' : 'rgb(var(--color-white) / 0.05)',
+                      background: playing ? 'rgb(var(--brand-500) / 0.15)' : 'rgb(var(--color-white) / 0.04)',
+                      color: playing ? 'rgb(var(--brand-500))' : 'rgb(var(--color-white) / 0.5)',
+                      borderColor: playing ? 'rgb(var(--brand-500) / 0.3)' : 'rgb(var(--color-white) / 0.05)',
                     }}
                   >
                     #{String(c.idx + 1).padStart(3, '0')}
@@ -1166,7 +1166,7 @@ function VoicesTab({
                 onChange={e => setSpeed(parseFloat(e.target.value))}
                 className="w-full h-2 rounded-full appearance-none cursor-pointer"
                 style={{
-                  background: `linear-gradient(90deg, #8b5cf6 0%, #8b5cf6 ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
+                  background: `linear-gradient(90deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-500)) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
                 }}
               />
             </div>
@@ -1214,9 +1214,9 @@ function VoicesTab({
             {chars.map(c => {
               const vid = c.assigned_voice_id || '';
               const genderColor =
-                c.gender === '男' ? '#3b82f6'
-                : c.gender === '女' ? '#ec4899'
-                : '#8b5cf6';
+                c.gender === '男' ? 'rgb(var(--status-info-bg))'
+                : c.gender === '女' ? 'rgb(var(--status-error-bg))'
+                : 'rgb(var(--brand-500))';
               return (
                 <div
                   key={c.id}
@@ -1318,7 +1318,7 @@ function BuildsTab({
         <div className="glow-orb w-56 h-56 bg-brand-500/10" style={{ bottom: '-50px', right: '-40px' }} />
         <div className="flex items-start gap-3 min-w-0">
           <div className="w-10 h-10 rounded-md grid place-items-center shrink-0 shadow-brand"
-            style={{ backgroundImage: 'linear-gradient(135deg, #8b5cf6, #7c3aed)' }}
+            style={{ backgroundImage: 'linear-gradient(135deg, rgb(var(--brand-500)), rgb(var(--brand-700))' }}
           >
             🏗
           </div>
@@ -1444,12 +1444,12 @@ function BuildRow({
 
   const pctBarBg =
     item.status === 'done'
-      ? 'linear-gradient(90deg, #c6f44a 0%, #2dd4bf 100%)'
+      ? 'linear-gradient(90deg, rgb(var(--accent-soft)) 0%, rgb(var(--status-ready-bg)) 100%)'
       : item.status === 'failed'
-      ? 'linear-gradient(90deg, #ef4444, #dc2626)'
+      ? 'linear-gradient(90deg, rgb(var(--status-error-bg)), rgb(var(--status-error-fg))'
       : isRunning
-      ? 'linear-gradient(90deg, #f59e0b, #fbbf24)'
-      : 'linear-gradient(90deg, #8b5cf6, #6366f1)';
+      ? 'linear-gradient(90deg, rgb(var(--status-warn-bg)), rgb(var(--status-warn-dot))'
+      : 'linear-gradient(90deg, rgb(var(--brand-500)), rgb(var(--brand-600))';
 
   return (
     <div className="glass-panel space-y-3 animate-fade-in p-5 relative overflow-hidden">
@@ -1477,9 +1477,9 @@ function BuildRow({
         {isRunning && item.started_at && (
           <span className="chip"
             style={{
-              background: 'linear-gradient(135deg, rgba(245,158,11,0.22), rgba(251,191,36,0.12))',
+              background: 'linear-gradient(135deg, rgb(var(--status-warn-bg) / 0.22), rgb(var(--status-warn-dot) / 0.12))',
               color: 'rgb(var(--status-partial-fg))',
-              border: '1px solid rgba(245,158,11,0.3)',
+              border: '1px solid rgb(var(--status-warn-bg) / 0.3)',
             }}
           >
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse mr-1" />
@@ -1619,7 +1619,7 @@ function BuildDetailContent({
                   className="text-[11px] font-mono tabular-nums shrink-0 rounded-lg px-2 py-1"
                   style={{
                     background: 'rgb(var(--color-white) / 0.04)',
-                    color: playing ? '#8b5cf6' : 'rgb(var(--color-white) / 0.45)',
+                    color: playing ? 'rgb(var(--brand-500))' : 'rgb(var(--color-white) / 0.45)',
                     border: '1px solid rgb(var(--color-white) / 0.05)',
                   }}
                 >
@@ -1738,7 +1738,7 @@ function CreateBuildModal({
         <div className="flex items-center justify-between mb-5 relative">
           <div className="flex items-start gap-3 min-w-0">
             <div className="w-10 h-10 rounded-md grid place-items-center shrink-0 shadow-brand"
-              style={{ backgroundImage: 'linear-gradient(135deg, #8b5cf6, #7c3aed)' }}
+              style={{ backgroundImage: 'linear-gradient(135deg, rgb(var(--brand-500)), rgb(var(--brand-700))' }}
             >
               ▶
             </div>
@@ -1794,7 +1794,7 @@ function CreateBuildModal({
                   onChange={e => setSpeed(parseFloat(e.target.value))}
                   className="w-full h-2 rounded-full appearance-none cursor-pointer"
                   style={{
-                    background: `linear-gradient(90deg, #8b5cf6 0%, #8b5cf6 ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
+                    background: `linear-gradient(90deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-500)) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
                   }}
                 />
               </div>
@@ -1813,9 +1813,9 @@ function CreateBuildModal({
               <div className="grid md:grid-cols-2 gap-2.5 max-h-[300px] overflow-y-auto pr-1 p-1">
                 {project.characters.map(c => {
                   const genderColor =
-                    c.gender === '男' ? '#3b82f6'
-                    : c.gender === '女' ? '#ec4899'
-                    : '#8b5cf6';
+                    c.gender === '男' ? 'rgb(var(--status-info-bg))'
+                    : c.gender === '女' ? 'rgb(var(--status-error-bg))'
+                    : 'rgb(var(--brand-500))';
                   return (
                     <div
                       key={c.id}
@@ -2035,7 +2035,7 @@ function SettingsTab({
                 onChange={e => setSpeed(parseFloat(e.target.value))}
                 className="w-full h-2 rounded-full appearance-none cursor-pointer"
                 style={{
-                  background: `linear-gradient(90deg, #8b5cf6 0%, #8b5cf6 ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
+                  background: `linear-gradient(90deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-500)) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
                 }}
               />
             </div>

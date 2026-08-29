@@ -120,7 +120,7 @@ export default function LoginPage() {
                 className="relative w-12 h-12 rounded-lg grid place-items-center shadow-el-lg"
                 style={{
                   backgroundImage:
-                    'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 55%, #6366f1 100%)',
+                    'linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 55%, rgb(var(--brand-600)) 100%)',
                 }}
               >
                 <div className="flex items-end gap-[2px] h-5">
@@ -143,7 +143,7 @@ export default function LoginPage() {
             <h2 className="font-display text-[2.5rem] xl:text-[3rem] font-bold text-white leading-[1.1] tracking-tight">
               AI 内容创作平台
               <br />
-              <span style={{ background: 'linear-gradient(135deg, #c4b5fd 0%, #a78bfa 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
+              <span style={{ background: 'linear-gradient(135deg, rgb(var(--brand-300)) 0%, rgb(var(--brand-400)) 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
                 阿布
               </span>
             </h2>
@@ -162,10 +162,10 @@ export default function LoginPage() {
                   height: `${bar.h}%`,
                   animationDelay: bar.d,
                   background: i % 3 === 0
-                    ? 'linear-gradient(to top, #8b5cf6, #c4b5fd)'
+                    ? 'linear-gradient(to top, rgb(var(--brand-500)), rgb(var(--brand-300))'
                     : i % 3 === 1
-                    ? 'linear-gradient(to top, #7c3aed, #a78bfa)'
-                    : 'linear-gradient(to top, #6366f1, #a5b4fc)',
+                    ? 'linear-gradient(to top, rgb(var(--brand-700)), rgb(var(--brand-400))'
+                    : 'linear-gradient(to top, rgb(var(--brand-600)), rgb(var(--brand-300)))',
                 }}
               />
             ))}
@@ -179,9 +179,9 @@ export default function LoginPage() {
               <div
                 className="w-10 h-10 rounded-md grid place-items-center shrink-0"
                 style={{
-                  background: 'rgba(139,92,246,0.10)',
-                  border: '1px solid rgba(139,92,246,0.18)',
-                  color: '#c4b5fd',
+                  background: 'rgb(var(--brand-500) / 0.10)',
+                  border: '1px solid rgb(var(--brand-500) / 0.18)',
+                  color: 'rgb(var(--brand-300))',
                 }}
               >
                 <FeatureIcon name={f.icon} />
@@ -211,7 +211,7 @@ export default function LoginPage() {
                 className="w-10 h-10 rounded-md grid place-items-center shadow-el-lg"
                 style={{
                   backgroundImage:
-                    'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+                    'linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 100%)',
                 }}
               >
                 <div className="flex items-end gap-[2px] h-4">
@@ -312,7 +312,7 @@ export default function LoginPage() {
                 <div
                   className="text-sm rounded-md px-3.5 py-2.5 flex items-start gap-2"
                   style={{
-                    borderColor: 'rgba(251,113,133,0.28)',
+                    borderColor: 'rgb(var(--status-error-bg) / 0.28)',
                     background: 'rgb(var(--status-error-bg) / 0.08)',
                     color: 'rgb(var(--status-error-fg))',
                     borderWidth: 1,

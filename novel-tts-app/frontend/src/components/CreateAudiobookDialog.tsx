@@ -170,8 +170,8 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
             {err && (
               <div className="rounded-lg px-3 py-2 text-xs"
                 style={{
-                  border: '1px solid rgba(251,113,133,0.28)',
-                  background: 'rgba(251,113,133,0.06)',
+                  border: '1px solid rgb(var(--status-error-bg) / 0.28)',
+                  background: 'rgb(var(--status-error-bg) / 0.06)',
                   color: 'rgb(var(--status-error-fg))',
                 }}
               >{err}</div>

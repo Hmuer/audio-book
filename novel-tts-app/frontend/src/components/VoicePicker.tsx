@@ -14,10 +14,21 @@ import { Voice } from '@/lib/api';
 
 function avatarBg(gender: string, id: string): string {
   // 品牌色背景，基于 id 取模让同一音色头像颜色稳定
+  // 8 种"莫兰迪灰调"palette：从 globals.css 的 --palette-xxx-bg 通道变量取，
+  // 随主题深浅模式自动变，不再写死高饱和 candy 色。
   const palettes: Record<string, string[]> = {
-    '男': ['#3b82f6', '#6366f1', '#0ea5e9', '#14b8a6'],
-    '女': ['#ec4899', '#f472b6', '#a855f7', '#d946ef'],
-    '中性': ['#8b5cf6', '#22c55e', '#eab308', '#f97316'],
+    '男': [
+      'rgb(var(--palette-blue-bg))',   'rgb(var(--palette-cyan-bg))',
+      'rgb(var(--palette-mint-bg))',   'rgb(var(--status-info-bg))',
+    ],
+    '女': [
+      'rgb(var(--palette-rose-bg))',   'rgb(var(--palette-pink-bg))',
+      'rgb(var(--palette-purple-bg))', 'rgb(var(--palette-yellow-bg))',
+    ],
+    '中性': [
+      'rgb(var(--brand-500))',         'rgb(var(--palette-green-bg))',
+      'rgb(var(--palette-yellow-bg))', 'rgb(var(--status-synth-bg))',
+    ],
   };
   const pals = palettes[gender] || palettes['中性'];
   let hash = 0;
@@ -232,7 +243,7 @@ export default function VoicePicker({
                   <div className="text-[11px] uppercase tracking-[0.15em] text-ink-500 mb-1.5 px-1 flex items-center gap-2">
                     <span className="inline-block w-1.5 h-1.5 rounded-full"
                       style={{
-                        background: k === '男声' ? '#3b82f6' : k === '女声' ? '#ec4899' : '#8b5cf6'
+                        background: k === '男声' ? 'rgb(var(--status-info-bg))' : k === '女声' ? 'rgb(var(--status-error-bg))' : 'rgb(var(--brand-500))'
                       }}
                     />
                     {k}

@@ -15,8 +15,8 @@
  */
 :root {
   /* 基础色（反转变量：组件 text-white 在浅色下自动变近黑） */
-  --color-white: 255, 255, 255;
-  --color-black: 9, 9, 11;
+  --color-white: 241, 242, 248;   /* 冷灰纸白（非纯白） */
+  --color-black: 12, 14, 20;      /* 深冷炭黑（非纯黑） */
 
   /* Tailwind @apply 展开 rgb(var(--x)/<alpha-value>) 时会写入 --tw-*-opacity，
      但在 globals.css 里写 @apply text-white / bg-ink-100 等 utility class 的 color/bg 属性
@@ -29,157 +29,159 @@
   --tw-ring-offset-color: transparent;
   --tw-ring-color: transparent;
 
-  /* ink 中性阶 */
-  --ink-0:   9, 9, 11;
-  --ink-50:  15, 15, 18;
-  --ink-100: 21, 21, 26;
-  --ink-200: 28, 28, 36;
-  --ink-300: 38, 38, 49;
-  --ink-400: 58, 58, 71;
-  --ink-500: 85, 85, 98;
-  --ink-600: 139, 139, 151;
-  --ink-700: 197, 197, 204;
-  --ink-800: 232, 232, 235;
-  --ink-900: 255, 255, 255;
+  /* ink 中性阶 — 冷灰系，非纯黑非纯白非奶油。
+     数值越小越暗（底/容器），数值越大越亮（文字/强调） */
+  --ink-0:   12, 14, 20;
+  --ink-50:  18, 21, 29;
+  --ink-100: 24, 28, 38;
+  --ink-200: 32, 37, 49;
+  --ink-300: 45, 51, 66;
+  --ink-400: 68, 76, 95;
+  --ink-500: 108, 115, 134;
+  --ink-600: 153, 159, 175;
+  --ink-700: 198, 202, 214;
+  --ink-800: 224, 227, 236;
+  --ink-900: 241, 242, 248;
 
-  /* brand Tenet 紫（深浅通用，不随主题变） */
-  --brand-50:  245, 243, 255;
-  --brand-100: 237, 233, 254;
-  --brand-200: 221, 214, 254;
-  --brand-300: 196, 181, 253;
-  --brand-400: 167, 139, 250;
-  --brand-500: 139, 92, 246;
-  --brand-600: 124, 58, 237;
-  --brand-700: 109, 40, 217;
-  --brand-800: 91, 33, 182;
-  --brand-900: 76, 29, 149;
+  /* brand — 低饱和冷靛灰蓝（Linear / Framer 风格，克制专业，非儿童高饱和紫）
+     深浅模式保持一致，不随主题反转。 */
+  --brand-50:  240, 242, 250;
+  --brand-100: 229, 232, 244;
+  --brand-200: 210, 215, 233;
+  --brand-300: 181, 189, 215;
+  --brand-400: 143, 154, 190;
+  --brand-500: 108, 122, 170;
+  --brand-600: 88, 101, 146;
+  --brand-700: 70, 82, 120;
+  --brand-800: 53, 63, 94;
+  --brand-900: 37, 45, 70;
 
-  /* cream Tenet 暖奶油 */
-  --cream-50:  251, 250, 246;
-  --cream-100: 245, 242, 234;
-  --cream-200: 232, 226, 210;
-  --cream-300: 207, 198, 173;
+  /* cream — 从"暖奶油"改为冷灰纸色（Light 模式的背景底，去掉之前的奶黄小孩感） */
+  --cream-50:  244, 245, 249;
+  --cream-100: 237, 239, 244;
+  --cream-200: 225, 227, 234;
+  --cream-300: 200, 203, 213;
 
-  /* accent Tenet 点缀 */
-  --accent-lime: 198, 244, 74;
-  --accent-amber: 245, 158, 11;
-  --accent-teal:  45, 212, 191;
-  --accent-rose:  251, 113, 133;
+  /* accent 点缀 — 4 色全撤（取消 lime/cyan/teal/rose/amber 的高饱和糖果色）。
+     只保留一枚"冷灰蓝"做极微弱的交互高亮。品牌色就是唯一的强调色。 */
+  --accent-cold: 128, 142, 185;   /* 冷灰靛蓝，与 brand-500 接近的另一档 */
+  --accent-soft: 184, 191, 208;   /* 更淡的灰蓝，用于 hint / 次级边缘 */
 
-  /* status 语义色（bg/border 存 RGB 三通道，组件里按需加 opacity） */
-  /* 深色模式用亮色在暗背景上 */
-  --status-info-bg:     59, 130, 246;
-  --status-info-fg:     147, 197, 253;
-  --status-info-dot:    59, 130, 246;
-  --status-warn-bg:     245, 158, 11;
-  --status-warn-fg:     252, 211, 77;
-  --status-warn-dot:    245, 158, 11;
-  --status-success-bg:  74, 222, 128;
-  --status-success-fg:  134, 239, 172;
-  --status-success-dot: 74, 222, 128;
-  --status-ready-bg:    45, 212, 191;
-  --status-ready-fg:    94, 234, 212;
-  --status-ready-dot:   45, 212, 191;
-  --status-partial-bg:  250, 204, 21;
-  --status-partial-fg:  253, 230, 138;
-  --status-partial-dot: 250, 204, 21;
-  --status-error-bg:    251, 113, 133;
-  --status-error-fg:    253, 164, 175;
-  --status-error-dot:   251, 113, 133;
-  --status-muted-bg:    161, 161, 170;
-  --status-muted-fg:    212, 212, 216;
-  --status-muted-dot:   161, 161, 170;
-  --status-synth-bg:    251, 146, 60;
-  --status-synth-fg:    253, 186, 116;
-  --status-synth-dot:   251, 146, 60;
+  /* status 语义色（bg/border 存 RGB 三通道） — 全部降饱和，做"灰调语义色"
+     深色模式：在深冷灰底上的低饱和有色灰（不再亮黄亮绿亮粉） */
+  --status-info-bg:     89, 117, 165;     /* slate blue */
+  --status-info-fg:     152, 172, 208;
+  --status-info-dot:    108, 134, 180;
+  --status-warn-bg:     172, 138, 88;     /* 灰陶土 amber */
+  --status-warn-fg:     210, 188, 151;
+  --status-warn-dot:    182, 148, 98;
+  --status-success-bg:  102, 145, 122;    /* 冷灰墨绿 */
+  --status-success-fg:  162, 195, 176;
+  --status-success-dot: 118, 160, 138;
+  --status-ready-bg:    100, 140, 155;    /* slate teal */
+  --status-ready-fg:    162, 194, 206;
+  --status-ready-dot:   116, 156, 172;
+  --status-partial-bg:  166, 148, 88;     /* dusty olive */
+  --status-partial-fg:  204, 190, 146;
+  --status-partial-dot: 178, 162, 102;
+  --status-error-bg:    162, 96, 108;     /* 低饱和砖红（非 candy rose） */
+  --status-error-fg:    206, 156, 166;
+  --status-error-dot:   178, 110, 122;
+  --status-muted-bg:    118, 122, 136;    /* slate grey */
+  --status-muted-fg:    180, 184, 196;
+  --status-muted-dot:   136, 140, 154;
+  --status-synth-bg:    150, 124, 96;     /* ash terracotta */
+  --status-synth-fg:    196, 176, 154;
+  --status-synth-dot:   166, 140, 112;
 
-  /* palette 角色标签色（8 种色调，每种三通道：bg / fg / border） */
-  /* 深色模式：亮色在暗底 */
-  --palette-purple-bg:   139, 92, 246;
-  --palette-purple-fg:   196, 181, 253;
-  --palette-pink-bg:     244, 114, 182;
-  --palette-pink-fg:     249, 168, 212;
-  --palette-cyan-bg:     34, 211, 238;
-  --palette-cyan-fg:     103, 232, 249;
-  --palette-green-bg:    74, 222, 128;
-  --palette-green-fg:    134, 239, 172;
-  --palette-yellow-bg:   251, 191, 36;
-  --palette-yellow-fg:   253, 224, 71;
-  --palette-blue-bg:     96, 165, 250;
-  --palette-blue-fg:     147, 197, 253;
-  --palette-rose-bg:     251, 113, 133;
-  --palette-rose-fg:     253, 164, 175;
-  --palette-mint-bg:     45, 212, 191;
-  --palette-mint-fg:     94, 234, 212;
+  /* palette 角色标签色 — 8 档"莫兰迪灰调"：全低饱和，接近但略有区分
+     深底：用偏浅的灰调彩色 */
+  --palette-purple-bg:   155, 143, 188;
+  --palette-purple-fg:   192, 184, 214;
+  --palette-pink-bg:     186, 148, 162;
+  --palette-pink-fg:     218, 192, 202;
+  --palette-cyan-bg:     135, 162, 180;
+  --palette-cyan-fg:     182, 202, 216;
+  --palette-green-bg:    142, 166, 148;
+  --palette-green-fg:    188, 208, 192;
+  --palette-yellow-bg:   182, 168, 132;
+  --palette-yellow-fg:   214, 204, 180;
+  --palette-blue-bg:     132, 154, 190;
+  --palette-blue-fg:     180, 196, 220;
+  --palette-rose-bg:     176, 138, 146;
+  --palette-rose-fg:     212, 186, 192;
+  --palette-mint-bg:     140, 166, 162;
+  --palette-mint-fg:     186, 208, 205;
 
   color-scheme: dark;
 
-  /* 圆角 */
+  /* 圆角 — 走克制的小档（专业感，不大圆） */
   --radius-none: 0px;
-  --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius-md: 8px;
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 7px;
 }
 
 html.light {
-  --color-white: 15, 15, 18;
-  --color-black: 255, 255, 255;
+  /* Light 模式：冷灰纸白底 + 深炭灰文字，非奶油黄 非纯白 非纯黑 */
+  --color-white: 30, 34, 46;
+  --color-black: 244, 245, 249;
 
-  --ink-0:   251, 250, 246;
-  --ink-50:  247, 244, 237;
-  --ink-100: 255, 255, 255;
-  --ink-200: 240, 236, 225;
-  --ink-300: 228, 225, 218;
-  --ink-400: 200, 196, 186;
-  --ink-500: 160, 156, 148;
-  --ink-600: 110, 106, 100;
-  --ink-700: 55, 53, 50;
-  --ink-800: 25, 24, 22;
-  --ink-900: 9, 9, 11;
+  --ink-0:   244, 245, 249;
+  --ink-50:  240, 241, 246;
+  --ink-100: 250, 251, 255;
+  --ink-200: 231, 233, 240;
+  --ink-300: 218, 220, 229;
+  --ink-400: 196, 199, 210;
+  --ink-500: 154, 158, 173;
+  --ink-600: 112, 116, 132;
+  --ink-700: 66, 70, 86;
+  --ink-800: 40, 44, 57;
+  --ink-900: 22, 25, 35;
 
-  /* 浅色模式用更深的色调保证白底对比度 */
-  --status-info-bg:     37, 99, 235;
-  --status-info-fg:     37, 99, 235;
-  --status-info-dot:    37, 99, 235;
-  --status-warn-bg:     217, 119, 6;
-  --status-warn-fg:     180, 83, 9;
-  --status-warn-dot:    217, 119, 6;
-  --status-success-bg:  34, 197, 94;
-  --status-success-fg:  21, 128, 61;
-  --status-success-dot: 22, 163, 74;
-  --status-ready-bg:    13, 148, 136;
-  --status-ready-fg:    15, 118, 110;
-  --status-ready-dot:   13, 148, 136;
-  --status-partial-bg:  202, 138, 4;
-  --status-partial-fg:  161, 98, 7;
-  --status-partial-dot: 202, 138, 4;
-  --status-error-bg:    225, 29, 72;
-  --status-error-fg:    190, 18, 60;
-  --status-error-dot:   225, 29, 72;
-  --status-muted-bg:    82, 82, 91;
-  --status-muted-fg:    63, 63, 70;
-  --status-muted-dot:   82, 82, 91;
-  --status-synth-bg:    234, 88, 12;
-  --status-synth-fg:    194, 65, 12;
-  --status-synth-dot:   234, 88, 12;
+  /* 浅色模式 status：灰调饱和加强到"看得清但不刺眼"的水平 */
+  --status-info-bg:     72, 100, 150;
+  --status-info-fg:     58, 84, 130;
+  --status-info-dot:    84, 112, 162;
+  --status-warn-bg:     156, 122, 72;
+  --status-warn-fg:     128, 98, 56;
+  --status-warn-dot:    168, 134, 84;
+  --status-success-bg:  82, 125, 102;
+  --status-success-fg:  58, 98, 78;
+  --status-success-dot: 96, 140, 116;
+  --status-ready-bg:    80, 120, 135;
+  --status-ready-fg:    60, 98, 112;
+  --status-ready-dot:   96, 136, 152;
+  --status-partial-bg:  148, 130, 72;
+  --status-partial-fg:  118, 102, 56;
+  --status-partial-dot: 162, 144, 86;
+  --status-error-bg:    152, 82, 94;
+  --status-error-fg:    126, 60, 72;
+  --status-error-dot:   168, 96, 108;
+  --status-muted-bg:    100, 104, 118;
+  --status-muted-fg:    72, 76, 90;
+  --status-muted-dot:   116, 120, 134;
+  --status-synth-bg:    136, 110, 82;
+  --status-synth-fg:    110, 86, 60;
+  --status-synth-dot:   152, 124, 94;
 
-  /* palette 角色标签色 — 浅色模式用更深色调保证白底对比度 */
-  --palette-purple-bg:   124, 58, 237;
-  --palette-purple-fg:   109, 40, 217;
-  --palette-pink-bg:     219, 39, 119;
-  --palette-pink-fg:     190, 18, 60;
-  --palette-cyan-bg:     8, 145, 178;
-  --palette-cyan-fg:     14, 116, 144;
-  --palette-green-bg:    22, 163, 74;
-  --palette-green-fg:    21, 128, 61;
-  --palette-yellow-bg:   202, 138, 4;
-  --palette-yellow-fg:   161, 98, 7;
-  --palette-blue-bg:     37, 99, 235;
-  --palette-blue-fg:     30, 64, 175;
-  --palette-rose-bg:     225, 29, 72;
-  --palette-rose-fg:     190, 18, 60;
-  --palette-mint-bg:     13, 148, 136;
-  --palette-mint-fg:     15, 118, 110;
+  /* palette — light 下用偏深的莫兰迪：不刺眼、白底仍然区分开 */
+  --palette-purple-bg:   122, 110, 155;
+  --palette-purple-fg:   94, 84, 124;
+  --palette-pink-bg:     156, 118, 132;
+  --palette-pink-fg:     126, 88, 102;
+  --palette-cyan-bg:     100, 128, 146;
+  --palette-cyan-fg:     72, 98, 116;
+  --palette-green-bg:    106, 132, 112;
+  --palette-green-fg:    78, 104, 84;
+  --palette-yellow-bg:   150, 136, 100;
+  --palette-yellow-fg:   118, 104, 72;
+  --palette-blue-bg:     98, 120, 156;
+  --palette-blue-fg:     68, 90, 126;
+  --palette-rose-bg:     146, 108, 116;
+  --palette-rose-fg:     116, 80, 90;
+  --palette-mint-bg:     104, 130, 126;
+  --palette-mint-fg:     76, 102, 98;
 
   color-scheme: only light;
 }
@@ -203,18 +205,18 @@ body {
   color: rgb(var(--ink-700));
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  /* AI 引擎 glow mesh：紫→青→柠，三团发光，品牌链表达 AI 生成语义 */
+  /* 背景 — 克制的冷靛柔辉：一枚主辉（冷靛蓝，左上）+ 一枚极淡灰蓝副辉（右下），
+     不再是"紫→青→柠"的彩虹链，避免小孩气。AI 感 ≠ 彩虹霓虹，而是"几乎察觉不到的冷深度"。 */
   background-image:
-    radial-gradient(1100px 700px at -10% -10%, rgba(139,92,246,0.20), transparent 55%),
-    radial-gradient(900px 650px at 110% 10%,  rgba(45,212,191,0.14), transparent 55%),
-    radial-gradient(1000px 700px at 50%  115%, rgba(198,244,74,0.10), transparent 58%);
+    radial-gradient(1200px 780px at -8% 0%,   rgb(var(--brand-500) / 0.14), transparent 60%),
+    radial-gradient(900px 700px  at 115% 110%, rgb(var(--accent-cold) / 0.08), transparent 60%);
   background-attachment: fixed;
   min-height: 100vh;
   letter-spacing: -0.002em;
   position: relative;
   overflow-x: hidden;
 }
-/* Glow mesh 呼吸动画（背景三团光缓慢移动，表达 AI 持续生成感） */
+/* 背景 ::after 柔辉浮动层 — 同样收敛成两档冷灰靛，alpha 更低，避免塑料发光。 */
 body::after {
   content: '';
   position: fixed;
@@ -222,44 +224,43 @@ body::after {
   pointer-events: none;
   z-index: 0;
   background-image:
-    radial-gradient(520px 520px at 15% 20%,   rgba(139,92,246,0.18), transparent 70%),
-    radial-gradient(480px 480px at 85% 30%,   rgba(45,212,191,0.12), transparent 70%),
-    radial-gradient(600px 600px at 50% 100%,  rgba(198,244,74,0.08), transparent 70%);
-  filter: blur(60px);
-  animation: mesh-drift 24s ease-in-out infinite alternate;
-  opacity: 0.9;
+    radial-gradient(620px 620px at 18% 18%,  rgb(var(--brand-500) / 0.10), transparent 72%),
+    radial-gradient(540px 540px at 86% 92%,  rgb(var(--accent-cold) / 0.06), transparent 72%);
+  filter: blur(64px);
+  animation: mesh-drift 30s ease-in-out infinite alternate;
+  opacity: 0.85;
 }
 @keyframes mesh-drift {
   0%   { transform: translate3d(0, 0, 0) scale(1); }
-  50%  { transform: translate3d(-1.2%, 1.8%, 0) scale(1.05); }
-  100% { transform: translate3d(1.2%, -1.2%, 0) scale(1.02); }
+  50%  { transform: translate3d(-1.0%, 1.4%, 0) scale(1.04); }
+  100% { transform: translate3d(1.0%, -1.0%, 0) scale(1.02); }
 }
-/* 极低 alpha 的 grain，避免塑料感（不再是杂志颗粒，只是微深度） */
+/* grain：保留但降低强度，从"杂志颗粒"变成"纸张质感"的微噪 */
 body::before {
   content: '';
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 1;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.022 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
-  opacity: 0.7;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.014 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  opacity: 0.55;
   mix-blend-mode: overlay;
 }
 html.light body {
+  /* Light：更淡，冷靛蓝 0.09 + 灰蓝 0.05 */
   background-image:
-    radial-gradient(1100px 700px at -10% -10%, rgba(139,92,246,0.12), transparent 55%),
-    radial-gradient(900px 650px at 110% 10%,  rgba(45,212,191,0.08), transparent 55%),
-    radial-gradient(1000px 700px at 50%  115%, rgba(198,244,74,0.07), transparent 58%);
+    radial-gradient(1200px 780px at -8% 0%,   rgb(var(--brand-500) / 0.09), transparent 60%),
+    radial-gradient(900px 700px  at 115% 110%, rgb(var(--accent-cold) / 0.05), transparent 60%);
 }
 html.light body::after {
-  opacity: 0.55;
+  /* Light：更低 alpha */
+  opacity: 0.45;
   background-image:
-    radial-gradient(520px 520px at 15% 20%,   rgba(139,92,246,0.10), transparent 70%),
-    radial-gradient(480px 480px at 85% 30%,   rgba(45,212,191,0.08), transparent 70%),
-    radial-gradient(600px 600px at 50% 100%,  rgba(198,244,74,0.06), transparent 70%);
+    radial-gradient(620px 620px at 18% 18%,  rgb(var(--brand-500) / 0.06), transparent 72%),
+    radial-gradient(540px 540px at 86% 92%,  rgb(var(--accent-cold) / 0.04), transparent 72%);
 }
 html.light body::before {
-  opacity: 0.4;
+  opacity: 0.3;
 }
 body > * { position: relative; z-index: 2; }
 
@@ -279,16 +280,16 @@ body > * { position: relative; z-index: 2; }
     isolation: isolate;
   }
   .card::before {
-    /* AI glow：hover 时品牌紫+青外溢发光层 */
+    /* Hover 边框发光：只留冷靛蓝单色渐变，不再"紫→青"双色 */
     content: '';
     position: absolute;
     inset: -1px;
     border-radius: inherit;
     padding: 1px;
     background: linear-gradient(135deg,
-      rgba(139,92,246,0) 0%,
-      rgba(139,92,246,0.35) 40%,
-      rgba(45,212,191,0.25) 100%);
+      rgb(var(--brand-500) / 0) 0%,
+      rgb(var(--brand-500) / 0.22) 50%,
+      rgb(var(--accent-cold) / 0.14) 100%);
     -webkit-mask:
       linear-gradient(#000 0 0) content-box,
       linear-gradient(#000 0 0);
@@ -300,22 +301,21 @@ body > * { position: relative; z-index: 2; }
     z-index: 0;
   }
   .card::after {
-    /* Glow 外溢（柔和径向） */
+    /* Hover 外溢辉光：单色冷靛，更窄、更淡、不刺眼 */
     content: '';
     position: absolute;
-    inset: -40%;
+    inset: -30%;
     background:
-      radial-gradient(400px 180px at 20% 0%,  rgba(139,92,246,0.18), transparent 60%),
-      radial-gradient(320px 160px at 100% 50%, rgba(45,212,191,0.10), transparent 60%);
+      radial-gradient(280px 140px at 20% 0%,  rgb(var(--brand-500) / 0.12), transparent 65%);
     opacity: 0;
-    filter: blur(20px);
+    filter: blur(18px);
     transition: opacity 0.28s ease;
     pointer-events: none;
     z-index: -1;
   }
   .card:hover {
     @apply shadow-el-lg;
-    border-color: rgba(139,92,246,0.30);
+    border-color: rgb(var(--brand-500) / 0.22);
   }
   .card:hover::before { opacity: 1; }
   .card:hover::after  { opacity: 1; }
@@ -354,7 +354,7 @@ body > * { position: relative; z-index: 2; }
     border: 1px solid rgb(var(--color-white) / 0.06);
     box-shadow:
       0 1px 0 0 rgb(var(--color-white) / 0.04) inset,
-      0 0 0 1px rgba(139,92,246,0.04),
+      0 0 0 1px rgb(var(--brand-500) / 0.04),
       0 30px 80px -36px rgba(0,0,0,0.7);
     backdrop-filter: blur(22px);
     -webkit-backdrop-filter: blur(22px);
@@ -389,12 +389,12 @@ body > * { position: relative; z-index: 2; }
   .btn-primary {
     @apply btn text-white shadow-brand;
     background-image: linear-gradient(180deg, rgb(var(--color-white) / 0.12) 0%, rgb(var(--color-white) / 0) 50%),
-      linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+      linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 100%);
   }
   .btn-primary:hover {
     @apply shadow-brand-lg -translate-y-[1px];
     background-image: linear-gradient(180deg, rgb(var(--color-white) / 0.18) 0%, rgb(var(--color-white) / 0) 50%),
-      linear-gradient(135deg, #9b6bff 0%, #8b5cf6 100%);
+      linear-gradient(135deg, rgb(var(--brand-400)) 0%, rgb(var(--brand-600)) 100%);
   }
   .btn-primary:active {
     @apply shadow-brand;
@@ -443,7 +443,7 @@ body > * { position: relative; z-index: 2; }
     border: 1px solid rgb(var(--color-white) / 0.08);
     color: rgb(var(--color-white) / 0.92);
     box-shadow: 0 1px 0 0 rgb(var(--color-white) / 0.03) inset;
-    background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='rgba(139,92,246,0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='rgb(var(--brand-500) / 0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 10px center;
     padding-right: 32px;
@@ -457,13 +457,13 @@ body > * { position: relative; z-index: 2; }
   }
   select option:checked,
   select option:hover {
-    background: rgba(139,92,246,0.35);
+    background: rgb(var(--brand-500) / 0.35);
     color: rgb(var(--color-white));
   }
   html.light select option:checked,
   html.light select option:hover {
-    background: rgba(139,92,246,0.12);
-    color: #7c3aed;
+    background: rgb(var(--brand-500) / 0.12);
+    color: rgb(var(--brand-700));
   }
   select option:disabled {
     background: transparent;
@@ -471,17 +471,17 @@ body > * { position: relative; z-index: 2; }
   }
   @supports (-moz-appearance: none) {
     select {
-      background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='rgba(139,92,246,0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='rgb(var(--brand-500) / 0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
       background-repeat: no-repeat;
       background-position: right 10px center;
     }
   }
   .input:focus, .textarea:focus, select:focus {
     background: rgb(var(--color-white) / 0.035);
-    border-color: rgba(139,92,246,0.55);
+    border-color: rgb(var(--brand-500) / 0.55);
     box-shadow:
-      0 0 0 4px rgba(139,92,246,0.14),
-      0 0 0 1px rgba(139,92,246,0.5) inset;
+      0 0 0 4px rgb(var(--brand-500) / 0.14),
+      0 0 0 1px rgb(var(--brand-500) / 0.5) inset;
   }
   .input:hover, .textarea:hover, select:hover {
     border-color: rgb(var(--color-white) / 0.14);
@@ -520,7 +520,7 @@ body > * { position: relative; z-index: 2; }
   }
   .progress-fill {
     @apply h-full rounded-full transition-all duration-300 ease-out;
-    background-image: linear-gradient(90deg, #8b5cf6 0%, #6366f1 60%, #2dd4bf 100%);
+    background-image: linear-gradient(90deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-600)) 60%, rgb(var(--accent-cold)) 100%);
   }
 
   /* ------ 音量滑条 thumb ------ */
@@ -540,7 +540,7 @@ body > * { position: relative; z-index: 2; }
     background: rgb(var(--color-white));
     margin-top: -2px;
     border: 0;
-    box-shadow: 0 0 0 3px rgba(139,92,246,0.25), 0 1px 3px rgba(0,0,0,0.4);
+    box-shadow: 0 0 0 3px rgb(var(--brand-500) / 0.25), 0 1px 3px rgba(0,0,0,0.4);
     cursor: pointer;
     transition: transform 0.15s ease;
   }
@@ -557,7 +557,7 @@ body > * { position: relative; z-index: 2; }
     border-radius: 9999px;
     background: rgb(var(--color-white));
     border: 0;
-    box-shadow: 0 0 0 3px rgba(139,92,246,0.25), 0 1px 3px rgba(0,0,0,0.4);
+    box-shadow: 0 0 0 3px rgb(var(--brand-500) / 0.25), 0 1px 3px rgba(0,0,0,0.4);
     cursor: pointer;
   }
   .volume-slider:focus { outline: none; }
@@ -571,13 +571,13 @@ body > * { position: relative; z-index: 2; }
   }
   .step-dot.active {
     color: rgb(var(--color-white));
-    background-image: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+    background-image: linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 100%);
     border-color: transparent;
-    box-shadow: 0 0 0 4px rgba(139,92,246,0.14);
+    box-shadow: 0 0 0 4px rgb(var(--brand-500) / 0.14);
   }
   .step-dot.done {
     color: rgb(var(--ink-900));
-    background: #c6f44a;
+    background: rgb(var(--accent-soft));
     border-color: transparent;
   }
 }
@@ -664,17 +664,17 @@ body > * { position: relative; z-index: 2; }
 
   .focus-ring {
     @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-0;
-    --tw-ring-color: rgba(139,92,246,0.45);
+    --tw-ring-color: rgb(var(--brand-500) / 0.45);
   }
 }
 
 /* ========== 全局选中态 ========== */
 ::selection {
-  background: rgba(139,92,246,0.35);
+  background: rgb(var(--brand-500) / 0.35);
   color: rgb(var(--color-white));
 }
 html.light ::selection {
-  background: rgba(139,92,246,0.22);
+  background: rgb(var(--brand-500) / 0.22);
   color: rgb(var(--ink-900));
 }
 
@@ -722,9 +722,9 @@ html.light .input:focus,
 html.light .textarea:focus,
 html.light select:focus {
   background: rgb(var(--color-black) / 1);
-  border-color: rgba(139,92,246,0.65);
+  border-color: rgb(var(--brand-500) / 0.65);
   box-shadow:
-    0 0 0 4px rgba(139,92,246,0.16),
+    0 0 0 4px rgb(var(--brand-500) / 0.16),
     0 1px 0 0 rgb(var(--ink-200)) inset;
   color: rgb(var(--ink-900) / 0.96);
 }
@@ -734,7 +734,7 @@ html.light select option {
 }
 html.light select option:checked,
 html.light select option:hover {
-  background: rgba(139,92,246,0.18);         /* 浅紫选中背景 */
+  background: rgb(var(--brand-500) / 0.18);         /* 浅紫选中背景 */
   color: rgb(var(--brand-700, 109, 40, 217));/* 深紫品牌字 */
 }
 

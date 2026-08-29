@@ -263,9 +263,9 @@ export default function WaveformPlayer({
 
   const gradientStyle = {
     background: `linear-gradient(90deg,
-      #c4b5fd 0%,
-      #a78bfa 40%,
-      #7c3aed 100%)
+      rgb(var(--brand-300)) 0%,
+      rgb(var(--brand-400)) 40%,
+      rgb(var(--brand-700)) 100%)
     `,
   };
 
@@ -320,11 +320,11 @@ export default function WaveformPlayer({
             disabled:opacity-40 disabled:cursor-not-allowed`}
           style={{
             backgroundImage: isPlaying
-              ? 'linear-gradient(180deg, rgb(var(--color-white) / 0.20) 0%, rgb(var(--color-white) / 0) 50%), linear-gradient(135deg, #9b6bff 0%, #8b5cf6 100%)'
-              : 'linear-gradient(180deg, rgb(var(--color-white) / 0.14) 0%, rgb(var(--color-white) / 0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+              ? 'linear-gradient(180deg, rgb(var(--color-white) / 0.20) 0%, rgb(var(--color-white) / 0) 50%), linear-gradient(135deg, rgb(var(--brand-400)) 0%, rgb(var(--brand-600)) 100%)'
+              : 'linear-gradient(180deg, rgb(var(--color-white) / 0.14) 0%, rgb(var(--color-white) / 0) 50%), linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 100%)',
             boxShadow: isPlaying
-              ? '0 0 0 1px rgba(168,85,247,0.45), 0 10px 24px -8px rgba(139,92,246,0.55)'
-              : '0 0 0 1px rgba(168,85,247,0.35), 0 8px 20px -10px rgba(139,92,246,0.45)',
+              ? '0 0 0 1px rgb(var(--brand-600) / 0.45), 0 10px 24px -8px rgb(var(--brand-500) / 0.55)'
+              : '0 0 0 1px rgb(var(--brand-600) / 0.35), 0 8px 20px -10px rgb(var(--brand-500) / 0.45)',
           }}
           title={isPlaying ? '暂停' : '播放'}
         >
@@ -341,7 +341,7 @@ export default function WaveformPlayer({
           {isPlaying && (
             <span
               className="absolute inset-0 rounded-full animate-ping pointer-events-none"
-              style={{ background: 'rgba(139,92,246,0.20)', animationDuration: '1.8s' }}
+              style={{ background: 'rgb(var(--brand-500) / 0.20)', animationDuration: '1.8s' }}
             />
           )}
         </button>
@@ -418,7 +418,7 @@ export default function WaveformPlayer({
                 style={{
                   background: muted || volume === 0
                     ? 'rgb(var(--color-white) / 0.08)'
-                    : `linear-gradient(90deg, #a78bfa 0%, #8b5cf6 ${(muted ? 0 : volume) * 100}%, rgb(var(--color-white) / 0.08) ${(muted ? 0 : volume) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
+                    : `linear-gradient(90deg, rgb(var(--brand-400)) 0%, rgb(var(--brand-500)) ${(muted ? 0 : volume) * 100}%, rgb(var(--color-white) / 0.08) ${(muted ? 0 : volume) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
                 }}
               />
               <span className="text-[10px] tabular-nums w-7 text-right text-white/50">
@@ -512,7 +512,7 @@ export default function WaveformPlayer({
             style={{
               width: `${displayPercent * 100}%`,
               ...gradientStyle,
-              boxShadow: '0 0 10px 0 rgba(168,85,247,0.35)',
+              boxShadow: '0 0 10px 0 rgb(var(--brand-600) / 0.35)',
             }}
           />
           {/* 缓冲进度（buffered） */}
@@ -531,8 +531,8 @@ export default function WaveformPlayer({
               height: dragging ? 14 : 12,
               background: 'rgb(var(--color-white))',
               boxShadow: dragging
-                ? '0 0 0 4px rgba(139,92,246,0.25), 0 2px 6px rgba(0,0,0,0.5)'
-                : '0 0 0 3px rgba(139,92,246,0.22), 0 1px 4px rgba(0,0,0,0.45)',
+                ? '0 0 0 4px rgb(var(--brand-500) / 0.25), 0 2px 6px rgba(0,0,0,0.5)'
+                : '0 0 0 3px rgb(var(--brand-500) / 0.22), 0 1px 4px rgba(0,0,0,0.45)',
             }}
           />
         </div>

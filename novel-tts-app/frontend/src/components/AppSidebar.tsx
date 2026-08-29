@@ -113,7 +113,7 @@ export default function AppSidebar({ currentPath }: Props) {
               <div className="mt-1 flex items-center gap-1.5">
                 <span
                   className="inline-block w-1.5 h-1.5 rounded-full animate-pulse-soft"
-                  style={{ background: 'linear-gradient(135deg, #a78bfa, #22d3ee)' }}
+                  style={{ background: 'linear-gradient(135deg, rgb(var(--brand-400)), rgb(var(--accent-cold)))' }}
                 />
                 <span className="text-[10.5px] text-white/40 tracking-[0.04em] uppercase">
                   ABU · Creator Studio
@@ -214,7 +214,7 @@ function SectionLabel({ label }: { label: string }) {
     <div className="px-2.5 pt-1 pb-1.5 flex items-center gap-2 select-none">
       <span
         className="inline-block h-px w-4 rounded-full"
-        style={{ background: 'linear-gradient(90deg, rgba(167,139,250,0.7), rgba(34,211,238,0.0))' }}
+        style={{ background: 'linear-gradient(90deg, rgb(var(--brand-400) / 0.7), rgb(var(--accent-cold) / 0.0))' }}
       />
       <span className="text-[10.5px] uppercase tracking-[0.14em] text-white/32 font-semibold">
         {label}
@@ -246,8 +246,8 @@ function ModuleNav({
     !m.disabled && moduleActive
       ? {
           background:
-            'linear-gradient(135deg, rgba(139,92,246,0.16) 0%, rgba(139,92,246,0.04) 70%), rgb(var(--color-white) / 0.02)',
-          boxShadow: 'inset 0 0 0 1px rgba(139,92,246,0.18)',
+            'linear-gradient(135deg, rgb(var(--brand-500) / 0.16) 0%, rgb(var(--brand-500) / 0.04) 70%), rgb(var(--color-white) / 0.02)',
+          boxShadow: 'inset 0 0 0 1px rgb(var(--brand-500) / 0.18)',
         }
       : undefined;
 
@@ -257,7 +257,7 @@ function ModuleNav({
       {!m.disabled && moduleActive && (
         <span
           className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full"
-          style={{ background: 'linear-gradient(180deg, #c4b5fd 0%, #7c3aed 100%)' }}
+          style={{ background: 'linear-gradient(180deg, rgb(var(--brand-300)) 0%, rgb(var(--brand-700)) 100%)' }}
         />
       )}
       <IconCell icon={m.icon} active={!m.disabled && moduleActive} disabled={m.disabled} />
@@ -327,8 +327,8 @@ function ModuleNav({
                     active
                       ? {
                           background:
-                            'linear-gradient(90deg, rgba(139,92,246,0.22) 0%, rgba(139,92,246,0.06) 100%)',
-                          boxShadow: 'inset 0 0 0 1px rgba(139,92,246,0.18)',
+                            'linear-gradient(90deg, rgb(var(--brand-500) / 0.22) 0%, rgb(var(--brand-500) / 0.06) 100%)',
+                          boxShadow: 'inset 0 0 0 1px rgb(var(--brand-500) / 0.18)',
                         }
                       : undefined
                   }
@@ -336,7 +336,7 @@ function ModuleNav({
                   {active && (
                     <span
                       className="absolute left-1 top-1/2 -translate-y-1/2 w-[2.5px] h-4 rounded-r-full"
-                      style={{ background: 'linear-gradient(180deg,#c4b5fd,#8b5cf6)' }}
+                      style={{ background: 'linear-gradient(180deg,rgb(var(--brand-300)),rgb(var(--brand-500)))' }}
                     />
                   )}
                   <span
@@ -373,8 +373,8 @@ function TopLevelLink({ item, active }: { item: MenuItem; active: boolean }) {
         active
           ? {
               background:
-                'linear-gradient(135deg, rgba(139,92,246,0.16) 0%, rgba(139,92,246,0.04) 70%), rgb(var(--color-white) / 0.02)',
-              boxShadow: 'inset 0 0 0 1px rgba(139,92,246,0.18)',
+                'linear-gradient(135deg, rgb(var(--brand-500) / 0.16) 0%, rgb(var(--brand-500) / 0.04) 70%), rgb(var(--color-white) / 0.02)',
+              boxShadow: 'inset 0 0 0 1px rgb(var(--brand-500) / 0.18)',
             }
           : undefined
       }
@@ -382,7 +382,7 @@ function TopLevelLink({ item, active }: { item: MenuItem; active: boolean }) {
       {active && (
         <span
           className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full"
-          style={{ background: 'linear-gradient(180deg, #c4b5fd 0%, #7c3aed 100%)' }}
+          style={{ background: 'linear-gradient(180deg, rgb(var(--brand-300)) 0%, rgb(var(--brand-700)) 100%)' }}
         />
       )}
       <IconCell icon={item.icon} active={active} />
@@ -400,7 +400,7 @@ function IconCell({
         ${active ? 'bg-brand-500/25 text-brand-100'
           : disabled ? 'bg-white/[0.02] text-white/35'
           : 'bg-white/[0.03] text-white/80 group-hover:bg-white/[0.05]'}`}
-      style={{ borderRadius: 'var(--radius-sm)', ...(active ? { boxShadow: 'inset 0 0 0 1px rgba(167,139,250,0.25)' } : {}) }}
+      style={{ borderRadius: 'var(--radius-sm)', ...(active ? { boxShadow: 'inset 0 0 0 1px rgb(var(--brand-400) / 0.25)' } : {}) }}
     >
       {icon}
     </div>
@@ -445,8 +445,8 @@ function Avatar({ username }: { username: string }) {
       style={{
         borderRadius: 'var(--radius-sm)',
         backgroundImage:
-          'linear-gradient(180deg, rgb(var(--color-white) / 0.14) 0%, rgb(var(--color-white) / 0) 45%), linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)',
-        boxShadow: '0 0 0 1px rgba(167,139,250,0.35), 0 8px 16px -8px rgba(99,102,241,0.5)',
+          'linear-gradient(180deg, rgb(var(--color-white) / 0.14) 0%, rgb(var(--color-white) / 0) 45%), linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 100%)',
+        boxShadow: '0 0 0 1px rgb(var(--brand-400) / 0.35), 0 8px 16px -8px rgb(var(--brand-600) / 0.5)',
       }}
     >
       {initial}
@@ -461,8 +461,8 @@ function BrandLogo() {
       style={{
         borderRadius: 'var(--radius-md)',
         backgroundImage:
-          'linear-gradient(180deg, rgb(var(--color-white) / 0.18) 0%, rgb(var(--color-white) / 0) 50%), linear-gradient(135deg, #8b5cf6 0%, #6366f1 60%, #22d3ee 100%)',
-        boxShadow: '0 0 0 1px rgba(167,139,250,0.35), 0 12px 24px -10px rgba(139,92,246,0.6)',
+          'linear-gradient(180deg, rgb(var(--color-white) / 0.18) 0%, rgb(var(--color-white) / 0) 50%), linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 60%, rgb(var(--accent-cold)) 100%)',
+        boxShadow: '0 0 0 1px rgb(var(--brand-400) / 0.35), 0 12px 24px -10px rgb(var(--brand-500) / 0.6)',
       }}
     >
       {/* 波形 logo */}
