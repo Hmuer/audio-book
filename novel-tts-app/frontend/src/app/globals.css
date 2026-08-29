@@ -204,6 +204,36 @@ html.light body {
     border: 1px solid rgba(255,255,255,0.08);
     color: rgba(255,255,255,0.92);
     box-shadow: 0 1px 0 0 rgba(255,255,255,0.03) inset;
+    /* 自定义下拉箭头（深色风格） */
+    background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='rgba(255,255,255,0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 32px;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+  /* 下拉选项弹层：Webkit（Chrome/Edge/Safari）走 option 样式；Firefox 需要单独适配 */
+  select option {
+    background: #1a1826;
+    color: rgba(255,255,255,0.92);
+    padding: 8px 12px;
+  }
+  select option:checked,
+  select option:hover {
+    background: rgba(139,92,246,0.35);
+    color: #fff;
+  }
+  select option:disabled {
+    background: transparent;
+    color: rgba(255,255,255,0.35);
+  }
+  /* Firefox 特有的下拉面板样式 */
+  @supports (-moz-appearance: none) {
+    select {
+      background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='rgba(255,255,255,0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+    }
   }
   .input:focus, .textarea:focus, select:focus {
     background: rgba(255,255,255,0.035);
@@ -220,6 +250,16 @@ html.light body {
     border-color: rgba(15,15,18,0.10);
     color: #0f0f12;
     box-shadow: 0 1px 2px 0 rgba(0,0,0,0.04);
+    background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='rgba(15,15,18,0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  }
+  html.light select option {
+    background: #fff;
+    color: #0f0f12;
+  }
+  html.light select option:checked,
+  html.light select option:hover {
+    background: rgba(139,92,246,0.12);
+    color: #7c3aed;
   }
   html.light .input:focus, html.light .textarea:focus, html.light select:focus {
     border-color: rgba(139,92,246,0.55);
