@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   api,
+  errToLog,
   ProjectDetailResp,
   BuildListItem,
   BuildDetailResp,
@@ -847,7 +848,7 @@ function ChaptersTab({
     setLoadingDetail(true);
     api.projectChapterDetail(project.project_id, expandedIdx)
       .then(d => { if (!cancelled) setChapterDetail(d); })
-      .catch(err => { console.error('load chapter detail:', err); if (!cancelled) setChapterDetail(null); })
+      .catch(err => { console.error('load chapter detail:', errToLog(err)); if (!cancelled) setChapterDetail(null); })
       .finally(() => { if (!cancelled) setLoadingDetail(false); });
     return () => { cancelled = true; };
   }, [expandedIdx, project.project_id]);
@@ -1411,7 +1412,7 @@ function BuildRow({
       const d = await api.buildGet(projectId, item.build_id);
       setDetail(d);
     } catch (e: any) {
-      console.error('load build detail:', e);
+      console.error('load build detail:', errToLog(e));
     } finally {
       setLoadingDetail(false);
     }

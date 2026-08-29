@@ -261,13 +261,12 @@ export default function WaveformPlayer({
     return duration > 0 ? currentTime / duration : 0;
   }, [currentTime, duration]);
 
-  const gradientStyle = {
-    background: `linear-gradient(90deg,
-      rgb(var(--brand-300)) 0%,
-      rgb(var(--brand-400)) 40%,
-      rgb(var(--brand-700)) 100%)
-    `,
-  };
+  // Edtech 风格：进度 → indigo-600 (#4F46E5) → sky-400 (#38BDF8) 渐变
+  const edtechProgressGradient = `linear-gradient(90deg,
+    rgb(var(--brand-600)) 0%,
+    rgb(var(--brand-500)) 55%,
+    rgb(var(--accent-cold)) 100%
+  )`;
 
   // 静音图标
   const VolumeIcon = () => {
@@ -302,29 +301,31 @@ export default function WaveformPlayer({
   return (
     <div
       ref={containerRef}
-      className={`group relative w-full rounded-lg
-        border border-white/[0.06] bg-white/[0.025] backdrop-blur-sm
-        hover:border-white/[0.12] hover:bg-white/[0.04]
-        transition-all duration-200 ${compact ? 'px-4 py-3' : 'px-5 py-4'}
+      className={`group relative w-full
+        border bg-ink-100
+        hover:border-ink-300 transition-all duration-200
+        ${compact ? 'px-4 py-3' : 'px-5 py-4'}
         ${disabled ? 'opacity-60' : ''}`}
+      style={{
+        borderRadius: 'var(--radius-md)',
+        borderColor: 'rgb(var(--ink-300))',
+      }}
     >
       {/* ============ 第一行：播放 + 时间 + 倍速 + 下载 ============ */}
       <div className="flex items-center gap-3">
-        {/* 播放/暂停按钮 */}
+        {/* 播放/暂停按钮：Edtech indigo-600 实心圆 */}
         <button
           onClick={togglePlay}
           disabled={disabled}
-          className={`relative shrink-0 grid place-items-center rounded-full transition-all duration-200
+          className={`relative shrink-0 grid place-items-center transition-all duration-200
             ${compact ? 'w-11 h-11' : 'w-12 h-12'}
-            ${isPlaying ? 'ring-2 ring-brand-500/40 ring-offset-2 ring-offset-ink-50' : ''}
             disabled:opacity-40 disabled:cursor-not-allowed`}
           style={{
-            backgroundImage: isPlaying
-              ? 'linear-gradient(180deg, rgb(var(--color-white) / 0.20) 0%, rgb(var(--color-white) / 0) 50%), linear-gradient(135deg, rgb(var(--brand-400)) 0%, rgb(var(--brand-600)) 100%)'
-              : 'linear-gradient(180deg, rgb(var(--color-white) / 0.14) 0%, rgb(var(--color-white) / 0) 50%), linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 100%)',
+            borderRadius: '9999px',
+            background: 'rgb(var(--brand-600))',
             boxShadow: isPlaying
-              ? '0 0 0 1px rgb(var(--brand-600) / 0.45), 0 10px 24px -8px rgb(var(--brand-500) / 0.55)'
-              : '0 0 0 1px rgb(var(--brand-600) / 0.35), 0 8px 20px -10px rgb(var(--brand-500) / 0.45)',
+              ? '0 0 0 3px rgb(var(--brand-500) / 0.22), 0 10px 24px -8px rgb(var(--brand-700) / 0.95)'
+              : '0 0 0 1px rgb(var(--brand-500) / 0.45), 0 10px 20px -10px rgb(var(--brand-700) / 0.85)',
           }}
           title={isPlaying ? '暂停' : '播放'}
         >
@@ -346,14 +347,14 @@ export default function WaveformPlayer({
           )}
         </button>
 
-        {/* 时间：Eleven / Spotify 风格，左当前 / 右总时长 + 缓冲/错误提示 */}
+        {/* 时间：Edtech 风格更冷静，左当前 / 右总时长 + 缓冲/错误提示 */}
         <div className="flex flex-col items-start justify-center shrink-0 min-w-[130px]">
           <div className="flex items-baseline gap-1">
-            <span className="text-[12px] tabular-nums text-white/85">
+            <span className="text-[13px] font-mono tabular-nums text-white/90">
               {fmtTime(dragging || duration > 0 ? displayPercent * duration : 0)}
             </span>
             <span className="text-[11px] text-white/25">/</span>
-            <span className="text-[11px] tabular-nums text-white/40">
+            <span className="text-[12px] font-mono tabular-nums" style={{ color: 'rgb(var(--ink-700) / 0.6)' }}>
               {fmtTime(duration)}
             </span>
           </div>
@@ -361,8 +362,8 @@ export default function WaveformPlayer({
             <div className="flex items-center gap-1 mt-0.5">
               {isBuffering && (
                 <>
-                  <span className="inline-block w-2 h-2 rounded-full border-2 border-white/30 border-t-white/90 animate-spin" />
-                  <span className="text-[10px] text-white/60">缓冲中…</span>
+                  <span className="inline-block w-2 h-2 rounded-full border-2 border-white/25 border-t-brand-500 animate-spin" />
+                  <span className="text-[10px]" style={{ color: 'rgb(var(--accent-amber))' }}>缓冲中…</span>
                 </>
               )}
               {playError && (
@@ -493,7 +494,7 @@ export default function WaveformPlayer({
         </div>
       </div>
 
-      {/* ============ 第二行：进度条 ============ */}
+      {/* ============ 第二行：进度条（Edtech solid 胶囊 + indigo→sky 渐变 + 实心 thumb）============ */}
       <div className="mt-3 select-none">
         <div
           ref={trackRef}
@@ -501,25 +502,27 @@ export default function WaveformPlayer({
           onPointerMove={onTrackPointerMove}
           onPointerUp={onTrackPointerUp}
           onPointerCancel={onTrackPointerUp}
-          className={`relative h-2 w-full rounded-full cursor-pointer touch-none
-            bg-white/[0.07]
-            hover:bg-white/[0.10] transition-colors`}
-          style={{ touchAction: 'none' }}
+          className="relative h-2.5 w-full rounded-full cursor-pointer touch-none"
+          style={{
+            touchAction: 'none',
+            background: 'rgb(var(--ink-0))',
+            boxShadow: 'inset 0 0 0 1px rgb(var(--ink-300) / 0.9)',
+          }}
         >
-          {/* 已播放部分 */}
+          {/* 已播放部分：indigo-600 → sky-400 渐变 */}
           <div
             className="absolute top-0 left-0 h-full rounded-full pointer-events-none"
             style={{
               width: `${displayPercent * 100}%`,
-              ...gradientStyle,
-              boxShadow: '0 0 10px 0 rgb(var(--brand-600) / 0.35)',
+              background: edtechProgressGradient,
+              boxShadow: '0 0 12px 0 rgb(var(--brand-500) / 0.30)',
             }}
           />
           {/* 缓冲进度（buffered） */}
           {loaded && audioRef.current && (
             <BufferedBar audioRef={audioRef} percent={displayPercent} />
           )}
-          {/* 拖拽指针球 */}
+          {/* 拖拽指针球：Edtech 实心 indigo-500 */}
           <div
             className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2
               rounded-full pointer-events-none transition-transform duration-150
@@ -527,12 +530,12 @@ export default function WaveformPlayer({
             `}
             style={{
               left: `${displayPercent * 100}%`,
-              width: dragging ? 14 : 12,
-              height: dragging ? 14 : 12,
-              background: 'rgb(var(--color-white))',
+              width: dragging ? 16 : 14,
+              height: dragging ? 16 : 14,
+              background: dragging ? 'rgb(var(--brand-500))' : '#fff',
               boxShadow: dragging
-                ? '0 0 0 4px rgb(var(--brand-500) / 0.25), 0 2px 6px rgba(0,0,0,0.5)'
-                : '0 0 0 3px rgb(var(--brand-500) / 0.22), 0 1px 4px rgba(0,0,0,0.45)',
+                ? '0 0 0 5px rgb(var(--brand-500) / 0.22), 0 4px 10px rgba(0,0,0,0.5)'
+                : '0 0 0 3px rgb(var(--brand-500) / 0.22), 0 2px 6px rgba(0,0,0,0.45)',
             }}
           />
         </div>

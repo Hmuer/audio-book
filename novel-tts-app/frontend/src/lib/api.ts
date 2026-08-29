@@ -53,6 +53,25 @@ export function setOnAuthFail(cb: () => void): void {
   _onAuthFail = cb;
 }
 
+/**
+ * 把任意 caught value 转成 console.error 友好的可打印结构。
+ * 直接 console.error('prefix:', err) 在某些工具/日志序列化时会写成 'prefix: {}'，
+ * 因为 Error 实例的 message/stack 属性不可枚举，JSON.stringify(new Error('x')) === '{}'。
+ */
+export function errToLog(e: unknown): { message: string; name?: string; cause?: unknown } | unknown {
+  if (e instanceof Error) {
+    return {
+      name: e.name,
+      message: e.message,
+      cause:
+        e.cause instanceof Error
+          ? { name: e.cause.name, message: e.cause.message }
+          : (e.cause as unknown) ?? undefined,
+    };
+  }
+  return e;
+}
+
 async function _fetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = {};

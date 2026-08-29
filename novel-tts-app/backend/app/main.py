@@ -7,7 +7,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from .core.config import settings
 from .db.session import init_db
@@ -89,6 +89,9 @@ app = FastAPI(
     title="AI 有声小说生成器",
     version="1.0.0",
     lifespan=lifespan,
+    # 强制路由尾斜杠规范化：/api/projects/ → 307 → /api/projects
+    # 避免前端 trailingSlash 或代理加斜杠导致 StaticFiles fallback 到 404
+    redirect_slashes=True,
 )
 
 # 大文件下载 / 流式传输：告诉前端反向代理（Nginx / Caddy）
@@ -108,6 +111,33 @@ _DOWNLOAD_PATH_RE = re.compile(
 async def _disable_proxy_buffering_for_downloads(
     request: Request, call_next
 ) -> Response:
+    # ---- 尾斜杠规范化（内部转发，不返回307）----
+    # 背景：next.config.js trailingSlash + 某些代理/previewer 会强制
+    # "/api/projects" → "/api/projects/"。而 FastAPI 路由注册是"/api/projects"，
+    # 精确匹配失败后，StaticFiles mount 在 "/" 会吞掉该请求，返回 404 HTML。
+    #
+    # 处理策略：
+    #   - 检测到请求路径以 "/" 结尾且属于 /api 或 /media 前缀，
+    #     直接修改 scope["path"] 去掉末尾斜杠，让 call_next 走正确的 APIRouter。
+    #     这样对前端是"同一个请求"，不会触发浏览器的 fetch redirect 安全限制。
+    #   - 如果 path == "/" 不处理（首页要正常返回）。
+    path = request.url.path
+    if (
+        len(path) > 1
+        and path.endswith("/")
+        and (path.startswith("/api/") or path.startswith("/media/"))
+    ):
+        clean = path.rstrip("/") or "/"
+        # Starlette scope 可变对象；直接修改 path、raw_path、full_path
+        # 让后续的 call_next 按规范化后的路径重新匹配路由。
+        scope = request.scope
+        raw_query = scope.get("query_string", b"")
+        scope["path"] = clean
+        scope["raw_path"] = clean.encode("utf-8")
+        if raw_query:
+            scope["full_path"] = (clean + "?" + raw_query.decode("latin-1")).encode("utf-8")
+        else:
+            scope["full_path"] = clean.encode("utf-8")
     resp: Response = await call_next(request)
     if _DOWNLOAD_PATH_RE.search(request.url.path):
         # X-Accel-Buffering=no 对 Nginx 生效；Caddy 用类似的 disable_buffering

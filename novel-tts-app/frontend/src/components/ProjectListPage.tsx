@@ -265,6 +265,85 @@ export function RunningTasksBar({ items }: { items: ProjectListItem[] }) {
   );
 }
 
+// ===== 空状态 · Edtech Stepper Row =====
+function StepperRow({
+  step, title, desc, icon, status,
+}: {
+  step: number;
+  title: string;
+  desc: string;
+  icon: string;
+  status: 'done' | 'current' | 'pending';
+}) {
+  const palette =
+    status === 'done'
+      ? { ring: 'rgb(var(--status-success-bg))',   fg: '#fff', text: 'rgb(var(--ink-900))', muted: 'rgb(var(--ink-700) / 0.65)' }
+      : status === 'current'
+      ? { ring: 'rgb(var(--brand-600))',           fg: '#fff', text: 'rgb(var(--ink-900))', muted: 'rgb(var(--ink-700) / 0.65)' }
+      : { ring: 'rgb(var(--ink-300))',            fg: 'rgb(var(--ink-700) / 0.55)', text: 'rgb(var(--ink-700) / 0.55)', muted: 'rgb(var(--ink-700) / 0.4)' };
+
+  return (
+    <li className="relative grid grid-cols-[56px_minmax(0,1fr)] gap-4 items-start">
+      {/* 竖线：除最后一个外，向下延伸 100% */}
+      {step < 3 && (
+        <span
+          className="absolute left-[27px] top-[44px] bottom-[-20px] w-px"
+          style={{ background: 'rgb(var(--ink-300) / 0.9)' }}
+        />
+      )}
+      {/* 左侧：实心圆 + 图标 */}
+      <div className="relative flex flex-col items-center">
+        <div
+          className="w-14 h-14 shrink-0 grid place-items-center text-[20px] text-white shadow-[0_8px_20px_-8px_rgba(0,0,0,0.6)]"
+          style={{
+            borderRadius: 'var(--radius-md)',
+            background: palette.ring,
+            boxShadow: status === 'current'
+              ? `0 0 0 3px rgb(var(--brand-500) / 0.18), 0 8px 20px -8px rgb(var(--brand-700) / 0.9)`
+              : undefined,
+            color: palette.fg,
+            opacity: status === 'pending' ? 0.85 : 1,
+          }}
+        >
+          {icon}
+        </div>
+        {/* Step 小数字徽标 */}
+        <span
+          className="mt-2 text-[10px] font-mono tracking-[0.12em] px-1.5 py-0.5"
+          style={{
+            borderRadius: 4,
+            background: status === 'pending'
+              ? 'rgb(var(--ink-300) / 0.45)'
+              : 'rgb(var(--brand-500) / 0.16)',
+            color: status === 'pending' ? 'rgb(var(--ink-700) / 0.7)' : 'rgb(var(--brand-300))',
+          }}
+        >
+          STEP · 0{step}
+        </span>
+      </div>
+      {/* 右侧：标题 + 描述 */}
+      <div className="pt-2">
+        <div className="flex items-center gap-2 mb-1">
+          <h4 className="text-[15px] font-semibold leading-tight" style={{ color: palette.text }}>
+            {title}
+          </h4>
+          {status === 'current' && (
+            <span className="text-[10px] uppercase tracking-[0.14em] font-semibold px-1.5 py-0.5 rounded-full"
+              style={{ background: 'rgb(var(--accent-amber) / 0.14)', color: 'rgb(var(--accent-amber))' }}
+            >NOW</span>
+          )}
+          {status === 'done' && (
+            <span className="text-[10px] uppercase tracking-[0.14em] font-semibold px-1.5 py-0.5 rounded-full"
+              style={{ background: 'rgb(var(--status-success-bg) / 0.14)', color: 'rgb(var(--status-success-bg))' }}
+            >DONE</span>
+          )}
+        </div>
+        <p className="text-[13.5px] leading-5" style={{ color: palette.muted }}>{desc}</p>
+      </div>
+    </li>
+  );
+}
+
 // ===== 主页面 =====
 export default function ProjectListPage() {
   const [items, setItems] = useState<ProjectListItem[] | null>(null);
@@ -278,6 +357,10 @@ export default function ProjectListPage() {
       const list = await api.projectList();
       setItems(list);
       setErr(null);
+      // 同步给顶栏
+      try {
+        window.dispatchEvent(new CustomEvent('app:projects-refreshed', { detail: list }));
+      } catch {}
     } catch (e: any) {
       setErr(String(e?.message || e));
       setItems([]);
@@ -287,8 +370,12 @@ export default function ProjectListPage() {
   useEffect(() => {
     reload();
     pollTimerRef.current = setInterval(reload, POLL_INTERVAL_MS);
+    // 接收顶栏"新建有声书"CTA
+    const onOpen = () => setShowCreateDialog(true);
+    window.addEventListener('app:open-create-dialog', onOpen);
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+      window.removeEventListener('app:open-create-dialog', onOpen);
     };
   }, []);
 
@@ -310,9 +397,22 @@ export default function ProjectListPage() {
       {/* ===== 顶部操作栏 ===== */}
       <div className="flex items-end justify-between gap-4 flex-wrap animate-fade-in">
         <div className="min-w-0">
-          <div className="eyebrow mb-2">AUDIOBOOKS · 模块 01</div>
+          {/* Edtech Eyebrow：indigo 底 + 琥珀圆点 + 全大写 0.16em tracking */}
+          <div className="inline-flex items-center gap-2 px-2.5 py-1 mb-3"
+            style={{
+              borderRadius: 999,
+              background: 'rgb(var(--brand-600)0.10)',
+              border: '1px solid rgb(var(--brand-500)0.22)',
+            }}
+          >
+            <span className="inline-block w-1.5 h-1.5 rounded-full"
+              style={{ background: 'rgb(var(--accent-amber))' }} />
+            <span className="text-[10.5px] uppercase tracking-[0.16em] font-semibold"
+              style={{ color: 'rgb(var(--brand-400))' }}
+            >AUDIOBOOKS · MODULE 01</span>
+          </div>
           <h2 className="headline-lg text-[26px] sm:text-[28px]">我的有声书</h2>
-          <p className="mt-1.5 text-sm text-white/50">
+          <p className="mt-1.5 text-sm" style={{ color: 'rgb(var(--ink-700)0.68)' }}>
             上传小说 · AI 识别角色 · 一键合成有声书
           </p>
         </div>
@@ -344,32 +444,87 @@ export default function ProjectListPage() {
         </div>
       )}
 
-      {/* 空状态 */}
+      {/* 空状态：Edtech 三步引导 Hero */}
       {!loading && items && items.length === 0 && (
-        <div className="relative rounded-lg border border-white/[0.06] bg-white/[0.02] text-center py-20 overflow-hidden">
-          <div className="glow-orb w-[320px] h-[320px] bg-brand-500/15" style={{ left: '50%', top: '-80px', transform: 'translateX(-50%)' }} />
-          <div className="relative mx-auto w-20 h-20 rounded-lg grid place-items-center mb-6"
+        <div className="relative card p-8 lg:p-10 overflow-hidden">
+          {/* Edtech 柔和 brand glow */}
+          <div className="pointer-events-none absolute inset-0 -z-0"
             style={{
-              background: 'linear-gradient(135deg, rgb(var(--brand-500) / 0.18), rgb(var(--status-ready-bg) / 0.10))',
-              border: '1px solid rgb(var(--color-white) / 0.08)',
+              background:
+                'radial-gradient(720px 320px at 20% 0%, rgb(var(--brand-600) / 0.12), transparent 60%),' +
+                'radial-gradient(560px 260px at 100% 100%, rgb(var(--accent-cold) / 0.08), transparent 60%)',
             }}
-          >
-            <div className="flex items-end gap-[3px] h-8">
-              <span className="w-1.5 rounded-full bg-brand-400/70" style={{ height: '40%' }} />
-              <span className="w-1.5 rounded-full bg-brand-400/80" style={{ height: '70%' }} />
-              <span className="w-1.5 rounded-full bg-brand-400" style={{ height: '100%' }} />
-              <span className="w-1.5 rounded-full bg-brand-400/85" style={{ height: '60%' }} />
-              <span className="w-1.5 rounded-full bg-brand-400/65" style={{ height: '45%' }} />
+          />
+          <div className="relative grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] items-center">
+            {/* 左：Hero Copy */}
+            <div className="text-left">
+              {/* Eyebrow （Edtech 风格） */}
+              <div className="inline-flex items-center gap-2 px-2.5 py-1 mb-4"
+                style={{
+                  borderRadius: 999,
+                  background: 'rgb(var(--brand-600) / 0.10)',
+                  border: '1px solid rgb(var(--brand-500) / 0.22)',
+                }}
+              >
+                <span className="inline-block w-1.5 h-1.5 rounded-full"
+                  style={{ background: 'rgb(var(--accent-amber))' }} />
+                <span className="text-[10.5px] uppercase tracking-[0.16em] font-semibold"
+                  style={{ color: 'rgb(var(--brand-400))' }}
+                >GET STARTED · 3 STEPS</span>
+              </div>
+              <h3 className="text-[26px] lg:text-[28px] font-semibold text-white leading-[1.25] tracking-tight mb-3">
+                还没有有声书？<br />
+                <span style={{ color: 'rgb(var(--brand-400))' }}>三步</span>上线你的第一部作品
+              </h3>
+              <p className="text-[14.5px] leading-6" style={{ color: 'rgb(var(--ink-700) / 0.7)' }}>
+                上传 TXT / EPUB，AI 自动识别章节、角色与对白；匹配音色后一键合成多角色 MP3。
+              </p>
+              <div className="mt-6 flex flex-wrap items-center gap-3">
+                <button
+                  className="btn-primary !h-11 !px-5 text-[14px] font-semibold shadow-[0_10px_24px_-12px_rgb(var(--brand-700))]"
+                  onClick={() => setShowCreateDialog(true)}
+                >
+                  ＋ 创建第一个有声书
+                </button>
+                <a href="#/audiobooks/voices"
+                  className="inline-flex items-center gap-2 h-11 px-4 text-[14px] font-medium border"
+                  style={{
+                    borderRadius: 'var(--radius-sm)',
+                    background: 'rgb(var(--ink-100))',
+                    borderColor: 'rgb(var(--ink-300))',
+                    color: 'rgb(var(--ink-900) / 0.85)',
+                  }}
+                >
+                  🎙️ 先逛逛音色库
+                </a>
+              </div>
             </div>
+
+            {/* 右：Step Stepper（Edtech 垂直 Stepper · 实心圆） */}
+            <ol className="relative space-y-5">
+              <StepperRow
+                step={1}
+                title="导入小说原文"
+                desc="支持 TXT / EPUB，拖入即可上传。"
+                icon="📄"
+                status="current"
+              />
+              <StepperRow
+                step={2}
+                title="AI 匹配角色音色"
+                desc="自动提取角色名单，支持自定义分配。"
+                icon="🧑‍🎤"
+                status="pending"
+              />
+              <StepperRow
+                step={3}
+                title="一键合成多角色 MP3"
+                desc="章节级并发合成，随时试听 & 下载。"
+                icon="🎧"
+                status="pending"
+              />
+            </ol>
           </div>
-          <h3 className="text-lg font-semibold mb-2">还没有有声书</h3>
-          <p className="text-sm text-white/50 max-w-md mx-auto mb-6">
-            上传 TXT/EPUB 小说，自动识别章节切分、角色名单与对白归属，
-            为每个角色分配音色后即可一键生成多音色 MP3 有声书。
-          </p>
-          <button className="btn-primary !px-6 !py-2.5" onClick={() => setShowCreateDialog(true)}>
-            ＋ 创建第一个有声书
-          </button>
         </div>
       )}
 
