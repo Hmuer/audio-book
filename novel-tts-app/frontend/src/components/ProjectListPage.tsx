@@ -321,7 +321,7 @@ export default function ProjectListPage() {
             我的有声书
           </h2>
           <p className="mt-1 text-sm text-white/50">
-            管理你的 AI 有声书项目
+            管理你的有声书项目
             {hasRunning ? <> · <span className="text-amber-300">后台任务进行中</span></> : null}
           </p>
         </div>

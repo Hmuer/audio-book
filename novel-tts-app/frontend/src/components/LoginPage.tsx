@@ -13,11 +13,11 @@ const WAVE_BARS = [
   { h: 50, d: '0.13s' }, { h: 75, d: '0.07s' }, { h: 45, d: '0.19s' },
 ];
 
-/** 左侧品牌区特性列表 */
+/** 左侧品牌区特性列表：体现平台多形态（有声书 / 小说 / 短剧 / 漫画） */
 const FEATURES = [
-  { icon: 'microphone', title: '多音色合成', desc: '自动识别角色对白，分配独立音色' },
-  { icon: 'sparkles', title: 'AI 智能切章', desc: '正则规则可配置，精准拆分章节' },
-  { icon: 'bolt', title: '批量生成', desc: '并发限流控制，稳定高效产出' },
+  { icon: 'sparkles', title: 'AI 全程驱动', desc: '从灵感到成品，一站式内容创作工作流' },
+  { icon: 'microphone', title: '多形态创作', desc: '小说 · 有声书 · 短剧 · 漫画，持续扩展' },
+  { icon: 'wand', title: '角色与世界观', desc: '自动识别人物、设定并复用至各形态' },
 ];
 
 function FeatureIcon({ name }: { name: string }) {
@@ -38,6 +38,13 @@ function FeatureIcon({ name }: { name: string }) {
     bolt: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
         <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+      </svg>
+    ),
+    wand: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+        <path d="M15 4V2M15 10V8M18 7h2M12 7h2M3 21l9-9" />
+        <path d="M15.5 6.5l3 3" strokeWidth="1.8" strokeLinecap="round" />
+        <path d="M18.5 3.5l2 2" strokeWidth="1.8" strokeLinecap="round" />
       </svg>
     ),
   };
@@ -134,14 +141,14 @@ export default function LoginPage() {
         <div className="relative z-10 flex-1 flex flex-col justify-center max-w-md">
           <div className="animate-float-in" style={{ animationDelay: '0.25s' }}>
             <h2 className="font-display text-[2.5rem] xl:text-[3rem] font-bold text-white leading-[1.1] tracking-tight">
-              AI 有声书
+              AI 内容创作平台
               <br />
               <span style={{ background: 'linear-gradient(135deg, #c4b5fd 0%, #a78bfa 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
-                创作平台
+                阿布
               </span>
             </h2>
             <p className="mt-4 text-[15px] text-white/50 leading-relaxed">
-              上传小说文本，自动切章、识别角色、多音色合成 —— 让每一本书都拥有声音。
+              小说 · 有声书 · 短剧 · 漫画 —— AI 驱动，一个平台搞定全链路创作。
             </p>
           </div>
 
@@ -342,7 +349,7 @@ export default function LoginPage() {
 
           {/* 底部品牌语 */}
           <div className="mt-8 text-center text-[11px] text-ink-500/70 tracking-wide animate-float-in" style={{ animationDelay: '0.35s' }}>
-            Powered by MiniMax TTS · 角色识别 · 多音色合成
+            Powered by AI · 阿布创作平台
           </div>
         </div>
       </div>

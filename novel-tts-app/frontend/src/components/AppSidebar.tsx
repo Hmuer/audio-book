@@ -40,6 +40,18 @@ const MODULES: Module[] = [
     icon: '✍️',
     disabled: true,
   },
+  {
+    key: 'drama',
+    label: 'AI短剧',
+    icon: '🎬',
+    disabled: true,
+  },
+  {
+    key: 'comic',
+    label: 'AI漫画',
+    icon: '🎨',
+    disabled: true,
+  },
 ];
 
 const SETTINGS_ITEM: MenuItem = {
