@@ -215,8 +215,6 @@ export default function ProjectDetailPage({
 
       {/* ============ Header ============ */}
       <div className="glass-panel p-5 sm:p-6 relative overflow-hidden mb-5">
-        <div className="glow-orb w-72 h-72 bg-brand-500/15" style={{ top: '-40px', right: '-40px' }} />
-        <div className="glow-orb w-64 h-64 bg-accent-teal/10" style={{ bottom: '-60px', left: '-30px' }} />
         <div
           className="stripe rounded-l-3xl"
           style={{ backgroundColor: project!.cover_color || 'rgb(var(--brand-500))' }}
@@ -543,7 +541,6 @@ function OverviewTab({
       {/* ===== 识别中：7阶段时间线 ===== */}
       {isPreparing && (
         <div className="glass-panel space-y-4 relative overflow-hidden">
-          <div className="glow-orb w-48 h-48 bg-brand-500/10" style={{ top: '-30px', right: '-20px' }} />
           <div className="flex items-center justify-between gap-3 flex-wrap relative">
             <div className="min-w-0 flex-1">
               <div className="font-semibold text-ink-800 truncate">{stageLabel(prog?.stage)}</div>
@@ -578,7 +575,6 @@ function OverviewTab({
       {/* ===== 已导入但未识别 Banner ===== */}
       {needsPrepare && !isPreparing && project.source_filename && (
         <div className="glass-panel !border-brand-500/40 !bg-brand-500/[0.06] relative overflow-hidden">
-          <div className="glow-orb w-48 h-48 bg-brand-500/20" style={{ bottom: '-40px', right: '-30px' }} />
           <div className="flex items-center justify-between gap-3 flex-wrap relative">
             <div className="flex items-start gap-3 min-w-0 flex-1">
               <div className="w-10 h-10 rounded-md grid place-items-center bg-brand-500/20 text-brand-300 shrink-0">
@@ -712,7 +708,7 @@ function OverviewStat({
         <span className="text-lg opacity-70">{icon}</span>
       </div>
       <div
-        className="text-2xl sm:text-[28px] font-bold font-display tracking-tight mt-2 truncate relative"
+        className="text-2xl sm:text-[28px] font-bold tracking-tight mt-2 truncate relative font-sans"
         style={{
           background: `linear-gradient(135deg, ${color} 0%, ${color}cc 100%)`,
           WebkitBackgroundClip: 'text',
@@ -1119,7 +1115,6 @@ function VoicesTab({
   return (
     <div className="space-y-4">
       <div className="glass-panel space-y-5 p-5 sm:p-6 relative overflow-hidden">
-        <div className="glow-orb w-56 h-56 bg-brand-500/10" style={{ top: '-40px', right: '-40px' }} />
         <h3 className="font-semibold text-ink-800 flex items-center gap-2 relative">
           <div className="w-8 h-8 rounded-md grid place-items-center bg-brand-500/20 text-brand-300">🎙</div>
           <div>
@@ -1316,7 +1311,6 @@ function BuildsTab({
   return (
     <div className="space-y-4">
       <div className="glass-panel flex items-center justify-between gap-3 flex-wrap p-5 sm:p-6 relative overflow-hidden">
-        <div className="glow-orb w-56 h-56 bg-brand-500/10" style={{ bottom: '-50px', right: '-40px' }} />
         <div className="flex items-start gap-3 min-w-0">
           <div className="w-10 h-10 rounded-md grid place-items-center shrink-0 shadow-brand"
             style={{ backgroundImage: 'linear-gradient(135deg, rgb(var(--brand-500)), rgb(var(--brand-700))' }}
@@ -1343,7 +1337,6 @@ function BuildsTab({
 
       {builds.length === 0 ? (
         <div className="glass-panel text-center py-16 text-ink-500 relative overflow-hidden">
-          <div className="glow-orb w-56 h-56 bg-accent-teal/10" style={{ top: '-30px', left: '50%', transform: 'translateX(-50%)' }} />
           <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-white/[0.04] border border-white/[0.07] text-3xl relative">
             🏗
           </div>
@@ -1454,9 +1447,6 @@ function BuildRow({
 
   return (
     <div className="glass-panel space-y-3 animate-fade-in p-5 relative overflow-hidden">
-      {isRunning && (
-        <div className="glow-orb w-40 h-40 bg-brand-500/10" style={{ top: '-30px', right: '-20px' }} />
-      )}
       <div className="flex items-center gap-3 flex-wrap relative">
         <button
           className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md
@@ -1734,7 +1724,6 @@ function CreateBuildModal({
         className="glass-panel max-w-2xl w-full max-h-[90vh] overflow-y-auto p-5 sm:p-6 animate-scale-in relative"
         onClick={e => e.stopPropagation()}
       >
-        <div className="glow-orb w-60 h-60 bg-brand-500/15" style={{ top: '-40px', right: '-40px' }} />
 
         <div className="flex items-center justify-between mb-5 relative">
           <div className="flex items-start gap-3 min-w-0">
@@ -1960,7 +1949,6 @@ function SettingsTab({
   return (
     <div className="space-y-4">
       <div className="glass-panel p-5 sm:p-6 space-y-5 relative overflow-hidden">
-        <div className="glow-orb w-56 h-56 bg-accent-teal/10" style={{ bottom: '-50px', right: '-40px' }} />
         <h3 className="font-semibold text-ink-800 flex items-center gap-2 relative">
           <div className="w-8 h-8 rounded-md grid place-items-center bg-accent-teal/20 text-accent-teal">
             ⚙️
@@ -2074,7 +2062,6 @@ function SettingsTab({
       </div>
 
       <div className="glass-panel !border-red-500/30 !bg-red-500/[0.04] space-y-3 relative overflow-hidden">
-        <div className="glow-orb w-48 h-48 bg-red-500/10" style={{ bottom: '-40px', right: '-30px' }} />
         <h3 className="font-semibold text-red-300 flex items-center gap-2 relative">
           <span className="inline-flex w-7 h-7 rounded-md items-center justify-center bg-red-500/20 text-red-300">⚠️</span>
           危险区

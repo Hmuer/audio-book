@@ -112,28 +112,28 @@ export default function HomePage() {
 
   const R = routeInfo.route;
 
-  // 顶栏状态胶囊文案（Edtech 风格：实时资源计数）
+  // 顶栏状态胶囊（Edtech：实时资源计数 · 收敛字距）
   const statusCapsules = (() => {
     if (R.name === 'ab-list' || R.name === 'ab-detail') {
       const total = projects.length;
       const running = projects.filter(p => p.status === 'processing' || p.status === 'pending').length;
       const done    = projects.filter(p => p.status === 'ready').length;
       return [
-        { label: 'PROJECTS', value: String(total).padStart(2, '0'), tone: 'brand' as const },
+        { label: '项目',   value: String(total).padStart(2, '0'), tone: 'brand' as const },
         ...(total > 0 ? [
-          { label: 'IN PROGRESS', value: String(running).padStart(2, '0'), tone: 'amber' as const },
-          { label: 'COMPLETED',   value: String(done).padStart(2, '0'),    tone: 'ok' as const },
+          { label: '进行中', value: String(running).padStart(2, '0'), tone: 'cold' as const },
+          { label: '已完成', value: String(done).padStart(2, '0'),    tone: 'ok' as const },
         ] : []),
       ];
     }
     if (R.name === 'ab-voices') {
       return [
-        { label: 'VOICES', value: String(voices.length).padStart(2, '0'), tone: 'brand' as const },
-        { label: 'PRESETS', value: '16', tone: 'cold' as const },
+        { label: '音色', value: String(voices.length).padStart(2, '0'), tone: 'brand' as const },
+        { label: '预设', value: '16', tone: 'cold' as const },
       ];
     }
     return [
-      { label: 'VERSION', value: 'v0.1', tone: 'cold' as const },
+      { label: '版本', value: 'v0.1', tone: 'cold' as const },
     ];
   })();
 
@@ -145,14 +145,14 @@ export default function HomePage() {
       {/* 右侧主内容 */}
       <div className="flex-1 min-w-0 flex flex-col">
         {/* 顶部状态条：面包屑 + 状态胶囊（Edtech 参考） */}
-        <header className="h-12 shrink-0 border-b border-ink-300/70 px-5 lg:px-7 flex items-center justify-between bg-ink-50/40 backdrop-blur">
+        <header className="h-12 shrink-0 border-b border-ink-300/70 px-5 lg:px-7 flex items-center justify-between bg-ink-50">
           <div className="flex items-center gap-3 min-w-0">
-            {/* 面包屑 Eyebrow */}
-            <div className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-700/50">
-              {R.name === 'ab-list' && 'AUDIOBOOKS · MY LIBRARY'}
-              {R.name === 'ab-detail' && 'AUDIOBOOKS · WORKSPACE'}
-              {R.name === 'ab-voices' && 'AUDIOBOOKS · VOICE LIBRARY'}
-              {R.name === 'settings' && 'SYSTEM · SETTINGS'}
+            {/* 面包屑（收敛字距） */}
+            <div className="text-[11px] font-semibold text-ink-700/50">
+              {R.name === 'ab-list' && '有声书 · 我的作品库'}
+              {R.name === 'ab-detail' && '有声书 · 工作台'}
+              {R.name === 'ab-voices' && '有声书 · 音色库'}
+              {R.name === 'settings' && '系统 · 设置'}
             </div>
             {/* 状态胶囊组 */}
             <div className="hidden sm:flex items-center gap-1.5 pl-3 ml-1 border-l border-ink-300/60">
@@ -161,7 +161,7 @@ export default function HomePage() {
               ))}
             </div>
           </div>
-          {/* 右侧 Logo Eyebrow（Edtech 身份水印） */}
+          {/* 右侧（Edtech 工具感 · 无杂志水印） */}
           <div className="flex items-center gap-3">
             {/* 在列表页 & 详情页：顶栏主 CTA —— Edtech"随处可创建"理念 */}
             {(R.name === 'ab-list' || R.name === 'ab-detail') && (
@@ -171,7 +171,6 @@ export default function HomePage() {
                     window.dispatchEvent(new CustomEvent('app:open-create-dialog'));
                   } else {
                     window.location.hash = '/audiobooks';
-                    // 下一帧再触发
                     setTimeout(() => window.dispatchEvent(new CustomEvent('app:open-create-dialog')), 0);
                   }
                 }}
@@ -179,15 +178,12 @@ export default function HomePage() {
                 style={{
                   borderRadius: 'var(--radius-xs)',
                   background: 'rgb(var(--brand-600))',
-                  boxShadow: '0 6px 14px -8px rgb(var(--brand-700)0.95), 0 0 0 1px rgb(var(--brand-500)0.4)',
+                  boxShadow: '0 0 0 1px rgb(var(--brand-500) / 0.4), 0 6px 14px -8px rgb(var(--brand-700) / 0.9)',
                 }}
               >
-                ＋ 新建有声书
+                新建有声书
               </button>
             )}
-            <div className="text-[10.5px] text-ink-700/45 font-mono uppercase tracking-[0.2em] whitespace-nowrap">
-              ABU · CREATOR STUDIO
-            </div>
           </div>
         </header>
 
@@ -198,10 +194,10 @@ export default function HomePage() {
         >
           {R.name === 'ab-list' && <ProjectListPage />}
           {R.name === 'ab-detail' && <ProjectDetailPage projectId={R.id} voices={voices} />}
-          {R.name === 'ab-voices' && <PlaceholderPage title="音色库" desc="音色库功能即将上线" icon="🎙️" />}
+          {R.name === 'ab-voices' && <PlaceholderPage title="音色库" desc="音色库功能即将上线" iconName="mic" />}
           {R.name === 'settings' && <SettingsPage />}
           {R.name === 'unknown' && (
-            <PlaceholderPage title="页面不存在" desc="该路由暂未实现" icon="🤔" actionHref="#/audiobooks" actionLabel="返回有声书列表" />
+            <PlaceholderPage title="页面不存在" desc="该路由暂未实现" iconName="unknown" actionHref="#/audiobooks" actionLabel="返回有声书列表" />
           )}
         </main>
       </div>
@@ -209,7 +205,7 @@ export default function HomePage() {
   );
 }
 
-// ---- 状态胶囊（Edtech Header KPI）----
+// ---- 状态胶囊（Edtech Header KPI · 收敛字距 · 冷灰系）----
 function StatusCapsule({
   label, value, tone,
 }: {
@@ -218,26 +214,25 @@ function StatusCapsule({
   tone: 'brand' | 'amber' | 'cold' | 'ok';
 }) {
   const palette = {
-    brand: { fg: 'rgb(var(--brand-400))',  bg: 'rgb(var(--brand-600) / 0.10)', border: 'rgb(var(--brand-500) / 0.22)' },
-    amber: { fg: 'rgb(var(--accent-amber))',bg: 'rgb(var(--accent-amber) / 0.10)', border: 'rgb(var(--accent-amber) / 0.25)' },
-    cold:  { fg: 'rgb(var(--accent-cold))', bg: 'rgb(var(--accent-cold) / 0.08)', border: 'rgb(var(--accent-cold) / 0.20)' },
-    ok:    { fg: 'rgb(var(--status-success-bg))', bg: 'rgb(var(--status-success-bg) / 0.10)', border: 'rgb(var(--status-success-bg) / 0.22)' },
+    brand: { fg: 'rgb(var(--brand-400))',  bg: 'rgb(var(--ink-200))',       border: 'rgb(var(--ink-300))' },
+    amber: { fg: 'rgb(var(--accent-amber))',bg: 'rgb(var(--ink-200))',      border: 'rgb(var(--ink-300))' },
+    cold:  { fg: 'rgb(var(--ink-600))',    bg: 'rgb(var(--ink-200))',       border: 'rgb(var(--ink-300))' },
+    ok:    { fg: 'rgb(var(--status-success-fg))', bg: 'rgb(var(--ink-200))', border: 'rgb(var(--ink-300))' },
   }[tone];
   return (
     <div
       className="inline-flex items-center gap-2 h-6 px-2.5 border"
       style={{
-        borderRadius: 999,
+        borderRadius: 'var(--radius-xs)',
         background: palette.bg,
         borderColor: palette.border,
       }}
     >
-      <span className="inline-block w-1 h-1 rounded-full" style={{ background: palette.fg }} />
-      <span className="text-[9.5px] uppercase tracking-[0.14em] font-semibold" style={{ color: palette.fg }}>
+      <span className="text-[11px] font-medium" style={{ color: palette.fg }}>
         {label}
       </span>
       <span
-        className="text-[11.5px] font-mono font-semibold tabular-nums text-white"
+        className="text-[12px] font-semibold tabular-nums text-white/85"
       >{value}</span>
     </div>
   );
@@ -245,13 +240,27 @@ function StatusCapsule({
 
 // ---- 占位页（音色库 / 设置）----
 function PlaceholderPage({
-  title, desc, icon, actionHref, actionLabel,
-}: { title: string; desc: string; icon: string; actionHref?: string; actionLabel?: string }) {
+  title, desc, iconName, actionHref, actionLabel,
+}: { title: string; desc: string; iconName: 'mic' | 'unknown'; actionHref?: string; actionLabel?: string }) {
+  const common = {
+    width: 44, height: 44, viewBox: '0 0 24 24', fill: 'none',
+    stroke: 'rgb(var(--ink-500))', strokeWidth: 1.6,
+    strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
+  };
   return (
     <div className="h-full grid place-items-center py-20">
       <div className="text-center">
-        <div className="text-5xl mb-4">{icon}</div>
-        <h2 className="text-xl font-semibold mb-1">{title}</h2>
+        <div className="mx-auto w-16 h-16 grid place-items-center mb-4" style={{
+          background: 'rgb(var(--ink-100))',
+          borderRadius: 'var(--radius-md)',
+          border: '1px solid rgb(var(--ink-300))',
+        }}>
+          {iconName === 'mic'
+            ? <svg {...common}><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0014 0"/><path d="M12 18v3"/></svg>
+            : <svg {...common}><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          }
+        </div>
+        <h2 className="text-xl font-semibold mb-1 text-white">{title}</h2>
         <p className="text-sm text-white/50 mb-6">{desc}</p>
         {actionHref && actionLabel && (
           <a href={actionHref} className="btn-primary inline-flex justify-center">

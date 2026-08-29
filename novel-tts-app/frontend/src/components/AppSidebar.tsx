@@ -9,7 +9,7 @@ import { formatDate } from '@/lib/time';
 type MenuItem = {
   key: string;
   label: string;
-  icon: string;   // emoji/SVG char 直接用
+  icon: string;   // SVG / 内联图标名，不再使用 emoji
   href: string;
   disabled?: boolean;
   badge?: number | string;
@@ -26,24 +26,24 @@ type Module = {
 
 // ================= 菜单数据 =================
 const AUDIOBOOKS_CHILDREN: MenuItem[] = [
-  { key: 'list',   label: '我的有声书', href: '#/audiobooks',        icon: '📖' },
-  { key: 'voices', label: '音色库',     href: '#/audiobooks/voices', icon: '🎙️' },
+  { key: 'list',   label: '我的有声书', href: '#/audiobooks',        icon: 'book' },
+  { key: 'voices', label: '音色库',     href: '#/audiobooks/voices', icon: 'mic' },
 ];
 
 const MODULES: Module[] = [
-  { key: 'audiobooks', label: 'AI有声书',   icon: '🔊', children: AUDIOBOOKS_CHILDREN },
-  { key: 'novel',     label: 'AI小说创作', icon: '✍️', disabled: true },
-  { key: 'drama',     label: 'AI短剧',     icon: '🎬', disabled: true },
-  { key: 'comic',     label: 'AI漫画',     icon: '🎨', disabled: true },
+  { key: 'audiobooks', label: 'AI有声书',   icon: 'speaker', children: AUDIOBOOKS_CHILDREN },
+  { key: 'novel',     label: 'AI小说创作', icon: 'pen',     disabled: true },
+  { key: 'drama',     label: 'AI短剧',     icon: 'clapper', disabled: true },
+  { key: 'comic',     label: 'AI漫画',     icon: 'palette', disabled: true },
 ];
 
 const SETTINGS_ITEM: MenuItem = {
-  key: 'settings', label: '设置', icon: '⚙️', href: '#/settings',
+  key: 'settings', label: '设置', icon: 'cog', href: '#/settings',
 };
 
-// Edtech Eyebrow：全大写 + 细字距
-const SECTION_LABEL_WORKSPACE = 'WORKSPACE';
-const SECTION_LABEL_SYSTEM    = 'SYSTEM';
+// Edtech 工具化：分区标题使用中文简洁标签
+const SECTION_LABEL_WORKSPACE = '创作中心';
+const SECTION_LABEL_SYSTEM    = '系统';
 
 interface Props {
   currentPath: string;
@@ -99,8 +99,7 @@ export default function AppSidebar({ currentPath }: Props) {
       <aside
         className="hidden md:flex flex-col w-[244px] shrink-0 h-screen sticky top-0 border-r border-ink-300/70"
         style={{
-          background:
-            'linear-gradient(180deg, rgb(var(--ink-50)) 0%, rgb(var(--ink-0)) 100%)',
+          background: 'rgb(var(--ink-50))',
         }}
       >
         {/* ============ 品牌区 ============ */}
@@ -108,16 +107,8 @@ export default function AppSidebar({ currentPath }: Props) {
           <div className="flex items-center gap-3">
             <BrandLogo />
             <div className="min-w-0">
-              <div className="text-[17px] font-semibold text-white tracking-tight leading-none">阿布</div>
-              <div className="mt-1 flex items-center gap-1.5">
-                <span
-                  className="inline-block w-1.5 h-1.5 rounded-full animate-pulse-soft"
-                  style={{ background: 'linear-gradient(135deg, rgb(var(--brand-500)), rgb(var(--accent-cold)))' }}
-                />
-                <span className="text-[10.5px] text-white/40 tracking-[0.08em] uppercase font-semibold">
-                  ABU · CREATOR STUDIO
-                </span>
-              </div>
+              <div className="text-[15px] font-semibold text-white tracking-tight leading-none">阿布</div>
+              <div className="mt-1 text-[11px] text-white/35 leading-none">AI 内容创作平台</div>
             </div>
           </div>
         </div>
@@ -180,18 +171,18 @@ export default function AppSidebar({ currentPath }: Props) {
             {userMenuOpen && (
               <div
                 className="absolute left-0 right-0 bottom-[calc(100%+6px)] z-40
-                  border border-ink-300/70 bg-ink-50/98 backdrop-blur-md
+                  border border-ink-300/70 bg-ink-50 backdrop-blur-md
                   shadow-[0_16px_48px_-12px_rgba(0,0,0,0.75)] p-1.5 w-auto animate-fade-in"
                 style={{ borderRadius: 'var(--radius-md)' }}
               >
                 <MenuItemButton
                   label="修改密码"
-                  icon="🔐"
+                  icon="lock"
                   onClick={() => { setPwdModal(true); setUserMenuOpen(false); }}
                 />
                 <MenuItemButton
                   label="退出登录"
-                  icon="↩"
+                  icon="logout"
                   danger
                   onClick={() => { logout(); setUserMenuOpen(false); }}
                 />
@@ -208,12 +199,10 @@ export default function AppSidebar({ currentPath }: Props) {
 
 // ================= 子组件 =================
 function SectionLabel({ label }: { label: string }) {
-  // Edtech Eyebrow：全大写 + 0.16em tracking + 冷灰 muted，无装饰条
+  // Edtech：简单中文分区标题 · 不做 uppercase / tracking 装饰
   return (
     <div className="px-3 pt-1 pb-2 flex items-center select-none">
-      <span className="text-[10.5px] uppercase tracking-[0.16em] text-ink-700/45 font-semibold">
-        {label}
-      </span>
+      <span className="text-[11px] text-ink-700/45 font-medium">{label}</span>
     </div>
   );
 }
@@ -282,7 +271,7 @@ function ModuleNav({
       {headerEl}
 
       {/* 二级菜单：Edtech 风格 — 缩进 14px，激活=实心 indigo */}
-      {hasChildren && (
+              {hasChildren && (
         <div
           className="overflow-hidden transition-all duration-200 ease-out"
           style={{
@@ -310,12 +299,11 @@ function ModuleNav({
                     <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-[14px] rounded-r-full"
                       style={{ background: 'rgb(var(--accent-cold))' }} />
                   )}
-                  <span
-                    className={`w-5 h-5 shrink-0 rounded-[4px] grid place-items-center text-[12px]
-                      ${active ? 'bg-white/15 text-white' : 'bg-white/[0.04] text-white/70'}`}
-                  >
-                    {c.icon}
-                  </span>
+                  <MenuIcon
+                    name={c.icon}
+                    size={14}
+                    className={`shrink-0 ${active ? 'text-white' : 'text-white/70'}`}
+                  />
                   <span className="flex-1">{c.label}</span>
                   {c.badge != null && typeof c.badge !== 'undefined' && (
                     <span className="text-[10px] text-white/35 tabular-nums">{c.badge}</span>
@@ -357,13 +345,13 @@ function IconCell({
 }: { icon: string; active: boolean; disabled?: boolean }) {
   return (
     <div
-      className={`w-7 h-7 shrink-0 grid place-items-center text-[14px] transition-all
+      className={`w-7 h-7 shrink-0 grid place-items-center transition-all
         ${active ? 'bg-white/18 text-white ring-1 ring-white/25'
           : disabled ? 'bg-white/[0.02] text-white/35'
           : 'bg-white/[0.04] text-white/85 ring-1 ring-white/[0.05] group-hover:bg-white/[0.07]'}`}
       style={{ borderRadius: 'var(--radius-xs)' }}
     >
-      {icon}
+      <MenuIcon name={icon} size={15} />
     </div>
   );
 }
@@ -383,18 +371,18 @@ function Chevron({
 }
 
 function ComingSoonBadge() {
-  // Edtech：amber-500 琥珀色 SOON 胶囊点缀
+  // Edtech：冷灰「即将上线」小标签
   return (
     <span
-      className="text-[9.5px] px-1.5 py-0.5 font-semibold tracking-wide"
+      className="text-[10px] px-1.5 py-0.5 font-medium"
       style={{
         borderRadius: 'var(--radius-xs)',
-        background: 'rgb(var(--accent-amber)0.14)',
-        color: 'rgb(var(--accent-amber))',
-        border: '1px solid rgb(var(--accent-amber)0.25)',
+        background: 'rgb(var(--ink-300) / 0.55)',
+        color: 'rgb(var(--ink-600))',
+        border: '1px solid rgb(var(--ink-400) / 0.55)',
       }}
     >
-      SOON
+      即将上线
     </span>
   );
 }
@@ -407,8 +395,8 @@ function Avatar({ username }: { username: string }) {
       style={{
         borderRadius: 'var(--radius-sm)',
         backgroundImage:
-          'linear-gradient(180deg, rgb(var(--color-white)0.14) 0%, rgb(var(--color-white)0) 45%), linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 100%)',
-        boxShadow: '0 0 0 1px rgb(var(--brand-400)0.35), 0 8px 16px -8px rgb(var(--brand-600)0.5)',
+          'linear-gradient(180deg, rgb(var(--color-white) / 0.14) 0%, rgb(var(--color-white) / 0) 45%), linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 100%)',
+        boxShadow: '0 0 0 1px rgb(var(--brand-400) / 0.35), 0 8px 16px -8px rgb(var(--brand-600) / 0.5)',
       }}
     >
       {initial}
@@ -417,28 +405,59 @@ function Avatar({ username }: { username: string }) {
 }
 
 function BrandLogo() {
-  // Edtech：纯 indigo-600 实心 logo（不再是渐变），只保留顶部极薄高光
+  // Edtech：纯 indigo-600 实心 logo · 无渐变装饰
   return (
     <div
-      className="w-10 h-10 grid place-items-center shrink-0 relative"
+      className="w-9 h-9 grid place-items-center shrink-0 relative"
       style={{
         borderRadius: 'var(--radius-md)',
-        backgroundImage:
-          'linear-gradient(180deg, rgb(var(--color-white)0.18) 0%, rgb(var(--color-white)0) 40%), rgb(var(--brand-600))',
-        boxShadow: '0 0 0 1px rgb(var(--brand-500)0.4), 0 12px 24px -10px rgb(var(--brand-600)0.65)',
+        background: 'rgb(var(--brand-600))',
+        boxShadow: '0 0 0 1px rgb(var(--brand-500) / 0.4), 0 10px 20px -10px rgb(var(--brand-600) / 0.6)',
       }}
     >
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="text-white">
-        <g stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" fill="currentColor">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="text-white">
+        <g stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
           <rect x="4"  y="14" width="2.2" height="6"  rx="1.1" />
           <rect x="8"  y="10" width="2.2" height="10" rx="1.1" />
-          <rect x="12" y="5"  width="2.2" height="15" rx="1.1" opacity="0.95" />
+          <rect x="12" y="5"  width="2.2" height="15" rx="1.1" />
           <rect x="16" y="9"  width="2.2" height="11" rx="1.1" />
           <rect x="20" y="13" width="2.2" height="7"  rx="1.1" />
         </g>
       </svg>
     </div>
   );
+}
+
+// ================= 内联 SVG 图标（Edtech · 线性，无 emoji） =================
+function MenuIcon({ name, size = 16, className = '' }: { name: string; size?: number; className?: string }) {
+  const common = {
+    width: size, height: size, viewBox: '0 0 24 24', fill: 'none',
+    stroke: 'currentColor', strokeWidth: 1.9,
+    strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
+    className,
+  };
+  switch (name) {
+    case 'speaker':
+      return (<svg {...common}><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M19.07 4.93a10 10 0 010 14.14"/></svg>);
+    case 'book':
+      return (<svg {...common}><path d="M4 4h10a4 4 0 014 4v12H8a4 4 0 01-4-4V4z"/><path d="M4 16a4 4 0 014-4h10"/></svg>);
+    case 'mic':
+      return (<svg {...common}><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0014 0"/><path d="M12 18v3"/></svg>);
+    case 'pen':
+      return (<svg {...common}><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>);
+    case 'clapper':
+      return (<svg {...common}><path d="M3 8l2-2 4 2 4-2 4 2 4-2v12H3z"/><path d="M3 8v12h18V8"/></svg>);
+    case 'palette':
+      return (<svg {...common}><circle cx="13.5" cy="6.5" r="1.5"/><circle cx="17.5" cy="10.5" r="1.5"/><circle cx="8.5" cy="7.5" r="1.5"/><circle cx="6.5" cy="12.5" r="1.5"/><path d="M12 22a10 10 0 110-20 8 8 0 015.3 14A4 4 0 0015 22h-3z"/></svg>);
+    case 'cog':
+      return (<svg {...common}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 01-4 0v-.1A1.7 1.7 0 009 19.4a1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 010-4h.1A1.7 1.7 0 004.6 9a1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 014 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 010 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>);
+    case 'lock':
+      return (<svg {...common}><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>);
+    case 'logout':
+      return (<svg {...common}><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>);
+    default:
+      return (<svg {...common}><rect x="4" y="4" width="16" height="16" rx="2"/></svg>);
+  }
 }
 
 function MenuItemButton({
@@ -459,7 +478,9 @@ function MenuItemButton({
           : 'text-white/80 hover:bg-white/[0.06] hover:text-white'}`}
       style={{ borderRadius: 'var(--radius-xs)' }}
     >
-      <span className="w-6 h-6 grid place-items-center text-[13px] bg-white/[0.04]" style={{ borderRadius: 'var(--radius-xs)' }}>{icon}</span>
+      <span className="w-6 h-6 grid place-items-center bg-white/[0.04]" style={{ borderRadius: 'var(--radius-xs)' }}>
+        <MenuIcon name={icon} size={14} />
+      </span>
       <span className="flex-1 text-left">{label}</span>
     </button>
   );

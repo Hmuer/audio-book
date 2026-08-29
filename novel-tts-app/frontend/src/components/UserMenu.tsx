@@ -39,22 +39,24 @@ export default function UserMenu() {
               </div>
             </div>
             <button
-              className="w-full text-left px-4 py-2 text-sm hover:bg-white/5"
+              className="w-full text-left px-4 py-2 text-sm hover:bg-white/5 flex items-center gap-2.5"
               onClick={() => {
                 setOpen(false);
                 setShowChangePwd(true);
               }}
             >
-              🔒 修改密码
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className="opacity-70 shrink-0"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>
+              修改密码
             </button>
             <button
-              className="w-full text-left px-4 py-2 text-sm text-red-300 hover:bg-red-500/10"
+              className="w-full text-left px-4 py-2 text-sm text-red-300 hover:bg-red-500/10 flex items-center gap-2.5"
               onClick={async () => {
                 setOpen(false);
                 await logout();
               }}
             >
-              ↩ 退出登录
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className="opacity-80 shrink-0"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+              退出登录
             </button>
           </div>
         </>
@@ -124,8 +126,8 @@ export function ChangePasswordModal({ onClose }: { onClose: () => void }) {
         <p className="text-xs text-white/40 mb-4">当前账号：{user?.username}</p>
 
         {ok ? (
-          <div className="text-center py-6 text-green-300">
-            ✓ 密码已修改，下次登录请使用新密码
+          <div className="text-center py-6" style={{ color: 'rgb(var(--status-success-fg))' }}>
+            密码已修改，下次登录请使用新密码
           </div>
         ) : (
           <form onSubmit={onSubmit} className="space-y-3">

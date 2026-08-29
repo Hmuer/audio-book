@@ -2,8 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ===== 字体：UXPilot Edtech 模板指定 Inter（参考文档：Body 16px · Heading Bold 24px · Clean Sans）===== */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Sora:wght@500;600;700;800&display=swap');
+/* ===== 字体：UXPilot Edtech 模板 · 全 Inter（工具化，无装饰性 Sora / 展示字体） ===== */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
 /* ================================================================
    Edtech Dark · 全局色彩 Tokens（UxPilot Edtech Design Template · Dark）
@@ -66,6 +66,7 @@
   --accent-cold: 56, 189, 248;    /* sky-400 淡青蓝 · 学习状态的"新进展"光 */
   --accent-soft: 148, 163, 184;   /* slate-400 · 淡冷灰，hint/二级 */
   --accent-amber: 245, 158, 11;   /* amber-500 #F59E0B · Edtech Warn/Important dot */
+  --accent-teal: 45, 212, 191;    /* teal-400 · 保留 Tailwind teal 别名映射 */
 
   /* ============ status 语义色（bg 做容器色，fg 做文字色，dot 做小圆点） ============ */
   --status-info-bg:     59, 130, 246;   /* blue-500 信息 */
@@ -143,33 +144,14 @@ html {
 }
 
 body {
-  /* Edtech Canvas：纯 gray-900 底（不再是杂志渐变+grain 的大气氛围），
-     收敛到"信息密度工作板"。用一枚极淡的 brand glow 做 AI 创作感，不晃眼。 */
+  /* Edtech Canvas：纯 solid gray-900 底 · 无渐变、无 mesh、无点阵 · 信息密度优先 */
   background-color: rgb(var(--ink-0));
   color: rgb(var(--ink-700));
   letter-spacing: -0.004em;
   min-height: 100vh;
   position: relative;
   overflow-x: hidden;
-  background-image:
-    radial-gradient(900px 620px at -10% -10%,  rgb(var(--brand-600) / 0.14), transparent 62%),
-    radial-gradient(720px 520px at 110% 110%, rgb(var(--accent-cold) / 0.08), transparent 60%);
-  background-attachment: fixed;
 }
-/* 顶层浮层：极其收敛的 brand glow · Edtech 参考不做 grain，改成细点阵背景 */
-body::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  background-image:
-    radial-gradient(circle at 1px 1px, rgb(var(--color-white) / 0.035) 1px, transparent 0);
-  background-size: 22px 22px;
-  mask-image: radial-gradient(ellipse 90% 80% at 50% 40%, #000 20%, transparent 100%);
-  -webkit-mask-image: radial-gradient(ellipse 90% 80% at 50% 40%, #000 20%, transparent 100%);
-}
-body > * { position: relative; z-index: 2; }
 
 /* ================================================================
    Design System · 组件层
@@ -203,7 +185,7 @@ body > * { position: relative; z-index: 2; }
       0 1px 0 0 rgb(var(--color-white) / 0.04) inset,
       0 0 0 1px rgb(var(--brand-600) / 0.22),
       0 18px 40px -22px rgba(0, 0, 0, 0.7);
-    transform: translateY(-1px);
+    /* 无抬高 · 工具板不做漂浮 */
   }
   @media (max-width: 640px) { .card { padding: 1rem; } }
 
@@ -257,9 +239,9 @@ body > * { position: relative; z-index: 2; }
       0 1px 0 0 rgb(var(--color-white) / 0.14) inset,
       0 10px 22px -10px rgb(var(--brand-500) / 0.75),
       0 0 0 3px rgb(var(--brand-500) / 0.18);
-    transform: translateY(-1px);
+    /* 无抬高 · 工具按钮不做漂浮 */
   }
-  .btn-primary:active { transform: translateY(0) scale(0.99); }
+  .btn-primary:active { transform: scale(0.99); }
 
   /* Ghost：gray-800 底 + gray-700 边，hover 加靛边 */
   .btn-ghost {
@@ -437,31 +419,11 @@ body > * { position: relative; z-index: 2; }
     border-color: transparent;
   }
 
-  /* ---- 登录页插画动画 ---- */
-  @keyframes wave-bar {
-    0%, 100% { transform: scaleY(0.25); }
-    50%      { transform: scaleY(1); }
-  }
-  .wave-bar {
-    animation: wave-bar 1.2s ease-in-out infinite;
-    transform-origin: bottom center;
-    border-radius: 2px;
-  }
-
-  .login-grid-bg {
-    background-image:
-      linear-gradient(rgb(var(--color-white) / 0.04) 1px, transparent 1px),
-      linear-gradient(90deg, rgb(var(--color-white) / 0.04) 1px, transparent 1px);
-    background-size: 40px 40px;
-    mask-image: radial-gradient(ellipse 80% 60% at 50% 45%, #000 30%, transparent 100%);
-    -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 45%, #000 30%, transparent 100%);
-  }
-
   @keyframes float-in {
-    from { opacity: 0; transform: translateY(20px); }
+    from { opacity: 0; transform: translateY(10px); }
     to   { opacity: 1; transform: translateY(0); }
   }
-  .animate-float-in { animation: float-in 0.5s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+  .animate-float-in { animation: float-in 0.35s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
 }
 
 /* ================================================================
@@ -523,34 +485,35 @@ body > * { position: relative; z-index: 2; }
     border-radius: var(--radius-sm);
   }
 
-  /* ================ 排版体系（Edtech 参考 Body 16px Regular · Heading Bold 24px） ================ */
+  /* ================ 排版体系（Edtech · 全 Inter · 工具化，无 JetBrains Mono eyebrow） ================ */
   .eyebrow {
-    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-family: 'Inter', 'PingFang SC', sans-serif;
     font-size: 10.5px;
     text-transform: uppercase;
     color: rgb(var(--ink-500));
-    letter-spacing: 0.22em;
+    letter-spacing: 0.08em;
+    font-weight: 600;
   }
   .headline {
     font-family: 'Inter', 'PingFang SC', sans-serif;
     font-weight: 700;
     color: rgb(var(--ink-900));
-    letter-spacing: -0.018em;
-    line-height: 1.2;
+    letter-spacing: -0.014em;
+    line-height: 1.22;
   }
   .headline-lg {
     font-family: 'Inter', 'PingFang SC', sans-serif;
-    font-weight: 800;
-    color: rgb(var(--ink-900));
-    letter-spacing: -0.024em;
-    line-height: 1.12;
-  }
-  .headline-hero {
-    font-family: 'Sora', 'Inter', sans-serif;  /* 仅 hero 大号标题用 Sora，保留 AI 平台辨识度 */
     font-weight: 700;
     color: rgb(var(--ink-900));
-    letter-spacing: -0.028em;
-    line-height: 1.04;
+    letter-spacing: -0.018em;
+    line-height: 1.18;
+  }
+  .headline-hero {
+    font-family: 'Inter', 'PingFang SC', sans-serif;
+    font-weight: 700;
+    color: rgb(var(--ink-900));
+    letter-spacing: -0.018em;
+    line-height: 1.18;
   }
   .subtle-quote {
     color: rgb(var(--ink-500));

@@ -240,7 +240,7 @@ export default function VoicePicker({
             {Object.entries(groups).map(([k, list]) =>
               list.length > 0 ? (
                 <div key={k}>
-                  <div className="text-[11px] uppercase tracking-[0.15em] text-ink-500 mb-1.5 px-1 flex items-center gap-2">
+                  <div className="text-[11px] uppercase tracking-[0.08em] text-ink-500 mb-1.5 px-1 flex items-center gap-2 font-semibold">
                     <span className="inline-block w-1.5 h-1.5 rounded-full"
                       style={{
                         background: k === '男声' ? 'rgb(var(--status-info-bg))' : k === '女声' ? 'rgb(var(--status-error-bg))' : 'rgb(var(--brand-500))'

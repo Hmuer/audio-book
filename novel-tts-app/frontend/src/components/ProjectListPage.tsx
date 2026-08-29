@@ -129,12 +129,12 @@ export function PrepareProgressInline({
               color: 'rgb(var(--status-error-fg))',
               border: '1px solid rgb(var(--status-error-bg) / 0.22)',
             }}>
-              ❌ {prog.last_error}
+              {prog.last_error}
             </span>
           )}
           {typeof prog.restart_count === 'number' && prog.restart_count > 0 && (
             <span className="chip-soft">
-              ♻ 自动恢复 × {prog.restart_count}
+              自动恢复 × {prog.restart_count}
             </span>
           )}
         </div>
@@ -149,7 +149,7 @@ export function PrepareProgressInline({
             <div className="progress-fill" style={{ width: `${m.charPct}%` }} />
           </div>
           {m.charFailedN > 0 && (
-            <div className="mt-1" style={{ color: 'rgb(var(--status-warn-fg))' }}>⚠ 有 {m.charFailedN} 个切片失败，完成后可补跑</div>
+            <div className="mt-1" style={{ color: 'rgb(var(--status-warn-fg))' }}>有 {m.charFailedN} 个切片失败，完成后可补跑</div>
           )}
         </div>
       )}
@@ -163,7 +163,7 @@ export function PrepareProgressInline({
             <div className="progress-fill" style={{ width: `${m.dialoguePct}%` }} />
           </div>
           {m.dialogueFailedN > 0 && (
-            <div className="mt-1" style={{ color: 'rgb(var(--status-warn-fg))' }}>⚠ 有 {m.dialogueFailedN} 批对白失败，完成后可补跑</div>
+            <div className="mt-1" style={{ color: 'rgb(var(--status-warn-fg))' }}>有 {m.dialogueFailedN} 批对白失败，完成后可补跑</div>
           )}
         </div>
       )}
@@ -181,8 +181,8 @@ export function RunningTasksBar({ items }: { items: ProjectListItem[] }) {
   const preparing = running.filter(p => p.status === 'preparing');
   const synthesizing = running.filter(p => p.status === 'synthesizing');
   const summary: string[] = [];
-  if (preparing.length) summary.push(`🔍 ${preparing.length} 个识别任务进行中`);
-  if (synthesizing.length) summary.push(`🔊 ${synthesizing.length} 个合成任务进行中`);
+  if (preparing.length) summary.push(`${preparing.length} 个识别任务进行中`);
+  if (synthesizing.length) summary.push(`${synthesizing.length} 个合成任务进行中`);
   return (
     <div
       className="sticky top-2 z-30 rounded-lg backdrop-blur-xl px-5 py-4 mb-5 animate-fade-in"
@@ -267,81 +267,106 @@ export function RunningTasksBar({ items }: { items: ProjectListItem[] }) {
 
 // ===== 空状态 · Edtech Stepper Row =====
 function StepperRow({
-  step, title, desc, icon, status,
+  step, title, desc, iconName, status,
 }: {
   step: number;
   title: string;
   desc: string;
-  icon: string;
+  iconName: 'upload' | 'assign' | 'render';
   status: 'done' | 'current' | 'pending';
 }) {
   const palette =
     status === 'done'
-      ? { ring: 'rgb(var(--status-success-bg))',   fg: '#fff', text: 'rgb(var(--ink-900))', muted: 'rgb(var(--ink-700) / 0.65)' }
+      ? { ring: 'rgb(var(--ink-200))',          fg: 'rgb(var(--ink-700))',        text: 'rgb(var(--ink-800))',     muted: 'rgb(var(--ink-700) / 0.65)' }
       : status === 'current'
-      ? { ring: 'rgb(var(--brand-600))',           fg: '#fff', text: 'rgb(var(--ink-900))', muted: 'rgb(var(--ink-700) / 0.65)' }
-      : { ring: 'rgb(var(--ink-300))',            fg: 'rgb(var(--ink-700) / 0.55)', text: 'rgb(var(--ink-700) / 0.55)', muted: 'rgb(var(--ink-700) / 0.4)' };
+      ? { ring: 'rgb(var(--brand-600))',        fg: '#fff',                        text: 'rgb(var(--ink-900))',     muted: 'rgb(var(--ink-700) / 0.65)' }
+      : { ring: 'rgb(var(--ink-200))',          fg: 'rgb(var(--ink-500))',         text: 'rgb(var(--ink-700) / 0.55)', muted: 'rgb(var(--ink-700) / 0.4)' };
 
   return (
-    <li className="relative grid grid-cols-[56px_minmax(0,1fr)] gap-4 items-start">
+    <li className="relative grid grid-cols-[48px_minmax(0,1fr)] gap-3 items-start">
       {/* 竖线：除最后一个外，向下延伸 100% */}
       {step < 3 && (
         <span
-          className="absolute left-[27px] top-[44px] bottom-[-20px] w-px"
+          className="absolute left-[23px] top-[40px] bottom-[-16px] w-px"
           style={{ background: 'rgb(var(--ink-300) / 0.9)' }}
         />
       )}
-      {/* 左侧：实心圆 + 图标 */}
+      {/* 左侧：实心方 + SVG 图标（Edtech 工具感） */}
       <div className="relative flex flex-col items-center">
         <div
-          className="w-14 h-14 shrink-0 grid place-items-center text-[20px] text-white shadow-[0_8px_20px_-8px_rgba(0,0,0,0.6)]"
+          className="w-11 h-11 shrink-0 grid place-items-center shadow-[0_6px_16px_-8px_rgba(0,0,0,0.55)]"
           style={{
-            borderRadius: 'var(--radius-md)',
+            borderRadius: 'var(--radius-sm)',
             background: palette.ring,
             boxShadow: status === 'current'
-              ? `0 0 0 3px rgb(var(--brand-500) / 0.18), 0 8px 20px -8px rgb(var(--brand-700) / 0.9)`
+              ? `0 0 0 3px rgb(var(--brand-500) / 0.18), 0 6px 16px -8px rgb(var(--brand-700) / 0.85)`
               : undefined,
             color: palette.fg,
-            opacity: status === 'pending' ? 0.85 : 1,
+            opacity: status === 'pending' ? 0.9 : 1,
           }}
         >
-          {icon}
+          <StepperIcon name={iconName} />
         </div>
-        {/* Step 小数字徽标 */}
+        {/* Step 编号（简单 · 无装饰） */}
         <span
-          className="mt-2 text-[10px] font-mono tracking-[0.12em] px-1.5 py-0.5"
+          className="mt-1.5 text-[10px] font-medium px-1.5 py-0.5"
           style={{
             borderRadius: 4,
             background: status === 'pending'
               ? 'rgb(var(--ink-300) / 0.45)'
-              : 'rgb(var(--brand-500) / 0.16)',
+              : 'rgb(var(--brand-500) / 0.14)',
             color: status === 'pending' ? 'rgb(var(--ink-700) / 0.7)' : 'rgb(var(--brand-300))',
           }}
         >
-          STEP · 0{step}
+          0{step}
         </span>
       </div>
       {/* 右侧：标题 + 描述 */}
-      <div className="pt-2">
-        <div className="flex items-center gap-2 mb-1">
-          <h4 className="text-[15px] font-semibold leading-tight" style={{ color: palette.text }}>
+      <div className="pt-1">
+        <div className="flex items-center gap-2 mb-0.5">
+          <h4 className="text-[14px] font-semibold leading-tight" style={{ color: palette.text }}>
             {title}
           </h4>
           {status === 'current' && (
-            <span className="text-[10px] uppercase tracking-[0.14em] font-semibold px-1.5 py-0.5 rounded-full"
-              style={{ background: 'rgb(var(--accent-amber) / 0.14)', color: 'rgb(var(--accent-amber))' }}
-            >NOW</span>
+            <span className="text-[10px] font-medium px-1.5 py-0.5"
+              style={{
+                borderRadius: 'var(--radius-xs)',
+                background: 'rgb(var(--ink-300) / 0.65)',
+                color: 'rgb(var(--ink-700))',
+                border: '1px solid rgb(var(--ink-400) / 0.65)',
+              }}
+            >进行中</span>
           )}
           {status === 'done' && (
-            <span className="text-[10px] uppercase tracking-[0.14em] font-semibold px-1.5 py-0.5 rounded-full"
-              style={{ background: 'rgb(var(--status-success-bg) / 0.14)', color: 'rgb(var(--status-success-bg))' }}
-            >DONE</span>
+            <span className="text-[10px] font-medium px-1.5 py-0.5"
+              style={{
+                borderRadius: 'var(--radius-xs)',
+                background: 'rgb(var(--ink-300) / 0.55)',
+                color: 'rgb(var(--ink-600))',
+              }}
+            >已就绪</span>
           )}
         </div>
-        <p className="text-[13.5px] leading-5" style={{ color: palette.muted }}>{desc}</p>
+        <p className="text-[13px] leading-5" style={{ color: palette.muted }}>{desc}</p>
       </div>
     </li>
   );
+}
+
+function StepperIcon({ name }: { name: 'upload' | 'assign' | 'render' }) {
+  const common = {
+    width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none',
+    stroke: 'currentColor', strokeWidth: 1.8,
+    strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
+  };
+  switch (name) {
+    case 'upload':
+      return (<svg {...common}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>);
+    case 'assign':
+      return (<svg {...common}><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>);
+    case 'render':
+      return (<svg {...common}><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>);
+  }
 }
 
 // ===== 主页面 =====
@@ -397,23 +422,10 @@ export default function ProjectListPage() {
       {/* ===== 顶部操作栏 ===== */}
       <div className="flex items-end justify-between gap-4 flex-wrap animate-fade-in">
         <div className="min-w-0">
-          {/* Edtech Eyebrow：indigo 底 + 琥珀圆点 + 全大写 0.16em tracking */}
-          <div className="inline-flex items-center gap-2 px-2.5 py-1 mb-3"
-            style={{
-              borderRadius: 999,
-              background: 'rgb(var(--brand-600)0.10)',
-              border: '1px solid rgb(var(--brand-500)0.22)',
-            }}
-          >
-            <span className="inline-block w-1.5 h-1.5 rounded-full"
-              style={{ background: 'rgb(var(--accent-amber))' }} />
-            <span className="text-[10.5px] uppercase tracking-[0.16em] font-semibold"
-              style={{ color: 'rgb(var(--brand-400))' }}
-            >AUDIOBOOKS · MODULE 01</span>
-          </div>
-          <h2 className="headline-lg text-[26px] sm:text-[28px]">我的有声书</h2>
-          <p className="mt-1.5 text-sm" style={{ color: 'rgb(var(--ink-700)0.68)' }}>
-            上传小说 · AI 识别角色 · 一键合成有声书
+          {/* Edtech 工具化：仅当页标题，不做英文 eyebrow 胶囊 */}
+          <h2 className="headline-lg text-[22px] sm:text-[24px]">我的有声书</h2>
+          <p className="mt-1 text-sm" style={{ color: 'rgb(var(--ink-500))' }}>
+            上传小说原文 · AI 识别角色 · 一键合成多角色有声书
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -444,83 +456,66 @@ export default function ProjectListPage() {
         </div>
       )}
 
-      {/* 空状态：Edtech 三步引导 Hero */}
+      {/* 空状态：Edtech 三步引导 · 工具化无装饰 */}
       {!loading && items && items.length === 0 && (
-        <div className="relative card p-8 lg:p-10 overflow-hidden">
-          {/* Edtech 柔和 brand glow */}
-          <div className="pointer-events-none absolute inset-0 -z-0"
-            style={{
-              background:
-                'radial-gradient(720px 320px at 20% 0%, rgb(var(--brand-600) / 0.12), transparent 60%),' +
-                'radial-gradient(560px 260px at 100% 100%, rgb(var(--accent-cold) / 0.08), transparent 60%)',
-            }}
-          />
-          <div className="relative grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] items-center">
-            {/* 左：Hero Copy */}
+        <div className="card p-7 lg:p-8 overflow-hidden">
+          <div className="relative grid gap-7 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] items-start">
+            {/* 左：Copy */}
             <div className="text-left">
-              {/* Eyebrow （Edtech 风格） */}
-              <div className="inline-flex items-center gap-2 px-2.5 py-1 mb-4"
+              {/* Eyebrow （冷灰胶囊 · 无琥珀圆点） */}
+              <div className="inline-flex items-center px-2 py-0.5 mb-3"
                 style={{
-                  borderRadius: 999,
-                  background: 'rgb(var(--brand-600) / 0.10)',
-                  border: '1px solid rgb(var(--brand-500) / 0.22)',
+                  borderRadius: 'var(--radius-xs)',
+                  background: 'rgb(var(--ink-200))',
+                  border: '1px solid rgb(var(--ink-300))',
                 }}
               >
-                <span className="inline-block w-1.5 h-1.5 rounded-full"
-                  style={{ background: 'rgb(var(--accent-amber))' }} />
-                <span className="text-[10.5px] uppercase tracking-[0.16em] font-semibold"
-                  style={{ color: 'rgb(var(--brand-400))' }}
-                >GET STARTED · 3 STEPS</span>
+                <span className="text-[10.5px] uppercase tracking-[0.08em] font-medium"
+                  style={{ color: 'rgb(var(--ink-600))' }}
+                >快速开始 · 三步流程</span>
               </div>
-              <h3 className="text-[26px] lg:text-[28px] font-semibold text-white leading-[1.25] tracking-tight mb-3">
-                还没有有声书？<br />
-                <span style={{ color: 'rgb(var(--brand-400))' }}>三步</span>上线你的第一部作品
+              <h3 className="text-[22px] lg:text-[24px] font-semibold text-white leading-[1.22] tracking-tight mb-2">
+                创建你的第一个有声书
               </h3>
-              <p className="text-[14.5px] leading-6" style={{ color: 'rgb(var(--ink-700) / 0.7)' }}>
-                上传 TXT / EPUB，AI 自动识别章节、角色与对白；匹配音色后一键合成多角色 MP3。
+              <p className="text-[13.5px] leading-6" style={{ color: 'rgb(var(--ink-500))' }}>
+                上传 TXT 或 EPUB，AI 自动识别章节、角色与对白；匹配音色后一键合成多角色 MP3。
               </p>
-              <div className="mt-6 flex flex-wrap items-center gap-3">
+              <div className="mt-5 flex flex-wrap items-center gap-2.5">
                 <button
-                  className="btn-primary !h-11 !px-5 text-[14px] font-semibold shadow-[0_10px_24px_-12px_rgb(var(--brand-700))]"
+                  className="btn-primary !h-10 !px-4.5 text-[13.5px] font-semibold"
                   onClick={() => setShowCreateDialog(true)}
                 >
-                  ＋ 创建第一个有声书
+                  新建有声书
                 </button>
                 <a href="#/audiobooks/voices"
-                  className="inline-flex items-center gap-2 h-11 px-4 text-[14px] font-medium border"
-                  style={{
-                    borderRadius: 'var(--radius-sm)',
-                    background: 'rgb(var(--ink-100))',
-                    borderColor: 'rgb(var(--ink-300))',
-                    color: 'rgb(var(--ink-900) / 0.85)',
-                  }}
+                  className="btn-ghost !h-10 !px-4 text-[13.5px]"
                 >
-                  🎙️ 先逛逛音色库
+                  浏览音色库
                 </a>
               </div>
             </div>
 
-            {/* 右：Step Stepper（Edtech 垂直 Stepper · 实心圆） */}
-            <ol className="relative space-y-5">
+            {/* 右：Step Stepper（冷灰 · 信息密度优先） */}
+            <ol className="relative space-y-4">
               <StepperRow
                 step={1}
                 title="导入小说原文"
-                desc="支持 TXT / EPUB，拖入即可上传。"
-                icon="📄"
+                desc="支持 TXT / EPUB 文件，拖入即上传。"
+                iconName="upload"
                 status="current"
               />
               <StepperRow
                 step={2}
-                title="AI 匹配角色音色"
-                desc="自动提取角色名单，支持自定义分配。"
-                icon="🧑‍🎤"
+                title="匹配角色音色"
+                desc="自动提取角色列表，支持手工分配。"
+                iconName="assign"
                 status="pending"
               />
               <StepperRow
                 step={3}
-                title="一键合成多角色 MP3"
-                desc="章节级并发合成，随时试听 & 下载。"
-                icon="🎧"
+                title="合成并下载 MP3"
+                desc="章节并发合成，随时试听与导出。"
+                iconName="render"
                 status="pending"
               />
             </ol>
@@ -533,13 +528,13 @@ export default function ProjectListPage() {
         <div className="card overflow-hidden !p-0">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-[11px] text-white/40 uppercase tracking-[0.18em] border-b border-ink-300/60">
-                <th className="px-5 py-3.5 font-medium">有声书</th>
-                <th className="px-4 py-3.5 font-medium w-[100px]">状态</th>
-                <th className="px-4 py-3.5 font-medium w-[200px]">进度</th>
-                <th className="px-4 py-3.5 font-medium w-[80px] text-right tabular-nums">章节</th>
-                <th className="px-4 py-3.5 font-medium w-[140px]">更新时间</th>
-                <th className="px-5 py-3.5 font-medium w-[140px] text-right">操作</th>
+              <tr className="text-left text-[11px] text-white/40 uppercase tracking-[0.08em] border-b border-ink-300/60">
+                <th className="px-5 py-3 font-medium">有声书</th>
+                <th className="px-4 py-3 font-medium w-[100px]">状态</th>
+                <th className="px-4 py-3 font-medium w-[200px]">进度</th>
+                <th className="px-4 py-3 font-medium w-[80px] text-right tabular-nums">章节</th>
+                <th className="px-4 py-3 font-medium w-[140px]">更新时间</th>
+                <th className="px-5 py-3 font-medium w-[140px] text-right">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -557,29 +552,28 @@ export default function ProjectListPage() {
                     <td className="px-5 py-4 min-w-0">
                       <div className="flex items-center gap-3">
                         <div
-                          className="w-9 h-9 rounded-lg grid place-items-center text-base shrink-0"
+                          className="w-9 h-9 grid place-items-center shrink-0"
                           style={{
+                            borderRadius: 'var(--radius-sm)',
                             background: `linear-gradient(135deg, ${p.cover_color || 'rgb(var(--brand-500))'}33, ${p.cover_color || 'rgb(var(--brand-500))'}11)`,
                             border: `1px solid ${p.cover_color || 'rgb(var(--brand-500))'}33`,
                           }}
                         >
-                          <span>📖</span>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgb(var(--ink-800))" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M4 4h10a4 4 0 014 4v12H8a4 4 0 01-4-4V4z"/><path d="M4 16a4 4 0 014-4h10"/>
+                          </svg>
                         </div>
                         <div className="min-w-0">
                             <div className="font-medium text-white truncate">
                               {p.name}
                             </div>
                             {((p.book_title && p.book_title !== p.name) || p.source_filename) && (
-                              <div className="text-[11px] text-white/40 truncate mt-0.5 flex items-center gap-1.5 flex-wrap">
+                              <div className="text-[11px] text-white/40 truncate mt-0.5 flex items-center gap-3 flex-wrap">
                                 {p.book_title && p.book_title !== p.name && (
-                                  <span className="flex items-center gap-1">
-                                    <span>📚</span>{p.book_title}
-                                  </span>
+                                  <span>{p.book_title}</span>
                                 )}
                                 {p.source_filename && (
-                                  <span className="flex items-center gap-1">
-                                    <span>📄</span>{p.source_filename}
-                                  </span>
+                                  <span style={{ color: 'rgb(var(--ink-500))' }}>{p.source_filename}</span>
                                 )}
                               </div>
                             )}
@@ -601,17 +595,17 @@ export default function ProjectListPage() {
                       )}
                       {p.status === 'synthesizing' && (
                         <div className="text-xs" style={{ color: 'rgb(var(--status-synth-fg))' }}>
-                          🔊 合成中…
+                          合成中…
                         </div>
                       )}
                       {p.status === 'importing' && (
                         <div className="text-xs" style={{ color: 'rgb(var(--status-info-fg))' }}>
-                          📥 导入中…
+                          导入中…
                         </div>
                       )}
                       {p.status === 'failed' && p.prepare_progress?.last_error && (
                         <div className="text-xs truncate" style={{ color: 'rgb(var(--status-error-fg))' }} title={p.prepare_progress.last_error}>
-                          ❌ {p.prepare_progress.last_error.slice(0, 40)}
+                          {p.prepare_progress.last_error.slice(0, 40)}
                         </div>
                       )}
                       {['ready', 'done', 'success', 'partial_success'].includes(p.status) && (
@@ -628,8 +622,8 @@ export default function ProjectListPage() {
                     <td className="px-4 py-4 text-xs text-white/40">
                       {relativeTime(p.updated_at)}
                       {isRunning && (
-                        <span className="ml-1 inline-flex items-center gap-1 text-[10px]" style={{ color: 'rgb(var(--status-warn-fg) / 0.85)' }}>
-                          <span className="badge-dot animate-pulse-soft !w-1 !h-1" style={{ background: 'rgb(var(--status-warn-dot))' }} />
+                        <span className="ml-1 inline-flex items-center gap-1 text-[10px]" style={{ color: 'rgb(var(--ink-500))' }}>
+                          <span className="badge-dot animate-pulse-soft !w-1 !h-1" style={{ background: 'rgb(var(--ink-500))' }} />
                           自动刷新
                         </span>
                       )}
@@ -657,7 +651,7 @@ export default function ProjectListPage() {
                           onClick={() => setConfirmDeleteId(p.project_id)}
                           title="删除"
                         >
-                          🗑
+                          删除
                         </button>
                       </div>
                     </td>
@@ -681,7 +675,11 @@ export default function ProjectListPage() {
           >
             <div className="mx-auto w-11 h-11 rounded-lg grid place-items-center mb-3"
               style={{ background: 'rgb(var(--status-error-bg) / 0.12)' }}>
-              <span className="text-xl">⚠️</span>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="rgb(var(--status-error-fg))" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/>
+                <line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
             </div>
             <div className="font-semibold text-white mb-1.5">确认删除？</div>
             <div className="text-xs text-white/50 mb-5 leading-relaxed">
@@ -700,7 +698,7 @@ export default function ProjectListPage() {
                 }}
                 onClick={() => onDelete(confirmDeleteId)}
               >
-                🗑 确认删除
+                确认删除
               </button>
             </div>
           </div>

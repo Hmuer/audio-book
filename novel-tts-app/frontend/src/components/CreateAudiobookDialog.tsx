@@ -66,28 +66,25 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
         style={{ borderRadius: 'var(--radius-lg)' }}
         onClick={e => e.stopPropagation()}
       >
-        {/* 头部：Edtech gradient eyebrow + 步骤 */}
-        <div className="relative px-6 pt-5 pb-4 overflow-hidden"
+        {/* 头部：Edtech 简洁 · 冷灰 Eyebrow + 步骤条 */}
+        <div className="relative px-6 pt-5 pb-4"
           style={{
-            borderBottom: '1px solid rgb(var(--ink-300)))',
-            backgroundImage:
-              'linear-gradient(180deg, rgb(var(--brand-600)0.14), rgb(var(--brand-600)0) 70%)',
+            borderBottom: '1px solid rgb(var(--ink-300))',
+            background: 'rgb(var(--ink-50))',
           }}
         >
-          {/* 顶部胶囊 Eyebrow */}
+          {/* 顶部 Eyebrow */}
           <div className="flex items-center justify-between mb-3">
-            <div className="inline-flex items-center gap-2 px-2 py-0.5"
+            <div className="inline-flex items-center px-2 py-0.5"
               style={{
-                borderRadius: 999,
-                background: 'rgb(var(--brand-600)0.10)',
-                border: '1px solid rgb(var(--brand-500)0.25)',
+                borderRadius: 'var(--radius-xs)',
+                background: 'rgb(var(--ink-200))',
+                border: '1px solid rgb(var(--ink-300))',
               }}
             >
-              <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse"
-                style={{ background: 'rgb(var(--accent-amber))' }} />
-              <span className="text-[10px] uppercase tracking-[0.16em] font-semibold"
-                style={{ color: 'rgb(var(--brand-400))' }}
-              >CREATE · 01 / 03</span>
+              <span className="text-[10.5px] uppercase tracking-[0.08em] font-medium"
+                style={{ color: 'rgb(var(--ink-600))' }}
+              >步骤 1 / 3</span>
             </div>
             <button
               type="button"
@@ -95,34 +92,37 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
               aria-label="关闭"
               className="w-7 h-7 grid place-items-center transition-all text-white/55 hover:text-white hover:bg-white/[0.06]"
               style={{ borderRadius: 'var(--radius-xs)' }}
-            >✕</button>
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
           </div>
 
-          <h3 className="text-[18px] font-semibold text-white leading-tight">创建你的第一部有声书</h3>
-          <p className="text-[12.5px] mt-1" style={{ color: 'rgb(var(--ink-700)0.65)' }}>
-            命名 → 导入文本 → 开始 AI 合成，仅需三步
+          <h3 className="text-[17px] font-semibold text-white leading-tight">新建有声书</h3>
+          <p className="text-[12.5px] mt-0.5" style={{ color: 'rgb(var(--ink-500))' }}>
+            命名项目 · 导入文本 · AI 自动合成
           </p>
 
-          {/* Stepper（水平 3 步条） */}
+          {/* Stepper（水平 3 步条 · 冷灰） */}
           <div className="mt-4 grid grid-cols-3 gap-2">
             {['命名项目', '导入内容', 'AI 合成'].map((t, i) => (
               <div key={t} className="flex items-center gap-2">
-                <div className="w-6 h-6 shrink-0 grid place-items-center text-[11px] font-semibold text-white"
+                <div className="w-6 h-6 shrink-0 grid place-items-center text-[11px] font-semibold"
                   style={{
-                    borderRadius: 999,
+                    borderRadius: 'var(--radius-xs)',
                     background: i === 0
-                      ? 'rgb(var(--brand-600)))'
-                      : 'rgb(var(--ink-300)))',
-                    boxShadow: i === 0 ? '0 0 0 3px rgb(var(--brand-500)0.18))' : undefined,
+                      ? 'rgb(var(--brand-600))'
+                      : 'rgb(var(--ink-300))',
+                    boxShadow: i === 0 ? '0 0 0 3px rgb(var(--brand-500) / 0.18)' : undefined,
+                    color: '#fff',
                   }}
                 >{i + 1}</div>
                 <div className="min-w-0">
                   <div className="text-[11.5px] font-medium leading-tight truncate"
-                    style={{ color: i === 0 ? 'rgb(var(--ink-900)))' : 'rgb(var(--ink-700)0.55))' }}
+                    style={{ color: i === 0 ? 'rgb(var(--ink-900))' : 'rgb(var(--ink-700) / 0.55)' }}
                   >{t}</div>
-                  <div className="text-[9.5px] uppercase tracking-[0.12em] mt-0.5"
-                    style={{ color: i === 0 ? 'rgb(var(--accent-amber)))' : 'rgb(var(--ink-700)0.35))' }}
-                  >{i === 0 ? 'NOW' : 'NEXT'}</div>
+                  <div className="text-[10px] font-medium mt-0.5"
+                    style={{ color: i === 0 ? 'rgb(var(--brand-400))' : 'rgb(var(--ink-700) / 0.35)' }}
+                  >{i === 0 ? '当前' : '待办'}</div>
                 </div>
               </div>
             ))}
@@ -148,19 +148,19 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
               />
             </div>
 
-            {/* 模式切换（Edtech segmented control） */}
+            {/* 模式切换（Edtech segmented control · 冷灰） */}
             <div
               className="grid grid-cols-2 p-1"
               style={{
                 borderRadius: 'var(--radius-sm)',
-                background: 'rgb(var(--ink-0)))',
-                border: '1px solid rgb(var(--ink-300)))',
+                background: 'rgb(var(--ink-0))',
+                border: '1px solid rgb(var(--ink-300))',
               }}
             >
               {([
-                { k: 'file', icon: '📁', label: '上传文件', desc: 'TXT / EPUB' },
-                { k: 'text', icon: '✏️', label: '粘贴文本', desc: '直接粘贴原文' },
-              ] as { k: Mode; icon: string; label: string; desc: string }[]).map(it => {
+                { k: 'file', iconName: 'upload', label: '上传文件', desc: 'TXT / EPUB' },
+                { k: 'text', iconName: 'pen',    label: '粘贴文本', desc: '直接粘贴原文' },
+              ] as { k: Mode; iconName: 'upload' | 'pen'; label: string; desc: string }[]).map(it => {
                 const active = mode === it.k;
                 return (
                   <button
@@ -171,14 +171,16 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                     className="relative flex items-center gap-2.5 px-3 py-2.5 text-left transition-all"
                     style={{
                       borderRadius: 'calc(calc(var(--radius-sm) - 2px))',
-                      background: active ? 'rgb(var(--brand-600)))' : 'transparent',
-                      color: active ? '#fff' : 'rgb(var(--ink-700)0.75))',
-                      boxShadow: active ? '0 0 0 1px rgb(var(--brand-500)0.4))' : undefined,
+                      background: active ? 'rgb(var(--brand-600))' : 'transparent',
+                      color: active ? '#fff' : 'rgb(var(--ink-700) / 0.75)',
+                      boxShadow: active ? '0 0 0 1px rgb(var(--brand-500) / 0.4)' : undefined,
                     }}
                   >
-                    <span className={`w-8 h-8 shrink-0 grid place-items-center text-[15px] rounded-[6px] ${
+                    <span className={`w-8 h-8 shrink-0 grid place-items-center rounded-[6px] ${
                       active ? 'bg-white/15' : 'bg-white/[0.04]'
-                    }`}>{it.icon}</span>
+                    }`}>
+                      <SegmentIcon name={it.iconName} />
+                    </span>
                     <span className="min-w-0">
                       <span className="block text-[13px] font-semibold leading-tight">{it.label}</span>
                       <span className={`block text-[11px] mt-0.5 ${active ? 'text-white/75' : 'text-white/35'}`}>{it.desc}</span>
@@ -195,11 +197,12 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                 onDragLeave={() => setDragOver(false)}
                 onDrop={handleDrop}
                 onClick={() => fileInputRef.current?.click()}
-                className={`cursor-pointer rounded-md border-2 border-dashed transition-all text-center py-10 px-4 ${
+                className={`cursor-pointer rounded-md border-2 border-dashed transition-all text-center py-9 px-4 ${
                   dragOver
                     ? 'border-brand-400 bg-brand-500/10'
                     : 'border-white/10 hover:border-white/20 hover:bg-white/[0.02]'
                 }`}
+                style={{ borderRadius: 'var(--radius-md)' }}
               >
                 <input
                   ref={fileInputRef}
@@ -210,7 +213,17 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                 />
                 {file ? (
                   <div>
-                    <div className="text-2xl mb-2">📄</div>
+                    <div className="mx-auto w-10 h-10 grid place-items-center mb-2"
+                      style={{
+                        background: 'rgb(var(--brand-600) / 0.18)',
+                        borderRadius: 'var(--radius-sm)',
+                        color: 'rgb(var(--brand-400))',
+                      }}
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                      </svg>
+                    </div>
                     <div className="text-sm text-white font-medium truncate max-w-[300px] mx-auto">{file.name}</div>
                     <div className="text-xs text-white/40 mt-1">{(file.size / 1024).toFixed(1)} KB</div>
                     <button
@@ -223,7 +236,18 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                   </div>
                 ) : (
                   <div>
-                    <div className="text-3xl mb-3">📖</div>
+                    <div className="mx-auto w-12 h-12 grid place-items-center mb-3"
+                      style={{
+                        background: 'rgb(var(--ink-200))',
+                        borderRadius: 'var(--radius-md)',
+                        border: '1px solid rgb(var(--ink-300))',
+                        color: 'rgb(var(--ink-600))',
+                      }}
+                    >
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                      </svg>
+                    </div>
                     <div className="text-sm text-white/70 font-medium">拖拽文件到这里，或点击选择</div>
                     <div className="text-xs text-white/40 mt-2">支持 TXT、Markdown、EPUB 格式</div>
                   </div>
@@ -257,7 +281,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
           </div>
 
           {/* 底部按钮 */}
-          <div className="px-6 py-4 border-t border-white/[0.06] flex gap-2 justify-end">
+          <div className="px-6 py-4 border-t border-ink-300/60 flex gap-2 justify-end">
             <button
               type="button"
               onClick={onClose}
@@ -278,4 +302,15 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
       </div>
     </div>
   );
+}
+
+function SegmentIcon({ name }: { name: 'upload' | 'pen' }) {
+  const common = {
+    width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none',
+    stroke: 'currentColor', strokeWidth: 1.8,
+    strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
+  };
+  if (name === 'upload')
+    return (<svg {...common}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>);
+  return (<svg {...common}><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>);
 }
