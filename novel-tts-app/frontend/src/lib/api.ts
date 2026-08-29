@@ -27,8 +27,12 @@ export function getToken(): string | null {
 export function setToken(token: string, expiresAtIso: string): void {
   if (typeof window === 'undefined') return;
   localStorage.setItem(TOKEN_KEY, token);
-  const expMs = new Date(expiresAtIso).getTime();
-  if (!isNaN(expMs)) {
+  // 后端 isoformat() 不带时区后缀，必须按 UTC 解析，否则 Asia/Shanghai 差 +8h
+  // 会让 JWT 过期检查提前 8 小时误判
+  const iso = expiresAtIso.replace(' ', 'T');
+  const hasTz = /Z|[+-]\d{2}:?\d{2}$/.test(iso);
+  const expMs = new Date(hasTz ? iso : iso + 'Z').getTime();
+  if (!Number.isNaN(expMs)) {
     localStorage.setItem(TOKEN_EXP_KEY, String(expMs));
   }
 }

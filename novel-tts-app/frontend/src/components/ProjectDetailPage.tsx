@@ -12,6 +12,7 @@ import {
   ChapterSummary,
   ChapterDetail,
 } from '@/lib/api';
+import { parseTime, relativeTime } from '@/lib/time';
 import VoicePicker from './VoicePicker';
 import WaveformPlayer from './WaveformPlayer';
 import { StatusBadge } from './ProjectListPage';
@@ -63,29 +64,6 @@ function formatMs(ms: number | null | undefined): string {
   if (ms >= 60000) return `${(ms / 60000).toFixed(1)}m`;
   return `${(ms / 1000).toFixed(1)}s`;
 }
-function parseTime(iso: string | null | undefined): Date {
-  if (!iso) return new Date(NaN);
-  const hasTz = /Z|[+-]\d{2}:?\d{2}$/.test(iso);
-  if (hasTz) return new Date(iso);
-  const normalized = iso.replace(' ', 'T');
-  return new Date(normalized + 'Z');
-}
-
-function relativeTime(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  try {
-    const t = parseTime(iso).getTime();
-    if (Number.isNaN(t)) return iso;
-    const diff = Date.now() - t;
-    if (diff < 60 * 1000) return '刚刚';
-    if (diff < 60 * 60 * 1000) return `${Math.floor(diff / 60000)} 分钟前`;
-    if (diff < 24 * 60 * 60 * 1000) return `${Math.floor(diff / 3600000)} 小时前`;
-    if (diff < 7 * 24 * 60 * 60 * 1000) return `${Math.floor(diff / 86400000)} 天前`;
-    return parseTime(iso).toLocaleString('zh-CN');
-  } catch {
-    return iso;
-  }
-}
 
 export default function ProjectDetailPage({
   projectId,
@@ -119,7 +97,7 @@ export default function ProjectDetailPage({
       setBuilds(
         [...bl].sort(
           (a, b) =>
-            new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+            parseTime(b.created_at).getTime() - parseTime(a.created_at).getTime()
         )
       );
     } catch (e: any) {
@@ -141,24 +119,49 @@ export default function ProjectDetailPage({
     return () => clearInterval(timer);
   }, [preparing, projectId]);
 
+  const playingKeyRef = useRef<string | null>(null);
+
   const stopPlayback = () => {
     if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
+      audioRef.current.onended = null;
+      audioRef.current.onerror = null;
+      try { audioRef.current.pause(); } catch {}
+      try { audioRef.current.currentTime = 0; } catch {}
     }
+    playingKeyRef.current = null;
     setPlayingKey(null);
   };
   const playUrl = (key: string, url: string) => {
     if (!audioRef.current) return;
-    audioRef.current.src = url;
-    audioRef.current.onended = () => setPlayingKey(null);
-    audioRef.current.onerror = () => setPlayingKey(null);
+    // 标记"当前要播放哪个 key"，即使 onended 从旧 src 回来也不会误清除
+    playingKeyRef.current = key;
     setPlayingKey(key);
-    audioRef.current.play().catch(() => setPlayingKey(null));
+    // 重新绑定事件：每次都指向同一个 ref，避免旧 handler 清理新 key
+    audioRef.current.onended = () => {
+      // 只有当结束的是"当前正在播放的 key"时才清理
+      if (playingKeyRef.current === key) {
+        playingKeyRef.current = null;
+        setPlayingKey(null);
+      }
+    };
+    audioRef.current.onerror = () => {
+      if (playingKeyRef.current === key) {
+        playingKeyRef.current = null;
+        setPlayingKey(null);
+      }
+    };
+    audioRef.current.src = url;
+    audioRef.current.play().catch(() => {
+      // play() Promise rejected（自动播放策略/跨域/格式不支持）
+      if (playingKeyRef.current === key) {
+        playingKeyRef.current = null;
+        setPlayingKey(null);
+      }
+    });
   };
   const togglePlay = (key: string, url: string | null) => {
     if (!url) return;
-    if (playingKey === key) {
+    if (playingKeyRef.current === key) {
       stopPlayback();
       return;
     }
@@ -168,7 +171,7 @@ export default function ProjectDetailPage({
 
   const togglePreviewVoice = async (voiceId: string, text: string, speed: number) => {
     const key = `voice_${voiceId}`;
-    if (playingKey === key) {
+    if (playingKeyRef.current === key) {
       stopPlayback();
       return;
     }
@@ -617,7 +620,7 @@ function OverviewTab({
         <OverviewStat label="章节数" value={String(project.chapter_count)} icon="📜" color="#8b5cf6" />
         <OverviewStat label="角色数" value={String(project.characters.length)} icon="🧑" color="#ec4899" />
         <OverviewStat label="文件大小" value={formatSize(project.source_file_size)} icon="📄" color="#0ea5e9" />
-        <OverviewStat label="创建时间" value={project.created_at ? new Date(project.created_at).toLocaleDateString('zh-CN') : '—'} icon="🗓" color="#c6f44a" />
+        <OverviewStat label="创建时间" value={project.created_at ? parseTime(project.created_at).toLocaleDateString('zh-CN') : '—'} icon="🗓" color="#c6f44a" />
       </div>
 
       {(project.description || (project.tags && project.tags.length > 0)) && (
@@ -1482,7 +1485,7 @@ function BuildRow({
           >
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse mr-1" />
             {(() => {
-              const elapsed = (Date.now() - new Date(item.started_at).getTime()) / 1000;
+              const elapsed = (Date.now() - parseTime(item.started_at).getTime()) / 1000;
               const remaining = elapsed > 0 && pct > 0 ? (elapsed / pct) * (100 - pct) : 0;
               if (remaining > 0) {
                 const m = Math.floor(remaining / 60);

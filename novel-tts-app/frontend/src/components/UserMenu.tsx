@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useAuth } from '@/components/AuthContext';
+import { formatDate } from '@/lib/time';
 
 export default function UserMenu() {
   const { user, logout } = useAuth();
@@ -33,7 +34,7 @@ export default function UserMenu() {
               <div className="text-sm font-medium">{user.username}</div>
               <div className="text-xs text-white/40 mt-0.5">
                 {user.created_at
-                  ? `创建于 ${new Date(user.created_at).toLocaleDateString('zh-CN')}`
+                  ? `创建于 ${formatDate(user.created_at)}`
                   : ''}
               </div>
             </div>

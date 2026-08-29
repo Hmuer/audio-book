@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, PrepareProgress, ProjectListItem } from '@/lib/api';
+import { parseTime, relativeTime } from '@/lib/time';
 import CreateAudiobookDialog from './CreateAudiobookDialog';
 
 // ===== 常量 =====
@@ -20,28 +21,6 @@ const STATUS_DEFS: Record<string, { label: string; bg: string; color: string; do
   failed:          { label: '失败',      bg: 'rgba(251,113,133,0.10)', color: '#fda4af', dot: '#fb7185' },
   cancelled:       { label: '已取消',    bg: 'rgba(161,161,170,0.12)', color: '#d4d4d8', dot: '#a1a1aa' },
 };
-
-function parseTime(iso: string): Date {
-  // 后端 datetime 以 UTC 存储，不带时区后缀；若字符串中无 Z/+HH:MM 则强制按 UTC 解析，避免本地时区偏差（典型 UTC+8 偏差 8 小时）
-  if (!iso) return new Date(NaN);
-  const hasTz = /Z|[+-]\d{2}:?\d{2}$/.test(iso);
-  if (hasTz) return new Date(iso);
-  const normalized = iso.replace(' ', 'T');
-  return new Date(normalized + 'Z');
-}
-
-function relativeTime(iso: string): string {
-  try {
-    const t = parseTime(iso).getTime();
-    if (Number.isNaN(t)) return iso;
-    const diff = Date.now() - t;
-    if (diff < 60 * 1000) return '刚刚';
-    if (diff < 60 * 60 * 1000) return `${Math.floor(diff / 60000)} 分钟前`;
-    if (diff < 24 * 60 * 60 * 1000) return `${Math.floor(diff / 3600000)} 小时前`;
-    if (diff < 7 * 24 * 60 * 60 * 1000) return `${Math.floor(diff / 86400000)} 天前`;
-    return parseTime(iso).toLocaleDateString('zh-CN');
-  } catch { return iso; }
-}
 
 const STAGE_LABELS: Record<string, string> = {
   start: '准备中', split: '切章', characters: '角色识别',

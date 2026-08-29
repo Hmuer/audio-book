@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useAuth } from '@/components/AuthContext';
 import { ChangePasswordModal } from './UserMenu';
+import { formatDate } from '@/lib/time';
 
 // ================= 类型 =================
 type MenuItem = {
@@ -164,7 +165,7 @@ export default function AppSidebar({ currentPath }: Props) {
                 </div>
                 <div className="text-[11px] text-white/38 truncate">
                   {user.created_at
-                    ? `加入于 ${new Date(user.created_at).toLocaleDateString('zh-CN')}`
+                    ? `加入于 ${formatDate(user.created_at)}`
                     : ''}
                 </div>
               </div>
