@@ -63,16 +63,25 @@ function formatMs(ms: number | null | undefined): string {
   if (ms >= 60000) return `${(ms / 60000).toFixed(1)}m`;
   return `${(ms / 1000).toFixed(1)}s`;
 }
+function parseTime(iso: string | null | undefined): Date {
+  if (!iso) return new Date(NaN);
+  const hasTz = /Z|[+-]\d{2}:?\d{2}$/.test(iso);
+  if (hasTz) return new Date(iso);
+  const normalized = iso.replace(' ', 'T');
+  return new Date(normalized + 'Z');
+}
+
 function relativeTime(iso: string | null | undefined): string {
   if (!iso) return '—';
   try {
-    const t = new Date(iso).getTime();
+    const t = parseTime(iso).getTime();
+    if (Number.isNaN(t)) return iso;
     const diff = Date.now() - t;
     if (diff < 60 * 1000) return '刚刚';
     if (diff < 60 * 60 * 1000) return `${Math.floor(diff / 60000)} 分钟前`;
     if (diff < 24 * 60 * 60 * 1000) return `${Math.floor(diff / 3600000)} 小时前`;
     if (diff < 7 * 24 * 60 * 60 * 1000) return `${Math.floor(diff / 86400000)} 天前`;
-    return new Date(iso).toLocaleString('zh-CN');
+    return parseTime(iso).toLocaleString('zh-CN');
   } catch {
     return iso;
   }

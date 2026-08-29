@@ -21,15 +21,25 @@ const STATUS_DEFS: Record<string, { label: string; bg: string; color: string; do
   cancelled:       { label: '已取消',    bg: 'rgba(161,161,170,0.12)', color: '#d4d4d8', dot: '#a1a1aa' },
 };
 
+function parseTime(iso: string): Date {
+  // 后端 datetime 以 UTC 存储，不带时区后缀；若字符串中无 Z/+HH:MM 则强制按 UTC 解析，避免本地时区偏差（典型 UTC+8 偏差 8 小时）
+  if (!iso) return new Date(NaN);
+  const hasTz = /Z|[+-]\d{2}:?\d{2}$/.test(iso);
+  if (hasTz) return new Date(iso);
+  const normalized = iso.replace(' ', 'T');
+  return new Date(normalized + 'Z');
+}
+
 function relativeTime(iso: string): string {
   try {
-    const t = new Date(iso).getTime();
+    const t = parseTime(iso).getTime();
+    if (Number.isNaN(t)) return iso;
     const diff = Date.now() - t;
     if (diff < 60 * 1000) return '刚刚';
     if (diff < 60 * 60 * 1000) return `${Math.floor(diff / 60000)} 分钟前`;
     if (diff < 24 * 60 * 60 * 1000) return `${Math.floor(diff / 3600000)} 小时前`;
     if (diff < 7 * 24 * 60 * 60 * 1000) return `${Math.floor(diff / 86400000)} 天前`;
-    return new Date(iso).toLocaleDateString('zh-CN');
+    return parseTime(iso).toLocaleDateString('zh-CN');
   } catch { return iso; }
 }
 
@@ -422,20 +432,24 @@ export default function ProjectListPage() {
                           <span>📖</span>
                         </div>
                         <div className="min-w-0">
-                          <div className="font-medium text-white truncate">
-                            {p.name}
+                            <div className="font-medium text-white truncate">
+                              {p.name}
+                            </div>
+                            {((p.book_title && p.book_title !== p.name) || p.source_filename) && (
+                              <div className="text-[11px] text-white/40 truncate mt-0.5 flex items-center gap-1.5 flex-wrap">
+                                {p.book_title && p.book_title !== p.name && (
+                                  <span className="flex items-center gap-1">
+                                    <span>📚</span>{p.book_title}
+                                  </span>
+                                )}
+                                {p.source_filename && (
+                                  <span className="flex items-center gap-1">
+                                    <span>📄</span>{p.source_filename}
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </div>
-                          {p.book_title && p.book_title !== p.name && (
-                            <div className="text-[11px] text-white/40 truncate mt-0.5">
-                              📚 {p.book_title}
-                            </div>
-                          )}
-                          {p.source_filename && (
-                            <div className="text-[11px] text-white/40 truncate mt-0.5">
-                              📄 {p.source_filename}
-                            </div>
-                          )}
-                        </div>
                       </div>
                     </td>
 
@@ -446,10 +460,10 @@ export default function ProjectListPage() {
 
                     {/* 进度 */}
                     <td className="px-4 py-4">
-                      {p.status === 'preparing' && (
-                        <div onClick={e => e.stopPropagation()}>
-                          <PrepareProgressInline prog={p.prepare_progress} chapterCount={p.chapter_count} compact />
-                        </div>
+                      {p.status === 'preparing' && p.prepare_progress?.stage && (
+                        <span className="chip-soft text-[11px]">
+                          阶段 · {stageLabel(p.prepare_progress.stage)}
+                        </span>
                       )}
                       {p.status === 'synthesizing' && (
                         <div className="text-xs text-orange-300">
