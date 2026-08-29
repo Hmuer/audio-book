@@ -290,7 +290,7 @@ export const api = {
 
   // ---------- 系统设置 ----------
   settingsGet: () => _fetch<SettingItem[]>('/api/settings'),
-  settingsUpdate: (updates: Record<string, string | number | boolean>) =>
+  settingsUpdate: (updates: Record<string, string | number | boolean | string[]>) =>
     _fetch<{ ok: boolean; updated: string[]; skipped: string[]; note: string }>('/api/settings', {
       method: 'PUT',
       body: JSON.stringify({ updates }),
@@ -542,8 +542,8 @@ export interface BuildResp {
 // ---------- 系统设置 ----------
 export interface SettingItem {
   key: string;
-  value: string | number | boolean | null;
-  type: 'str' | 'int' | 'bool';
+  value: string | number | boolean | string[] | null;
+  type: 'str' | 'int' | 'bool' | 'list[str]';
   group: string;
   label: string;
   readonly: boolean;

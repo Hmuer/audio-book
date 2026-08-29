@@ -1034,6 +1034,7 @@ _EDITABLE_SETTINGS = {
     "TTS_SEGMENT_CACHE_TTL_DAYS": ("int", "缓存配置", "段缓存过期天数"),
     "TTS_SEGMENT_CACHE_MAX_SIZE_GB": ("int", "缓存配置", "段缓存最大磁盘占用（GB）"),
     # 章节切分
+    "CHAPTER_SPLIT_PATTERNS": ("list[str]", "章节切分", "切章正则匹配规则（每条一行）"),
     "CHAPTER_SPLIT_MIN_MATCHES": ("int", "章节切分", "最少匹配章节数"),
     "CHAPTER_SPLIT_HARD_FALLBACK_ENABLED": ("bool", "章节切分", "硬切兜底开关"),
     "CHAPTER_SPLIT_HARD_FALLBACK_MAX_CHARS": ("int", "章节切分", "硬切每块字符上限"),
@@ -1060,7 +1061,7 @@ _READONLY_SETTINGS = {
 class SettingsResp(BaseModel):
     """设置项：key、值、类型、分组、标签、是否只读"""
     key: str
-    value: str | int | bool | None
+    value: str | int | bool | list[str] | None
     type: str
     group: str
     label: str
@@ -1068,7 +1069,7 @@ class SettingsResp(BaseModel):
 
 
 class SettingsUpdateReq(BaseModel):
-    updates: dict[str, str | int | bool] = Field(default_factory=dict)
+    updates: dict[str, str | int | bool | list[str]] = Field(default_factory=dict)
 
 
 @router.get("/settings", response_model=list[SettingsResp])
@@ -1104,13 +1105,14 @@ async def update_settings(
     req: SettingsUpdateReq,
     cred: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
 ):
-    """更新运行时配置（内存生效，可选写入 .env 持久化）"""
+    """更新运行时配置（内存生效）。支持 int/str/bool/list[str]。"""
     payload = decode_token(cred.credentials)
     if not payload:
         raise HTTPException(401, "无效凭证")
 
     updated: list[str] = []
     skipped: list[str] = []
+    note_extras: list[str] = []
 
     for key, val in req.updates.items():
         if key not in _EDITABLE_SETTINGS:
@@ -1127,6 +1129,18 @@ async def update_settings(
                 val = bool(val)
             elif typ == "str":
                 val = str(val)
+            elif typ == "list[str]":
+                # 支持传 list，或传入字符串时按换行拆分成 list
+                if isinstance(val, list):
+                    val = [str(x).strip() for x in val if str(x).strip()]
+                else:
+                    val = [
+                        ln.strip() for ln in str(val).splitlines()
+                        if ln.strip()
+                    ]
+            else:
+                skipped.append(f"{key}(未知类型 {typ})")
+                continue
         except (ValueError, TypeError):
             skipped.append(f"{key}(类型转换失败)")
             continue
@@ -1134,13 +1148,31 @@ async def update_settings(
         setattr(settings, key, val)
         updated.append(key)
 
+    # 特殊钩子：修改切章正则后即时编译 + 校验
+    if "CHAPTER_SPLIT_PATTERNS" in updated:
+        try:
+            from ..services.book_split import refresh_chapter_patterns
+            compiled = refresh_chapter_patterns()
+            total = len(settings.CHAPTER_SPLIT_PATTERNS)
+            success = len(compiled)
+            note_extras.append(f"章节切分规则已即时生效：{success}/{total} 条编译成功")
+            if success < total:
+                note_extras.append(f"⚠️ 有 {total - success} 条正则语法错误，已自动跳过")
+        except Exception as e:
+            skipped.append(f"CHAPTER_SPLIT_PATTERNS(编译异常: {e})")
+            updated.remove("CHAPTER_SPLIT_PATTERNS")
+
     logger.info(f"[Settings] 更新配置: {updated}")
     if skipped:
         logger.warning(f"[Settings] 跳过: {skipped}")
+
+    note = "配置已即时生效（内存）。重启后端后恢复 .env 默认值。"
+    if note_extras:
+        note += " · " + " · ".join(note_extras)
 
     return {
         "ok": True,
         "updated": updated,
         "skipped": skipped,
-        "note": "配置已即时生效（内存）。重启后端后恢复 .env 默认值，如需持久化请手动写入 .env 文件。",
+        "note": note,
     }

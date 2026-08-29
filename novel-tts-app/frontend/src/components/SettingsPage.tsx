@@ -3,25 +3,58 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, SettingItem } from '@/lib/api';
 
-// 分组顺序 & 图标
+// ---------- 常量 ----------
 const GROUP_META: Record<string, { icon: string; desc: string }> = {
   '模型配置': { icon: '🤖', desc: 'TTS / LLM 厂商 API 地址、密钥与模型选择' },
   '超时配置': { icon: '⏱️', desc: '各环节请求超时与 Build 运行超时' },
   '限流配置': { icon: '🚦', desc: '并发度、RPM 限流、批处理参数' },
   '缓存配置': { icon: '💾', desc: 'TTS 段缓存 LRU / 磁盘过期策略' },
-  '章节切分': { icon: '📑', desc: '章节识别正则匹配与硬切兜底' },
+  '章节切分': { icon: '📑', desc: '章节识别正则匹配（可在线增删改，保存后即时生效）' },
   '日志配置': { icon: '📝', desc: '日志级别与文件路径' },
   '认证配置': { icon: '🔐', desc: 'JWT 过期时间' },
   '系统': { icon: '⚙️', desc: '运行环境与服务参数（只读）' },
 };
 
-// 敏感字段：显示为密码框
 const SENSITIVE_KEYS = new Set(['TTS_API_KEY', 'LLM_API_KEY', 'JWT_SECRET']);
 
+type DraftValue = string | string[];
+type DraftMap = Record<string, DraftValue>;
+
+// ---------- 小工具 ----------
+function valToDraft(v: SettingItem['value']): DraftValue {
+  if (Array.isArray(v)) return [...v];
+  if (v === null || v === undefined) return '';
+  return String(v);
+}
+
+function deepEqual(a: SettingItem['value'], b: DraftValue | undefined): boolean {
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    return a.every((x, i) => x === b[i]);
+  }
+  if (Array.isArray(b)) return false;
+  return String(a ?? '') === String(b ?? '');
+}
+
+const EMPTY_LINE_MARKER = '__EMPTY_LINE__';
+
+/** 校验正则语法（浏览器端），返回错误字符串或 null；空行返回 EMPTY_LINE_MARKER */
+function regexValidate(pattern: string): string | null {
+  if (!pattern.trim()) return EMPTY_LINE_MARKER;
+  try {
+    new RegExp(pattern, 'm');
+    return null;
+  } catch (e: any) {
+    return e.message || 'regex syntax error';
+  }
+}
+
+// ---------- 主组件 ----------
 export default function SettingsPage() {
   const [items, setItems] = useState<SettingItem[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [draft, setDraft] = useState<DraftMap>({});
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -29,10 +62,8 @@ export default function SettingsPage() {
     try {
       const list = await api.settingsGet();
       setItems(list);
-      const map: Record<string, string> = {};
-      for (const it of list) {
-        map[it.key] = String(it.value ?? '');
-      }
+      const map: DraftMap = {};
+      for (const it of list) map[it.key] = valToDraft(it.value);
       setDraft(map);
       setErr(null);
     } catch (e: any) {
@@ -43,23 +74,19 @@ export default function SettingsPage() {
 
   useEffect(() => { load(); }, []);
 
-  // 按分组归类
   const grouped = useMemo(() => {
     if (!items) return {};
     const g: Record<string, SettingItem[]> = {};
-    for (const it of items) {
-      (g[it.group] ??= []).push(it);
-    }
+    for (const it of items) (g[it.group] ??= []).push(it);
     return g;
   }, [items]);
 
   const groupOrder = ['模型配置', '超时配置', '限流配置', '缓存配置', '章节切分', '日志配置', '认证配置', '系统'];
 
-  // 检查是否有修改
   const dirtyKeys = useMemo(() => {
     if (!items) return [];
     return items
-      .filter(it => !it.readonly && String(it.value ?? '') !== (draft[it.key] ?? ''))
+      .filter(it => !it.readonly && !deepEqual(it.value, draft[it.key]))
       .map(it => it.key);
   }, [items, draft]);
 
@@ -68,47 +95,61 @@ export default function SettingsPage() {
     setSaving(true);
     setSavedMsg(null);
     try {
-      const updates: Record<string, string | number | boolean> = {};
+      const updates: Record<string, string | number | boolean | string[]> = {};
       for (const key of dirtyKeys) {
         const item = items!.find(i => i.key === key)!;
         const raw = draft[key];
         if (item.type === 'int') {
-          updates[key] = parseInt(raw, 10) || 0;
+          updates[key] = parseInt(String(raw ?? 0), 10) || 0;
         } else if (item.type === 'bool') {
           updates[key] = raw === 'true' || raw === '1';
+        } else if (item.type === 'list[str]') {
+          updates[key] = Array.isArray(raw)
+            ? raw.map(s => s.trim()).filter(Boolean)
+            : String(raw ?? '').split('\n').map(s => s.trim()).filter(Boolean);
         } else {
-          updates[key] = raw;
+          updates[key] = String(raw ?? '');
         }
       }
       const res = await api.settingsUpdate(updates);
+      const tail = [res.skipped.length ? `跳过: ${res.skipped.join(', ')}` : ''].filter(Boolean);
       setSavedMsg({
         ok: true,
-        text: `已更新 ${res.updated.length} 项配置。${res.skipped.length ? `跳过: ${res.skipped.join(', ')}` : ''}`,
+        text: `已更新 ${res.updated.length} 项配置。${tail.join(' ')}\n${res.note}`,
       });
       await load();
     } catch (e: any) {
       setSavedMsg({ ok: false, text: String(e?.message || e) });
     } finally {
       setSaving(false);
-      setTimeout(() => setSavedMsg(null), 6000);
+      setTimeout(() => setSavedMsg(null), 8000);
     }
   };
 
   const onReset = () => {
     if (!items) return;
-    const map: Record<string, string> = {};
-    for (const it of items) map[it.key] = String(it.value ?? '');
+    const map: DraftMap = {};
+    for (const it of items) map[it.key] = valToDraft(it.value);
     setDraft(map);
     setSavedMsg(null);
   };
 
   const loading = items === null;
 
-  const renderField = (it: SettingItem) => {
-    const val = draft[it.key] ?? '';
+  // ---- 渲染普通字段 ----
+  const renderScalarField = (it: SettingItem) => {
+    const val = (draft[it.key] ?? '') as string;
     const isSensitive = SENSITIVE_KEYS.has(it.key);
 
     if (it.readonly) {
+      if (it.type === 'list[str]') {
+        const arr = (draft[it.key] ?? []) as string[];
+        return (
+          <div className="px-3 py-2 rounded-lg bg-white/[0.02] border border-white/[0.06] text-xs text-white/50 max-h-32 overflow-auto font-mono whitespace-pre-wrap break-all">
+            {arr.length ? arr.join('\n') : '—'}
+          </div>
+        );
+      }
       return (
         <div className="px-3 py-2 rounded-lg bg-white/[0.02] border border-white/[0.06] text-sm text-white/50 truncate">
           {it.type === 'bool' ? (val === 'true' ? '✅ 是' : '❌ 否') : (val || '—')}
@@ -144,14 +185,122 @@ export default function SettingsPage() {
     );
   };
 
+  // ---- 渲染多行 list 编辑器 ----
+  const renderListEditor = (it: SettingItem) => {
+    const arr = Array.isArray(draft[it.key]) ? (draft[it.key] as string[]) : [];
+    if (it.readonly) return renderScalarField(it);
+
+    const updateAll = (next: string[]) => {
+      setDraft(d => ({ ...d, [it.key]: next }));
+    };
+    const updateOne = (idx: number, v: string) => {
+      const next = [...arr];
+      next[idx] = v;
+      updateAll(next);
+    };
+    const removeOne = (idx: number) => {
+      const next = arr.filter((_, i) => i !== idx);
+      updateAll(next);
+    };
+    const addOne = () => updateAll([...arr, '']);
+
+    const errors = arr.map(s => regexValidate(s));
+    const errCount = errors.filter(e => e && e !== EMPTY_LINE_MARKER).length;
+    const emptyCount = errors.filter(e => e === EMPTY_LINE_MARKER).length;
+
+    return (
+      <div className="space-y-2">
+        {/* 顶部：统计 + 添加/按换行粘贴 按钮 */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="text-xs text-white/40 tabular-nums">
+            共 <span className="text-white/70">{arr.length}</span> 条规则
+            {errCount > 0 && <span className="text-rose-300 ml-2">· {errCount} 语法错误</span>}
+            {emptyCount > 0 && <span className="text-amber-300 ml-2">· {emptyCount} 空行</span>}
+          </div>
+          <div className="flex-1" />
+          <button
+            type="button"
+            onClick={() => {
+              const text = window.prompt('粘贴所有正则（每条一行）：', arr.join('\n'));
+              if (text !== null) {
+                updateAll(text.split('\n').map(s => s.trim()));
+              }
+            }}
+            className="btn-ghost !py-1 !px-2.5 text-xs"
+          >
+            📋 批量编辑
+          </button>
+          <button type="button" onClick={addOne} className="btn-ghost !py-1 !px-2.5 text-xs">
+            ＋ 新增
+          </button>
+        </div>
+
+        {/* 正则行列表 */}
+        <div className="space-y-1.5 max-h-96 overflow-y-auto pr-1">
+          {arr.length === 0 && (
+            <div className="rounded-lg border border-dashed border-white/10 py-6 text-center text-xs text-white/30">
+              暂无规则，点击「新增」开始添加
+            </div>
+          )}
+          {arr.map((line, idx) => {
+            const errorMsg = errors[idx];
+            const bad = errorMsg && errorMsg !== EMPTY_LINE_MARKER;
+            return (
+              <div key={idx} className="flex items-start gap-2">
+                <span className="mt-2 w-7 shrink-0 text-right text-[0.6rem] text-white/30 tabular-nums pt-0.5">
+                  #{idx + 1}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <input
+                    value={line}
+                    onChange={e => updateOne(idx, e.target.value)}
+                    placeholder={'^[ \\t]*第[ \\t]*(章|回|节)...'}
+                    spellCheck={false}
+                    className={`input-base w-full !font-mono !text-xs !py-2 !leading-5 ${
+                      bad ? '!border-rose-500/50 focus:!border-rose-500'
+                      : errorMsg === EMPTY_LINE_MARKER ? '!border-amber-500/30' : ''
+                    }`}
+                  />
+                  {bad && (
+                    <div className="mt-1 text-[0.6rem] text-rose-300">
+                      ⚠️ {errorMsg}
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => removeOne(idx)}
+                  className="mt-1.5 w-7 h-7 grid place-items-center rounded-lg text-white/30 hover:text-rose-300 hover:bg-rose-500/10 transition-colors shrink-0"
+                  title="删除该条"
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* 提示 */}
+        <div className="text-[0.6rem] text-white/25 leading-relaxed">
+          提示：正则自动带 re.MULTILINE 标志；英文模式自动加 IGNORECASE；建议行首用 ^[ \t]* 锁定避免正文误命中。保存时后端会即时重新编译，语法错误的规则会被跳过。
+        </div>
+      </div>
+    );
+  };
+
+  const renderField = (it: SettingItem) => {
+    if (it.type === 'list[str]') return renderListEditor(it);
+    return renderScalarField(it);
+  };
+
   return (
-    <section className="p-6 max-w-4xl mx-auto space-y-5">
+    <section className="p-6 max-w-5xl mx-auto space-y-5">
       {/* 顶部 */}
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <h2 className="text-[22px] font-semibold text-white leading-tight">设置</h2>
           <p className="mt-1 text-sm text-white/50">
-            管理模型厂商、限流、超时等系统配置 · 修改即时生效
+            管理模型厂商、限流、超时、切章正则等系统配置 · 修改即时生效
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -168,16 +317,17 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* 提示 */}
+      {/* 提示信息 */}
       {savedMsg && (
         <div
-          className={`rounded-xl px-4 py-3 text-sm flex items-center gap-2 ${
+          className={`rounded-xl px-4 py-3 text-sm flex items-center gap-2 whitespace-pre-wrap ${
             savedMsg.ok
               ? 'border border-lime-500/30 bg-lime-500/10 text-lime-200'
               : 'border border-rose-500/30 bg-rose-500/10 text-rose-200'
           }`}
         >
-          {savedMsg.ok ? '✓' : '❌'} {savedMsg.text}
+          <span className="shrink-0">{savedMsg.ok ? '✓' : '❌'}</span>
+          <span className="min-w-0">{savedMsg.text}</span>
         </div>
       )}
 
@@ -209,26 +359,27 @@ export default function SettingsPage() {
                   <span className="text-lg">{meta.icon}</span>
                   <div>
                     <div className="text-sm font-semibold text-white">{group}</div>
-                    <div className="text-[11px] text-white/40">{meta.desc}</div>
+                    <div className="text-xs text-white/40">{meta.desc}</div>
                   </div>
                 </div>
                 {/* 字段 */}
                 <div className="divide-y divide-white/[0.04]">
                   {groupItems.map(it => {
-                    const isDirty = !it.readonly && String(it.value ?? '') !== (draft[it.key] ?? '');
+                    const isDirty = !it.readonly && !deepEqual(it.value, draft[it.key]);
+                    const isList = it.type === 'list[str]';
                     return (
-                      <div key={it.key} className="px-5 py-3 flex items-center gap-4">
+                      <div key={it.key} className={`px-5 ${isList ? 'py-4' : 'py-3'} flex gap-4 ${isList ? 'items-start' : 'items-center'}`}>
                         {/* 标签 */}
-                        <div className="w-[180px] shrink-0">
+                        <div className="w-[180px] shrink-0 pt-0.5">
                           <div className="text-sm text-white/80">{it.label}</div>
-                          <div className="text-[10px] text-white/30 font-mono mt-0.5">{it.key}</div>
+                          <div className="text-[0.6rem] text-white/30 font-mono mt-0.5">{it.key}</div>
                         </div>
                         {/* 输入 */}
                         <div className="flex-1 min-w-0">
                           {renderField(it)}
                         </div>
                         {/* 修改标记 */}
-                        <div className="w-4 shrink-0">
+                        <div className="w-4 shrink-0 pt-1">
                           {isDirty && <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" title="已修改" />}
                         </div>
                       </div>
@@ -243,7 +394,7 @@ export default function SettingsPage() {
 
       {/* 底部说明 */}
       {!loading && items && (
-        <div className="text-[11px] text-white/30 text-center py-2">
+        <div className="text-xs text-white/30 text-center py-2 leading-relaxed">
           配置修改即时生效（内存级）。重启后端后恢复 .env 默认值，如需持久化请手动写入 .env 文件。
         </div>
       )}

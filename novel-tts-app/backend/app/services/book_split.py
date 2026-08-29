@@ -84,8 +84,31 @@ def _compile_patterns(raw_patterns: list[str]) -> list[re.Pattern]:
     return compiled
 
 
-# 启动时一次性编译（settings 是单例，程序生命周期不变）
-CHAPTER_TITLE_PATTERNS: list[re.Pattern] = _compile_patterns(settings.CHAPTER_SPLIT_PATTERNS)
+# ----------------------------------------------------------------
+# 运行时编译缓存：支持运行时通过 settings API 修改正则后即时生效
+#   - _PATTERNS_CACHE: 已编译的 Pattern 列表
+#   - _PATTERNS_VERSION: 缓存的设置快照标识；与当前 settings 对象引用比对
+# ----------------------------------------------------------------
+_PATTERNS_CACHE: list[re.Pattern] | None = None
+_PATTERNS_SNAPSHOT: tuple[str, ...] | None = None
+
+
+def refresh_chapter_patterns() -> list[re.Pattern]:
+    """强制重新编译 CHAPTER_SPLIT_PATTERNS（写入 settings 后调用）。"""
+    global _PATTERNS_CACHE, _PATTERNS_SNAPSHOT
+    _PATTERNS_CACHE = _compile_patterns(settings.CHAPTER_SPLIT_PATTERNS)
+    _PATTERNS_SNAPSHOT = tuple(settings.CHAPTER_SPLIT_PATTERNS)
+    return _PATTERNS_CACHE
+
+
+def get_chapter_patterns() -> list[re.Pattern]:
+    """获取当前生效的章节切分正则（懒加载 + 快照刷新）。"""
+    global _PATTERNS_CACHE, _PATTERNS_SNAPSHOT
+    current = tuple(settings.CHAPTER_SPLIT_PATTERNS)
+    if _PATTERNS_CACHE is None or _PATTERNS_SNAPSHOT != current:
+        refresh_chapter_patterns()
+    assert _PATTERNS_CACHE is not None
+    return _PATTERNS_CACHE
 
 
 def _cn_to_int(s: str) -> Optional[int]:
@@ -129,7 +152,7 @@ def split_chapters_regex(text: str, *, min_matches: Optional[int] = None) -> lis
     min_matches = int(min_matches if min_matches is not None else settings.CHAPTER_SPLIT_MIN_MATCHES)
     # 找所有命中位置
     matches: list[tuple[int, int, str]] = []  # (start, end, matched_line)
-    for pat in CHAPTER_TITLE_PATTERNS:
+    for pat in get_chapter_patterns():
         for m in pat.finditer(text):
             # 去重：同一位置可能被多个模式命中（位置差 < 5 视为同一行）
             start = m.start()
