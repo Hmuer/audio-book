@@ -40,6 +40,20 @@ module.exports = {
           200: 'rgb(var(--cream-200) / <alpha-value>)',
           300: 'rgb(var(--cream-300) / <alpha-value>)',
         },
+        // 品牌紫（Tenet） — 深浅模式保持一致（brand 不会反转）
+        brand: {
+          DEFAULT: '#8b5cf6',
+          50:  '#f5f3ff',
+          100: '#ede9fe',
+          200: '#ddd6fe',
+          300: '#c4b5fd',
+          400: '#a78bfa',
+          500: '#8b5cf6',
+          600: '#7c3aed',
+          700: '#6d28d9',
+          800: '#5b21b6',
+          900: '#4c1d95',
+        },
         accent: {
           lime:  'rgb(var(--accent-lime) / <alpha-value>)',
           amber: 'rgb(var(--accent-amber) / <alpha-value>)',

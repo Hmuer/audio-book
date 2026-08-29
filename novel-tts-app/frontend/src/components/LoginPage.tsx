@@ -313,7 +313,7 @@ export default function LoginPage() {
                   className="text-sm rounded-md px-3.5 py-2.5 flex items-start gap-2"
                   style={{
                     borderColor: 'rgba(251,113,133,0.28)',
-                    background: 'rgba(251,113,133,0.08)',
+                    background: 'rgb(var(--status-error-bg) / 0.08)',
                     color: 'rgb(var(--status-error-fg))',
                     borderWidth: 1,
                     borderStyle: 'solid',

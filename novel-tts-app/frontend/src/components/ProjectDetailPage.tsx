@@ -924,7 +924,7 @@ function ChaptersTab({
                     className="text-[11px] font-mono tabular-nums shrink-0 rounded-lg px-2 py-1 border"
                     style={{
                       background: playing ? 'rgba(139,92,246,0.15)' : 'rgb(var(--color-white) / 0.04)',
-                      color: playing ? '#c4b5fd' : 'rgb(var(--color-white) / 0.5)',
+                      color: playing ? '#8b5cf6' : 'rgb(var(--color-white) / 0.5)',
                       borderColor: playing ? 'rgba(139,92,246,0.3)' : 'rgb(var(--color-white) / 0.05)',
                     }}
                   >
@@ -1149,8 +1149,7 @@ function VoicesTab({
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm text-ink-700">语速</span>
             <span
-              className="chip-soft font-mono tabular-nums"
-              style={{ color: '#c4b5fd' }}
+              className="chip-soft font-mono tabular-nums text-brand-300"
             >
               {speed.toFixed(1)}x
             </span>
@@ -1620,7 +1619,7 @@ function BuildDetailContent({
                   className="text-[11px] font-mono tabular-nums shrink-0 rounded-lg px-2 py-1"
                   style={{
                     background: 'rgb(var(--color-white) / 0.04)',
-                    color: playing ? '#c4b5fd' : 'rgb(var(--color-white) / 0.45)',
+                    color: playing ? '#8b5cf6' : 'rgb(var(--color-white) / 0.45)',
                     border: '1px solid rgb(var(--color-white) / 0.05)',
                   }}
                 >
@@ -1779,7 +1778,7 @@ function CreateBuildModal({
                 <span className="w-6 h-6 rounded-lg grid place-items-center bg-brand-500/20 text-brand-300 text-xs">2</span>
                 语速
               </div>
-              <span className="chip-soft font-mono tabular-nums" style={{ color: '#c4b5fd' }}>
+              <span className="chip-soft font-mono tabular-nums text-brand-300">
                 {speed.toFixed(1)}x
               </span>
             </div>
@@ -2020,7 +2019,7 @@ function SettingsTab({
         <div className="space-y-2 relative">
           <div className="flex items-center justify-between mb-1">
             <span className="text-sm text-ink-700">默认语速</span>
-            <span className="chip-soft font-mono tabular-nums" style={{ color: '#c4b5fd' }}>
+            <span className="chip-soft font-mono tabular-nums text-brand-300">
               {speed.toFixed(1)}x
             </span>
           </div>

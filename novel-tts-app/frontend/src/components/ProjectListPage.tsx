@@ -525,7 +525,7 @@ export default function ProjectListPage() {
             onClick={e => e.stopPropagation()}
           >
             <div className="mx-auto w-11 h-11 rounded-lg grid place-items-center mb-3"
-              style={{ background: 'rgba(251,113,133,0.12)' }}>
+              style={{ background: 'rgb(var(--status-error-bg) / 0.12)' }}>
               <span className="text-xl">⚠️</span>
             </div>
             <div className="font-semibold text-white mb-1.5">确认删除？</div>

@@ -101,7 +101,7 @@
   --palette-mint-bg:     45, 212, 191;
   --palette-mint-fg:     94, 234, 212;
 
-  color-scheme: dark light;
+  color-scheme: dark;
 
   /* 圆角 */
   --radius-none: 0px;
@@ -169,6 +169,8 @@ html.light {
   --palette-rose-fg:     190, 18, 60;
   --palette-mint-bg:     13, 148, 136;
   --palette-mint-fg:     15, 118, 110;
+
+  color-scheme: only light;
 }
 
 /* ============ 全局 ============ */
@@ -649,6 +651,16 @@ body > * { position: relative; z-index: 2; }
   }
 }
 
+/* ========== 全局选中态 ========== */
+::selection {
+  background: rgba(139,92,246,0.35);
+  color: rgb(var(--color-white));
+}
+html.light ::selection {
+  background: rgba(139,92,246,0.22);
+  color: rgb(var(--ink-900));
+}
+
 /* ========== 滚动条 ========== */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb {
@@ -663,6 +675,51 @@ body > * { position: relative; z-index: 2; }
   border: 2px solid transparent;
 }
 ::-webkit-scrollbar-track { background: transparent; }
+html.light ::-webkit-scrollbar-thumb {
+  background: rgb(var(--ink-700) / 0.22);
+  background-clip: content-box;
+}
+html.light ::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--ink-700) / 0.36);
+  background-clip: content-box;
+}
+
+/* ========== 输入框/下拉/文本域 · light 模式对比度修正 ==========
+   深色模式：透明背景 + 白色边框（0.08 alpha = 暗）
+   浅色模式：白底 + 深色边框（ink-400 实色 = 够深）
+   直接在 dark-first 定义后面用 html.light 覆盖 */
+html.light .input,
+html.light .textarea,
+html.light select {
+  background: rgb(var(--color-black) / 1);  /* --color-black = 255,255,255 → 纯白背景 */
+  border-color: rgb(var(--ink-400) / 1);   /* 灰色实边，不透明 */
+  color: rgb(var(--ink-900) / 0.94);
+  box-shadow: 0 1px 0 0 rgb(var(--ink-200)) inset;
+}
+html.light .input::placeholder,
+html.light .textarea::placeholder,
+html.light select::placeholder {
+  color: rgb(var(--ink-500));
+}
+html.light .input:focus,
+html.light .textarea:focus,
+html.light select:focus {
+  background: rgb(var(--color-black) / 1);
+  border-color: rgba(139,92,246,0.65);
+  box-shadow:
+    0 0 0 4px rgba(139,92,246,0.16),
+    0 1px 0 0 rgb(var(--ink-200)) inset;
+  color: rgb(var(--ink-900) / 0.96);
+}
+html.light select option {
+  background: rgb(var(--color-black) / 1);   /* 纯白列表底 */
+  color: rgb(var(--ink-900));                /* 深黑文字 */
+}
+html.light select option:checked,
+html.light select option:hover {
+  background: rgba(139,92,246,0.18);         /* 浅紫选中背景 */
+  color: rgb(var(--brand-700, 109, 40, 217));/* 深紫品牌字 */
+}
 
 /* ========== 登录页 ========== */
 @keyframes wave-bar {
