@@ -18,6 +18,17 @@
   --color-white: 255, 255, 255;
   --color-black: 9, 9, 11;
 
+  /* Tailwind @apply 展开 rgb(var(--x)/<alpha-value>) 时会写入 --tw-*-opacity，
+     但在 globals.css 里写 @apply text-white / bg-ink-100 等 utility class 的 color/bg 属性
+     时，@apply 只复制 `color: rgb(var(--x)/var(--tw-text-opacity))` 这一行，
+     不会附带 `--tw-text-opacity: 1` 的声明，导致 rgb() fallback 成透明/黑。
+     在 :root 提供全局默认值，所有未显式指定的 alpha 都按 100% 处理，与普通 CSS 预期一致。 */
+  --tw-bg-opacity: 1;
+  --tw-border-opacity: 1;
+  --tw-text-opacity: 1;
+  --tw-ring-offset-color: transparent;
+  --tw-ring-color: transparent;
+
   /* ink 中性阶 */
   --ink-0:   9, 9, 11;
   --ink-50:  15, 15, 18;
@@ -185,7 +196,13 @@ html {
 }
 
 body {
-  @apply bg-ink-50 text-ink-700 antialiased;
+  /* 注意：不使用 @apply bg-ink-50，因为 Tailwind v3.4 对 `rgb(var(--x)/<alpha-value>)`
+     在 @apply 展开时不会同步设置 --tw-bg-opacity，导致 rgb() fallback 到 rgba(0,0,0,0)。
+     直接写原生属性即可，语义等价且不依赖 --tw-*-opacity。 */
+  background-color: rgb(var(--ink-50));
+  color: rgb(var(--ink-700));
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   /* AI 引擎 glow mesh：紫→青→柠，三团发光，品牌链表达 AI 生成语义 */
   background-image:
     radial-gradient(1100px 700px at -10% -10%, rgba(139,92,246,0.20), transparent 55%),
@@ -409,8 +426,8 @@ body > * { position: relative; z-index: 2; }
   .btn-danger {
     @apply btn text-white;
     background-image: linear-gradient(180deg, rgb(var(--color-white) / 0.10) 0%, rgb(var(--color-white) / 0) 50%),
-      linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-    box-shadow: 0 0 0 1px rgba(239,68,68,0.35), 0 10px 30px -8px rgba(239,68,68,0.45);
+      linear-gradient(135deg, rgb(var(--status-error-bg)) 0%, rgb(var(--status-error-fg)) 100%);
+    box-shadow: 0 0 0 1px rgb(var(--status-error-bg) / 0.35), 0 10px 30px -8px rgb(var(--status-error-bg) / 0.45);
   }
   .btn-danger:hover {
     filter: brightness(1.08);
