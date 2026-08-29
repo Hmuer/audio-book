@@ -54,6 +54,32 @@ export default function AppSidebar({ currentPath }: Props) {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [pwdModal, setPwdModal] = useState(false);
 
+  // 一级菜单折叠状态：有子菜单的模块默认展开当前激活的，其余折叠
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => {
+    // 初始化：展开当前路由匹配到的模块
+    const keys = new Set<string>();
+    for (const m of MODULES) {
+      if (m.children?.some(c => {
+        const p = c.href.replace(/^#/, '');
+        if (typeof window === 'undefined') return false;
+        const current = window.location.hash.replace(/^#/, '');
+        return current === p || current.startsWith(p + '/');
+      })) {
+        keys.add(m.key);
+      }
+    }
+    return keys;
+  });
+
+  const toggleExpand = (key: string) => {
+    setExpandedKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
   if (!user) return null;
 
   const isPathActive = (href: string) => {
@@ -107,6 +133,8 @@ export default function AppSidebar({ currentPath }: Props) {
                 m={m}
                 moduleActive={isModuleActive(m)}
                 pathActive={isPathActive}
+                expanded={expandedKeys.has(m.key)}
+                onToggleExpand={() => toggleExpand(m.key)}
               />
             ))}
           </div>
@@ -195,100 +223,135 @@ function SectionLabel({ label }: { label: string }) {
 }
 
 function ModuleNav({
-  m, moduleActive, pathActive,
+  m, moduleActive, pathActive, expanded, onToggleExpand,
 }: {
   m: Module;
   moduleActive: boolean;
   pathActive: (href: string) => boolean;
+  expanded: boolean;
+  onToggleExpand: () => void;
 }) {
   const hasChildren = !!m.children && !m.disabled;
 
-  return (
-    <div className="space-y-1">
-      {/* 一级菜单项 */}
-      <a
-        href={m.disabled ? undefined : (m.href || '#')}
-        onClick={m.disabled ? (e) => e.preventDefault() : undefined}
-        className={[
-          'group relative flex items-center gap-2.5 px-3 h-[38px] text-[14px] font-medium transition-all',
-        m.disabled
-          ? 'text-white/28 cursor-not-allowed'
-          : moduleActive
-            ? 'text-white'
-            : 'text-white/68 hover:text-white hover:bg-white/[0.04]',
-        ].join(' ')}
-        style={
-          !m.disabled && moduleActive
-            ? {
-                background:
-                  'linear-gradient(135deg, rgba(139,92,246,0.16) 0%, rgba(139,92,246,0.04) 70%), rgba(255,255,255,0.02)',
-                boxShadow: 'inset 0 0 0 1px rgba(139,92,246,0.18)',
-              }
-            : undefined
+  const headerClass = [
+    'group relative flex items-center gap-2.5 px-3 h-[38px] text-[14px] font-medium transition-all',
+    m.disabled
+      ? 'text-white/28 cursor-not-allowed'
+      : moduleActive
+        ? 'text-white'
+        : 'text-white/68 hover:text-white hover:bg-white/[0.04]',
+  ].join(' ');
+  const headerStyle =
+    !m.disabled && moduleActive
+      ? {
+          background:
+            'linear-gradient(135deg, rgba(139,92,246,0.16) 0%, rgba(139,92,246,0.04) 70%), rgba(255,255,255,0.02)',
+          boxShadow: 'inset 0 0 0 1px rgba(139,92,246,0.18)',
         }
-      >
-        {/* 激活时左侧渐变条 */}
-        {!m.disabled && moduleActive && (
-          <span
-            className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full"
-            style={{ background: 'linear-gradient(180deg, #c4b5fd 0%, #7c3aed 100%)' }}
-          />
-        )}
-        <IconCell icon={m.icon} active={!m.disabled && moduleActive} disabled={m.disabled} />
-        <span className="flex-1">{m.label}</span>
-        {m.disabled && <ComingSoonBadge />}
-        {hasChildren && (
-          <Chevron
-            open={!!hasChildren}
-            className={!m.disabled && moduleActive ? 'text-brand-300' : 'text-white/30'}
-          />
-        )}
-      </a>
+      : undefined;
 
-      {/* 二级菜单项：胶囊式内嵌卡片 */}
+  const headerInner = (
+    <>
+      {/* 激活时左侧渐变条 */}
+      {!m.disabled && moduleActive && (
+        <span
+          className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full"
+          style={{ background: 'linear-gradient(180deg, #c4b5fd 0%, #7c3aed 100%)' }}
+        />
+      )}
+      <IconCell icon={m.icon} active={!m.disabled && moduleActive} disabled={m.disabled} />
+      <span className="flex-1">{m.label}</span>
+      {m.disabled && <ComingSoonBadge />}
       {hasChildren && (
-        <div className="ml-2 px-1.5 py-1.5 bg-white/[0.025] border border-white/[0.05] space-y-0.5" style={{ borderRadius: 'var(--radius-sm)' }}>
-          {m.children!.map((c) => {
-            const active = pathActive(c.href);
-            return (
-              <a
-                key={c.key}
-                href={c.href}
-                className={[
-                  'relative flex items-center gap-2 px-2.5 h-[34px] text-[13px] transition-all',
-                  active
-                    ? 'text-white'
-                    : 'text-white/58 hover:text-white hover:bg-white/[0.04]',
-                ].join(' ')}
-                style={
-                  active
-                    ? {
-                        background:
-                          'linear-gradient(90deg, rgba(139,92,246,0.22) 0%, rgba(139,92,246,0.06) 100%)',
-                        boxShadow: 'inset 0 0 0 1px rgba(139,92,246,0.18)',
-                      }
-                    : undefined
-                }
-              >
-                {active && (
-                  <span
-                    className="absolute left-1 top-1/2 -translate-y-1/2 w-[2.5px] h-4 rounded-r-full"
-                    style={{ background: 'linear-gradient(180deg,#c4b5fd,#8b5cf6)' }}
-                  />
-                )}
-                <span
-                  className={`w-6 h-6 shrink-0 rounded-md grid place-items-center text-[12px]
-                    ${active ? 'bg-brand-500/20 text-brand-200' : 'bg-white/[0.03] text-white/65'}`}
+        <Chevron
+          open={expanded}
+          className={!m.disabled && moduleActive ? 'text-brand-300' : 'text-white/30'}
+        />
+      )}
+    </>
+  );
+
+  // 一级菜单头：有子菜单时用 button 切换展开；有 href 时用链接；禁用则静态展示
+  const headerEl = hasChildren ? (
+    <button
+      type="button"
+      onClick={onToggleExpand}
+      aria-expanded={expanded}
+      className={headerClass + ' w-full text-left'}
+      style={headerStyle}
+    >
+      {headerInner}
+    </button>
+  ) : m.href && !m.disabled ? (
+    <a href={m.href} className={headerClass} style={headerStyle}>
+      {headerInner}
+    </a>
+  ) : (
+    <div className={headerClass} style={headerStyle}>
+      {headerInner}
+    </div>
+  );
+
+  return (
+    <div>
+      {headerEl}
+
+      {/* 二级菜单：基于 expanded 折叠/展开，带过渡动画 */}
+      {hasChildren && (
+        <div
+          className="overflow-hidden transition-all duration-200 ease-out"
+          style={{
+            maxHeight: expanded ? 240 : 0,
+            opacity: expanded ? 1 : 0,
+            marginTop: expanded ? 4 : 0,
+          }}
+        >
+          <div
+            className="ml-2 px-1.5 py-1.5 bg-white/[0.025] border border-white/[0.05] space-y-0.5"
+            style={{ borderRadius: 'var(--radius-sm)' }}
+          >
+            {m.children!.map((c) => {
+              const active = pathActive(c.href);
+              return (
+                <a
+                  key={c.key}
+                  href={c.href}
+                  className={[
+                    'relative flex items-center gap-2 px-2.5 h-[34px] text-[13px] transition-all',
+                    active
+                      ? 'text-white'
+                      : 'text-white/58 hover:text-white hover:bg-white/[0.04]',
+                  ].join(' ')}
+                  style={
+                    active
+                      ? {
+                          background:
+                            'linear-gradient(90deg, rgba(139,92,246,0.22) 0%, rgba(139,92,246,0.06) 100%)',
+                          boxShadow: 'inset 0 0 0 1px rgba(139,92,246,0.18)',
+                        }
+                      : undefined
+                  }
                 >
-                  {c.icon}
-                </span>
-                <span className="flex-1">{c.label}</span>
-                {c.badge != null && typeof c.badge !== 'undefined' && (
-                  <span className="text-[10px] text-white/35 tabular-nums">{c.badge}</span>
-                )}
-              </a>
-            );
-          })}
+                  {active && (
+                    <span
+                      className="absolute left-1 top-1/2 -translate-y-1/2 w-[2.5px] h-4 rounded-r-full"
+                      style={{ background: 'linear-gradient(180deg,#c4b5fd,#8b5cf6)' }}
+                    />
+                  )}
+                  <span
+                    className={`w-6 h-6 shrink-0 rounded-md grid place-items-center text-[12px]
+                      ${active ? 'bg-brand-500/20 text-brand-200' : 'bg-white/[0.03] text-white/65'}`}
+                  >
+                    {c.icon}
+                  </span>
+                  <span className="flex-1">{c.label}</span>
+                  {c.badge != null && typeof c.badge !== 'undefined' && (
+                    <span className="text-[10px] text-white/35 tabular-nums">{c.badge}</span>
+                  )}
+                </a>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
