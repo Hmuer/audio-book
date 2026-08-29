@@ -136,9 +136,9 @@ export default function VoicePicker({
           ref={btnRef}
           onClick={() => setOpen(v => !v)}
           className={`group relative flex items-center gap-3 ${compact ? 'flex-1' : 'w-full'}
-            rounded-lg border border-white/[0.07] bg-white/[0.035]
+            rounded-lg border border-ink-300/70 bg-ink-100
             px-3 py-2.5 text-left
-            hover:border-white/[0.14] hover:bg-white/[0.055]
+            hover:border-ink-400 hover:bg-ink-200
             focus:outline-none focus:ring-2 focus:ring-brand-500/40
             transition-all duration-200`}
         >
@@ -168,7 +168,7 @@ export default function VoicePicker({
             </>
           ) : (
             <>
-              <div className="shrink-0 w-9 h-9 rounded-full grid place-items-center bg-white/[0.04] border border-white/[0.07] text-ink-500">
+              <div className="shrink-0 w-9 h-9 rounded-full grid place-items-center bg-ink-200 border border-ink-300/70 text-ink-500">
                 ?
               </div>
               <div className="flex-1 text-sm text-ink-600">请选择音色…</div>
@@ -185,7 +185,7 @@ export default function VoicePicker({
             border transition-all duration-200
             ${isPlaying
               ? 'border-brand-500/50 bg-brand-500/15 text-brand-300 ring-2 ring-brand-500/25'
-              : 'border-white/[0.07] bg-white/[0.035] text-ink-700 hover:border-brand-500/30 hover:bg-brand-500/10 hover:text-brand-300'
+              : 'border-ink-300/70 bg-ink-100 text-ink-700 hover:border-brand-500/30 hover:bg-brand-500/10 hover:text-brand-300'
             }
             disabled:opacity-40 disabled:cursor-not-allowed`}
           style={{ width: compact ? 40 : 44, height: compact ? 40 : 44 }}
@@ -265,7 +265,7 @@ export default function VoicePicker({
                             flex items-center gap-3 w-full
                             ${active
                               ? 'bg-brand-500/12 border-brand-500/40'
-                              : 'bg-white/[0.025] border-white/[0.05] hover:bg-white/[0.06] hover:border-white/[0.10]'
+                              : 'bg-ink-100 border-ink-300/70 hover:bg-ink-200 hover:border-ink-400'
                             }`}
                         >
                           {active && (
@@ -296,7 +296,7 @@ export default function VoicePicker({
                                 ? 'bg-brand-500/20 text-brand-300 ring-2 ring-brand-500/30'
                                 : lv
                                 ? 'bg-white/5 text-brand-400'
-                                : 'bg-white/[0.03] text-ink-500 opacity-0 group-hover:opacity-100 hover:bg-brand-500/15 hover:text-brand-300'
+                                : 'bg-ink-200 text-ink-500 opacity-0 group-hover:opacity-100 hover:bg-brand-500/15 hover:text-brand-300'
                               }`}
                             style={{ width: 30, height: 30 }}
                             title={pv ? '停止试听' : '试听'}

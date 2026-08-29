@@ -145,13 +145,13 @@ export default function SettingsPage() {
       if (it.type === 'list[str]') {
         const arr = (draft[it.key] ?? []) as string[];
         return (
-          <div className="px-3 py-2 rounded-lg bg-white/[0.02] border border-white/[0.06] text-xs text-white/50 max-h-32 overflow-auto font-mono whitespace-pre-wrap break-all">
+          <div className="px-3 py-2 rounded-lg bg-ink-200 border border-ink-300/70 text-xs text-white/50 max-h-32 overflow-auto font-mono whitespace-pre-wrap break-all">
             {arr.length ? arr.join('\n') : '—'}
           </div>
         );
       }
       return (
-        <div className="px-3 py-2 rounded-lg bg-white/[0.02] border border-white/[0.06] text-sm text-white/50 truncate">
+        <div className="px-3 py-2 rounded-lg bg-ink-200 border border-ink-300/70 text-sm text-white/50 truncate">
           {it.type === 'bool' ? (val === 'true' ? '✅ 是' : '❌ 否') : (val || '—')}
         </div>
       );
@@ -238,7 +238,7 @@ export default function SettingsPage() {
         {/* 正则行列表 */}
         <div className="space-y-1.5 max-h-96 overflow-y-auto pr-1">
           {arr.length === 0 && (
-            <div className="rounded-lg border border-dashed border-white/10 py-6 text-center text-xs text-white/30">
+            <div className="rounded-lg border border-dashed border-ink-300/70 py-6 text-center text-xs text-white/30">
               暂无规则，点击「新增」开始添加
             </div>
           )}
@@ -339,7 +339,7 @@ export default function SettingsPage() {
 
       {/* 加载中 */}
       {loading && (
-        <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] text-center py-16">
+        <div className="rounded-lg border border-ink-300/70 bg-ink-200 text-center py-16">
           <div className="mx-auto w-9 h-9 rounded-full border-2 border-brand-500/30 border-t-brand-500 animate-spin mb-4" />
           <div className="text-sm text-white/50">加载配置…</div>
         </div>
@@ -353,9 +353,9 @@ export default function SettingsPage() {
             if (!groupItems || groupItems.length === 0) return null;
             const meta = GROUP_META[group] ?? { icon: '📦', desc: '' };
             return (
-              <div key={group} className="rounded-lg border border-white/[0.06] bg-white/[0.02] overflow-hidden">
+              <div key={group} className="rounded-lg border border-ink-300/70 bg-ink-200 overflow-hidden">
                 {/* 分组头 */}
-                <div className="px-5 py-3.5 border-b border-white/[0.06] flex items-center gap-2.5">
+                <div className="px-5 py-3.5 border-b border-ink-300/70 flex items-center gap-2.5">
                   <span className="text-lg">{meta.icon}</span>
                   <div>
                     <div className="text-sm font-semibold text-white">{group}</div>

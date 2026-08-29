@@ -144,7 +144,7 @@ export default function AppSidebar({ currentPath }: Props) {
             <button
               onClick={() => setUserMenuOpen((o) => !o)}
               className="w-full flex items-center gap-3 px-2.5 py-2
-                hover:bg-white/[0.04] transition-all group"
+                hover:bg-ink-200 transition-all group"
               style={{ borderRadius: 'var(--radius-sm)' }}
             >
               <Avatar username={user.username} />
@@ -171,7 +171,7 @@ export default function AppSidebar({ currentPath }: Props) {
             {userMenuOpen && (
               <div
                 className="absolute left-0 right-0 bottom-[calc(100%+6px)] z-40
-                  border border-ink-300/70 bg-ink-50 backdrop-blur-md
+                  border border-ink-300/70 bg-ink-50
                   shadow-[0_16px_48px_-12px_rgba(0,0,0,0.75)] p-1.5 w-auto animate-fade-in"
                 style={{ borderRadius: 'var(--radius-md)' }}
               >
@@ -224,7 +224,7 @@ function ModuleNav({
       ? 'text-white/28 cursor-not-allowed'
       : moduleActive
         ? 'text-white bg-brand-600 shadow-[0_0_0_1px_rgb(var(--brand-500)/0.45),0_6px_16px_-8px_rgb(var(--brand-700)/0.85)]'
-        : 'text-ink-700/78 hover:text-white hover:bg-white/[0.04]',
+        : 'text-ink-700/78 hover:text-white hover:bg-ink-200',
   ].join(' ');
 
   const headerInner = (
@@ -291,7 +291,7 @@ function ModuleNav({
                     'relative flex items-center gap-2 px-2.5 h-[34px] text-[13px] transition-all',
                     active
                       ? 'text-white bg-brand-600/90 shadow-[0_0_0_1px_rgb(var(--brand-500)/0.4)]'
-                      : 'text-ink-700/68 hover:text-white hover:bg-white/[0.04]',
+                      : 'text-ink-700/68 hover:text-white hover:bg-ink-200',
                   ].join(' ')}
                   style={{ borderRadius: 'var(--radius-xs)' }}
                 >
@@ -326,7 +326,7 @@ function TopLevelLink({ item, active }: { item: MenuItem; active: boolean }) {
         'group relative flex items-center gap-2.5 px-3 h-[40px] text-[14px] font-medium transition-all',
         active
           ? 'text-white bg-brand-600 shadow-[0_0_0_1px_rgb(var(--brand-500)/0.45),0_6px_16px_-8px_rgb(var(--brand-700)/0.85)]'
-          : 'text-ink-700/78 hover:text-white hover:bg-white/[0.04]',
+          : 'text-ink-700/78 hover:text-white hover:bg-ink-200',
       ].join(' ')}
       style={{ borderRadius: 'var(--radius-sm)' }}
     >
@@ -346,9 +346,9 @@ function IconCell({
   return (
     <div
       className={`w-7 h-7 shrink-0 grid place-items-center transition-all
-        ${active ? 'bg-white/18 text-white ring-1 ring-white/25'
-          : disabled ? 'bg-white/[0.02] text-white/35'
-          : 'bg-white/[0.04] text-white/85 ring-1 ring-white/[0.05] group-hover:bg-white/[0.07]'}`}
+        ${active ? 'bg-ink-200 text-white ring-1 ring-ink-300/80'
+          : disabled ? 'bg-ink-200 text-white/35'
+          : 'bg-ink-200 text-white/85 ring-1 ring-ink-300/50 group-hover:bg-ink-200'}`}
       style={{ borderRadius: 'var(--radius-xs)' }}
     >
       <MenuIcon name={icon} size={15} />
@@ -475,10 +475,10 @@ function MenuItemButton({
       className={`w-full flex items-center gap-2.5 px-3 h-10 text-[13.5px] transition-all
         ${danger
           ? 'text-rose-200/90 hover:bg-rose-500/10 hover:text-rose-100'
-          : 'text-white/80 hover:bg-white/[0.06] hover:text-white'}`}
+          : 'text-white/80 hover:bg-ink-200 hover:text-white'}`}
       style={{ borderRadius: 'var(--radius-xs)' }}
     >
-      <span className="w-6 h-6 grid place-items-center bg-white/[0.04]" style={{ borderRadius: 'var(--radius-xs)' }}>
+      <span className="w-6 h-6 grid place-items-center bg-ink-200" style={{ borderRadius: 'var(--radius-xs)' }}>
         <MenuIcon name={icon} size={14} />
       </span>
       <span className="flex-1 text-left">{label}</span>

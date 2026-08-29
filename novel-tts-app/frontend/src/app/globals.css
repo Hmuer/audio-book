@@ -196,18 +196,14 @@ body {
     border: 1px solid rgb(var(--ink-300));
   }
 
-  /* ---- 玻璃面板（Edtech 轻玻璃，用在 Dialog / Popover / UserMenu） ---- */
+  /* ---- 玻璃面板 → GreenSpring 实心底卡（无透明、无blur，纯卡片感） ---- */
   .glass-panel {
     position: relative;
     border-radius: var(--radius-md);
     padding: 16px 18px;
-    background:
-      linear-gradient(180deg, rgb(var(--color-white) / 0.02) 0%, rgb(var(--color-white) / 0) 100%),
-      rgb(var(--ink-100));
+    background: rgb(var(--ink-100));
     border: 1px solid rgb(var(--ink-300));
-    box-shadow:
-      0 1px 0 0 rgb(var(--color-white) / 0.03) inset,
-      0 24px 60px -30px rgba(0, 0, 0, 0.8);
+    box-shadow: 0 1px 0 0 rgb(var(--color-white) / 0.03) inset;
   }
   @media (min-width: 640px) {
     .glass-panel { padding: 20px 22px; }

@@ -59,38 +59,30 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center p-4"
-      style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(4px)' }}
+      style={{ background: 'rgba(0,0,0,0.72)' }}
       onClick={onClose}>
       <div
-        className="bg-ink-100 border border-ink-300 w-full max-w-lg max-h-[88vh] overflow-hidden flex flex-col animate-scale-in"
-        style={{ borderRadius: 'var(--radius-lg)' }}
+        className="bg-ink-100 border border-ink-300 w-full max-w-lg max-h-[88vh] overflow-hidden flex flex-col animate-scale-in shadow-[0_30px_80px_-20px_rgba(0,0,0,0.9)]"
+        style={{ borderRadius: 'var(--radius-md)' }}
         onClick={e => e.stopPropagation()}
       >
-        {/* 头部：Edtech 简洁 · 冷灰 Eyebrow + 步骤条 */}
+        {/* 头部：GreenSpring简洁步骤条 · 无胶囊装饰 */}
         <div className="relative px-6 pt-5 pb-4"
           style={{
             borderBottom: '1px solid rgb(var(--ink-300))',
             background: 'rgb(var(--ink-50))',
           }}
         >
-          {/* 顶部 Eyebrow */}
+          {/* 顶部：标题行 */}
           <div className="flex items-center justify-between mb-3">
-            <div className="inline-flex items-center px-2 py-0.5"
-              style={{
-                borderRadius: 'var(--radius-xs)',
-                background: 'rgb(var(--ink-200))',
-                border: '1px solid rgb(var(--ink-300))',
-              }}
-            >
-              <span className="text-[10.5px] uppercase tracking-[0.08em] font-medium"
-                style={{ color: 'rgb(var(--ink-600))' }}
-              >步骤 1 / 3</span>
+            <div className="text-[11px] font-medium" style={{ color: 'rgb(var(--ink-600))' }}>
+              步骤 1 / 3
             </div>
             <button
               type="button"
               onClick={onClose}
               aria-label="关闭"
-              className="w-7 h-7 grid place-items-center transition-all text-white/55 hover:text-white hover:bg-white/[0.06]"
+              className="w-7 h-7 grid place-items-center transition-all text-ink-600 hover:text-white hover:bg-ink-200"
               style={{ borderRadius: 'var(--radius-xs)' }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -112,7 +104,6 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                     background: i === 0
                       ? 'rgb(var(--brand-600))'
                       : 'rgb(var(--ink-300))',
-                    boxShadow: i === 0 ? '0 0 0 3px rgb(var(--brand-500) / 0.18)' : undefined,
                     color: '#fff',
                   }}
                 >{i + 1}</div>
@@ -120,9 +111,6 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                   <div className="text-[11.5px] font-medium leading-tight truncate"
                     style={{ color: i === 0 ? 'rgb(var(--ink-900))' : 'rgb(var(--ink-700) / 0.55)' }}
                   >{t}</div>
-                  <div className="text-[10px] font-medium mt-0.5"
-                    style={{ color: i === 0 ? 'rgb(var(--brand-400))' : 'rgb(var(--ink-700) / 0.35)' }}
-                  >{i === 0 ? '当前' : '待办'}</div>
                 </div>
               </div>
             ))}
@@ -177,7 +165,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                     }}
                   >
                     <span className={`w-8 h-8 shrink-0 grid place-items-center rounded-[6px] ${
-                      active ? 'bg-white/15' : 'bg-white/[0.04]'
+                      active ? 'bg-white/15' : 'bg-ink-200'
                     }`}>
                       <SegmentIcon name={it.iconName} />
                     </span>
@@ -200,7 +188,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                 className={`cursor-pointer rounded-md border-2 border-dashed transition-all text-center py-9 px-4 ${
                   dragOver
                     ? 'border-brand-400 bg-brand-500/10'
-                    : 'border-white/10 hover:border-white/20 hover:bg-white/[0.02]'
+                    : 'border-ink-300/70 hover:border-ink-400 hover:bg-ink-200'
                 }`}
                 style={{ borderRadius: 'var(--radius-md)' }}
               >

@@ -15,7 +15,7 @@ export default function UserMenu() {
     <div className="relative">
       <button
         onClick={() => setOpen(o => !o)}
-        className="chip border border-white/10 hover:border-white/30 flex items-center gap-2"
+        className="chip border border-ink-300/70 hover:border-ink-400 flex items-center gap-2"
         title={user.username}
       >
         <span className="w-6 h-6 rounded-full bg-brand-500/30 text-brand-200 flex items-center justify-center text-xs font-bold">
@@ -30,7 +30,7 @@ export default function UserMenu() {
           {/* 点击外部关闭 */}
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
           <div className="absolute right-0 mt-1 w-56 bg-ink-50 border border-ink-300/70 rounded-md shadow-xl z-20 overflow-hidden">
-            <div className="px-4 py-3 border-b border-white/5">
+            <div className="px-4 py-3 border-b border-ink-300/60">
               <div className="text-sm font-medium">{user.username}</div>
               <div className="text-xs text-white/40 mt-0.5">
                 {user.created_at
@@ -115,7 +115,7 @@ export function ChangePasswordModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
       onClick={onClose}
     >
       <div

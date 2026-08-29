@@ -101,7 +101,7 @@ export default function HomePage() {
     return (
       <div className="min-h-[60vh] grid place-items-center text-white/40">
         <div className="text-center">
-          <div className="inline-block w-8 h-8 border-2 border-white/20 border-t-brand-500 rounded-full animate-spin mb-3" />
+          <div className="inline-block w-8 h-8 border-2 border-ink-400/70 border-t-brand-500 rounded-full animate-spin mb-3" />
           <div className="text-sm">加载中…</div>
         </div>
       </div>
@@ -161,30 +161,8 @@ export default function HomePage() {
               ))}
             </div>
           </div>
-          {/* 右侧（Edtech 工具感 · 无杂志水印） */}
-          <div className="flex items-center gap-3">
-            {/* 在列表页 & 详情页：顶栏主 CTA —— Edtech"随处可创建"理念 */}
-            {(R.name === 'ab-list' || R.name === 'ab-detail') && (
-              <button
-                onClick={() => {
-                  if (R.name === 'ab-list') {
-                    window.dispatchEvent(new CustomEvent('app:open-create-dialog'));
-                  } else {
-                    window.location.hash = '/audiobooks';
-                    setTimeout(() => window.dispatchEvent(new CustomEvent('app:open-create-dialog')), 0);
-                  }
-                }}
-                className="inline-flex items-center gap-1.5 h-8 px-3 text-[12px] font-semibold text-white"
-                style={{
-                  borderRadius: 'var(--radius-xs)',
-                  background: 'rgb(var(--brand-600))',
-                  boxShadow: '0 0 0 1px rgb(var(--brand-500) / 0.4), 0 6px 14px -8px rgb(var(--brand-700) / 0.9)',
-                }}
-              >
-                新建有声书
-              </button>
-            )}
-          </div>
+          {/* 右侧（GreenSpring风格：无多余主CTA，仅保留功能入口） */}
+          <div className="flex items-center gap-3"></div>
         </header>
 
         {/* 主内容 —— 统一右侧、底部边距：画布画布 */}

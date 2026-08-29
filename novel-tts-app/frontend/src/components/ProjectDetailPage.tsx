@@ -206,7 +206,12 @@ export default function ProjectDetailPage({
       <audio ref={audioRef} className="hidden" />
 
       {err && (
-        <div className="rounded-lg border border-red-500/40 bg-red-500/10 backdrop-blur px-4 py-3 text-sm text-red-200 flex items-center gap-3 mb-5">
+        <div className="rounded-lg px-4 py-3 text-sm flex items-center gap-3 mb-5"
+          style={{
+            border: '1px solid rgb(var(--status-error-bg))',
+            background: 'rgb(var(--status-error-bg))',
+            color: 'rgb(var(--status-error-fg))',
+          }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12" y2="16"/></svg>
           <span className="flex-1 min-w-0">{err}</span>
           <button className="btn-ghost !py-1 !px-2.5 text-xs" onClick={reload}>重试</button>
@@ -277,7 +282,7 @@ export default function ProjectDetailPage({
                   className={`flex items-center gap-2 px-3.5 py-2 text-sm font-medium whitespace-nowrap transition-all duration-200
                     ${active
                       ? 'text-white shadow-brand'
-                      : 'text-ink-600 hover:text-ink-800 hover:bg-white/[0.04]'
+                      : 'text-ink-600 hover:text-ink-800 hover:bg-ink-200'
                     }`}
                   style={{
                     borderRadius: 'var(--radius-sm)',
@@ -373,7 +378,7 @@ function PipelineTimeline({ prog }: { prog: ProjectDetailResp['prepare_progress'
                   isFailed ? 'bg-red-500/20 text-red-300 border border-red-500/40'
                   : isDone ? 'bg-lime-500/20 text-lime-300 border border-lime-500/30'
                   : isCurrent ? 'bg-brand-500/20 text-brand-300 border border-brand-500/40 animate-pulse-soft'
-                  : 'bg-white/[0.03] text-white/30 border border-white/[0.06]'
+                  : 'bg-ink-200 text-white/30 border border-ink-300/70'
                 }`}
               >
                 {isFailed ? '❌' : isDone ? '✓' : st.icon}
@@ -383,7 +388,7 @@ function PipelineTimeline({ prog }: { prog: ProjectDetailResp['prepare_progress'
               }`}>{st.label}</span>
             </div>
             {i < PIPELINE_STAGES.length - 1 && (
-              <div className={`h-px w-6 ${isDone ? 'bg-lime-500/40' : 'bg-white/[0.08]'}`} />
+              <div className={`h-px w-6 ${isDone ? 'bg-lime-500/40' : 'bg-ink-300/60'}`} />
             )}
           </div>
         );
@@ -454,7 +459,12 @@ function OverviewTab({
   return (
     <div className="space-y-4">
       {prepareTip && (
-        <div className="rounded-lg border border-blue-500/40 bg-blue-500/10 backdrop-blur px-4 py-3 text-sm text-blue-200 flex items-center gap-2">
+        <div className="rounded-lg px-4 py-3 text-sm flex items-center gap-2"
+          style={{
+            border: '1px solid rgb(var(--brand-500) / 0.35)',
+            background: 'rgb(var(--brand-500) / 0.10)',
+            color: 'rgb(var(--brand-200))',
+          }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="m9 12 2 2 4-4"/></svg>
           {prepareTip}
         </div>
@@ -470,7 +480,7 @@ function OverviewTab({
           className={`rounded-lg border-2 border-dashed transition-all text-center py-10 px-4 cursor-pointer ${
             dragOver
               ? 'border-brand-400 bg-brand-500/10'
-              : 'border-white/10 hover:border-white/20 hover:bg-white/[0.02]'
+              : 'border-ink-300/70 hover:border-ink-400 hover:bg-ink-200'
           }`}
         >
           <input
@@ -881,7 +891,7 @@ function ChaptersTab({
   if (chapters.length === 0) {
     return (
       <div className="glass-panel text-center py-16 text-ink-500">
-        <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-white/[0.04] border border-white/[0.07] text-3xl">📭</div>
+        <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-ink-200 border border-ink-300/70 text-3xl">📭</div>
         <div className="text-sm font-medium text-ink-700">还没有章节</div>
         <div className="text-xs text-ink-500 mt-1">请先到「概览」触发识别</div>
       </div>
@@ -911,11 +921,11 @@ function ChaptersTab({
               ? api.buildChapterAudioUrl(project.project_id, lastBuild!.build_id, c.idx)
               : null;
             return (
-              <div key={c.idx} className="rounded-lg border bg-white/[0.02] border-white/[0.04] overflow-hidden transition-all duration-200">
+              <div key={c.idx} className="rounded-lg border bg-ink-200 border-ink-300/70 overflow-hidden transition-all duration-200">
                 {/* 章首行（始终可见） */}
                 <button
                   onClick={() => onExpand(c.idx)}
-                  className="w-full p-3 text-left flex items-center gap-3 hover:bg-white/[0.04] transition-colors"
+                  className="w-full p-3 text-left flex items-center gap-3 hover:bg-ink-200 transition-colors"
                 >
                   <span
                     className="text-[11px] font-mono tabular-nums shrink-0 rounded-lg px-2 py-1 border"
@@ -954,7 +964,7 @@ function ChaptersTab({
 
                 {/* 展开：逐行文本标注 */}
                 {isOpen && (
-                  <div className="border-t border-white/[0.05] px-3 py-3 bg-white/[0.015]">
+                  <div className="border-t border-ink-300/70 px-3 py-3 bg-ink-100">
                     {loadingDetail && (
                       <div className="text-center py-6 text-sm text-ink-500">
                         <span className="inline-block w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin mr-2 align-middle" />
@@ -978,7 +988,7 @@ function ChaptersTab({
                                 </span>
                               );
                             })}
-                            <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border border-white/[0.07] bg-white/[0.03] text-ink-500">
+                            <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border border-ink-300/70 bg-ink-200 text-ink-500">
                               N 旁白
                             </span>
                           </div>
@@ -995,7 +1005,7 @@ function ChaptersTab({
                             return (
                               <div
                                 key={l.key}
-                                className="flex gap-2 items-start py-1.5 px-2 rounded-lg transition-colors hover:bg-white/[0.02]"
+                                className="flex gap-2 items-start py-1.5 px-2 rounded-lg transition-colors hover:bg-ink-200"
                                 style={isSpeech && c ? { background: c.bg, borderLeft: `2px solid ${c.border}` } : {}}
                               >
                                 {isSpeech ? (
@@ -1042,7 +1052,7 @@ function ChaptersTab({
         </div>
 
         {!hasAudio && (
-          <div className="text-xs text-ink-500 pt-2 border-t border-white/[0.05]">
+          <div className="text-xs text-ink-500 pt-2 border-t border-ink-300/70">
             完成一次构建后，此页面将显示每章的波形播放器与下载按钮。点击章节可展开查看逐行角色归属。
           </div>
         )}
@@ -1174,7 +1184,7 @@ function VoicesTab({
           <button className="btn-primary" disabled={savingDefault} onClick={saveDefaults}>
             {savingDefault ? (
               <>
-                <span className="inline-block w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                <span className="inline-block w-4 h-4 border-2 border-ink-400/70 border-t-white rounded-full animate-spin" />
                 保存中…
               </>
             ) : (
@@ -1200,8 +1210,8 @@ function VoicesTab({
           <span className="chip-soft">{chars.length} 个角色</span>
         </h3>
         {chars.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-white/[0.1] p-10 text-center">
-            <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-white/[0.04] border border-white/[0.07] text-3xl">🎭</div>
+          <div className="rounded-lg border border-dashed border-ink-300 p-10 text-center">
+            <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-ink-200 border border-ink-300/70 text-3xl">🎭</div>
             <div className="text-sm font-medium text-ink-700">还没有识别到角色</div>
             <div className="text-xs text-ink-500 mt-1">请先到「概览」触发识别，或直接导入章节系统会自动识别角色</div>
           </div>
@@ -1216,8 +1226,8 @@ function VoicesTab({
               return (
                 <div
                   key={c.id}
-                  className="rounded-lg border border-white/[0.06] bg-white/[0.025] p-4 space-y-3
-                    hover:border-brand-500/30 hover:bg-white/[0.05] transition-all animate-fade-in group"
+                  className="rounded-lg border border-ink-300/70 bg-ink-100 p-4 space-y-3
+                    hover:border-brand-500/30 hover:bg-ink-200 transition-all animate-fade-in group"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-start gap-3 min-w-0">
@@ -1337,7 +1347,7 @@ function BuildsTab({
 
       {builds.length === 0 ? (
         <div className="glass-panel text-center py-16 text-ink-500 relative overflow-hidden">
-          <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-white/[0.04] border border-white/[0.07] text-3xl relative">
+          <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-ink-200 border border-ink-300/70 text-3xl relative">
             🏗
           </div>
           <div className="text-sm font-medium text-ink-700 relative">还没有构建记录</div>
@@ -1450,7 +1460,7 @@ function BuildRow({
       <div className="flex items-center gap-3 flex-wrap relative">
         <button
           className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md
-            border border-white/[0.07] bg-white/[0.03] text-ink-600
+            border border-ink-300/70 bg-ink-200 text-ink-600
             hover:border-brand-500/30 hover:bg-brand-500/10 hover:text-brand-300
             transition-colors shrink-0"
           onClick={onToggleExpand}
@@ -1492,7 +1502,7 @@ function BuildRow({
         <button
           onClick={() => setConfirmDelete(true)}
           className="inline-flex items-center justify-center shrink-0 rounded-md
-            border border-white/[0.06] bg-white/[0.03] text-ink-500
+            border border-ink-300/70 bg-ink-200 text-ink-500
             hover:border-red-500/40 hover:bg-red-500/15 hover:text-red-300
             transition-all duration-150"
           style={{ width: 34, height: 34 }}
@@ -1524,7 +1534,7 @@ function BuildRow({
       </div>
 
       {expanded && (
-        <div className="pt-1 mt-1 border-t border-white/[0.05]">
+        <div className="pt-1 mt-1 border-t border-ink-300/70">
           {loadingDetail && !detail ? (
             <div className="text-center py-4 text-sm text-ink-500">
               <span className="inline-block w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin mr-2 align-middle" />
@@ -1587,7 +1597,7 @@ function BuildDetailContent({
       </div>
 
       {detail.progress_msg && (
-        <div className="text-xs text-ink-500 rounded-md bg-white/[0.04] px-3 py-2 border border-white/[0.05]">
+        <div className="text-xs text-ink-500 rounded-md bg-ink-200 px-3 py-2 border border-ink-300/70">
           {detail.progress_msg}
         </div>
       )}
@@ -1602,7 +1612,7 @@ function BuildDetailContent({
               className={`rounded-lg p-3 transition-all duration-150 border
                 ${playing
                   ? 'bg-brand-500/10 border-brand-500/40'
-                  : 'bg-white/[0.02] border-white/[0.04] hover:bg-white/[0.045] hover:border-white/[0.10]'
+                  : 'bg-ink-200 border-ink-300/70 hover:bg-ink-200 hover:border-ink-400'
                 }`}
             >
               <div className="flex items-center gap-2 mb-2">
@@ -1665,7 +1675,7 @@ function BuildArtifactStatusIcon({ status }: { status: string }) {
       <span className="inline-flex w-5 h-5 rounded-full bg-red-500/20 text-red-300 items-center justify-center text-[11px]">✗</span>
     );
   return (
-    <span className="inline-flex w-5 h-5 rounded-full bg-white/[0.04] border border-white/[0.07] items-center justify-center text-[9px] text-ink-500">○</span>
+    <span className="inline-flex w-5 h-5 rounded-full bg-ink-200 border border-ink-300/70 items-center justify-center text-[9px] text-ink-500">○</span>
   );
 }
 
@@ -1717,7 +1727,8 @@ function CreateBuildModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
+      style={{ background: 'rgba(0,0,0,0.72)' }}
       onClick={onClose}
     >
       <div
@@ -1809,7 +1820,7 @@ function CreateBuildModal({
                   return (
                     <div
                       key={c.id}
-                      className="rounded-lg border border-white/[0.06] bg-white/[0.025] p-3 space-y-2 hover:border-white/[0.12] hover:bg-white/[0.05] transition-all"
+                      className="rounded-lg border border-ink-300/70 bg-ink-100 p-3 space-y-2 hover:border-ink-400 hover:bg-ink-200 transition-all"
                     >
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0">
@@ -1862,7 +1873,7 @@ function CreateBuildModal({
           <button className="btn-primary" onClick={submit} disabled={busy}>
             {busy ? (
               <>
-                <span className="inline-block w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                <span className="inline-block w-4 h-4 border-2 border-ink-400/70 border-t-white rounded-full animate-spin" />
                 启动中…
               </>
             ) : (
@@ -2042,7 +2053,7 @@ function SettingsTab({
           <button className="btn-primary" disabled={saving} onClick={save}>
             {saving ? (
               <>
-                <span className="inline-block w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                <span className="inline-block w-4 h-4 border-2 border-ink-400/70 border-t-white rounded-full animate-spin" />
                 保存中…
               </>
             ) : (

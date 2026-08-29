@@ -185,12 +185,10 @@ export function RunningTasksBar({ items }: { items: ProjectListItem[] }) {
   if (synthesizing.length) summary.push(`${synthesizing.length} 个合成任务进行中`);
   return (
     <div
-      className="sticky top-2 z-30 rounded-lg backdrop-blur-xl px-5 py-4 mb-5 animate-fade-in"
+      className="sticky top-2 z-30 rounded-lg px-5 py-4 mb-5 animate-fade-in"
       style={{
-        border: '1px solid rgb(var(--brand-500) / 0.22)',
-        background:
-          'linear-gradient(180deg, rgb(var(--brand-500) / 0.10) 0%, rgb(var(--brand-500) / 0.04) 100%)',
-        boxShadow: '0 0 0 1px rgb(var(--brand-500) / 0.10), 0 12px 32px -8px rgb(var(--brand-500) / 0.25)',
+        border: '1px solid rgb(var(--ink-300))',
+        background: 'rgb(var(--ink-100))',
       }}
     >
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -450,7 +448,7 @@ export default function ProjectListPage() {
 
       {/* 加载中 */}
       {loading && (
-        <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] text-center py-16">
+        <div className="rounded-lg border border-ink-300/70 bg-ink-200 text-center py-16">
           <div className="mx-auto w-9 h-9 rounded-full border-2 border-brand-500/30 border-t-brand-500 animate-spin mb-4" />
           <div className="text-sm text-white/50">加载项目列表…</div>
         </div>
@@ -544,7 +542,7 @@ export default function ProjectListPage() {
                 return (
                   <tr
                     key={p.project_id}
-                    className="border-b border-ink-300/40 hover:bg-white/[0.03] transition-colors cursor-pointer stagger-item last:border-b-0"
+                    className="border-b border-ink-300/40 hover:bg-ink-200 transition-colors cursor-pointer stagger-item last:border-b-0"
                     style={{ ['--i' as any]: i }}
                     onClick={() => { window.location.hash = detailHref; }}
                   >
@@ -666,7 +664,8 @@ export default function ProjectListPage() {
       {/* 删除确认 Modal */}
       {confirmDeleteId && (
         <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm"
+          className="fixed inset-0 z-50 grid place-items-center"
+          style={{ background: 'rgba(0,0,0,0.72)' }}
           onClick={() => setConfirmDeleteId(null)}
         >
           <div

@@ -362,7 +362,7 @@ export default function WaveformPlayer({
             <div className="flex items-center gap-1 mt-0.5">
               {isBuffering && (
                 <>
-                  <span className="inline-block w-2 h-2 rounded-full border-2 border-white/25 border-t-brand-500 animate-spin" />
+                  <span className="inline-block w-2 h-2 rounded-full border-2 border-ink-400/70 border-t-brand-500 animate-spin" />
                   <span className="text-[10px]" style={{ color: 'rgb(var(--accent-amber))' }}>缓冲中…</span>
                 </>
               )}
@@ -388,7 +388,7 @@ export default function WaveformPlayer({
               className="shrink-0 grid place-items-center rounded-md
                 w-8 h-8
                 text-white/60 hover:text-white/90
-                hover:bg-white/[0.05] border border-white/[0.05] hover:border-white/[0.1]
+                hover:bg-ink-200 border border-ink-300/70 hover:border-ink-400
                 transition-all"
               title={muted || volume === 0 ? '取消静音' : '静音'}
             >
@@ -397,7 +397,7 @@ export default function WaveformPlayer({
             {/* 悬停展开的音量滑条 */}
             <div className="
               hidden group-hover/vol:flex items-center gap-2 px-2
-              ml-1 h-8 rounded-md border border-white/[0.06] bg-white/[0.04]
+              ml-1 h-8 rounded-md border border-ink-300/70 bg-ink-200
             ">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-white/35">
                 <circle cx="11" cy="11" r="8"/>
@@ -435,8 +435,8 @@ export default function WaveformPlayer({
               onClick={() => setShowSpeedMenu(v => !v)}
               onBlur={() => setTimeout(() => setShowSpeedMenu(false), 120)}
               className="shrink-0 inline-flex items-center justify-center gap-1
-                h-8 px-2.5 rounded-md border border-white/[0.06] bg-white/[0.03]
-                text-white/70 hover:text-white/95 hover:bg-white/[0.06] hover:border-white/[0.12]
+                h-8 px-2.5 rounded-md border border-ink-300/70 bg-ink-200
+                text-white/70 hover:text-white/95 hover:bg-ink-200 hover:border-ink-400
                 transition-all font-medium text-[11.5px]"
               title="倍速"
             >
@@ -447,7 +447,7 @@ export default function WaveformPlayer({
             </button>
             {showSpeedMenu && (
               <div className="absolute bottom-9 right-0 z-30
-                rounded-md border border-ink-300/70 bg-ink-50/95 backdrop-blur-md
+                rounded-md border border-ink-300/70 bg-ink-50
                 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.7)] p-1.5 w-24 animate-fade-in">
                 {SPEEDS.map(s => (
                   <button
@@ -461,7 +461,7 @@ export default function WaveformPlayer({
                     className={`w-full text-left text-[12px] px-2.5 py-1.5 rounded-lg transition-colors
                       ${Math.abs(s - speed) < 1e-6
                         ? 'bg-brand-500/20 text-brand-200'
-                        : 'text-white/70 hover:bg-white/[0.06] hover:text-white/95'
+                        : 'text-white/70 hover:bg-ink-200 hover:text-white/95'
                       }`}
                   >
                     {s.toFixed(2).replace(/\.?0+$/, '') || '1'}x
@@ -480,7 +480,7 @@ export default function WaveformPlayer({
               className="shrink-0 grid place-items-center rounded-md
                 w-8 h-8
                 text-white/60 hover:text-brand-300
-                hover:bg-brand-500/10 border border-white/[0.05] hover:border-brand-500/30
+                hover:bg-brand-500/10 border border-ink-300/70 hover:border-brand-500/30
                 transition-all"
               title="下载 MP3"
             >
