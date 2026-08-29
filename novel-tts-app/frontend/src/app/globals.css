@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,600&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&family=Noto+Serif+SC:wght@400;500;600;700&display=swap');
 
 /* ============ 主题颜色 Tokens ============
  * 所有 CSS 颜色用 RGB 三通道变量，Tailwind 通过 rgb(var(--x) / <alpha-value>) 自动组合 opacity。
@@ -178,7 +178,7 @@ html {
   -moz-osx-font-smoothing: grayscale;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+  font-family: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
     'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
 
@@ -191,12 +191,29 @@ body {
   background-attachment: fixed;
   min-height: 100vh;
   letter-spacing: 0.01em;
+  position: relative;
+}
+/* 颗粒噪声层（给整站增加胶片/杂志质感，非常 subtle） */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.035 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  opacity: 0.85;
+  mix-blend-mode: overlay;
+}
+html.light body::before {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.025 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
 }
 html.light body {
   background-image:
     radial-gradient(1400px 800px at 0% -10%, rgba(139,92,246,0.08), transparent 55%),
     radial-gradient(1000px 600px at 100% 0%, rgba(45,212,191,0.05), transparent 60%);
 }
+/* body 内所有内容都在 noise 之上 */
+body > * { position: relative; z-index: 2; }
 
 /* ========== Design System ========== */
 @layer components {
@@ -207,10 +224,31 @@ html.light body {
 
   .card {
     @apply relative rounded-lg p-5 sm:p-6 border border-ink-300/70 bg-ink-100/60 backdrop-blur-xl shadow-el;
-    transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+    transition: border-color 0.24s cubic-bezier(0.2, 0.8, 0.2, 1),
+                transform 0.24s cubic-bezier(0.2, 0.8, 0.2, 1),
+                box-shadow 0.24s cubic-bezier(0.2, 0.8, 0.2, 1),
+                background-color 0.24s ease;
   }
   .card:hover {
     @apply border-ink-400/90 shadow-el-lg;
+    transform: translateY(-2px);
+  }
+  /* 卡片进入动画，加 stagger-index 做错位 */
+  .card.in-view {
+    animation: card-rise 0.5s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+  }
+  @keyframes card-rise {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  /* 子元素用 style="--i: 0..N" 产生错位 */
+  .stagger-item {
+    animation: stagger-rise 0.48s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+    animation-delay: calc(var(--i, 0) * 60ms);
+  }
+  @keyframes stagger-rise {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
   }
 
   .surface {
@@ -511,9 +549,36 @@ html.light body {
     border-radius: var(--radius-sm);
   }
 
+  /* ——— 排版系统：杂志编辑感 ——— */
+  .eyebrow {
+    @apply font-mono text-[10px] uppercase tracking-[0.32em] text-ink-500;
+    letter-spacing: 0.32em;
+  }
   .headline {
     @apply font-display font-semibold tracking-tight text-ink-900;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.022em;
+    font-optical-sizing: auto;
+    font-variation-settings: "opsz" 36;
+  }
+  .headline-lg {
+    @apply font-display font-semibold text-ink-900;
+    letter-spacing: -0.032em;
+    line-height: 1.05;
+    font-optical-sizing: auto;
+    font-variation-settings: "opsz" 48;
+  }
+  .headline-hero {
+    @apply font-display font-bold text-ink-900;
+    letter-spacing: -0.04em;
+    line-height: 1;
+    font-optical-sizing: auto;
+    font-variation-settings: "opsz" 72;
+  }
+  .subtle-quote {
+    @apply italic;
+    font-family: 'Fraunces', 'Noto Serif SC', serif;
+    font-variation-settings: "opsz" 24;
+    letter-spacing: -0.005em;
   }
 
   .focus-ring {

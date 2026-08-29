@@ -60,7 +60,7 @@ module.exports = {
       },
       fontFamily: {
         sans: [
-          'Inter',
+          'Geist',
           'ui-sans-serif',
           'system-ui',
           '-apple-system',
@@ -69,15 +69,23 @@ module.exports = {
           'Microsoft YaHei',
           'sans-serif',
         ],
+        // 大标题/杂志衬线：Fraunces（英文）+ Noto Serif SC（中文）
         display: [
-          'Space Grotesk',
-          'Inter',
+          'Fraunces',
+          'Noto Serif SC',
           'PingFang SC',
-          'ui-sans-serif',
-          'sans-serif',
+          'ui-serif',
+          'serif',
+        ],
+        serif: [
+          'Fraunces',
+          'Noto Serif SC',
+          'ui-serif',
+          'Georgia',
+          'serif',
         ],
         mono: [
-          'JetBrains Mono',
+          'Geist Mono',
           'ui-monospace',
           'SF Mono',
           'Menlo',

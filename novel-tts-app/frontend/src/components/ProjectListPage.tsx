@@ -310,10 +310,9 @@ export default function ProjectListPage() {
       {/* ===== 顶部操作栏 ===== */}
       <div className="flex items-end justify-between gap-4 flex-wrap animate-fade-in">
         <div className="min-w-0">
-          <h2 className="text-[22px] font-semibold text-white leading-tight">
-            我的有声书
-          </h2>
-          <p className="mt-1 text-sm text-white/50">
+          <div className="eyebrow mb-2">workspace · audiobooks</div>
+          <h2 className="headline-lg text-[26px] sm:text-[28px]">我的有声书</h2>
+          <p className="mt-1.5 text-sm text-white/50">
             管理你的有声书项目
           </p>
         </div>
@@ -376,16 +375,16 @@ export default function ProjectListPage() {
 
       {/* 表格视图 */}
       {!loading && items && items.length > 0 && (
-        <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] overflow-hidden">
+        <div className="card overflow-hidden !p-0">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-[11px] text-white/40 uppercase tracking-wider border-b border-white/[0.06]">
-                <th className="px-5 py-3 font-medium">有声书</th>
-                <th className="px-4 py-3 font-medium w-[100px]">状态</th>
-                <th className="px-4 py-3 font-medium w-[200px]">进度</th>
-                <th className="px-4 py-3 font-medium w-[80px] text-right">章节</th>
-                <th className="px-4 py-3 font-medium w-[140px]">更新时间</th>
-                <th className="px-5 py-3 font-medium w-[140px] text-right">操作</th>
+              <tr className="text-left text-[11px] text-white/40 uppercase tracking-[0.18em] border-b border-ink-300/60">
+                <th className="px-5 py-3.5 font-medium">有声书</th>
+                <th className="px-4 py-3.5 font-medium w-[100px]">状态</th>
+                <th className="px-4 py-3.5 font-medium w-[200px]">进度</th>
+                <th className="px-4 py-3.5 font-medium w-[80px] text-right tabular-nums">章节</th>
+                <th className="px-4 py-3.5 font-medium w-[140px]">更新时间</th>
+                <th className="px-5 py-3.5 font-medium w-[140px] text-right">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -395,8 +394,8 @@ export default function ProjectListPage() {
                 return (
                   <tr
                     key={p.project_id}
-                    className="border-b border-white/[0.04] hover:bg-white/[0.03] transition-colors cursor-pointer animate-fade-in"
-                    style={{ animationDelay: `${i * 25}ms` }}
+                    className="border-b border-ink-300/40 hover:bg-white/[0.03] transition-colors cursor-pointer stagger-item last:border-b-0"
+                    style={{ ['--i' as any]: i }}
                     onClick={() => { window.location.hash = detailHref; }}
                   >
                     {/* 名称 */}
@@ -446,17 +445,17 @@ export default function ProjectListPage() {
                         </span>
                       )}
                       {p.status === 'synthesizing' && (
-                        <div className="text-xs text-orange-300">
+                        <div className="text-xs" style={{ color: 'rgb(var(--status-synth-fg))' }}>
                           🔊 合成中…
                         </div>
                       )}
                       {p.status === 'importing' && (
-                        <div className="text-xs text-blue-300">
+                        <div className="text-xs" style={{ color: 'rgb(var(--status-info-fg))' }}>
                           📥 导入中…
                         </div>
                       )}
                       {p.status === 'failed' && p.prepare_progress?.last_error && (
-                        <div className="text-xs text-rose-300 truncate" title={p.prepare_progress.last_error}>
+                        <div className="text-xs truncate" style={{ color: 'rgb(var(--status-error-fg))' }} title={p.prepare_progress.last_error}>
                           ❌ {p.prepare_progress.last_error.slice(0, 40)}
                         </div>
                       )}
@@ -474,7 +473,7 @@ export default function ProjectListPage() {
                     <td className="px-4 py-4 text-xs text-white/40">
                       {relativeTime(p.updated_at)}
                       {isRunning && (
-                        <span className="ml-1 inline-flex items-center gap-1 text-[10px] text-amber-300/70">
+                        <span className="ml-1 inline-flex items-center gap-1 text-[10px]" style={{ color: 'rgb(var(--status-warn-fg) / 0.85)' }}>
                           <span className="badge-dot animate-pulse-soft !w-1 !h-1" style={{ background: 'rgb(var(--status-warn-dot))' }} />
                           自动刷新
                         </span>
@@ -498,8 +497,8 @@ export default function ProjectListPage() {
                           </a>
                         )}
                         <button
-                          className="btn-ghost !px-2.5 !py-1 text-xs hover:text-rose-300"
-                          style={{ color: 'rgba(251,113,133,0.7)' }}
+                          className="btn-ghost !px-2.5 !py-1 text-xs"
+                          style={{ color: 'rgb(var(--status-error-fg) / 0.85)' }}
                           onClick={() => setConfirmDeleteId(p.project_id)}
                           title="删除"
                         >
