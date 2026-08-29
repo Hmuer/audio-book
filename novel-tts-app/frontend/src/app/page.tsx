@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useTheme } from '@/components/ThemeContext';
 import { useAuth } from '@/components/AuthContext';
 import AppSidebar from '@/components/AppSidebar';
 import ProjectListPage from '@/components/ProjectListPage';
@@ -57,7 +56,6 @@ function parseHash(): { route: Route; path: string } {
 }
 
 export default function HomePage() {
-  const { theme, toggle } = useTheme();
   const { user, loading: authLoading } = useAuth();
   const [routeInfo, setRouteInfo] = useState(() => parseHash());
   const [voices, setVoices] = useState<Voice[]>([]);
@@ -108,18 +106,18 @@ export default function HomePage() {
 
       {/* 右侧主内容 */}
       <div className="flex-1 min-w-0 flex flex-col">
-        {/* 顶部小条：主题切换（品牌名已在侧栏） */}
-        <header className="h-14 border-b border-white/[0.06] px-6 flex items-center justify-between shrink-0">
-          <div className="text-xs text-white/40">
-            {R.name === 'ab-list' && 'AI有声书 · 我的有声书'}
-            {R.name === 'ab-detail' && 'AI有声书 · 工作台'}
-            {R.name === 'ab-voices' && 'AI有声书 · 音色库'}
-            {R.name === 'settings' && '设置'}
+        {/* 顶部状态条：面包屑（Edtech 参考的轻量顶栏） */}
+        <header className="h-12 shrink-0 border-b border-ink-200 px-5 lg:px-7 flex items-center justify-between bg-ink-50/40 backdrop-blur">
+          <div className="text-xs font-medium tracking-wide text-ink-700/60">
+            {R.name === 'ab-list' && 'AUDIOBOOKS · MY LIBRARY'}
+            {R.name === 'ab-detail' && 'AUDIOBOOKS · WORKSPACE'}
+            {R.name === 'ab-voices' && 'AUDIOBOOKS · VOICE LIBRARY'}
+            {R.name === 'settings' && 'SYSTEM · SETTINGS'}
             {R.name === 'unknown' && ''}
           </div>
-          <button className="btn-ghost h-8 text-xs" onClick={toggle}>
-            {theme === 'dark' ? '🌙 深色' : '☀️ 浅色'}
-          </button>
+          <div className="text-[11px] text-ink-700/45 font-mono uppercase tracking-[0.18em]">
+            Abu Creator Studio
+          </div>
         </header>
 
         {/* 主内容 —— 统一右侧、底部边距：画布画布 */}

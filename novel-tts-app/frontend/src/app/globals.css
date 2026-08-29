@@ -2,496 +2,358 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap');
+/* ===== 字体：UXPilot Edtech 模板指定 Inter（参考文档：Body 16px · Heading Bold 24px · Clean Sans）===== */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Sora:wght@500;600;700;800&display=swap');
 
-/* ============ 主题颜色 Tokens ============
- * 所有 CSS 颜色用 RGB 三通道变量，Tailwind 通过 rgb(var(--x) / <alpha-value>) 自动组合 opacity。
- * 组件里的 bg-ink-100、text-white/60、border-ink-300/70 以及 globals.css 中的 inline rgba 值
- * 全部引用这些变量，所以深浅切换时一处都不需要改。
- *
- * token 语义：数值越小越暗（底/容器），数值越大越亮（文字/强调）
- *   深色：ink-0=极深底 → ink-900=纯白文字
- *   浅色：ink-0=奶油底 → ink-900=近黑文字
- */
+/* ================================================================
+   Edtech Dark · 全局色彩 Tokens（UxPilot Edtech Design Template · Dark）
+   参考调色板：
+     Primary 品牌靛    #4F46E5  (indigo-600) — 按钮/选中态/焦点环
+     Secondary 石板灰  #6B7280  (gray-500)    — 次级文字/未激活/元信息
+     Canvas 画布底     #111827  (gray-900)    — 全局底层
+     Card 卡片面       #1F2937  (gray-800)    — 玻璃面板/对话框/输入框底
+     Hairline 边框线   #374151  (gray-700)    — 1px 分隔
+     Text 正文         #E5E7EB  (gray-200)    — ink-700
+     Text 强/标题      #F9FAFB  (gray-50)     — ink-900
+     Accent 青蓝点缀   #38BDF8  (sky-400)     — Edtech 专属"学习感"冷青
+     Alert 琥珀点缀    #F59E0B  (amber-500)   — warn/提醒
+     Success 翠绿点    #10B981  (emerald-500)
+     Error 砖红点      #EF4444  (red-500)
+
+   所有通道以 RGB 三通道定义，Tailwind 通过 `rgb(var(--x) / <alpha-value>)` 自动拼 opacity。
+   全站 DARK ONLY：无反转、无 html.light 覆盖块、color-scheme 强制 dark。
+================================================================ */
 :root {
-  /* 基础色（反转变量：组件 text-white 在浅色下自动变近黑） */
-  --color-white: 241, 242, 248;   /* 冷灰纸白（非纯白） */
-  --color-black: 12, 14, 20;      /* 深冷炭黑（非纯黑） */
-
-  /* Tailwind @apply 展开 rgb(var(--x)/<alpha-value>) 时会写入 --tw-*-opacity，
-     但在 globals.css 里写 @apply text-white / bg-ink-100 等 utility class 的 color/bg 属性
-     时，@apply 只复制 `color: rgb(var(--x)/var(--tw-text-opacity))` 这一行，
-     不会附带 `--tw-text-opacity: 1` 的声明，导致 rgb() fallback 成透明/黑。
-     在 :root 提供全局默认值，所有未显式指定的 alpha 都按 100% 处理，与普通 CSS 预期一致。 */
+  /* Tailwind @apply 展开时会写 `rgb(var(--x)/var(--tw-x-opacity))`；
+     在 :root 给默认 1，避免未显式指定 alpha 时 fallback 为透明。 */
   --tw-bg-opacity: 1;
   --tw-border-opacity: 1;
   --tw-text-opacity: 1;
   --tw-ring-offset-color: transparent;
   --tw-ring-color: transparent;
 
-  /* ink 中性阶 — 冷灰系，非纯黑非纯白非奶油。
-     数值越小越暗（底/容器），数值越大越亮（文字/强调） */
-  --ink-0:   12, 14, 20;
-  --ink-50:  18, 21, 29;
-  --ink-100: 24, 28, 38;
-  --ink-200: 32, 37, 49;
-  --ink-300: 45, 51, 66;
-  --ink-400: 68, 76, 95;
-  --ink-500: 108, 115, 134;
-  --ink-600: 153, 159, 175;
-  --ink-700: 198, 202, 214;
-  --ink-800: 224, 227, 236;
-  --ink-900: 241, 242, 248;
+  /* ============ 反转变量（组件 text-white/70 走这里） ============ */
+  --color-white: 249, 250, 251;   /* gray-50 近白（参考 Edtech 正文强色） */
+  --color-black: 17, 24, 39;      /* gray-900 纯画布底 */
 
-  /* brand — 低饱和冷靛灰蓝（Linear / Framer 风格，克制专业，非儿童高饱和紫）
-     深浅模式保持一致，不随主题反转。 */
-  --brand-50:  240, 242, 250;
-  --brand-100: 229, 232, 244;
-  --brand-200: 210, 215, 233;
-  --brand-300: 181, 189, 215;
-  --brand-400: 143, 154, 190;
-  --brand-500: 108, 122, 170;
-  --brand-600: 88, 101, 146;
-  --brand-700: 70, 82, 120;
-  --brand-800: 53, 63, 94;
-  --brand-900: 37, 45, 70;
+  /* ============ ink 中性阶（cool gray 严格 0=最暗 → 900=最白） ============ */
+  --ink-0:   17, 24, 39;          /* 画布 gray-900  17,24,39  */
+  --ink-50:  23, 29, 46;          /* 侧栏/顶栏底，略亮 */
+  --ink-100: 31, 41, 55;          /* 卡片底 gray-800 */
+  --ink-200: 41, 50, 67;          /* 对话框/二级面板底（略浮于 card） */
+  --ink-300: 55, 65, 81;          /* hairline gray-700  — 1px 边框/分隔线默认色 */
+  --ink-400: 75, 85, 99;          /* 输入框底/hover 线 */
+  --ink-500: 107, 114, 128;       /* 次级解释文字 gray-500 — 参考 Secondary #6B7280 */
+  --ink-600: 156, 163, 175;       /* 辅助 label gray-400 */
+  --ink-700: 209, 213, 219;       /* 正文 gray-300 */
+  --ink-800: 229, 231, 235;       /* 强正文 gray-200 */
+  --ink-900: 249, 250, 251;       /* 标题/按钮白字 gray-50 */
 
-  /* cream — 从"暖奶油"改为冷灰纸色（Light 模式的背景底，去掉之前的奶黄小孩感） */
-  --cream-50:  244, 245, 249;
-  --cream-100: 237, 239, 244;
-  --cream-200: 225, 227, 234;
-  --cream-300: 200, 203, 213;
+  /* ============ brand：Primary 靛 #4F46E5 · 50–950 色阶严格（WCAG AA 对比度打底） ============ */
+  --brand-50:   238, 242, 255;    /* 极浅靛 hover 光 */
+  --brand-100:  224, 231, 255;
+  --brand-200:  199, 210, 254;
+  --brand-300:  165, 180, 252;
+  --brand-400:  129, 140, 248;    /* 靛-400 亮边/hover */
+  --brand-500:  99, 102, 241;     /* 靛-500 — Brand 亮靛（渐变顶部） */
+  --brand-600:  79, 70, 229;      /* 靛-600 #4F46E5 — Edtech Primary · 按钮主色 */
+  --brand-700:  67, 56, 202;      /* 靛-700 · 按下/渐变底部 */
+  --brand-800:  55, 48, 163;      /* 靛-800 */
+  --brand-900:  49, 46, 129;      /* 靛-900 · 深背景里的 brand 柔光 */
+  --brand-950:  30, 27, 75;
 
-  /* accent 点缀 — 4 色全撤（取消 lime/cyan/teal/rose/amber 的高饱和糖果色）。
-     只保留一枚"冷灰蓝"做极微弱的交互高亮。品牌色就是唯一的强调色。 */
-  --accent-cold: 128, 142, 185;   /* 冷灰靛蓝，与 brand-500 接近的另一档 */
-  --accent-soft: 184, 191, 208;   /* 更淡的灰蓝，用于 hint / 次级边缘 */
+  /* ============ accent：Edtech 青蓝 + 琥珀（仅用于状态点缀，不再大量使用） ============ */
+  --accent-cold: 56, 189, 248;    /* sky-400 淡青蓝 · 学习状态的"新进展"光 */
+  --accent-soft: 148, 163, 184;   /* slate-400 · 淡冷灰，hint/二级 */
+  --accent-amber: 245, 158, 11;   /* amber-500 #F59E0B · Edtech Warn/Important dot */
 
-  /* status 语义色（bg/border 存 RGB 三通道） — 全部降饱和，做"灰调语义色"
-     深色模式：在深冷灰底上的低饱和有色灰（不再亮黄亮绿亮粉） */
-  --status-info-bg:     89, 117, 165;     /* slate blue */
-  --status-info-fg:     152, 172, 208;
-  --status-info-dot:    108, 134, 180;
-  --status-warn-bg:     172, 138, 88;     /* 灰陶土 amber */
-  --status-warn-fg:     210, 188, 151;
-  --status-warn-dot:    182, 148, 98;
-  --status-success-bg:  102, 145, 122;    /* 冷灰墨绿 */
-  --status-success-fg:  162, 195, 176;
-  --status-success-dot: 118, 160, 138;
-  --status-ready-bg:    100, 140, 155;    /* slate teal */
-  --status-ready-fg:    162, 194, 206;
-  --status-ready-dot:   116, 156, 172;
-  --status-partial-bg:  166, 148, 88;     /* dusty olive */
-  --status-partial-fg:  204, 190, 146;
-  --status-partial-dot: 178, 162, 102;
-  --status-error-bg:    162, 96, 108;     /* 低饱和砖红（非 candy rose） */
-  --status-error-fg:    206, 156, 166;
-  --status-error-dot:   178, 110, 122;
-  --status-muted-bg:    118, 122, 136;    /* slate grey */
-  --status-muted-fg:    180, 184, 196;
-  --status-muted-dot:   136, 140, 154;
-  --status-synth-bg:    150, 124, 96;     /* ash terracotta */
-  --status-synth-fg:    196, 176, 154;
-  --status-synth-dot:   166, 140, 112;
+  /* ============ status 语义色（bg 做容器色，fg 做文字色，dot 做小圆点） ============ */
+  --status-info-bg:     59, 130, 246;   /* blue-500 信息 */
+  --status-info-fg:     147, 197, 253;
+  --status-info-dot:    96, 165, 250;
 
-  /* palette 角色标签色 — 8 档"莫兰迪灰调"：全低饱和，接近但略有区分
-     深底：用偏浅的灰调彩色 */
-  --palette-purple-bg:   155, 143, 188;
-  --palette-purple-fg:   192, 184, 214;
-  --palette-pink-bg:     186, 148, 162;
-  --palette-pink-fg:     218, 192, 202;
-  --palette-cyan-bg:     135, 162, 180;
-  --palette-cyan-fg:     182, 202, 216;
-  --palette-green-bg:    142, 166, 148;
-  --palette-green-fg:    188, 208, 192;
-  --palette-yellow-bg:   182, 168, 132;
-  --palette-yellow-fg:   214, 204, 180;
-  --palette-blue-bg:     132, 154, 190;
-  --palette-blue-fg:     180, 196, 220;
-  --palette-rose-bg:     176, 138, 146;
-  --palette-rose-fg:     212, 186, 192;
-  --palette-mint-bg:     140, 166, 162;
-  --palette-mint-fg:     186, 208, 205;
+  --status-warn-bg:     245, 158, 11;   /* amber-500 警告 · Edtech 模板橙 */
+  --status-warn-fg:     251, 191, 36;
+  --status-warn-dot:    251, 191, 36;
 
-  color-scheme: dark;
+  --status-success-bg:  16, 185, 129;   /* emerald-500 完成 */
+  --status-success-fg:  52, 211, 153;
+  --status-success-dot: 16, 185, 129;
 
-  /* 圆角 — 走克制的小档（专业感，不大圆） */
+  --status-ready-bg:    6, 182, 212;    /* cyan-500 · 就绪 */
+  --status-ready-fg:     103, 232, 249;
+  --status-ready-dot:    6, 182, 212;
+
+  --status-partial-bg:  234, 179, 8;    /* yellow-500 · 部分完成 */
+  --status-partial-fg:  250, 204, 21;
+  --status-partial-dot: 234, 179, 8;
+
+  --status-error-bg:    239, 68, 68;    /* red-500 · 失败 */
+  --status-error-fg:    248, 113, 113;
+  --status-error-dot:   239, 68, 68;
+
+  --status-muted-bg:    107, 114, 128;  /* gray-500 · 等待/未知 */
+  --status-muted-fg:    156, 163, 175;
+  --status-muted-dot:   107, 114, 128;
+
+  --status-synth-bg:    168, 85, 247;   /* purple-500 · 合成中（Edtech 品牌副色） */
+  --status-synth-fg:    192, 132, 252;
+  --status-synth-dot:   168, 85, 247;
+
+  /* ============ palette：角色/标签 8 档低饱和（不再莫兰迪灰，换成 Edtech 模板的可识别蓝紫青绿） ============ */
+  --palette-purple-bg:   139, 92, 246;   --palette-purple-fg: 216, 180, 254;
+  --palette-pink-bg:     236, 72, 153;   --palette-pink-fg:   249, 168, 212;
+  --palette-cyan-bg:     34, 211, 238;   --palette-cyan-fg:   103, 232, 249;
+  --palette-green-bg:    34, 197, 94;    --palette-green-fg:  134, 239, 172;
+  --palette-yellow-bg:   245, 158, 11;   --palette-yellow-fg: 252, 211, 77;
+  --palette-blue-bg:     59, 130, 246;   --palette-blue-fg:   147, 197, 253;
+  --palette-rose-bg:     244, 63, 94;    --palette-rose-fg:   253, 164, 175;
+  --palette-mint-bg:     20, 184, 166;   --palette-mint-fg:   94, 234, 212;
+
+  /* ============ cream：仅用于特殊亮色块（登录屏插画/空态 illustration），不作为画布 ============ */
+  --cream-50:  249, 250, 251;
+  --cream-100: 243, 244, 246;
+  --cream-200: 229, 231, 235;
+  --cream-300: 209, 213, 219;
+
+  /* ============ 圆角体系（Edtech 参考 6px radius，稍圆角不大圆） ============ */
   --radius-none: 0px;
-  --radius-xs: 3px;
-  --radius-sm: 5px;
-  --radius-md: 7px;
+  --radius-xs:   4px;
+  --radius-sm:   6px;
+  --radius-md:   8px;
+  --radius-lg:   10px;
+
+  /* DARK ONLY：原生浏览器控件（select option / scrollbar / selection）强制 dark 配色 */
+  color-scheme: dark;
 }
 
-html.light {
-  /* Light 模式：冷灰纸白底 + 深炭灰文字，非奶油黄 非纯白 非纯黑 */
-  --color-white: 30, 34, 46;
-  --color-black: 244, 245, 249;
-
-  --ink-0:   244, 245, 249;
-  --ink-50:  240, 241, 246;
-  --ink-100: 250, 251, 255;
-  --ink-200: 231, 233, 240;
-  --ink-300: 218, 220, 229;
-  --ink-400: 196, 199, 210;
-  --ink-500: 154, 158, 173;
-  --ink-600: 112, 116, 132;
-  --ink-700: 66, 70, 86;
-  --ink-800: 40, 44, 57;
-  --ink-900: 22, 25, 35;
-
-  /* 浅色模式 status：灰调饱和加强到"看得清但不刺眼"的水平 */
-  --status-info-bg:     72, 100, 150;
-  --status-info-fg:     58, 84, 130;
-  --status-info-dot:    84, 112, 162;
-  --status-warn-bg:     156, 122, 72;
-  --status-warn-fg:     128, 98, 56;
-  --status-warn-dot:    168, 134, 84;
-  --status-success-bg:  82, 125, 102;
-  --status-success-fg:  58, 98, 78;
-  --status-success-dot: 96, 140, 116;
-  --status-ready-bg:    80, 120, 135;
-  --status-ready-fg:    60, 98, 112;
-  --status-ready-dot:   96, 136, 152;
-  --status-partial-bg:  148, 130, 72;
-  --status-partial-fg:  118, 102, 56;
-  --status-partial-dot: 162, 144, 86;
-  --status-error-bg:    152, 82, 94;
-  --status-error-fg:    126, 60, 72;
-  --status-error-dot:   168, 96, 108;
-  --status-muted-bg:    100, 104, 118;
-  --status-muted-fg:    72, 76, 90;
-  --status-muted-dot:   116, 120, 134;
-  --status-synth-bg:    136, 110, 82;
-  --status-synth-fg:    110, 86, 60;
-  --status-synth-dot:   152, 124, 94;
-
-  /* palette — light 下用偏深的莫兰迪：不刺眼、白底仍然区分开 */
-  --palette-purple-bg:   122, 110, 155;
-  --palette-purple-fg:   94, 84, 124;
-  --palette-pink-bg:     156, 118, 132;
-  --palette-pink-fg:     126, 88, 102;
-  --palette-cyan-bg:     100, 128, 146;
-  --palette-cyan-fg:     72, 98, 116;
-  --palette-green-bg:    106, 132, 112;
-  --palette-green-fg:    78, 104, 84;
-  --palette-yellow-bg:   150, 136, 100;
-  --palette-yellow-fg:   118, 104, 72;
-  --palette-blue-bg:     98, 120, 156;
-  --palette-blue-fg:     68, 90, 126;
-  --palette-rose-bg:     146, 108, 116;
-  --palette-rose-fg:     116, 80, 90;
-  --palette-mint-bg:     104, 130, 126;
-  --palette-mint-fg:     76, 102, 98;
-
-  color-scheme: only light;
-}
-
-/* ============ 全局 ============ */
+/* ================================================================
+   全局基址
+================================================================ */
 html {
   scroll-behavior: smooth;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  font-family: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
-    'PingFang SC', 'Microsoft YaHei', sans-serif;
+  /* 主字体 Inter（参考 Edtech 模板 Body 16px Regular / Heading Bold 24px · Clean Sans） */
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 
 body {
-  /* 注意：不使用 @apply bg-ink-50，因为 Tailwind v3.4 对 `rgb(var(--x)/<alpha-value>)`
-     在 @apply 展开时不会同步设置 --tw-bg-opacity，导致 rgb() fallback 到 rgba(0,0,0,0)。
-     直接写原生属性即可，语义等价且不依赖 --tw-*-opacity。 */
-  background-color: rgb(var(--ink-50));
+  /* Edtech Canvas：纯 gray-900 底（不再是杂志渐变+grain 的大气氛围），
+     收敛到"信息密度工作板"。用一枚极淡的 brand glow 做 AI 创作感，不晃眼。 */
+  background-color: rgb(var(--ink-0));
   color: rgb(var(--ink-700));
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
-  /* 背景 — 克制的冷靛柔辉：一枚主辉（冷靛蓝，左上）+ 一枚极淡灰蓝副辉（右下），
-     不再是"紫→青→柠"的彩虹链，避免小孩气。AI 感 ≠ 彩虹霓虹，而是"几乎察觉不到的冷深度"。 */
-  background-image:
-    radial-gradient(1200px 780px at -8% 0%,   rgb(var(--brand-500) / 0.14), transparent 60%),
-    radial-gradient(900px 700px  at 115% 110%, rgb(var(--accent-cold) / 0.08), transparent 60%);
-  background-attachment: fixed;
+  letter-spacing: -0.004em;
   min-height: 100vh;
-  letter-spacing: -0.002em;
   position: relative;
   overflow-x: hidden;
-}
-/* 背景 ::after 柔辉浮动层 — 同样收敛成两档冷灰靛，alpha 更低，避免塑料发光。 */
-body::after {
-  content: '';
-  position: fixed;
-  inset: -20%;
-  pointer-events: none;
-  z-index: 0;
   background-image:
-    radial-gradient(620px 620px at 18% 18%,  rgb(var(--brand-500) / 0.10), transparent 72%),
-    radial-gradient(540px 540px at 86% 92%,  rgb(var(--accent-cold) / 0.06), transparent 72%);
-  filter: blur(64px);
-  animation: mesh-drift 30s ease-in-out infinite alternate;
-  opacity: 0.85;
+    radial-gradient(900px 620px at -10% -10%,  rgb(var(--brand-600) / 0.14), transparent 62%),
+    radial-gradient(720px 520px at 110% 110%, rgb(var(--accent-cold) / 0.08), transparent 60%);
+  background-attachment: fixed;
 }
-@keyframes mesh-drift {
-  0%   { transform: translate3d(0, 0, 0) scale(1); }
-  50%  { transform: translate3d(-1.0%, 1.4%, 0) scale(1.04); }
-  100% { transform: translate3d(1.0%, -1.0%, 0) scale(1.02); }
-}
-/* grain：保留但降低强度，从"杂志颗粒"变成"纸张质感"的微噪 */
-body::before {
+/* 顶层浮层：极其收敛的 brand glow · Edtech 参考不做 grain，改成细点阵背景 */
+body::after {
   content: '';
   position: fixed;
   inset: 0;
   pointer-events: none;
-  z-index: 1;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.014 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
-  opacity: 0.55;
-  mix-blend-mode: overlay;
-}
-html.light body {
-  /* Light：更淡，冷靛蓝 0.09 + 灰蓝 0.05 */
+  z-index: 0;
   background-image:
-    radial-gradient(1200px 780px at -8% 0%,   rgb(var(--brand-500) / 0.09), transparent 60%),
-    radial-gradient(900px 700px  at 115% 110%, rgb(var(--accent-cold) / 0.05), transparent 60%);
-}
-html.light body::after {
-  /* Light：更低 alpha */
-  opacity: 0.45;
-  background-image:
-    radial-gradient(620px 620px at 18% 18%,  rgb(var(--brand-500) / 0.06), transparent 72%),
-    radial-gradient(540px 540px at 86% 92%,  rgb(var(--accent-cold) / 0.04), transparent 72%);
-}
-html.light body::before {
-  opacity: 0.3;
+    radial-gradient(circle at 1px 1px, rgb(var(--color-white) / 0.035) 1px, transparent 0);
+  background-size: 22px 22px;
+  mask-image: radial-gradient(ellipse 90% 80% at 50% 40%, #000 20%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 90% 80% at 50% 40%, #000 20%, transparent 100%);
 }
 body > * { position: relative; z-index: 2; }
 
-/* ========== Design System ========== */
+/* ================================================================
+   Design System · 组件层
+================================================================ */
 @layer components {
 
+  /* ---- 壳 ---- */
   .shell {
-    @apply max-w-[1240px] mx-auto px-4 sm:px-6 lg:px-8 w-full;
+    @apply max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-8 w-full;
   }
 
+  /* ---- Card · Edtech：gray-800 实心 + 1px #374151 hairline + 不发光 hover ---- */
   .card {
-    @apply relative rounded-lg p-5 sm:p-6 border border-ink-300/70 bg-ink-100/60 backdrop-blur-xl shadow-el;
-    transition: border-color 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
-                box-shadow 0.24s cubic-bezier(0.2, 0.8, 0.2, 1),
-                background-color 0.22s ease,
-                filter 0.24s ease;
-    isolation: isolate;
-  }
-  .card::before {
-    /* Hover 边框发光：只留冷靛蓝单色渐变，不再"紫→青"双色 */
-    content: '';
-    position: absolute;
-    inset: -1px;
-    border-radius: inherit;
-    padding: 1px;
-    background: linear-gradient(135deg,
-      rgb(var(--brand-500) / 0) 0%,
-      rgb(var(--brand-500) / 0.22) 50%,
-      rgb(var(--accent-cold) / 0.14) 100%);
-    -webkit-mask:
-      linear-gradient(#000 0 0) content-box,
-      linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor;
-            mask-composite: exclude;
-    opacity: 0;
-    transition: opacity 0.28s ease;
-    pointer-events: none;
-    z-index: 0;
-  }
-  .card::after {
-    /* Hover 外溢辉光：单色冷靛，更窄、更淡、不刺眼 */
-    content: '';
-    position: absolute;
-    inset: -30%;
-    background:
-      radial-gradient(280px 140px at 20% 0%,  rgb(var(--brand-500) / 0.12), transparent 65%);
-    opacity: 0;
-    filter: blur(18px);
-    transition: opacity 0.28s ease;
-    pointer-events: none;
-    z-index: -1;
+    position: relative;
+    border-radius: var(--radius-md);
+    padding: 1.25rem 1.5rem;      /* p-5 p-6 */
+    background: rgb(var(--ink-100));   /* 实心 gray-800，不再玻璃态 */
+    border: 1px solid rgb(var(--ink-300)); /* #374151 */
+    box-shadow:
+      0 1px 0 0 rgb(var(--color-white) / 0.04) inset,
+      0 10px 30px -18px rgba(0, 0, 0, 0.6);
+    transition:
+      border-color 0.18s ease,
+      box-shadow 0.2s ease,
+      background-color 0.18s ease,
+      transform 0.18s ease;
   }
   .card:hover {
-    @apply shadow-el-lg;
-    border-color: rgb(var(--brand-500) / 0.22);
+    border-color: rgb(var(--brand-500) / 0.45);
+    box-shadow:
+      0 1px 0 0 rgb(var(--color-white) / 0.04) inset,
+      0 0 0 1px rgb(var(--brand-600) / 0.22),
+      0 18px 40px -22px rgba(0, 0, 0, 0.7);
+    transform: translateY(-1px);
   }
-  .card:hover::before { opacity: 1; }
-  .card:hover::after  { opacity: 1; }
-  .card > * { position: relative; z-index: 1; }
+  @media (max-width: 640px) { .card { padding: 1rem; } }
 
-  /* 卡片进入动画（staggered rise） */
-  .card.in-view {
-    animation: card-rise 0.5s cubic-bezier(0.2, 0.9, 0.3, 1) both;
-  }
-  @keyframes card-rise {
-    from { opacity: 0; transform: translateY(12px); filter: blur(4px); }
-    to   { opacity: 1; transform: translateY(0);   filter: blur(0); }
-  }
-  .stagger-item {
-    animation: stagger-rise 0.48s cubic-bezier(0.2, 0.9, 0.3, 1) both;
-    animation-delay: calc(var(--i, 0) * 50ms);
-  }
-  @keyframes stagger-rise {
-    from { opacity: 0; transform: translateY(8px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-
+  /* ---- Surface：卡片的"次级小面"，例如概览里的 mini-stat ---- */
   .surface {
-    @apply border bg-ink-100/60;
     border-radius: var(--radius-md);
+    background: rgb(var(--ink-200));
+    border: 1px solid rgb(var(--ink-300));
   }
 
-  /* 玻璃态面板 */
+  /* ---- 玻璃面板（Edtech 轻玻璃，用在 Dialog / Popover / UserMenu） ---- */
   .glass-panel {
-    @apply relative overflow-hidden;
+    position: relative;
     border-radius: var(--radius-md);
     padding: 16px 18px;
     background:
-      linear-gradient(180deg, rgb(var(--color-white) / 0.03) 0%, rgb(var(--color-white) / 0.005) 100%),
-      rgb(var(--ink-50) / 0.55);
-    border: 1px solid rgb(var(--color-white) / 0.06);
+      linear-gradient(180deg, rgb(var(--color-white) / 0.02) 0%, rgb(var(--color-white) / 0) 100%),
+      rgb(var(--ink-100));
+    border: 1px solid rgb(var(--ink-300));
     box-shadow:
-      0 1px 0 0 rgb(var(--color-white) / 0.04) inset,
-      0 0 0 1px rgb(var(--brand-500) / 0.04),
-      0 30px 80px -36px rgba(0,0,0,0.7);
-    backdrop-filter: blur(22px);
-    -webkit-backdrop-filter: blur(22px);
+      0 1px 0 0 rgb(var(--color-white) / 0.03) inset,
+      0 24px 60px -30px rgba(0, 0, 0, 0.8);
   }
   @media (min-width: 640px) {
     .glass-panel { padding: 20px 22px; }
   }
 
-  .glow-orb {
-    position: absolute;
-    border-radius: 9999px;
-    filter: blur(72px);
-    z-index: -1;
-    pointer-events: none;
-    opacity: 0.55;
-  }
-
-  .stripe {
-    @apply absolute left-0 top-0 bottom-0 w-[2px] h-full;
-  }
-
-  /* ------ 按钮 ------ */
+  /* ---- 按钮：Edtech 参考 · 6px 半径 · 实心靛 Primary · Gray-700 hairline Ghost ---- */
   .btn {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium
-      transition-all duration-200 select-none
+      transition-all duration-150 select-none
       disabled:opacity-40 disabled:cursor-not-allowed
       active:scale-[0.98];
     border-radius: var(--radius-sm);
     letter-spacing: -0.005em;
   }
 
+  /* Primary：靛-600 #4F46E5 → 靛-700 · 不再做多层渐变叠加，简单专业 */
   .btn-primary {
-    @apply btn text-white shadow-brand;
-    background-image: linear-gradient(180deg, rgb(var(--color-white) / 0.12) 0%, rgb(var(--color-white) / 0) 50%),
-      linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 100%);
+    @apply btn text-white;
+    background: rgb(var(--brand-600));
+    border: 1px solid rgb(var(--brand-700));
+    box-shadow:
+      0 1px 0 0 rgb(var(--color-white) / 0.10) inset,
+      0 8px 20px -10px rgb(var(--brand-600) / 0.70);
   }
   .btn-primary:hover {
-    @apply shadow-brand-lg -translate-y-[1px];
-    background-image: linear-gradient(180deg, rgb(var(--color-white) / 0.18) 0%, rgb(var(--color-white) / 0) 50%),
-      linear-gradient(135deg, rgb(var(--brand-400)) 0%, rgb(var(--brand-600)) 100%);
+    background: rgb(var(--brand-500));
+    border-color: rgb(var(--brand-600));
+    box-shadow:
+      0 1px 0 0 rgb(var(--color-white) / 0.14) inset,
+      0 10px 22px -10px rgb(var(--brand-500) / 0.75),
+      0 0 0 3px rgb(var(--brand-500) / 0.18);
+    transform: translateY(-1px);
   }
-  .btn-primary:active {
-    @apply shadow-brand;
-    transform: translateY(0) scale(0.99);
-  }
+  .btn-primary:active { transform: translateY(0) scale(0.99); }
 
+  /* Ghost：gray-800 底 + gray-700 边，hover 加靛边 */
   .btn-ghost {
     @apply btn;
-    background: rgb(var(--color-white) / 0.03);
-    border: 1px solid rgb(var(--color-white) / 0.08);
-    color: rgb(var(--color-white) / 0.82);
+    background: rgb(var(--ink-100));
+    border: 1px solid rgb(var(--ink-300));
+    color: rgb(var(--ink-800));
   }
   .btn-ghost:hover {
-    background: rgb(var(--color-white) / 0.07);
-    border-color: rgb(var(--color-white) / 0.14);
-    color: rgb(var(--color-white));
+    background: rgb(var(--ink-200));
+    border-color: rgb(var(--brand-500) / 0.45);
+    color: rgb(var(--ink-900));
   }
 
+  /* Outline：透明底 + gray-700 边 */
   .btn-outline {
     @apply btn text-ink-800;
     background: transparent;
-    border: 1px solid rgb(var(--color-white) / 0.1);
+    border: 1px solid rgb(var(--ink-300));
   }
   .btn-outline:hover {
     background: rgb(var(--color-white) / 0.04);
-    border-color: rgb(var(--color-white) / 0.2);
+    border-color: rgb(var(--ink-400));
   }
 
+  /* Danger：red-500 实心 */
   .btn-danger {
     @apply btn text-white;
-    background-image: linear-gradient(180deg, rgb(var(--color-white) / 0.10) 0%, rgb(var(--color-white) / 0) 50%),
-      linear-gradient(135deg, rgb(var(--status-error-bg)) 0%, rgb(var(--status-error-fg)) 100%);
-    box-shadow: 0 0 0 1px rgb(var(--status-error-bg) / 0.35), 0 10px 30px -8px rgb(var(--status-error-bg) / 0.45);
+    background: rgb(var(--status-error-bg));
+    border: 1px solid rgb(var(--status-error-bg));
+    box-shadow: 0 8px 20px -10px rgb(var(--status-error-bg) / 0.6);
   }
   .btn-danger:hover {
     filter: brightness(1.08);
+    box-shadow: 0 10px 24px -10px rgb(var(--status-error-bg) / 0.7),
+                0 0 0 3px rgb(var(--status-error-bg) / 0.18);
   }
 
-  /* ------ 输入框 / 下拉 ------ */
+  /* ---- 输入框 / 下拉 / 文本域 · Edtech 参考 1px #E3E6EA light gray → 转 dark 版 #374151 ---- */
   .input, .textarea, select {
     @apply w-full px-3.5 py-2.5 text-sm outline-none
       transition-all duration-150
       placeholder:text-ink-500;
     border-radius: var(--radius-sm);
-    background: rgb(var(--color-white) / 0.02);
-    border: 1px solid rgb(var(--color-white) / 0.08);
-    color: rgb(var(--color-white) / 0.92);
-    box-shadow: 0 1px 0 0 rgb(var(--color-white) / 0.03) inset;
-    background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='rgb(var(--brand-500) / 0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background: rgb(var(--ink-100));        /* gray-800 实心，不再玻璃态 */
+    border: 1px solid rgb(var(--ink-300));   /* #374151 hairline */
+    color: rgb(var(--ink-800));
+    box-shadow: 0 1px 0 0 rgb(var(--color-white) / 0.025) inset;
+    /* 自定义下拉箭头：靛-400 细线 · UX Pilot 模板风格 */
+    background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%23818CF8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
-    background-position: right 10px center;
-    padding-right: 32px;
+    background-position: right 12px center;
+    padding-right: 36px;
     appearance: none;
     -webkit-appearance: none;
   }
   select option {
     background: rgb(var(--ink-100));
-    color: rgb(var(--color-white));
-    padding: 8px 12px;
+    color: rgb(var(--ink-800));
+    padding: 6px 12px;
+    border: 0;
   }
   select option:checked,
   select option:hover {
-    background: rgb(var(--brand-500) / 0.35);
+    background: rgb(var(--brand-600) / 0.28);
     color: rgb(var(--color-white));
-  }
-  html.light select option:checked,
-  html.light select option:hover {
-    background: rgb(var(--brand-500) / 0.12);
-    color: rgb(var(--brand-700));
   }
   select option:disabled {
     background: transparent;
-    color: rgb(var(--color-white) / 0.35);
+    color: rgb(var(--ink-500));
   }
   @supports (-moz-appearance: none) {
     select {
-      background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='rgb(var(--brand-500) / 0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%23818CF8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
       background-repeat: no-repeat;
-      background-position: right 10px center;
+      background-position: right 12px center;
     }
   }
   .input:focus, .textarea:focus, select:focus {
-    background: rgb(var(--color-white) / 0.035);
-    border-color: rgb(var(--brand-500) / 0.55);
+    background: rgb(var(--ink-100));
+    border-color: rgb(var(--brand-500));
+    color: rgb(var(--ink-900));
     box-shadow:
-      0 0 0 4px rgb(var(--brand-500) / 0.14),
-      0 0 0 1px rgb(var(--brand-500) / 0.5) inset;
+      0 0 0 3px rgb(var(--brand-500) / 0.18),
+      0 0 0 1px rgb(var(--brand-500) / 0.45) inset;
   }
   .input:hover, .textarea:hover, select:hover {
-    border-color: rgb(var(--color-white) / 0.14);
+    border-color: rgb(var(--ink-400));
   }
   .textarea {
     @apply resize-y min-h-[120px] leading-6;
   }
-  .input-base { @apply input; }
 
-  /* ------ Chip / Badge ------ */
+  /* ---- Chip · Badge · 圆角 4px ---- */
   .chip {
     @apply inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium;
     border-radius: var(--radius-xs);
@@ -499,31 +361,33 @@ body > * { position: relative; z-index: 2; }
   }
   .chip-soft {
     @apply chip;
-    background: rgb(var(--color-white) / 0.04);
-    border: 1px solid rgb(var(--color-white) / 0.06);
-    color: rgb(var(--color-white) / 0.70);
+    background: rgb(var(--color-white) / 0.035);
+    border: 1px solid rgb(var(--ink-300));
+    color: rgb(var(--ink-600));
   }
 
   .badge-dot {
     @apply inline-block w-2 h-2 rounded-full;
   }
 
-  /* ------ 分隔 ------ */
+  /* ---- 分隔线 ---- */
   .hr-divider {
-    @apply border-t border-ink-300/60;
+    @apply border-t;
+    border-color: rgb(var(--ink-300) / 0.70);
   }
 
-  /* ------ 进度条 ------ */
+  /* ---- 进度条 ---- */
   .progress-track {
     @apply h-1.5 w-full rounded-full overflow-hidden;
-    background: rgb(var(--color-white) / 0.05);
+    background: rgb(var(--ink-300) / 0.70);
   }
   .progress-fill {
     @apply h-full rounded-full transition-all duration-300 ease-out;
-    background-image: linear-gradient(90deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-600)) 60%, rgb(var(--accent-cold)) 100%);
+    /* Edtech 靛 → 青 渐变（学习感的"进度蓝绿"） */
+    background-image: linear-gradient(90deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-600)) 65%, rgb(var(--accent-cold)) 100%);
   }
 
-  /* ------ 音量滑条 thumb ------ */
+  /* ---- 音量滑条 ---- */
   .volume-slider {
     @apply appearance-none rounded-full cursor-pointer outline-none;
   }
@@ -534,67 +398,88 @@ body > * { position: relative; z-index: 2; }
   }
   .volume-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
-    width: 10px;
-    height: 10px;
+    width: 12px; height: 12px;
     border-radius: 9999px;
     background: rgb(var(--color-white));
-    margin-top: -2px;
-    border: 0;
-    box-shadow: 0 0 0 3px rgb(var(--brand-500) / 0.25), 0 1px 3px rgba(0,0,0,0.4);
+    margin-top: -3px;
+    border: 2px solid rgb(var(--brand-500));
+    box-shadow: 0 0 0 3px rgb(var(--brand-500) / 0.22), 0 1px 3px rgba(0,0,0,0.5);
     cursor: pointer;
     transition: transform 0.15s ease;
   }
-  .volume-slider:hover::-webkit-slider-thumb { transform: scale(1.15); }
-  .volume-slider::-moz-range-track {
-    background: transparent;
-    height: 6px;
-    border-radius: 9999px;
-    border: 0;
-  }
+  .volume-slider:hover::-webkit-slider-thumb { transform: scale(1.12); }
+  .volume-slider::-moz-range-track { background: transparent; height: 6px; border-radius: 9999px; border: 0; }
   .volume-slider::-moz-range-thumb {
-    width: 10px;
-    height: 10px;
-    border-radius: 9999px;
+    width: 12px; height: 12px; border-radius: 9999px;
     background: rgb(var(--color-white));
-    border: 0;
-    box-shadow: 0 0 0 3px rgb(var(--brand-500) / 0.25), 0 1px 3px rgba(0,0,0,0.4);
+    border: 2px solid rgb(var(--brand-500));
+    box-shadow: 0 0 0 3px rgb(var(--brand-500) / 0.22), 0 1px 3px rgba(0,0,0,0.5);
     cursor: pointer;
   }
   .volume-slider:focus { outline: none; }
 
-  /* ------ 步骤条 ------ */
+  /* ---- 步骤条 · Edtech 简洁圆 ---- */
   .step-dot {
     @apply grid place-items-center w-8 h-8 rounded-full text-xs font-semibold;
-    background: rgb(var(--color-white) / 0.04);
-    border: 1px solid rgb(var(--color-white) / 0.08);
-    color: rgb(var(--color-white) / 0.5);
+    background: rgb(var(--ink-200));
+    border: 1px solid rgb(var(--ink-300));
+    color: rgb(var(--ink-500));
   }
   .step-dot.active {
-    color: rgb(var(--color-white));
-    background-image: linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 100%);
-    border-color: transparent;
-    box-shadow: 0 0 0 4px rgb(var(--brand-500) / 0.14);
+    color: #ffffff;
+    background: rgb(var(--brand-600));
+    border: 1px solid rgb(var(--brand-700));
+    box-shadow: 0 0 0 4px rgb(var(--brand-600) / 0.18);
   }
   .step-dot.done {
-    color: rgb(var(--ink-900));
-    background: rgb(var(--accent-soft));
+    color: rgb(var(--ink-0));
+    background: rgb(var(--accent-cold));
     border-color: transparent;
   }
+
+  /* ---- 登录页插画动画 ---- */
+  @keyframes wave-bar {
+    0%, 100% { transform: scaleY(0.25); }
+    50%      { transform: scaleY(1); }
+  }
+  .wave-bar {
+    animation: wave-bar 1.2s ease-in-out infinite;
+    transform-origin: bottom center;
+    border-radius: 2px;
+  }
+
+  .login-grid-bg {
+    background-image:
+      linear-gradient(rgb(var(--color-white) / 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(var(--color-white) / 0.04) 1px, transparent 1px);
+    background-size: 40px 40px;
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 45%, #000 30%, transparent 100%);
+    -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 45%, #000 30%, transparent 100%);
+  }
+
+  @keyframes float-in {
+    from { opacity: 0; transform: translateY(20px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .animate-float-in { animation: float-in 0.5s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
 }
 
-/* ========== 通用动画 ========== */
+/* ================================================================
+   工具层：动画 / 排版 / skeleton / focus-ring
+================================================================ */
 @layer utilities {
+
   @keyframes fade-in-up {
     from { opacity: 0; transform: translateY(10px); }
     to   { opacity: 1; transform: translateY(0); }
   }
-  .animate-fade-in { animation: fade-in-up 0.42s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+  .animate-fade-in { animation: fade-in-up 0.4s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
 
   @keyframes scale-in {
     from { opacity: 0; transform: translateY(6px) scale(0.97); }
     to   { opacity: 1; transform: translateY(0)   scale(1); }
   }
-  .animate-scale-in { animation: scale-in 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.1) both; }
+  .animate-scale-in { animation: scale-in 0.26s cubic-bezier(0.2, 0.9, 0.3, 1.1) both; }
 
   @keyframes pulse-soft {
     0%, 100% { opacity: 0.85; }
@@ -606,7 +491,7 @@ body > * { position: relative; z-index: 2; }
     from { opacity: 0; transform: translateX(16px); }
     to   { opacity: 1; transform: translateX(0); }
   }
-  .animate-slide-in-right { animation: slide-in-right 0.28s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+  .animate-slide-in-right { animation: slide-in-right 0.26s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
 
   @keyframes shake {
     0%, 100% { transform: translateX(0); }
@@ -615,158 +500,97 @@ body > * { position: relative; z-index: 2; }
   }
   .animate-shake { animation: shake 0.4s ease; }
 
+  /* Skeleton shimmer — Edtech 的 slate 冷灰 shimmer */
   .skeleton {
     background: linear-gradient(
       90deg,
-      rgb(var(--color-white) / 0.035) 0%,
-      rgb(var(--color-white) / 0.085) 50%,
-      rgb(var(--color-white) / 0.035) 100%
+      rgb(var(--ink-300) / 0.6) 0%,
+      rgb(var(--ink-400) / 0.8) 50%,
+      rgb(var(--ink-300) / 0.6) 100%
     );
     background-size: 200% 100%;
-    animation: shimmer 2.2s linear infinite;
-    border-radius: 10px;
+    animation: shimmer 2s linear infinite;
+    border-radius: var(--radius-sm);
   }
   @keyframes shimmer {
-    0% { background-position: -200% 0; }
-    100% { background-position: 200% 0; }
+    0%   { background-position: -200% 0; }
+    100% { background-position:  200% 0; }
   }
 
+  /* Tabs indicator */
   .tab-indicator {
     @apply px-3.5 py-2 text-sm font-medium transition-all duration-200;
     border-radius: var(--radius-sm);
   }
 
-  /* ——— 排版系统：AI 引擎 · Sora 几何张力 ——— */
+  /* ================ 排版体系（Edtech 参考 Body 16px Regular · Heading Bold 24px） ================ */
   .eyebrow {
-    @apply font-mono text-[10px] uppercase text-ink-500;
-    letter-spacing: 0.2em;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    color: rgb(var(--ink-500));
+    letter-spacing: 0.22em;
   }
   .headline {
-    @apply font-display font-semibold text-ink-900;
-    letter-spacing: -0.022em;
+    font-family: 'Inter', 'PingFang SC', sans-serif;
+    font-weight: 700;
+    color: rgb(var(--ink-900));
+    letter-spacing: -0.018em;
     line-height: 1.2;
   }
   .headline-lg {
-    @apply font-display font-semibold text-ink-900;
-    letter-spacing: -0.028em;
+    font-family: 'Inter', 'PingFang SC', sans-serif;
+    font-weight: 800;
+    color: rgb(var(--ink-900));
+    letter-spacing: -0.024em;
     line-height: 1.12;
   }
   .headline-hero {
-    @apply font-display font-bold text-ink-900;
-    letter-spacing: -0.034em;
-    line-height: 1.02;
+    font-family: 'Sora', 'Inter', sans-serif;  /* 仅 hero 大号标题用 Sora，保留 AI 平台辨识度 */
+    font-weight: 700;
+    color: rgb(var(--ink-900));
+    letter-spacing: -0.028em;
+    line-height: 1.04;
   }
   .subtle-quote {
-    @apply text-ink-500;
-    font-family: 'Geist', 'PingFang SC', sans-serif;
+    color: rgb(var(--ink-500));
+    font-family: 'Inter', 'PingFang SC', sans-serif;
     letter-spacing: -0.003em;
   }
 
   .focus-ring {
     @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-0;
-    --tw-ring-color: rgb(var(--brand-500) / 0.45);
+    --tw-ring-color: rgb(var(--brand-500) / 0.55);
   }
 }
 
-/* ========== 全局选中态 ========== */
+/* ================================================================
+   全局选中态 / 滚动条（DARK-ONLY）
+================================================================ */
 ::selection {
-  background: rgb(var(--brand-500) / 0.35);
+  background: rgb(var(--brand-500) / 0.38);
   color: rgb(var(--color-white));
 }
-html.light ::selection {
-  background: rgb(var(--brand-500) / 0.22);
-  color: rgb(var(--ink-900));
-}
 
-/* ========== 滚动条 ========== */
-::-webkit-scrollbar { width: 8px; height: 8px; }
+/* 滚动条：Edtech 模板的细、灰、靛 hover */
+::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb {
-  background: rgb(var(--color-white) / 0.10);
+  background: rgb(var(--ink-400) / 0.85);
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgb(var(--color-white) / 0.18);
+  background: rgb(var(--brand-500) / 0.55);
   background-clip: content-box;
   border: 2px solid transparent;
 }
 ::-webkit-scrollbar-track { background: transparent; }
-html.light ::-webkit-scrollbar-thumb {
-  background: rgb(var(--ink-700) / 0.22);
-  background-clip: content-box;
-}
-html.light ::-webkit-scrollbar-thumb:hover {
-  background: rgb(var(--ink-700) / 0.36);
-  background-clip: content-box;
-}
 
-/* ========== 输入框/下拉/文本域 · light 模式对比度修正 ==========
-   深色模式：透明背景 + 白色边框（0.08 alpha = 暗）
-   浅色模式：白底 + 深色边框（ink-400 实色 = 够深）
-   直接在 dark-first 定义后面用 html.light 覆盖 */
-html.light .input,
-html.light .textarea,
-html.light select {
-  background: rgb(var(--color-black) / 1);  /* --color-black = 255,255,255 → 纯白背景 */
-  border-color: rgb(var(--ink-400) / 1);   /* 灰色实边，不透明 */
-  color: rgb(var(--ink-900) / 0.94);
-  box-shadow: 0 1px 0 0 rgb(var(--ink-200)) inset;
-}
-html.light .input::placeholder,
-html.light .textarea::placeholder,
-html.light select::placeholder {
-  color: rgb(var(--ink-500));
-}
-html.light .input:focus,
-html.light .textarea:focus,
-html.light select:focus {
-  background: rgb(var(--color-black) / 1);
-  border-color: rgb(var(--brand-500) / 0.65);
-  box-shadow:
-    0 0 0 4px rgb(var(--brand-500) / 0.16),
-    0 1px 0 0 rgb(var(--ink-200)) inset;
-  color: rgb(var(--ink-900) / 0.96);
-}
-html.light select option {
-  background: rgb(var(--color-black) / 1);   /* 纯白列表底 */
-  color: rgb(var(--ink-900));                /* 深黑文字 */
-}
-html.light select option:checked,
-html.light select option:hover {
-  background: rgb(var(--brand-500) / 0.18);         /* 浅紫选中背景 */
-  color: rgb(var(--brand-700, 109, 40, 217));/* 深紫品牌字 */
-}
-
-/* ========== 登录页 ========== */
-@keyframes wave-bar {
-  0%, 100% { transform: scaleY(0.25); }
-  50% { transform: scaleY(1); }
-}
-.wave-bar {
-  animation: wave-bar 1.2s ease-in-out infinite;
-  transform-origin: bottom center;
-  border-radius: 2px;
-}
-
-.login-grid-bg {
-  background-image:
-    linear-gradient(rgb(var(--color-white) / 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(var(--color-white) / 0.025) 1px, transparent 1px);
-  background-size: 48px 48px;
-  mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 30%, transparent 100%);
-  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 30%, transparent 100%);
-}
-
-@keyframes float-in {
-  from { opacity: 0; transform: translateY(20px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-.animate-float-in { animation: float-in 0.5s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
-
-/* ========== 响应式 ========== */
+/* ================================================================
+   响应式收尾 + 低运动尊重
+================================================================ */
 @media (max-width: 640px) {
-  .card { @apply p-4; }
   .btn { @apply px-3.5 py-2; }
 }
 
