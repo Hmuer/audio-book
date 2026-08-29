@@ -4,8 +4,54 @@
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
+/* ============ 主题颜色 Tokens（默认深色，html.light 覆盖为浅色） ============
+ * 所有值用 RGB 三通道（R, G, B），Tailwind 通过 rgb(var(--x) / <alpha-value>) 自动组合 opacity。
+ * 所以组件里的 bg-ink-100、text-white/60、border-ink-300/70 全都会跟随主题切换。
+ */
 :root {
+  /* 基础色：深浅自动反转 */
+  --color-white: 255, 255, 255;
+  --color-black: 9, 9, 11;
+
+  /* ink：Tenet 色调 */
+  --ink-0:   9, 9, 11;       /* 极深底 */
+  --ink-50:  15, 15, 18;     /* 主底色 */
+  --ink-100: 21, 21, 26;     /* 卡片底 */
+  --ink-200: 28, 28, 36;     /* 卡片底 2 */
+  --ink-300: 38, 38, 49;     /* 分割线 */
+  --ink-400: 58, 58, 71;     /* 边框 hover */
+  --ink-500: 85, 85, 98;     /* 边框 */
+  --ink-600: 139, 139, 151;  /* 次级文本 */
+  --ink-700: 197, 197, 204;  /* 正文文本 */
+  --ink-800: 232, 232, 235;  /* 强文本 */
+  --ink-900: 255, 255, 255;  /* 纯白（仅高对比） */
+
+  /* brand：Tenet 紫（深浅通用） */
+  --brand-50:  245, 243, 255;
+  --brand-100: 237, 233, 254;
+  --brand-200: 221, 214, 254;
+  --brand-300: 196, 181, 253;
+  --brand-400: 167, 139, 250;
+  --brand-500: 139, 92, 246;
+  --brand-600: 124, 58, 237;
+  --brand-700: 109, 40, 217;
+  --brand-800: 91, 33, 182;
+  --brand-900: 76, 29, 149;
+
+  /* cream：Tenet 暖奶油底色（light 用） */
+  --cream-50:  251, 250, 246;
+  --cream-100: 245, 242, 234;
+  --cream-200: 232, 226, 210;
+  --cream-300: 207, 198, 173;
+
+  /* accent：Tenet 点缀色 */
+  --accent-lime: 198, 244, 74;
+  --accent-amber: 245, 158, 11;
+  --accent-teal:  45, 212, 191;
+  --accent-rose:  251, 113, 133;
+
   color-scheme: dark light;
+
   /* ---- 阿布设计语言 · Design Tokens ----
    * 圆角规范（收敛为 4 级 + none）
    *   --radius-none : 0px    菜单项、导航项
@@ -17,6 +63,30 @@
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 8px;
+}
+
+/* ============ 浅色主题覆盖 ============
+ * token 语义保持一致：数值越小越暗（底/容器），数值越大越亮（文字/强调）
+ * 深色模式：ink-0=极深底, ink-900=纯白文字
+ * 浅色模式：ink-0=奶油底, ink-900=近黑文字（反转色值但保持"0=底,900=文字"语义）
+ */
+html.light {
+  /* 反转黑白：组件里的 text-white 在浅色下变成近黑 */
+  --color-white: 15, 15, 18;
+  --color-black: 255, 255, 255;
+
+  /* ink：Tenet 浅色版，保持 "0=底→900=文字" 递增语义 */
+  --ink-0:   251, 250, 246;     /* 极浅 = cream-50 */
+  --ink-50:  247, 244, 237;     /* 主底色 */
+  --ink-100: 255, 255, 255;     /* 卡片底 = 纯白 */
+  --ink-200: 240, 236, 225;
+  --ink-300: 228, 225, 218;     /* 分割线 */
+  --ink-400: 200, 196, 186;     /* 边框 hover */
+  --ink-500: 160, 156, 148;     /* 边框 */
+  --ink-600: 110, 106, 100;     /* 次级文本 */
+  --ink-700: 55, 53, 50;        /* 正文文本 */
+  --ink-800: 25, 24, 22;        /* 强文本 */
+  --ink-900: 9, 9, 11;          /* 最深文字（最高对比） */
 }
 
 html {
@@ -41,7 +111,7 @@ body {
 }
 
 html.light body {
-  @apply bg-cream-50 text-gray-800;
+  @apply bg-ink-50 text-ink-700;
   background-image:
     radial-gradient(1400px 800px at 0% -10%, rgba(139,92,246,0.08), transparent 55%),
     radial-gradient(1000px 600px at 100% 0%, rgba(45,212,191,0.05), transparent 60%);
@@ -182,6 +252,14 @@ html.light body {
     background: rgba(255,255,255,0.04);
     border-color: rgba(255,255,255,0.2);
   }
+  html.light .btn-outline {
+    color: #0f0f12;
+    border-color: rgba(15,15,18,0.16);
+  }
+  html.light .btn-outline:hover {
+    background: rgba(15,15,18,0.04);
+    border-color: rgba(15,15,18,0.28);
+  }
 
   /* 破坏性操作 */
   .btn-danger {
@@ -309,6 +387,9 @@ html.light body {
     @apply h-1.5 w-full rounded-full overflow-hidden;
     background: rgba(255,255,255,0.05);
   }
+  html.light .progress-track {
+    background: rgba(15,15,18,0.08);
+  }
   .progress-fill {
     @apply h-full rounded-full transition-all duration-300 ease-out;
     background-image: linear-gradient(90deg, #8b5cf6 0%, #6366f1 60%, #2dd4bf 100%);
@@ -336,6 +417,10 @@ html.light body {
     cursor: pointer;
     transition: transform 0.15s ease;
   }
+  html.light .volume-slider::-webkit-slider-thumb {
+    background: #0f0f12;
+    box-shadow: 0 0 0 3px rgba(139,92,246,0.18), 0 1px 3px rgba(0,0,0,0.15);
+  }
   .volume-slider:hover::-webkit-slider-thumb {
     transform: scale(1.15);
   }
@@ -354,6 +439,10 @@ html.light body {
     box-shadow: 0 0 0 3px rgba(139,92,246,0.25), 0 1px 3px rgba(0,0,0,0.4);
     cursor: pointer;
   }
+  html.light .volume-slider::-moz-range-thumb {
+    background: #0f0f12;
+    box-shadow: 0 0 0 3px rgba(139,92,246,0.18), 0 1px 3px rgba(0,0,0,0.15);
+  }
   .volume-slider:focus { outline: none; }
 
   /* ------ 步骤条（Wizard 用） ------ */
@@ -362,6 +451,11 @@ html.light body {
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(255,255,255,0.08);
     color: rgba(255,255,255,0.5);
+  }
+  html.light .step-dot {
+    background: rgba(15,15,18,0.04);
+    border-color: rgba(15,15,18,0.1);
+    color: rgba(15,15,18,0.55);
   }
   .step-dot.active {
     color: #fff;
@@ -454,9 +548,6 @@ html.light body {
   .headline {
     @apply font-display font-semibold tracking-tight text-ink-900;
     letter-spacing: -0.02em;
-  }
-  html.light .headline {
-    @apply text-ink-0;
   }
 
   /* focus ring：Eleven 统一用 4px 外发光而不是 outline */
