@@ -4,29 +4,34 @@
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
-/* ============ 主题颜色 Tokens（默认深色，html.light 覆盖为浅色） ============
- * 所有值用 RGB 三通道（R, G, B），Tailwind 通过 rgb(var(--x) / <alpha-value>) 自动组合 opacity。
- * 所以组件里的 bg-ink-100、text-white/60、border-ink-300/70 全都会跟随主题切换。
+/* ============ 主题颜色 Tokens ============
+ * 所有 CSS 颜色用 RGB 三通道变量，Tailwind 通过 rgb(var(--x) / <alpha-value>) 自动组合 opacity。
+ * 组件里的 bg-ink-100、text-white/60、border-ink-300/70 以及 globals.css 中的 inline rgba 值
+ * 全部引用这些变量，所以深浅切换时一处都不需要改。
+ *
+ * token 语义：数值越小越暗（底/容器），数值越大越亮（文字/强调）
+ *   深色：ink-0=极深底 → ink-900=纯白文字
+ *   浅色：ink-0=奶油底 → ink-900=近黑文字
  */
 :root {
-  /* 基础色：深浅自动反转 */
+  /* 基础色（反转变量：组件 text-white 在浅色下自动变近黑） */
   --color-white: 255, 255, 255;
   --color-black: 9, 9, 11;
 
-  /* ink：Tenet 色调 */
-  --ink-0:   9, 9, 11;       /* 极深底 */
-  --ink-50:  15, 15, 18;     /* 主底色 */
-  --ink-100: 21, 21, 26;     /* 卡片底 */
-  --ink-200: 28, 28, 36;     /* 卡片底 2 */
-  --ink-300: 38, 38, 49;     /* 分割线 */
-  --ink-400: 58, 58, 71;     /* 边框 hover */
-  --ink-500: 85, 85, 98;     /* 边框 */
-  --ink-600: 139, 139, 151;  /* 次级文本 */
-  --ink-700: 197, 197, 204;  /* 正文文本 */
-  --ink-800: 232, 232, 235;  /* 强文本 */
-  --ink-900: 255, 255, 255;  /* 纯白（仅高对比） */
+  /* ink 中性阶 */
+  --ink-0:   9, 9, 11;
+  --ink-50:  15, 15, 18;
+  --ink-100: 21, 21, 26;
+  --ink-200: 28, 28, 36;
+  --ink-300: 38, 38, 49;
+  --ink-400: 58, 58, 71;
+  --ink-500: 85, 85, 98;
+  --ink-600: 139, 139, 151;
+  --ink-700: 197, 197, 204;
+  --ink-800: 232, 232, 235;
+  --ink-900: 255, 255, 255;
 
-  /* brand：Tenet 紫（深浅通用） */
+  /* brand Tenet 紫（深浅通用，不随主题变） */
   --brand-50:  245, 243, 255;
   --brand-100: 237, 233, 254;
   --brand-200: 221, 214, 254;
@@ -38,57 +43,135 @@
   --brand-800: 91, 33, 182;
   --brand-900: 76, 29, 149;
 
-  /* cream：Tenet 暖奶油底色（light 用） */
+  /* cream Tenet 暖奶油 */
   --cream-50:  251, 250, 246;
   --cream-100: 245, 242, 234;
   --cream-200: 232, 226, 210;
   --cream-300: 207, 198, 173;
 
-  /* accent：Tenet 点缀色 */
+  /* accent Tenet 点缀 */
   --accent-lime: 198, 244, 74;
   --accent-amber: 245, 158, 11;
   --accent-teal:  45, 212, 191;
   --accent-rose:  251, 113, 133;
 
+  /* status 语义色（bg/border 存 RGB 三通道，组件里按需加 opacity） */
+  /* 深色模式用亮色在暗背景上 */
+  --status-info-bg:     59, 130, 246;
+  --status-info-fg:     147, 197, 253;
+  --status-info-dot:    59, 130, 246;
+  --status-warn-bg:     245, 158, 11;
+  --status-warn-fg:     252, 211, 77;
+  --status-warn-dot:    245, 158, 11;
+  --status-success-bg:  74, 222, 128;
+  --status-success-fg:  134, 239, 172;
+  --status-success-dot: 74, 222, 128;
+  --status-ready-bg:    45, 212, 191;
+  --status-ready-fg:    94, 234, 212;
+  --status-ready-dot:   45, 212, 191;
+  --status-partial-bg:  250, 204, 21;
+  --status-partial-fg:  253, 230, 138;
+  --status-partial-dot: 250, 204, 21;
+  --status-error-bg:    251, 113, 133;
+  --status-error-fg:    253, 164, 175;
+  --status-error-dot:   251, 113, 133;
+  --status-muted-bg:    161, 161, 170;
+  --status-muted-fg:    212, 212, 216;
+  --status-muted-dot:   161, 161, 170;
+  --status-synth-bg:    251, 146, 60;
+  --status-synth-fg:    253, 186, 116;
+  --status-synth-dot:   251, 146, 60;
+
+  /* palette 角色标签色（8 种色调，每种三通道：bg / fg / border） */
+  /* 深色模式：亮色在暗底 */
+  --palette-purple-bg:   139, 92, 246;
+  --palette-purple-fg:   196, 181, 253;
+  --palette-pink-bg:     244, 114, 182;
+  --palette-pink-fg:     249, 168, 212;
+  --palette-cyan-bg:     34, 211, 238;
+  --palette-cyan-fg:     103, 232, 249;
+  --palette-green-bg:    74, 222, 128;
+  --palette-green-fg:    134, 239, 172;
+  --palette-yellow-bg:   251, 191, 36;
+  --palette-yellow-fg:   253, 224, 71;
+  --palette-blue-bg:     96, 165, 250;
+  --palette-blue-fg:     147, 197, 253;
+  --palette-rose-bg:     251, 113, 133;
+  --palette-rose-fg:     253, 164, 175;
+  --palette-mint-bg:     45, 212, 191;
+  --palette-mint-fg:     94, 234, 212;
+
   color-scheme: dark light;
 
-  /* ---- 阿布设计语言 · Design Tokens ----
-   * 圆角规范（收敛为 4 级 + none）
-   *   --radius-none : 0px    菜单项、导航项
-   *   --radius-xs   : 4px    badge、chip、小标签
-   *   --radius-sm   : 6px    按钮、输入框、图标容器、下拉项
-   *   --radius-md   : 8px    面板、卡片、模态框、弹出框、提示框
-   */
+  /* 圆角 */
   --radius-none: 0px;
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 8px;
 }
 
-/* ============ 浅色主题覆盖 ============
- * token 语义保持一致：数值越小越暗（底/容器），数值越大越亮（文字/强调）
- * 深色模式：ink-0=极深底, ink-900=纯白文字
- * 浅色模式：ink-0=奶油底, ink-900=近黑文字（反转色值但保持"0=底,900=文字"语义）
- */
 html.light {
-  /* 反转黑白：组件里的 text-white 在浅色下变成近黑 */
   --color-white: 15, 15, 18;
   --color-black: 255, 255, 255;
 
-  /* ink：Tenet 浅色版，保持 "0=底→900=文字" 递增语义 */
-  --ink-0:   251, 250, 246;     /* 极浅 = cream-50 */
-  --ink-50:  247, 244, 237;     /* 主底色 */
-  --ink-100: 255, 255, 255;     /* 卡片底 = 纯白 */
+  --ink-0:   251, 250, 246;
+  --ink-50:  247, 244, 237;
+  --ink-100: 255, 255, 255;
   --ink-200: 240, 236, 225;
-  --ink-300: 228, 225, 218;     /* 分割线 */
-  --ink-400: 200, 196, 186;     /* 边框 hover */
-  --ink-500: 160, 156, 148;     /* 边框 */
-  --ink-600: 110, 106, 100;     /* 次级文本 */
-  --ink-700: 55, 53, 50;        /* 正文文本 */
-  --ink-800: 25, 24, 22;        /* 强文本 */
-  --ink-900: 9, 9, 11;          /* 最深文字（最高对比） */
+  --ink-300: 228, 225, 218;
+  --ink-400: 200, 196, 186;
+  --ink-500: 160, 156, 148;
+  --ink-600: 110, 106, 100;
+  --ink-700: 55, 53, 50;
+  --ink-800: 25, 24, 22;
+  --ink-900: 9, 9, 11;
+
+  /* 浅色模式用更深的色调保证白底对比度 */
+  --status-info-bg:     37, 99, 235;
+  --status-info-fg:     37, 99, 235;
+  --status-info-dot:    37, 99, 235;
+  --status-warn-bg:     217, 119, 6;
+  --status-warn-fg:     180, 83, 9;
+  --status-warn-dot:    217, 119, 6;
+  --status-success-bg:  34, 197, 94;
+  --status-success-fg:  21, 128, 61;
+  --status-success-dot: 22, 163, 74;
+  --status-ready-bg:    13, 148, 136;
+  --status-ready-fg:    15, 118, 110;
+  --status-ready-dot:   13, 148, 136;
+  --status-partial-bg:  202, 138, 4;
+  --status-partial-fg:  161, 98, 7;
+  --status-partial-dot: 202, 138, 4;
+  --status-error-bg:    225, 29, 72;
+  --status-error-fg:    190, 18, 60;
+  --status-error-dot:   225, 29, 72;
+  --status-muted-bg:    82, 82, 91;
+  --status-muted-fg:    63, 63, 70;
+  --status-muted-dot:   82, 82, 91;
+  --status-synth-bg:    234, 88, 12;
+  --status-synth-fg:    194, 65, 12;
+  --status-synth-dot:   234, 88, 12;
+
+  /* palette 角色标签色 — 浅色模式用更深色调保证白底对比度 */
+  --palette-purple-bg:   124, 58, 237;
+  --palette-purple-fg:   109, 40, 217;
+  --palette-pink-bg:     219, 39, 119;
+  --palette-pink-fg:     190, 18, 60;
+  --palette-cyan-bg:     8, 145, 178;
+  --palette-cyan-fg:     14, 116, 144;
+  --palette-green-bg:    22, 163, 74;
+  --palette-green-fg:    21, 128, 61;
+  --palette-yellow-bg:   202, 138, 4;
+  --palette-yellow-fg:   161, 98, 7;
+  --palette-blue-bg:     37, 99, 235;
+  --palette-blue-fg:     30, 64, 175;
+  --palette-rose-bg:     225, 29, 72;
+  --palette-rose-fg:     190, 18, 60;
+  --palette-mint-bg:     13, 148, 136;
+  --palette-mint-fg:     15, 118, 110;
 }
 
+/* ============ 全局 ============ */
 html {
   scroll-behavior: smooth;
   -webkit-font-smoothing: antialiased;
@@ -109,17 +192,15 @@ body {
   min-height: 100vh;
   letter-spacing: 0.01em;
 }
-
 html.light body {
-  @apply bg-ink-50 text-ink-700;
   background-image:
     radial-gradient(1400px 800px at 0% -10%, rgba(139,92,246,0.08), transparent 55%),
     radial-gradient(1000px 600px at 100% 0%, rgba(45,212,191,0.05), transparent 60%);
 }
 
-/* ========== Design System（ElevenLabs 风格） ========== */
+/* ========== Design System ========== */
 @layer components {
-  /* ------ 容器 / 卡片 ------ */
+
   .shell {
     @apply max-w-[1240px] mx-auto px-4 sm:px-6 lg:px-8 w-full;
   }
@@ -131,54 +212,32 @@ html.light body {
   .card:hover {
     @apply border-ink-400/90 shadow-el-lg;
   }
-  html.light .card {
-    @apply border-gray-200/80 bg-white/80 shadow-el;
-  }
-  html.light .card:hover {
-    @apply border-gray-300 shadow-el-lg;
-  }
 
   .surface {
     @apply border bg-ink-100/60;
     border-radius: var(--radius-md);
   }
-  html.light .surface {
-    @apply border-gray-200 bg-white;
-  }
 
-  /* 玻璃态面板：阿布自定义风格 —— 悬浮浮岛感 + 极细描边 + 内嵌高光 */
+  /* 玻璃态面板 */
   .glass-panel {
     @apply relative overflow-hidden;
     border-radius: var(--radius-md);
     padding: 16px 18px;
     background:
-      linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.005) 100%),
-      rgba(22, 20, 34, 0.55);
-    border: 1px solid rgba(255,255,255,0.06);
+      linear-gradient(180deg, rgb(var(--color-white) / 0.03) 0%, rgb(var(--color-white) / 0.005) 100%),
+      rgb(var(--ink-50) / 0.55);
+    border: 1px solid rgb(var(--color-white) / 0.06);
     box-shadow:
-      0 1px 0 0 rgba(255,255,255,0.04) inset,
+      0 1px 0 0 rgb(var(--color-white) / 0.04) inset,
       0 0 0 1px rgba(139,92,246,0.04),
       0 30px 80px -36px rgba(0,0,0,0.7);
     backdrop-filter: blur(22px);
     -webkit-backdrop-filter: blur(22px);
   }
   @media (min-width: 640px) {
-    .glass-panel {
-      padding: 20px 22px;
-    }
-  }
-  html.light .glass-panel {
-    border-radius: var(--radius-md);
-    background:
-      linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0.75) 100%);
-    border-color: rgba(15,15,18,0.08);
-    box-shadow:
-      0 1px 0 0 rgba(255,255,255,0.9) inset,
-      0 0 0 1px rgba(139,92,246,0.05),
-      0 24px 60px -30px rgba(15,15,18,0.18);
+    .glass-panel { padding: 20px 22px; }
   }
 
-  /* 光晕装饰：Eleven 常用品牌紫+青柠的 corner glows（注意 z-index -1） */
   .glow-orb {
     position: absolute;
     border-radius: 9999px;
@@ -188,12 +247,11 @@ html.light body {
     opacity: 0.55;
   }
 
-  /* 顶部细条（卡片左侧状态色条——Eleven 风格用 2px 细条而非粗条） */
   .stripe {
     @apply absolute left-0 top-0 bottom-0 w-[2px] h-full;
   }
 
-  /* ------ 按钮（Eleven 克制风） ------ */
+  /* ------ 按钮 ------ */
   .btn {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium
       transition-all duration-200 select-none
@@ -203,15 +261,14 @@ html.light body {
     letter-spacing: -0.005em;
   }
 
-  /* 主 CTA：品牌紫渐变 + 阴影外发光 */
   .btn-primary {
     @apply btn text-white shadow-brand;
-    background-image: linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0) 50%),
+    background-image: linear-gradient(180deg, rgb(var(--color-white) / 0.12) 0%, rgb(var(--color-white) / 0) 50%),
       linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
   }
   .btn-primary:hover {
     @apply shadow-brand-lg -translate-y-[1px];
-    background-image: linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0) 50%),
+    background-image: linear-gradient(180deg, rgb(var(--color-white) / 0.18) 0%, rgb(var(--color-white) / 0) 50%),
       linear-gradient(135deg, #9b6bff 0%, #8b5cf6 100%);
   }
   .btn-primary:active {
@@ -219,52 +276,31 @@ html.light body {
     transform: translateY(0) scale(0.99);
   }
 
-  /* 次按钮：玻璃态白边 */
   .btn-ghost {
     @apply btn;
-    background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.08);
-    color: rgba(255,255,255,0.82);
+    background: rgb(var(--color-white) / 0.03);
+    border: 1px solid rgb(var(--color-white) / 0.08);
+    color: rgb(var(--color-white) / 0.82);
   }
   .btn-ghost:hover {
-    background: rgba(255,255,255,0.07);
-    border-color: rgba(255,255,255,0.14);
-    color: #fff;
-  }
-  html.light .btn-ghost {
-    background: rgba(15,15,18,0.02);
-    border-color: rgba(15,15,18,0.08);
-    color: rgba(15,15,18,0.78);
-  }
-  html.light .btn-ghost:hover {
-    background: rgba(15,15,18,0.04);
-    border-color: rgba(15,15,18,0.14);
-    color: #0f0f12;
+    background: rgb(var(--color-white) / 0.07);
+    border-color: rgb(var(--color-white) / 0.14);
+    color: rgb(var(--color-white));
   }
 
-  /* 描边按钮：深色细线 */
   .btn-outline {
     @apply btn text-ink-800;
     background: transparent;
-    border: 1px solid rgba(255,255,255,0.1);
+    border: 1px solid rgb(var(--color-white) / 0.1);
   }
   .btn-outline:hover {
-    background: rgba(255,255,255,0.04);
-    border-color: rgba(255,255,255,0.2);
-  }
-  html.light .btn-outline {
-    color: #0f0f12;
-    border-color: rgba(15,15,18,0.16);
-  }
-  html.light .btn-outline:hover {
-    background: rgba(15,15,18,0.04);
-    border-color: rgba(15,15,18,0.28);
+    background: rgb(var(--color-white) / 0.04);
+    border-color: rgb(var(--color-white) / 0.2);
   }
 
-  /* 破坏性操作 */
   .btn-danger {
     @apply btn text-white;
-    background-image: linear-gradient(180deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0) 50%),
+    background-image: linear-gradient(180deg, rgb(var(--color-white) / 0.10) 0%, rgb(var(--color-white) / 0) 50%),
       linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
     box-shadow: 0 0 0 1px rgba(239,68,68,0.35), 0 10px 30px -8px rgba(239,68,68,0.45);
   }
@@ -272,84 +308,62 @@ html.light body {
     filter: brightness(1.08);
   }
 
-  /* ------ 输入框 / 文本框 / 下拉 ------ */
+  /* ------ 输入框 / 下拉 ------ */
   .input, .textarea, select {
     @apply w-full px-3.5 py-2.5 text-sm outline-none
       transition-all duration-150
       placeholder:text-ink-500;
     border-radius: var(--radius-sm);
-    background: rgba(255,255,255,0.02);
-    border: 1px solid rgba(255,255,255,0.08);
-    color: rgba(255,255,255,0.92);
-    box-shadow: 0 1px 0 0 rgba(255,255,255,0.03) inset;
-    /* 自定义下拉箭头（深色风格） */
-    background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='rgba(255,255,255,0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background: rgb(var(--color-white) / 0.02);
+    border: 1px solid rgb(var(--color-white) / 0.08);
+    color: rgb(var(--color-white) / 0.92);
+    box-shadow: 0 1px 0 0 rgb(var(--color-white) / 0.03) inset;
+    background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='rgba(139,92,246,0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 10px center;
     padding-right: 32px;
     appearance: none;
     -webkit-appearance: none;
   }
-  /* 下拉选项弹层：Webkit（Chrome/Edge/Safari）走 option 样式；Firefox 需要单独适配 */
   select option {
-    background: #1a1826;
-    color: rgba(255,255,255,0.92);
+    background: rgb(var(--ink-100));
+    color: rgb(var(--color-white));
     padding: 8px 12px;
   }
   select option:checked,
   select option:hover {
     background: rgba(139,92,246,0.35);
-    color: #fff;
-  }
-  select option:disabled {
-    background: transparent;
-    color: rgba(255,255,255,0.35);
-  }
-  /* Firefox 特有的下拉面板样式 */
-  @supports (-moz-appearance: none) {
-    select {
-      background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='rgba(255,255,255,0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 10px center;
-    }
-  }
-  .input:focus, .textarea:focus, select:focus {
-    background: rgba(255,255,255,0.035);
-    border-color: rgba(168,85,247,0.55);
-    box-shadow:
-      0 0 0 4px rgba(168,85,247,0.14),
-      0 0 0 1px rgba(168,85,247,0.5) inset;
-  }
-  .input:hover, .textarea:hover, select:hover {
-    border-color: rgba(255,255,255,0.14);
-  }
-  html.light .input, html.light .textarea, html.light select {
-    background: #fff;
-    border-color: rgba(15,15,18,0.10);
-    color: #0f0f12;
-    box-shadow: 0 1px 2px 0 rgba(0,0,0,0.04);
-    background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='rgba(15,15,18,0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  }
-  html.light select option {
-    background: #fff;
-    color: #0f0f12;
+    color: rgb(var(--color-white));
   }
   html.light select option:checked,
   html.light select option:hover {
     background: rgba(139,92,246,0.12);
     color: #7c3aed;
   }
-  html.light .input:focus, html.light .textarea:focus, html.light select:focus {
+  select option:disabled {
+    background: transparent;
+    color: rgb(var(--color-white) / 0.35);
+  }
+  @supports (-moz-appearance: none) {
+    select {
+      background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='rgba(139,92,246,0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+    }
+  }
+  .input:focus, .textarea:focus, select:focus {
+    background: rgb(var(--color-white) / 0.035);
     border-color: rgba(139,92,246,0.55);
     box-shadow:
-      0 0 0 4px rgba(139,92,246,0.12),
-      0 1px 2px 0 rgba(0,0,0,0.04);
+      0 0 0 4px rgba(139,92,246,0.14),
+      0 0 0 1px rgba(139,92,246,0.5) inset;
+  }
+  .input:hover, .textarea:hover, select:hover {
+    border-color: rgb(var(--color-white) / 0.14);
   }
   .textarea {
     @apply resize-y min-h-[120px] leading-6;
   }
-
-  /* 对遗留的 input-base 别名做兼容 */
   .input-base { @apply input; }
 
   /* ------ Chip / Badge ------ */
@@ -360,14 +374,9 @@ html.light body {
   }
   .chip-soft {
     @apply chip;
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.06);
-    color: rgba(255,255,255,0.70);
-  }
-  html.light .chip-soft {
-    background: rgba(15,15,18,0.03);
-    border-color: rgba(15,15,18,0.06);
-    color: rgba(15,15,18,0.62);
+    background: rgb(var(--color-white) / 0.04);
+    border: 1px solid rgb(var(--color-white) / 0.06);
+    color: rgb(var(--color-white) / 0.70);
   }
 
   .badge-dot {
@@ -378,24 +387,18 @@ html.light body {
   .hr-divider {
     @apply border-t border-ink-300/60;
   }
-  html.light .hr-divider {
-    @apply border-gray-200;
-  }
 
   /* ------ 进度条 ------ */
   .progress-track {
     @apply h-1.5 w-full rounded-full overflow-hidden;
-    background: rgba(255,255,255,0.05);
-  }
-  html.light .progress-track {
-    background: rgba(15,15,18,0.08);
+    background: rgb(var(--color-white) / 0.05);
   }
   .progress-fill {
     @apply h-full rounded-full transition-all duration-300 ease-out;
     background-image: linear-gradient(90deg, #8b5cf6 0%, #6366f1 60%, #2dd4bf 100%);
   }
 
-  /* ------ 音量滑条（WaveformPlayer 用）：去除原生轨道/thumb，仅用背景渐变填充 ------ */
+  /* ------ 音量滑条 thumb ------ */
   .volume-slider {
     @apply appearance-none rounded-full cursor-pointer outline-none;
   }
@@ -406,24 +409,17 @@ html.light body {
   }
   .volume-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
-    appearance: none;
     width: 10px;
     height: 10px;
     border-radius: 9999px;
-    background: #ffffff;
+    background: rgb(var(--color-white));
     margin-top: -2px;
     border: 0;
     box-shadow: 0 0 0 3px rgba(139,92,246,0.25), 0 1px 3px rgba(0,0,0,0.4);
     cursor: pointer;
     transition: transform 0.15s ease;
   }
-  html.light .volume-slider::-webkit-slider-thumb {
-    background: #0f0f12;
-    box-shadow: 0 0 0 3px rgba(139,92,246,0.18), 0 1px 3px rgba(0,0,0,0.15);
-  }
-  .volume-slider:hover::-webkit-slider-thumb {
-    transform: scale(1.15);
-  }
+  .volume-slider:hover::-webkit-slider-thumb { transform: scale(1.15); }
   .volume-slider::-moz-range-track {
     background: transparent;
     height: 6px;
@@ -434,37 +430,28 @@ html.light body {
     width: 10px;
     height: 10px;
     border-radius: 9999px;
-    background: #ffffff;
+    background: rgb(var(--color-white));
     border: 0;
     box-shadow: 0 0 0 3px rgba(139,92,246,0.25), 0 1px 3px rgba(0,0,0,0.4);
     cursor: pointer;
   }
-  html.light .volume-slider::-moz-range-thumb {
-    background: #0f0f12;
-    box-shadow: 0 0 0 3px rgba(139,92,246,0.18), 0 1px 3px rgba(0,0,0,0.15);
-  }
   .volume-slider:focus { outline: none; }
 
-  /* ------ 步骤条（Wizard 用） ------ */
+  /* ------ 步骤条 ------ */
   .step-dot {
     @apply grid place-items-center w-8 h-8 rounded-full text-xs font-semibold;
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.08);
-    color: rgba(255,255,255,0.5);
-  }
-  html.light .step-dot {
-    background: rgba(15,15,18,0.04);
-    border-color: rgba(15,15,18,0.1);
-    color: rgba(15,15,18,0.55);
+    background: rgb(var(--color-white) / 0.04);
+    border: 1px solid rgb(var(--color-white) / 0.08);
+    color: rgb(var(--color-white) / 0.5);
   }
   .step-dot.active {
-    color: #fff;
+    color: rgb(var(--color-white));
     background-image: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
     border-color: transparent;
     box-shadow: 0 0 0 4px rgba(139,92,246,0.14);
   }
   .step-dot.done {
-    color: #0f0f12;
+    color: rgb(var(--ink-900));
     background: #c6f44a;
     border-color: transparent;
   }
@@ -476,33 +463,25 @@ html.light body {
     from { opacity: 0; transform: translateY(10px); }
     to   { opacity: 1; transform: translateY(0); }
   }
-  .animate-fade-in {
-    animation: fade-in-up 0.42s cubic-bezier(0.2, 0.9, 0.3, 1) both;
-  }
+  .animate-fade-in { animation: fade-in-up 0.42s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
 
   @keyframes scale-in {
     from { opacity: 0; transform: translateY(6px) scale(0.97); }
     to   { opacity: 1; transform: translateY(0)   scale(1); }
   }
-  .animate-scale-in {
-    animation: scale-in 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.1) both;
-  }
+  .animate-scale-in { animation: scale-in 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.1) both; }
 
   @keyframes pulse-soft {
     0%, 100% { opacity: 0.85; }
     50%      { opacity: 0.35; }
   }
-  .animate-pulse-soft {
-    animation: pulse-soft 1.8s ease-in-out infinite;
-  }
+  .animate-pulse-soft { animation: pulse-soft 1.8s ease-in-out infinite; }
 
   @keyframes slide-in-right {
     from { opacity: 0; transform: translateX(16px); }
     to   { opacity: 1; transform: translateX(0); }
   }
-  .animate-slide-in-right {
-    animation: slide-in-right 0.28s cubic-bezier(0.2, 0.9, 0.3, 1) both;
-  }
+  .animate-slide-in-right { animation: slide-in-right 0.28s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
 
   @keyframes shake {
     0%, 100% { transform: translateX(0); }
@@ -511,115 +490,85 @@ html.light body {
   }
   .animate-shake { animation: shake 0.4s ease; }
 
-  /* Skeleton 加载 */
   .skeleton {
     background: linear-gradient(
       90deg,
-      rgba(255,255,255,0.035) 0%,
-      rgba(255,255,255,0.085) 50%,
-      rgba(255,255,255,0.035) 100%
+      rgb(var(--color-white) / 0.035) 0%,
+      rgb(var(--color-white) / 0.085) 50%,
+      rgb(var(--color-white) / 0.035) 100%
     );
     background-size: 200% 100%;
     animation: shimmer 2.2s linear infinite;
     border-radius: 10px;
-  }
-  html.light .skeleton {
-    background: linear-gradient(
-      90deg,
-      rgba(15,15,18,0.04) 0%,
-      rgba(15,15,18,0.10) 50%,
-      rgba(15,15,18,0.04) 100%
-    );
-    background-size: 200% 100%;
-    animation: shimmer 2.2s linear infinite;
   }
   @keyframes shimmer {
     0% { background-position: -200% 0; }
     100% { background-position: 200% 0; }
   }
 
-  /* Tab 切换时的小指示器：pill-shaped */
   .tab-indicator {
     @apply px-3.5 py-2 text-sm font-medium transition-all duration-200;
     border-radius: var(--radius-sm);
   }
 
-  /* 粗体、标题、品牌强调色字体 */
   .headline {
     @apply font-display font-semibold tracking-tight text-ink-900;
     letter-spacing: -0.02em;
   }
 
-  /* focus ring：Eleven 统一用 4px 外发光而不是 outline */
   .focus-ring {
     @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-0;
     --tw-ring-color: rgba(139,92,246,0.45);
   }
 }
 
-/* ========== 滚动条：Eleven 细、柔和 ========== */
+/* ========== 滚动条 ========== */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.10);
+  background: rgb(var(--color-white) / 0.10);
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255,255,255,0.18);
+  background: rgb(var(--color-white) / 0.18);
   background-clip: content-box;
   border: 2px solid transparent;
 }
 ::-webkit-scrollbar-track { background: transparent; }
-html.light ::-webkit-scrollbar-thumb {
-  background: rgba(15,15,18,0.14);
-  background-clip: content-box;
-  border: 2px solid transparent;
-}
-html.light ::-webkit-scrollbar-thumb:hover {
-  background: rgba(15,15,18,0.24);
-  background-clip: content-box;
-  border: 2px solid transparent;
-}
 
-/* ========== 登录页：声波动画 ========== */
+/* ========== 登录页 ========== */
 @keyframes wave-bar {
   0%, 100% { transform: scaleY(0.25); }
   50% { transform: scaleY(1); }
 }
-
 .wave-bar {
   animation: wave-bar 1.2s ease-in-out infinite;
   transform-origin: bottom center;
   border-radius: 2px;
 }
 
-/* 登录页背景网格 */
 .login-grid-bg {
   background-image:
-    linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+    linear-gradient(rgb(var(--color-white) / 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--color-white) / 0.025) 1px, transparent 1px);
   background-size: 48px 48px;
   mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 30%, transparent 100%);
   -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 30%, transparent 100%);
 }
 
-/* 渐入上浮（登录页用） */
 @keyframes float-in {
   from { opacity: 0; transform: translateY(20px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.animate-float-in {
-  animation: float-in 0.5s cubic-bezier(0.2, 0.9, 0.3, 1) both;
-}
+.animate-float-in { animation: float-in 0.5s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
 
-/* ========== 响应式微调 ========== */
+/* ========== 响应式 ========== */
 @media (max-width: 640px) {
   .card { @apply p-4; }
   .btn { @apply px-3.5 py-2; }
 }
 
-/* 高对比模式（辅助）：ElevenLabs 无此需求，但保证无障碍 */
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }

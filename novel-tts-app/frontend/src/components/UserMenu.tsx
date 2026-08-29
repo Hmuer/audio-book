@@ -29,7 +29,7 @@ export default function UserMenu() {
         <>
           {/* 点击外部关闭 */}
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 mt-1 w-56 bg-zinc-900 border border-white/10 rounded-md shadow-xl z-20 overflow-hidden">
+          <div className="absolute right-0 mt-1 w-56 bg-ink-50 border border-ink-300/70 rounded-md shadow-xl z-20 overflow-hidden">
             <div className="px-4 py-3 border-b border-white/5">
               <div className="text-sm font-medium">{user.username}</div>
               <div className="text-xs text-white/40 mt-0.5">
@@ -117,7 +117,7 @@ export function ChangePasswordModal({ onClose }: { onClose: () => void }) {
       onClick={onClose}
     >
       <div
-        className="bg-zinc-900 border border-white/10 rounded-lg p-6 w-full max-w-sm"
+        className="bg-ink-50 border border-ink-300/70 rounded-lg p-6 w-full max-w-sm"
         onClick={e => e.stopPropagation()}
       >
         <h3 className="text-lg font-semibold mb-1">修改密码</h3>

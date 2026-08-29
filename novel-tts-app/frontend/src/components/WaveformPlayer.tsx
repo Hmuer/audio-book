@@ -316,12 +316,12 @@ export default function WaveformPlayer({
           disabled={disabled}
           className={`relative shrink-0 grid place-items-center rounded-full transition-all duration-200
             ${compact ? 'w-11 h-11' : 'w-12 h-12'}
-            ${isPlaying ? 'ring-2 ring-brand-500/40 ring-offset-2 ring-offset-[#0b0a14]' : ''}
+            ${isPlaying ? 'ring-2 ring-brand-500/40 ring-offset-2 ring-offset-ink-50' : ''}
             disabled:opacity-40 disabled:cursor-not-allowed`}
           style={{
             backgroundImage: isPlaying
-              ? 'linear-gradient(180deg, rgba(255,255,255,0.20) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #9b6bff 0%, #8b5cf6 100%)'
-              : 'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+              ? 'linear-gradient(180deg, rgb(var(--color-white) / 0.20) 0%, rgb(var(--color-white) / 0) 50%), linear-gradient(135deg, #9b6bff 0%, #8b5cf6 100%)'
+              : 'linear-gradient(180deg, rgb(var(--color-white) / 0.14) 0%, rgb(var(--color-white) / 0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
             boxShadow: isPlaying
               ? '0 0 0 1px rgba(168,85,247,0.45), 0 10px 24px -8px rgba(139,92,246,0.55)'
               : '0 0 0 1px rgba(168,85,247,0.35), 0 8px 20px -10px rgba(139,92,246,0.45)',
@@ -417,8 +417,8 @@ export default function WaveformPlayer({
                 className="volume-slider w-24 h-1.5"
                 style={{
                   background: muted || volume === 0
-                    ? 'rgba(255,255,255,0.08)'
-                    : `linear-gradient(90deg, #a78bfa 0%, #8b5cf6 ${(muted ? 0 : volume) * 100}%, rgba(255,255,255,0.08) ${(muted ? 0 : volume) * 100}%, rgba(255,255,255,0.08) 100%)`,
+                    ? 'rgb(var(--color-white) / 0.08)'
+                    : `linear-gradient(90deg, #a78bfa 0%, #8b5cf6 ${(muted ? 0 : volume) * 100}%, rgb(var(--color-white) / 0.08) ${(muted ? 0 : volume) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
                 }}
               />
               <span className="text-[10px] tabular-nums w-7 text-right text-white/50">
@@ -446,7 +446,7 @@ export default function WaveformPlayer({
             </button>
             {showSpeedMenu && (
               <div className="absolute bottom-9 right-0 z-30
-                rounded-md border border-white/[0.10] bg-[#12101d]/95 backdrop-blur-md
+                rounded-md border border-ink-300/70 bg-ink-50/95 backdrop-blur-md
                 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.7)] p-1.5 w-24 animate-fade-in">
                 {SPEEDS.map(s => (
                   <button
@@ -529,7 +529,7 @@ export default function WaveformPlayer({
               left: `${displayPercent * 100}%`,
               width: dragging ? 14 : 12,
               height: dragging ? 14 : 12,
-              background: '#fff',
+              background: 'rgb(var(--color-white))',
               boxShadow: dragging
                 ? '0 0 0 4px rgba(139,92,246,0.25), 0 2px 6px rgba(0,0,0,0.5)'
                 : '0 0 0 3px rgba(139,92,246,0.22), 0 1px 4px rgba(0,0,0,0.45)',
@@ -675,7 +675,7 @@ function BufferedBar({
       className="absolute top-0 left-0 h-full rounded-full pointer-events-none"
       style={{
         width: `${display * 100}%`,
-        background: 'rgba(255,255,255,0.06)',
+        background: 'rgb(var(--color-white) / 0.06)',
         zIndex: -1,
       }}
     />

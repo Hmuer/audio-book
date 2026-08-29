@@ -98,10 +98,10 @@ export default function AppSidebar({ currentPath }: Props) {
   return (
     <>
       <aside
-        className="hidden md:flex flex-col w-[244px] shrink-0 h-screen sticky top-0 border-r border-white/[0.06]"
+        className="hidden md:flex flex-col w-[244px] shrink-0 h-screen sticky top-0 border-r border-ink-300/70"
         style={{
           background:
-            'linear-gradient(180deg, rgba(22,20,32,0.95) 0%, rgba(15,14,22,0.98) 100%)',
+            'linear-gradient(180deg, rgb(var(--ink-50)) 0%, rgb(var(--ink-0)) 100%)',
         }}
       >
         {/* ============ 品牌区 ============ */}
@@ -182,7 +182,7 @@ export default function AppSidebar({ currentPath }: Props) {
             {userMenuOpen && (
               <div
                 className="absolute left-0 right-0 bottom-[calc(100%+6px)] z-40
-                  border border-white/[0.09] bg-[#14121f]/98 backdrop-blur-md
+                  border border-ink-300/70 bg-ink-50/98 backdrop-blur-md
                   shadow-[0_16px_48px_-12px_rgba(0,0,0,0.75)] p-1.5 w-auto animate-fade-in"
                 style={{ borderRadius: 'var(--radius-md)' }}
               >
@@ -246,7 +246,7 @@ function ModuleNav({
     !m.disabled && moduleActive
       ? {
           background:
-            'linear-gradient(135deg, rgba(139,92,246,0.16) 0%, rgba(139,92,246,0.04) 70%), rgba(255,255,255,0.02)',
+            'linear-gradient(135deg, rgba(139,92,246,0.16) 0%, rgba(139,92,246,0.04) 70%), rgb(var(--color-white) / 0.02)',
           boxShadow: 'inset 0 0 0 1px rgba(139,92,246,0.18)',
         }
       : undefined;
@@ -373,7 +373,7 @@ function TopLevelLink({ item, active }: { item: MenuItem; active: boolean }) {
         active
           ? {
               background:
-                'linear-gradient(135deg, rgba(139,92,246,0.16) 0%, rgba(139,92,246,0.04) 70%), rgba(255,255,255,0.02)',
+                'linear-gradient(135deg, rgba(139,92,246,0.16) 0%, rgba(139,92,246,0.04) 70%), rgb(var(--color-white) / 0.02)',
               boxShadow: 'inset 0 0 0 1px rgba(139,92,246,0.18)',
             }
           : undefined
@@ -427,9 +427,9 @@ function ComingSoonBadge() {
       className="text-[9.5px] px-1.5 py-0.5 font-medium tracking-wide"
       style={{
         borderRadius: 'var(--radius-xs)',
-        background: 'rgba(255,255,255,0.04)',
-        color: 'rgba(255,255,255,0.38)',
-        border: '1px solid rgba(255,255,255,0.06)',
+        background: 'rgb(var(--color-white) / 0.04)',
+        color: 'rgb(var(--color-white) / 0.38)',
+        border: '1px solid rgb(var(--color-white) / 0.06)',
       }}
     >
       SOON
@@ -445,7 +445,7 @@ function Avatar({ username }: { username: string }) {
       style={{
         borderRadius: 'var(--radius-sm)',
         backgroundImage:
-          'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 45%), linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)',
+          'linear-gradient(180deg, rgb(var(--color-white) / 0.14) 0%, rgb(var(--color-white) / 0) 45%), linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)',
         boxShadow: '0 0 0 1px rgba(167,139,250,0.35), 0 8px 16px -8px rgba(99,102,241,0.5)',
       }}
     >
@@ -461,7 +461,7 @@ function BrandLogo() {
       style={{
         borderRadius: 'var(--radius-md)',
         backgroundImage:
-          'linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #6366f1 60%, #22d3ee 100%)',
+          'linear-gradient(180deg, rgb(var(--color-white) / 0.18) 0%, rgb(var(--color-white) / 0) 50%), linear-gradient(135deg, #8b5cf6 0%, #6366f1 60%, #22d3ee 100%)',
         boxShadow: '0 0 0 1px rgba(167,139,250,0.35), 0 12px 24px -10px rgba(139,92,246,0.6)',
       }}
     >

@@ -9,17 +9,18 @@ import CreateAudiobookDialog from './CreateAudiobookDialog';
 const POLL_INTERVAL_MS = 3000;
 
 // 状态定义（Eleven 风格：柔和、克制，不是浓重的半透明块）
+// 颜色全部引用 status CSS 变量，深浅主题自动切换
 const STATUS_DEFS: Record<string, { label: string; bg: string; color: string; dot: string; pulse?: boolean }> = {
-  draft:           { label: '草稿',      bg: 'rgba(255,255,255,0.04)', color: 'rgba(255,255,255,0.62)', dot: '#71717a' },
-  imported:        { label: '已导入',    bg: 'rgba(59,130,246,0.10)',  color: '#93c5fd', dot: '#3b82f6' },
-  preparing:       { label: '识别中',    bg: 'rgba(245,158,11,0.12)',  color: '#fcd34d', dot: '#f59e0b', pulse: true },
-  ready:           { label: '就绪',      bg: 'rgba(45,212,191,0.10)',  color: '#5eead4', dot: '#2dd4bf' },
-  synthesizing:    { label: '合成中',    bg: 'rgba(251,146,60,0.12)',  color: '#fdba74', dot: '#fb923c', pulse: true },
-  done:            { label: '已完成',    bg: 'rgba(74,222,128,0.10)',  color: '#86efac', dot: '#4ade80' },
-  success:         { label: '已完成',    bg: 'rgba(74,222,128,0.10)',  color: '#86efac', dot: '#4ade80' },
-  partial_success: { label: '部分成功',  bg: 'rgba(250,204,21,0.10)',  color: '#fde68a', dot: '#facc15' },
-  failed:          { label: '失败',      bg: 'rgba(251,113,133,0.10)', color: '#fda4af', dot: '#fb7185' },
-  cancelled:       { label: '已取消',    bg: 'rgba(161,161,170,0.12)', color: '#d4d4d8', dot: '#a1a1aa' },
+  draft:           { label: '草稿',      bg: 'rgb(var(--status-muted-bg) / 0.12)',    color: 'rgb(var(--status-muted-fg))',    dot: 'rgb(var(--status-muted-dot))' },
+  imported:        { label: '已导入',    bg: 'rgb(var(--status-info-bg) / 0.12)',     color: 'rgb(var(--status-info-fg))',     dot: 'rgb(var(--status-info-dot))' },
+  preparing:       { label: '识别中',    bg: 'rgb(var(--status-warn-bg) / 0.14)',     color: 'rgb(var(--status-warn-fg))',     dot: 'rgb(var(--status-warn-dot))', pulse: true },
+  ready:           { label: '就绪',      bg: 'rgb(var(--status-ready-bg) / 0.12)',    color: 'rgb(var(--status-ready-fg))',    dot: 'rgb(var(--status-ready-dot))' },
+  synthesizing:    { label: '合成中',    bg: 'rgb(var(--status-synth-bg) / 0.14)',    color: 'rgb(var(--status-synth-fg))',    dot: 'rgb(var(--status-synth-dot))', pulse: true },
+  done:            { label: '已完成',    bg: 'rgb(var(--status-success-bg) / 0.12)',  color: 'rgb(var(--status-success-fg))',  dot: 'rgb(var(--status-success-dot))' },
+  success:         { label: '已完成',    bg: 'rgb(var(--status-success-bg) / 0.12)',  color: 'rgb(var(--status-success-fg))',  dot: 'rgb(var(--status-success-dot))' },
+  partial_success: { label: '部分成功',  bg: 'rgb(var(--status-partial-bg) / 0.12)',  color: 'rgb(var(--status-partial-fg))',  dot: 'rgb(var(--status-partial-dot))' },
+  failed:          { label: '失败',      bg: 'rgb(var(--status-error-bg) / 0.12)',    color: 'rgb(var(--status-error-fg))',    dot: 'rgb(var(--status-error-dot))' },
+  cancelled:       { label: '已取消',    bg: 'rgb(var(--status-muted-bg) / 0.12)',    color: 'rgb(var(--status-muted-fg))',    dot: 'rgb(var(--status-muted-dot))' },
 };
 
 const STAGE_LABELS: Record<string, string> = {
@@ -125,7 +126,7 @@ export function PrepareProgressInline({
           {prog.last_error && (
             <span className="chip" style={{
               background: 'rgba(251,113,133,0.08)',
-              color: '#fda4af',
+              color: 'rgb(var(--status-error-fg))',
               border: '1px solid rgba(251,113,133,0.22)',
             }}>
               ❌ {prog.last_error}
@@ -148,7 +149,7 @@ export function PrepareProgressInline({
             <div className="progress-fill" style={{ width: `${m.charPct}%` }} />
           </div>
           {m.charFailedN > 0 && (
-            <div className="mt-1" style={{ color: '#fdba74' }}>⚠ 有 {m.charFailedN} 个切片失败，完成后可补跑</div>
+            <div className="mt-1" style={{ color: 'rgb(var(--status-warn-fg))' }}>⚠ 有 {m.charFailedN} 个切片失败，完成后可补跑</div>
           )}
         </div>
       )}
@@ -162,7 +163,7 @@ export function PrepareProgressInline({
             <div className="progress-fill" style={{ width: `${m.dialoguePct}%` }} />
           </div>
           {m.dialogueFailedN > 0 && (
-            <div className="mt-1" style={{ color: '#fdba74' }}>⚠ 有 {m.dialogueFailedN} 批对白失败，完成后可补跑</div>
+            <div className="mt-1" style={{ color: 'rgb(var(--status-warn-fg))' }}>⚠ 有 {m.dialogueFailedN} 批对白失败，完成后可补跑</div>
           )}
         </div>
       )}
@@ -196,10 +197,10 @@ export function RunningTasksBar({ items }: { items: ProjectListItem[] }) {
         <div className="flex items-center gap-3 min-w-0">
           <span className="badge-dot animate-pulse-soft" style={{ background: '#8b5cf6', transform: 'scale(1.4)' }} />
           <div className="min-w-0">
-            <div className="font-semibold truncate" style={{ color: '#ede9fe' }}>
+            <div className="font-semibold truncate text-brand-300">
               {summary.join(' · ')}
             </div>
-            <div className="text-xs truncate mt-0.5" style={{ color: 'rgba(237,233,254,0.65)' }}>
+            <div className="text-xs truncate mt-0.5 text-brand-300/70">
               后台继续运行 · 关闭此页面不影响 · 进度每 3 秒自动刷新
             </div>
           </div>
@@ -331,7 +332,7 @@ export default function ProjectListPage() {
           style={{
             border: '1px solid rgba(251,113,133,0.28)',
             background: 'rgba(251,113,133,0.06)',
-            color: '#fecdd3',
+            color: 'rgb(var(--status-error-fg))',
           }}
         >{err}</div>
       )}
@@ -351,7 +352,7 @@ export default function ProjectListPage() {
           <div className="relative mx-auto w-20 h-20 rounded-lg grid place-items-center mb-6"
             style={{
               background: 'linear-gradient(135deg, rgba(139,92,246,0.18), rgba(45,212,191,0.10))',
-              border: '1px solid rgba(255,255,255,0.08)',
+              border: '1px solid rgb(var(--color-white) / 0.08)',
             }}
           >
             <div className="flex items-end gap-[3px] h-8">
@@ -474,7 +475,7 @@ export default function ProjectListPage() {
                       {relativeTime(p.updated_at)}
                       {isRunning && (
                         <span className="ml-1 inline-flex items-center gap-1 text-[10px] text-amber-300/70">
-                          <span className="badge-dot animate-pulse-soft !w-1 !h-1" style={{ background: '#f59e0b' }} />
+                          <span className="badge-dot animate-pulse-soft !w-1 !h-1" style={{ background: 'rgb(var(--status-warn-dot))' }} />
                           自动刷新
                         </span>
                       )}
@@ -521,7 +522,7 @@ export default function ProjectListPage() {
           onClick={() => setConfirmDeleteId(null)}
         >
           <div
-            className="bg-zinc-900 border border-white/10 rounded-lg p-6 w-full max-w-sm mx-4 text-center animate-scale-in"
+            className="bg-ink-50 border border-ink-300/70 rounded-lg p-6 w-full max-w-sm mx-4 text-center animate-scale-in"
             onClick={e => e.stopPropagation()}
           >
             <div className="mx-auto w-11 h-11 rounded-lg grid place-items-center mb-3"
@@ -540,7 +541,7 @@ export default function ProjectListPage() {
                 className="flex-1 rounded-lg text-sm font-medium transition-all"
                 style={{
                   background: 'rgba(251,113,133,0.15)',
-                  color: '#fda4af',
+                  color: 'rgb(var(--status-error-fg))',
                   border: '1px solid rgba(251,113,133,0.3)',
                 }}
                 onClick={() => onDelete(confirmDeleteId)}

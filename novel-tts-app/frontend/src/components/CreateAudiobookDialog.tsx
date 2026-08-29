@@ -60,7 +60,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm p-4" onClick={onClose}>
       <div
-        className="bg-zinc-900 border border-white/10 rounded-lg w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col animate-scale-in"
+        className="bg-ink-50 border border-ink-300/70 rounded-lg w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col animate-scale-in"
         onClick={e => e.stopPropagation()}
       >
         {/* 头部 */}
@@ -172,7 +172,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                 style={{
                   border: '1px solid rgba(251,113,133,0.28)',
                   background: 'rgba(251,113,133,0.06)',
-                  color: '#fecdd3',
+                  color: 'rgb(var(--status-error-fg))',
                 }}
               >{err}</div>
             )}

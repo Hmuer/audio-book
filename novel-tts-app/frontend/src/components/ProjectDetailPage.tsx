@@ -283,7 +283,7 @@ export default function ProjectDetailPage({
                   style={{
                     borderRadius: 'var(--radius-sm)',
                     ...(active ? {
-                      backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+                      backgroundImage: 'linear-gradient(180deg, rgb(var(--color-white) / 0.14) 0%, rgb(var(--color-white) / 0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
                     } : {}),
                   }}
                 >
@@ -772,14 +772,14 @@ function LastBuildSummary({
 // =================== Chapters Tab ===================
 // =================== 角色颜色工具 ===================
 const CHARACTER_COLORS: { bg: string; fg: string; border: string }[] = [
-  { bg: 'rgba(139,92,246,0.14)', fg: '#c4b5fd', border: 'rgba(139,92,246,0.30)' },   // 紫
-  { bg: 'rgba(244,114,182,0.14)', fg: '#f9a8d4', border: 'rgba(244,114,182,0.30)' },   // 粉
-  { bg: 'rgba(34,211,238,0.14)',  fg: '#67e8f9', border: 'rgba(34,211,238,0.30)' },   // 青
-  { bg: 'rgba(74,222,128,0.14)',  fg: '#86efac', border: 'rgba(74,222,128,0.30)' },   // 绿
-  { bg: 'rgba(251,191,36,0.14)',  fg: '#fde047', border: 'rgba(251,191,36,0.30)' },   // 黄
-  { bg: 'rgba(96,165,250,0.14)',  fg: '#93c5fd', border: 'rgba(96,165,250,0.30)' },   // 蓝
-  { bg: 'rgba(251,113,133,0.14)', fg: '#fda4af', border: 'rgba(251,113,133,0.30)' },  // 红
-  { bg: 'rgba(45,212,191,0.14)',  fg: '#5eead4', border: 'rgba(45,212,191,0.30)' },   // 薄荷
+  { bg: 'rgb(var(--palette-purple-bg) / 0.14)', fg: 'rgb(var(--palette-purple-fg))', border: 'rgb(var(--palette-purple-bg) / 0.30)' },   // 紫
+  { bg: 'rgb(var(--palette-pink-bg) / 0.14)',   fg: 'rgb(var(--palette-pink-fg))',   border: 'rgb(var(--palette-pink-bg) / 0.30)' },    // 粉
+  { bg: 'rgb(var(--palette-cyan-bg) / 0.14)',   fg: 'rgb(var(--palette-cyan-fg))',   border: 'rgb(var(--palette-cyan-bg) / 0.30)' },    // 青
+  { bg: 'rgb(var(--palette-green-bg) / 0.14)',  fg: 'rgb(var(--palette-green-fg))',  border: 'rgb(var(--palette-green-bg) / 0.30)' },   // 绿
+  { bg: 'rgb(var(--palette-yellow-bg) / 0.14)', fg: 'rgb(var(--palette-yellow-fg))', border: 'rgb(var(--palette-yellow-bg) / 0.30)' },  // 黄
+  { bg: 'rgb(var(--palette-blue-bg) / 0.14)',   fg: 'rgb(var(--palette-blue-fg))',   border: 'rgb(var(--palette-blue-bg) / 0.30)' },    // 蓝
+  { bg: 'rgb(var(--palette-rose-bg) / 0.14)',   fg: 'rgb(var(--palette-rose-fg))',   border: 'rgb(var(--palette-rose-bg) / 0.30)' },    // 红
+  { bg: 'rgb(var(--palette-mint-bg) / 0.14)',   fg: 'rgb(var(--palette-mint-fg))',   border: 'rgb(var(--palette-mint-bg) / 0.30)' },    // 薄荷
 ];
 
 function charColor(name: string): typeof CHARACTER_COLORS[number] {
@@ -923,9 +923,9 @@ function ChaptersTab({
                   <span
                     className="text-[11px] font-mono tabular-nums shrink-0 rounded-lg px-2 py-1 border"
                     style={{
-                      background: playing ? 'rgba(139,92,246,0.15)' : 'rgba(255,255,255,0.04)',
-                      color: playing ? '#c4b5fd' : 'rgba(255,255,255,0.5)',
-                      borderColor: playing ? 'rgba(139,92,246,0.3)' : 'rgba(255,255,255,0.05)',
+                      background: playing ? 'rgba(139,92,246,0.15)' : 'rgb(var(--color-white) / 0.04)',
+                      color: playing ? '#c4b5fd' : 'rgb(var(--color-white) / 0.5)',
+                      borderColor: playing ? 'rgba(139,92,246,0.3)' : 'rgb(var(--color-white) / 0.05)',
                     }}
                   >
                     #{String(c.idx + 1).padStart(3, '0')}
@@ -1167,7 +1167,7 @@ function VoicesTab({
                 onChange={e => setSpeed(parseFloat(e.target.value))}
                 className="w-full h-2 rounded-full appearance-none cursor-pointer"
                 style={{
-                  background: `linear-gradient(90deg, #8b5cf6 0%, #8b5cf6 ${((speed - 0.5) / 1.5) * 100}%, rgba(255,255,255,0.08) ${((speed - 0.5) / 1.5) * 100}%, rgba(255,255,255,0.08) 100%)`,
+                  background: `linear-gradient(90deg, #8b5cf6 0%, #8b5cf6 ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
                 }}
               />
             </div>
@@ -1230,7 +1230,7 @@ function VoicesTab({
                         className="w-10 h-10 rounded-md grid place-items-center shrink-0 text-white font-bold"
                         style={{
                           background: `linear-gradient(135deg, ${genderColor}, ${genderColor}aa)`,
-                          boxShadow: `0 0 0 1px rgba(255,255,255,0.12) inset, 0 6px 12px -6px ${genderColor}66`,
+                          boxShadow: `0 0 0 1px rgb(var(--color-white) / 0.12) inset, 0 6px 12px -6px ${genderColor}66`,
                         }}
                       >
                         {c.name?.trim()?.[0] || '?'}
@@ -1479,7 +1479,7 @@ function BuildRow({
           <span className="chip"
             style={{
               background: 'linear-gradient(135deg, rgba(245,158,11,0.22), rgba(251,191,36,0.12))',
-              color: '#fde68a',
+              color: 'rgb(var(--status-partial-fg))',
               border: '1px solid rgba(245,158,11,0.3)',
             }}
           >
@@ -1619,9 +1619,9 @@ function BuildDetailContent({
                 <span
                   className="text-[11px] font-mono tabular-nums shrink-0 rounded-lg px-2 py-1"
                   style={{
-                    background: 'rgba(255,255,255,0.04)',
-                    color: playing ? '#c4b5fd' : 'rgba(255,255,255,0.45)',
-                    border: '1px solid rgba(255,255,255,0.05)',
+                    background: 'rgb(var(--color-white) / 0.04)',
+                    color: playing ? '#c4b5fd' : 'rgb(var(--color-white) / 0.45)',
+                    border: '1px solid rgb(var(--color-white) / 0.05)',
                   }}
                 >
                   #{String(a.chapter_idx + 1).padStart(3, '0')}
@@ -1795,7 +1795,7 @@ function CreateBuildModal({
                   onChange={e => setSpeed(parseFloat(e.target.value))}
                   className="w-full h-2 rounded-full appearance-none cursor-pointer"
                   style={{
-                    background: `linear-gradient(90deg, #8b5cf6 0%, #8b5cf6 ${((speed - 0.5) / 1.5) * 100}%, rgba(255,255,255,0.08) ${((speed - 0.5) / 1.5) * 100}%, rgba(255,255,255,0.08) 100%)`,
+                    background: `linear-gradient(90deg, #8b5cf6 0%, #8b5cf6 ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
                   }}
                 />
               </div>
@@ -2036,7 +2036,7 @@ function SettingsTab({
                 onChange={e => setSpeed(parseFloat(e.target.value))}
                 className="w-full h-2 rounded-full appearance-none cursor-pointer"
                 style={{
-                  background: `linear-gradient(90deg, #8b5cf6 0%, #8b5cf6 ${((speed - 0.5) / 1.5) * 100}%, rgba(255,255,255,0.08) ${((speed - 0.5) / 1.5) * 100}%, rgba(255,255,255,0.08) 100%)`,
+                  background: `linear-gradient(90deg, #8b5cf6 0%, #8b5cf6 ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
                 }}
               />
             </div>

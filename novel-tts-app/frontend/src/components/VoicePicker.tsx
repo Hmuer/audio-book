@@ -36,7 +36,7 @@ function Avatar({ voice, size = 32 }: { voice: Voice; size?: number }) {
         height: size,
         fontSize: Math.floor(size * 0.42),
         background: `linear-gradient(135deg, ${bg} 0%, ${bg}bb 100%)`,
-        boxShadow: `0 0 0 1px rgba(255,255,255,0.12) inset, 0 4px 10px -4px ${bg}77`,
+        boxShadow: `0 0 0 1px rgb(var(--color-white) / 0.12) inset, 0 4px 10px -4px ${bg}77`,
       }}
     >
       {initial}

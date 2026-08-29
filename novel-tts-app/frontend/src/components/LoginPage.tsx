@@ -98,7 +98,7 @@ export default function LoginPage() {
           className="absolute inset-0"
           style={{
             background:
-              'linear-gradient(145deg, #0f0f12 0%, #13111c 40%, #1a1428 100%)',
+              'linear-gradient(145deg, rgb(var(--ink-0)) 0%, rgb(var(--ink-50)) 40%, rgb(var(--ink-100)) 100%)',
           }}
         />
         <div className="absolute inset-0 login-grid-bg" />
@@ -314,7 +314,7 @@ export default function LoginPage() {
                   style={{
                     borderColor: 'rgba(251,113,133,0.28)',
                     background: 'rgba(251,113,133,0.08)',
-                    color: '#fecdd3',
+                    color: 'rgb(var(--status-error-fg))',
                     borderWidth: 1,
                     borderStyle: 'solid',
                   }}
