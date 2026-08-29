@@ -193,7 +193,7 @@ export default function ProjectDetailPage({
       <audio ref={audioRef} className="hidden" />
 
       {err && (
-        <div className="rounded-2xl border border-red-500/40 bg-red-500/10 backdrop-blur px-4 py-3 text-sm text-red-200 flex items-center gap-3 mb-5">
+        <div className="rounded-lg border border-red-500/40 bg-red-500/10 backdrop-blur px-4 py-3 text-sm text-red-200 flex items-center gap-3 mb-5">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12" y2="16"/></svg>
           <span className="flex-1 min-w-0">{err}</span>
           <button className="btn-ghost !py-1 !px-2.5 text-xs" onClick={reload}>重试</button>
@@ -251,7 +251,7 @@ export default function ProjectDetailPage({
                 <button
                   key={t.key}
                   onClick={() => setTab(t.key)}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200
+                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition-all duration-200
                     ${active
                       ? 'text-white shadow-brand'
                       : 'text-ink-600 hover:text-ink-800 hover:bg-white/[0.04]'
@@ -494,7 +494,7 @@ function OverviewTab({
   return (
     <div className="space-y-4">
       {prepareTip && (
-        <div className="rounded-2xl border border-blue-500/40 bg-blue-500/10 backdrop-blur px-4 py-3 text-sm text-blue-200 flex items-center gap-2">
+        <div className="rounded-lg border border-blue-500/40 bg-blue-500/10 backdrop-blur px-4 py-3 text-sm text-blue-200 flex items-center gap-2">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="m9 12 2 2 4-4"/></svg>
           {prepareTip}
         </div>
@@ -507,7 +507,7 @@ function OverviewTab({
           onDragLeave={() => setDragOver(false)}
           onDrop={handleDrop}
           onClick={() => !uploadBusy && fileInputRef.current?.click()}
-          className={`rounded-2xl border-2 border-dashed transition-all text-center py-10 px-4 cursor-pointer ${
+          className={`rounded-lg border-2 border-dashed transition-all text-center py-10 px-4 cursor-pointer ${
             dragOver
               ? 'border-brand-400 bg-brand-500/10'
               : 'border-white/10 hover:border-white/20 hover:bg-white/[0.02]'
@@ -545,7 +545,7 @@ function OverviewTab({
         <div className="glass-panel border-red-500/40 !bg-red-500/5 space-y-3">
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div className="min-w-0 flex items-start gap-2">
-              <div className="w-9 h-9 rounded-xl grid place-items-center bg-red-500/20 text-red-300 shrink-0">
+              <div className="w-9 h-9 rounded-md grid place-items-center bg-red-500/20 text-red-300 shrink-0">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
               </div>
               <div className="min-w-0">
@@ -584,7 +584,7 @@ function OverviewTab({
           <div className="glow-orb w-48 h-48 bg-brand-500/10" style={{ top: '-30px', right: '-20px' }} />
           <div className="flex items-center justify-between gap-3 flex-wrap relative">
             <div className="flex items-center gap-3 min-w-0">
-              <div className="w-10 h-10 rounded-xl grid place-items-center shrink-0 shadow-brand"
+              <div className="w-10 h-10 rounded-md grid place-items-center shrink-0 shadow-brand"
                 style={{ backgroundImage: 'linear-gradient(135deg, #8b5cf6, #7c3aed)' }}>
                 <span className="w-4 h-4 border-[2.5px] border-white/40 border-t-white rounded-full animate-spin" />
               </div>
@@ -650,7 +650,7 @@ function OverviewTab({
           </div>
 
           {hasPartialFailures && !hasPrepareError && (
-            <div className="rounded-2xl border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-200">
+            <div className="rounded-lg border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-200">
               ⚠️ 部分切片/批失败，将在重跑识别时自动补跑：
               {failedCharSlicesN > 0 && <span className="ml-2">角色切片失败 {failedCharSlicesN} 个</span>}
               {failedCharSlicesN > 0 && failedDialogueBatchesN > 0 && '，'}
@@ -666,7 +666,7 @@ function OverviewTab({
           <div className="glow-orb w-48 h-48 bg-brand-500/20" style={{ bottom: '-40px', right: '-30px' }} />
           <div className="flex items-center justify-between gap-3 flex-wrap relative">
             <div className="flex items-start gap-3 min-w-0 flex-1">
-              <div className="w-10 h-10 rounded-xl grid place-items-center bg-brand-500/20 text-brand-300 shrink-0">
+              <div className="w-10 h-10 rounded-md grid place-items-center bg-brand-500/20 text-brand-300 shrink-0">
                 🚀
               </div>
               <div className="min-w-0">
@@ -762,7 +762,7 @@ function OverviewTab({
             className="glass-panel text-left !p-4 flex items-start gap-3 hover:!border-brand-500/40 transition-all group"
           >
             <div
-              className="w-10 h-10 rounded-xl grid place-items-center shrink-0 transition-all group-hover:scale-105"
+              className="w-10 h-10 rounded-md grid place-items-center shrink-0 transition-all group-hover:scale-105"
               style={{
                 background: `linear-gradient(135deg, ${it.color}33 0%, ${it.color}11 100%)`,
                 border: `1px solid ${it.color}55`,
@@ -970,7 +970,7 @@ function ChaptersTab({
   if (chapters.length === 0) {
     return (
       <div className="glass-panel text-center py-16 text-ink-500">
-        <div className="mx-auto mb-3 w-14 h-14 rounded-2xl grid place-items-center bg-white/[0.04] border border-white/[0.07] text-3xl">📭</div>
+        <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-white/[0.04] border border-white/[0.07] text-3xl">📭</div>
         <div className="text-sm font-medium text-ink-700">还没有章节</div>
         <div className="text-xs text-ink-500 mt-1">请先到「概览」触发识别</div>
       </div>
@@ -1000,7 +1000,7 @@ function ChaptersTab({
               ? api.buildChapterAudioUrl(project.project_id, lastBuild!.build_id, c.idx)
               : null;
             return (
-              <div key={c.idx} className="rounded-2xl border bg-white/[0.02] border-white/[0.04] overflow-hidden transition-all duration-200">
+              <div key={c.idx} className="rounded-lg border bg-white/[0.02] border-white/[0.04] overflow-hidden transition-all duration-200">
                 {/* 章首行（始终可见） */}
                 <button
                   onClick={() => onExpand(c.idx)}
@@ -1206,7 +1206,7 @@ function VoicesTab({
       <div className="glass-panel space-y-5 p-5 sm:p-6 relative overflow-hidden">
         <div className="glow-orb w-56 h-56 bg-brand-500/10" style={{ top: '-40px', right: '-40px' }} />
         <h3 className="font-semibold text-ink-800 flex items-center gap-2 relative">
-          <div className="w-8 h-8 rounded-xl grid place-items-center bg-brand-500/20 text-brand-300">🎙</div>
+          <div className="w-8 h-8 rounded-md grid place-items-center bg-brand-500/20 text-brand-300">🎙</div>
           <div>
             <div>旁白音色 & 语速 <span className="text-xs text-ink-500 font-normal">（项目默认）</span></div>
           </div>
@@ -1286,13 +1286,13 @@ function VoicesTab({
 
       <div className="glass-panel space-y-4">
         <h3 className="font-semibold text-ink-800 flex items-center gap-2">
-          <div className="w-8 h-8 rounded-xl grid place-items-center bg-accent-rose/20 text-accent-rose">🧑‍🤝‍🧑</div>
+          <div className="w-8 h-8 rounded-md grid place-items-center bg-accent-rose/20 text-accent-rose">🧑‍🤝‍🧑</div>
           角色音色
           <span className="chip-soft">{chars.length} 个角色</span>
         </h3>
         {chars.length === 0 ? (
-          <div className="rounded-3xl border border-dashed border-white/[0.1] p-10 text-center">
-            <div className="mx-auto mb-3 w-14 h-14 rounded-2xl grid place-items-center bg-white/[0.04] border border-white/[0.07] text-3xl">🎭</div>
+          <div className="rounded-lg border border-dashed border-white/[0.1] p-10 text-center">
+            <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-white/[0.04] border border-white/[0.07] text-3xl">🎭</div>
             <div className="text-sm font-medium text-ink-700">还没有识别到角色</div>
             <div className="text-xs text-ink-500 mt-1">请先到「概览」触发识别，或直接导入章节系统会自动识别角色</div>
           </div>
@@ -1307,13 +1307,13 @@ function VoicesTab({
               return (
                 <div
                   key={c.id}
-                  className="rounded-2xl border border-white/[0.06] bg-white/[0.025] p-4 space-y-3
+                  className="rounded-lg border border-white/[0.06] bg-white/[0.025] p-4 space-y-3
                     hover:border-brand-500/30 hover:bg-white/[0.05] transition-all animate-fade-in group"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-start gap-3 min-w-0">
                       <div
-                        className="w-10 h-10 rounded-xl grid place-items-center shrink-0 text-white font-bold"
+                        className="w-10 h-10 rounded-md grid place-items-center shrink-0 text-white font-bold"
                         style={{
                           background: `linear-gradient(135deg, ${genderColor}, ${genderColor}aa)`,
                           boxShadow: `0 0 0 1px rgba(255,255,255,0.12) inset, 0 6px 12px -6px ${genderColor}66`,
@@ -1404,7 +1404,7 @@ function BuildsTab({
       <div className="glass-panel flex items-center justify-between gap-3 flex-wrap p-5 sm:p-6 relative overflow-hidden">
         <div className="glow-orb w-56 h-56 bg-brand-500/10" style={{ bottom: '-50px', right: '-40px' }} />
         <div className="flex items-start gap-3 min-w-0">
-          <div className="w-10 h-10 rounded-xl grid place-items-center shrink-0 shadow-brand"
+          <div className="w-10 h-10 rounded-md grid place-items-center shrink-0 shadow-brand"
             style={{ backgroundImage: 'linear-gradient(135deg, #8b5cf6, #7c3aed)' }}
           >
             🏗
@@ -1430,7 +1430,7 @@ function BuildsTab({
       {builds.length === 0 ? (
         <div className="glass-panel text-center py-16 text-ink-500 relative overflow-hidden">
           <div className="glow-orb w-56 h-56 bg-accent-teal/10" style={{ top: '-30px', left: '50%', transform: 'translateX(-50%)' }} />
-          <div className="mx-auto mb-3 w-14 h-14 rounded-2xl grid place-items-center bg-white/[0.04] border border-white/[0.07] text-3xl relative">
+          <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-white/[0.04] border border-white/[0.07] text-3xl relative">
             🏗
           </div>
           <div className="text-sm font-medium text-ink-700 relative">还没有构建记录</div>
@@ -1545,7 +1545,7 @@ function BuildRow({
       )}
       <div className="flex items-center gap-3 flex-wrap relative">
         <button
-          className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl
+          className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md
             border border-white/[0.07] bg-white/[0.03] text-ink-600
             hover:border-brand-500/30 hover:bg-brand-500/10 hover:text-brand-300
             transition-colors shrink-0"
@@ -1587,7 +1587,7 @@ function BuildRow({
         </span>
         <button
           onClick={() => setConfirmDelete(true)}
-          className="inline-flex items-center justify-center shrink-0 rounded-xl
+          className="inline-flex items-center justify-center shrink-0 rounded-md
             border border-white/[0.06] bg-white/[0.03] text-ink-500
             hover:border-red-500/40 hover:bg-red-500/15 hover:text-red-300
             transition-all duration-150"
@@ -1598,7 +1598,7 @@ function BuildRow({
         </button>
         {!isRunning && (
           <a
-            className="inline-flex items-center justify-center shrink-0 rounded-xl
+            className="inline-flex items-center justify-center shrink-0 rounded-md
               border border-brand-500/25 bg-brand-500/10 text-brand-200
               hover:border-brand-500/50 hover:bg-brand-500/20 hover:text-brand-100
               transition-all duration-150"
@@ -1640,7 +1640,7 @@ function BuildRow({
       )}
 
       {confirmDelete && (
-        <div className="rounded-2xl border border-red-500/40 bg-red-500/10 p-3 flex items-center justify-between gap-3 flex-wrap">
+        <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 flex items-center justify-between gap-3 flex-wrap">
           <span className="text-sm text-red-200">确认删除该构建？删除后所有音频产物不可恢复。</span>
           <div className="flex gap-2">
             <button className="btn-ghost !py-1.5 text-xs" onClick={() => setConfirmDelete(false)}>
@@ -1683,7 +1683,7 @@ function BuildDetailContent({
       </div>
 
       {detail.progress_msg && (
-        <div className="text-xs text-ink-500 rounded-xl bg-white/[0.04] px-3 py-2 border border-white/[0.05]">
+        <div className="text-xs text-ink-500 rounded-md bg-white/[0.04] px-3 py-2 border border-white/[0.05]">
           {detail.progress_msg}
         </div>
       )}
@@ -1695,7 +1695,7 @@ function BuildDetailContent({
           return (
             <div
               key={a.chapter_idx}
-              className={`rounded-2xl p-3 transition-all duration-150 border
+              className={`rounded-lg p-3 transition-all duration-150 border
                 ${playing
                   ? 'bg-brand-500/10 border-brand-500/40'
                   : 'bg-white/[0.02] border-white/[0.04] hover:bg-white/[0.045] hover:border-white/[0.10]'
@@ -1824,7 +1824,7 @@ function CreateBuildModal({
 
         <div className="flex items-center justify-between mb-5 relative">
           <div className="flex items-start gap-3 min-w-0">
-            <div className="w-10 h-10 rounded-xl grid place-items-center shrink-0 shadow-brand"
+            <div className="w-10 h-10 rounded-md grid place-items-center shrink-0 shadow-brand"
               style={{ backgroundImage: 'linear-gradient(135deg, #8b5cf6, #7c3aed)' }}
             >
               ▶
@@ -1906,7 +1906,7 @@ function CreateBuildModal({
                   return (
                     <div
                       key={c.id}
-                      className="rounded-2xl border border-white/[0.06] bg-white/[0.025] p-3 space-y-2 hover:border-white/[0.12] hover:bg-white/[0.05] transition-all"
+                      className="rounded-lg border border-white/[0.06] bg-white/[0.025] p-3 space-y-2 hover:border-white/[0.12] hover:bg-white/[0.05] transition-all"
                     >
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0">
@@ -1947,7 +1947,7 @@ function CreateBuildModal({
         </div>
 
         {err && (
-          <div className="mt-5 rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          <div className="mt-5 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
             {err}
           </div>
         )}
@@ -2048,7 +2048,7 @@ function SettingsTab({
       <div className="glass-panel p-5 sm:p-6 space-y-5 relative overflow-hidden">
         <div className="glow-orb w-56 h-56 bg-accent-teal/10" style={{ bottom: '-50px', right: '-40px' }} />
         <h3 className="font-semibold text-ink-800 flex items-center gap-2 relative">
-          <div className="w-8 h-8 rounded-xl grid place-items-center bg-accent-teal/20 text-accent-teal">
+          <div className="w-8 h-8 rounded-md grid place-items-center bg-accent-teal/20 text-accent-teal">
             ⚙️
           </div>
           项目设置
@@ -2131,7 +2131,7 @@ function SettingsTab({
         </div>
 
         {err && (
-          <div className="rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200 relative">
+          <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200 relative">
             {err}
           </div>
         )}
@@ -2162,7 +2162,7 @@ function SettingsTab({
       <div className="glass-panel !border-red-500/30 !bg-red-500/[0.04] space-y-3 relative overflow-hidden">
         <div className="glow-orb w-48 h-48 bg-red-500/10" style={{ bottom: '-40px', right: '-30px' }} />
         <h3 className="font-semibold text-red-300 flex items-center gap-2 relative">
-          <span className="inline-flex w-7 h-7 rounded-xl items-center justify-center bg-red-500/20 text-red-300">⚠️</span>
+          <span className="inline-flex w-7 h-7 rounded-md items-center justify-center bg-red-500/20 text-red-300">⚠️</span>
           危险区
         </h3>
         <p className="text-sm text-ink-500 relative">
@@ -2176,7 +2176,7 @@ function SettingsTab({
             🗑 删除该项目
           </button>
         ) : (
-          <div className="rounded-2xl border border-red-500/40 bg-red-500/10 p-3 space-y-3 relative">
+          <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 space-y-3 relative">
             <div className="text-sm text-red-200">
               确认要删除项目「{project.book_title || project.name}」吗？
             </div>

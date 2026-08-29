@@ -60,7 +60,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm p-4" onClick={onClose}>
       <div
-        className="bg-zinc-900 border border-white/10 rounded-2xl w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col animate-scale-in"
+        className="bg-zinc-900 border border-white/10 rounded-lg w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col animate-scale-in"
         onClick={e => e.stopPropagation()}
       >
         {/* 头部 */}
@@ -117,7 +117,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                 onDragLeave={() => setDragOver(false)}
                 onDrop={handleDrop}
                 onClick={() => fileInputRef.current?.click()}
-                className={`cursor-pointer rounded-xl border-2 border-dashed transition-all text-center py-10 px-4 ${
+                className={`cursor-pointer rounded-md border-2 border-dashed transition-all text-center py-10 px-4 ${
                   dragOver
                     ? 'border-brand-400 bg-brand-500/10'
                     : 'border-white/10 hover:border-white/20 hover:bg-white/[0.02]'

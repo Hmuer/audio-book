@@ -320,7 +320,7 @@ export default function SettingsPage() {
       {/* 提示信息 */}
       {savedMsg && (
         <div
-          className={`rounded-xl px-4 py-3 text-sm flex items-center gap-2 whitespace-pre-wrap ${
+          className={`rounded-md px-4 py-3 text-sm flex items-center gap-2 whitespace-pre-wrap ${
             savedMsg.ok
               ? 'border border-lime-500/30 bg-lime-500/10 text-lime-200'
               : 'border border-rose-500/30 bg-rose-500/10 text-rose-200'
@@ -332,14 +332,14 @@ export default function SettingsPage() {
       )}
 
       {err && (
-        <div className="rounded-xl px-4 py-3 text-sm border border-rose-500/30 bg-rose-500/10 text-rose-200">
+        <div className="rounded-md px-4 py-3 text-sm border border-rose-500/30 bg-rose-500/10 text-rose-200">
           {err}
         </div>
       )}
 
       {/* 加载中 */}
       {loading && (
-        <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] text-center py-16">
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] text-center py-16">
           <div className="mx-auto w-9 h-9 rounded-full border-2 border-brand-500/30 border-t-brand-500 animate-spin mb-4" />
           <div className="text-sm text-white/50">加载配置…</div>
         </div>
@@ -353,7 +353,7 @@ export default function SettingsPage() {
             if (!groupItems || groupItems.length === 0) return null;
             const meta = GROUP_META[group] ?? { icon: '📦', desc: '' };
             return (
-              <div key={group} className="rounded-2xl border border-white/[0.06] bg-white/[0.02] overflow-hidden">
+              <div key={group} className="rounded-lg border border-white/[0.06] bg-white/[0.02] overflow-hidden">
                 {/* 分组头 */}
                 <div className="px-5 py-3.5 border-b border-white/[0.06] flex items-center gap-2.5">
                   <span className="text-lg">{meta.icon}</span>

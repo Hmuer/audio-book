@@ -208,7 +208,7 @@ export default function WaveformPlayer({
   return (
     <div
       ref={containerRef}
-      className={`group relative w-full rounded-2xl
+      className={`group relative w-full rounded-lg
         border border-white/[0.06] bg-white/[0.025] backdrop-blur-sm
         hover:border-white/[0.12] hover:bg-white/[0.04]
         transition-all duration-200 ${compact ? 'px-4 py-3' : 'px-5 py-4'}
@@ -273,7 +273,7 @@ export default function WaveformPlayer({
               type="button"
               onClick={toggleMute}
               disabled={disabled}
-              className="shrink-0 grid place-items-center rounded-[10px]
+              className="shrink-0 grid place-items-center rounded-md
                 w-8 h-8
                 text-white/60 hover:text-white/90
                 hover:bg-white/[0.05] border border-white/[0.05] hover:border-white/[0.1]
@@ -285,7 +285,7 @@ export default function WaveformPlayer({
             {/* 悬停展开的音量滑条 */}
             <div className="
               hidden group-hover/vol:flex items-center gap-2 px-2
-              ml-1 h-8 rounded-[10px] border border-white/[0.06] bg-white/[0.04]
+              ml-1 h-8 rounded-md border border-white/[0.06] bg-white/[0.04]
             ">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-white/35">
                 <circle cx="11" cy="11" r="8"/>
@@ -323,7 +323,7 @@ export default function WaveformPlayer({
               onClick={() => setShowSpeedMenu(v => !v)}
               onBlur={() => setTimeout(() => setShowSpeedMenu(false), 120)}
               className="shrink-0 inline-flex items-center justify-center gap-1
-                h-8 px-2.5 rounded-[10px] border border-white/[0.06] bg-white/[0.03]
+                h-8 px-2.5 rounded-md border border-white/[0.06] bg-white/[0.03]
                 text-white/70 hover:text-white/95 hover:bg-white/[0.06] hover:border-white/[0.12]
                 transition-all font-medium text-[11.5px]"
               title="倍速"
@@ -335,7 +335,7 @@ export default function WaveformPlayer({
             </button>
             {showSpeedMenu && (
               <div className="absolute bottom-9 right-0 z-30
-                rounded-xl border border-white/[0.10] bg-[#12101d]/95 backdrop-blur-md
+                rounded-md border border-white/[0.10] bg-[#12101d]/95 backdrop-blur-md
                 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.7)] p-1.5 w-24 animate-fade-in">
                 {SPEEDS.map(s => (
                   <button
@@ -365,7 +365,7 @@ export default function WaveformPlayer({
             <button
               type="button"
               onClick={onDownload}
-              className="shrink-0 grid place-items-center rounded-[10px]
+              className="shrink-0 grid place-items-center rounded-md
                 w-8 h-8
                 text-white/60 hover:text-brand-300
                 hover:bg-brand-500/10 border border-white/[0.05] hover:border-brand-500/30

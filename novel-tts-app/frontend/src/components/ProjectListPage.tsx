@@ -195,7 +195,7 @@ export function RunningTasksBar({ items }: { items: ProjectListItem[] }) {
   if (synthesizing.length) summary.push(`🔊 ${synthesizing.length} 个合成任务进行中`);
   return (
     <div
-      className="sticky top-2 z-30 rounded-2xl backdrop-blur-xl px-5 py-4 mb-5 animate-fade-in"
+      className="sticky top-2 z-30 rounded-lg backdrop-blur-xl px-5 py-4 mb-5 animate-fade-in"
       style={{
         border: '1px solid rgba(139,92,246,0.22)',
         background:
@@ -331,7 +331,7 @@ export default function ProjectListPage() {
       </div>
 
       {err && (
-        <div className="rounded-xl px-4 py-3 text-sm"
+        <div className="rounded-md px-4 py-3 text-sm"
           style={{
             border: '1px solid rgba(251,113,133,0.28)',
             background: 'rgba(251,113,133,0.06)',
@@ -342,7 +342,7 @@ export default function ProjectListPage() {
 
       {/* 加载中 */}
       {loading && (
-        <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] text-center py-16">
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] text-center py-16">
           <div className="mx-auto w-9 h-9 rounded-full border-2 border-brand-500/30 border-t-brand-500 animate-spin mb-4" />
           <div className="text-sm text-white/50">加载项目列表…</div>
         </div>
@@ -350,9 +350,9 @@ export default function ProjectListPage() {
 
       {/* 空状态 */}
       {!loading && items && items.length === 0 && (
-        <div className="relative rounded-2xl border border-white/[0.06] bg-white/[0.02] text-center py-20 overflow-hidden">
+        <div className="relative rounded-lg border border-white/[0.06] bg-white/[0.02] text-center py-20 overflow-hidden">
           <div className="glow-orb w-[320px] h-[320px] bg-brand-500/15" style={{ left: '50%', top: '-80px', transform: 'translateX(-50%)' }} />
-          <div className="relative mx-auto w-20 h-20 rounded-3xl grid place-items-center mb-6"
+          <div className="relative mx-auto w-20 h-20 rounded-lg grid place-items-center mb-6"
             style={{
               background: 'linear-gradient(135deg, rgba(139,92,246,0.18), rgba(45,212,191,0.10))',
               border: '1px solid rgba(255,255,255,0.08)',
@@ -379,7 +379,7 @@ export default function ProjectListPage() {
 
       {/* 表格视图 */}
       {!loading && items && items.length > 0 && (
-        <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] overflow-hidden">
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] overflow-hidden">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-[11px] text-white/40 uppercase tracking-wider border-b border-white/[0.06]">
@@ -516,10 +516,10 @@ export default function ProjectListPage() {
           onClick={() => setConfirmDeleteId(null)}
         >
           <div
-            className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-sm mx-4 text-center animate-scale-in"
+            className="bg-zinc-900 border border-white/10 rounded-lg p-6 w-full max-w-sm mx-4 text-center animate-scale-in"
             onClick={e => e.stopPropagation()}
           >
-            <div className="mx-auto w-11 h-11 rounded-2xl grid place-items-center mb-3"
+            <div className="mx-auto w-11 h-11 rounded-lg grid place-items-center mb-3"
               style={{ background: 'rgba(251,113,133,0.12)' }}>
               <span className="text-xl">⚠️</span>
             </div>

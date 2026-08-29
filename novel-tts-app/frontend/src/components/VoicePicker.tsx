@@ -125,7 +125,7 @@ export default function VoicePicker({
           ref={btnRef}
           onClick={() => setOpen(v => !v)}
           className={`group relative flex items-center gap-3 ${compact ? 'flex-1' : 'w-full'}
-            rounded-2xl border border-white/[0.07] bg-white/[0.035]
+            rounded-lg border border-white/[0.07] bg-white/[0.035]
             px-3 py-2.5 text-left
             hover:border-white/[0.14] hover:bg-white/[0.055]
             focus:outline-none focus:ring-2 focus:ring-brand-500/40
@@ -170,7 +170,7 @@ export default function VoicePicker({
           onClick={() => selected && onPreview(selected.id)}
           disabled={!selected || isLoading}
           title={isPlaying ? '停止播放' : '试听'}
-          className={`relative shrink-0 grid place-items-center rounded-[12px]
+          className={`relative shrink-0 grid place-items-center rounded-md
             border transition-all duration-200
             ${isPlaying
               ? 'border-brand-500/50 bg-brand-500/15 text-brand-300 ring-2 ring-brand-500/25'
@@ -204,7 +204,7 @@ export default function VoicePicker({
             width: `${Math.max(coords.width, 360)}px`,
             zIndex: 9999,
           }}
-          className="glass-panel !rounded-3xl p-3 shadow-el-xl animate-scale-in"
+          className="glass-panel !rounded-lg p-3 shadow-el-xl animate-scale-in"
         >
           {/* 搜索框 */}
           <div className="relative mb-3">
@@ -250,7 +250,7 @@ export default function VoicePicker({
                             onChange(v.id);
                             setOpen(false);
                           }}
-                          className={`group relative text-left rounded-2xl px-2.5 py-2 border transition-all duration-150
+                          className={`group relative text-left rounded-lg px-2.5 py-2 border transition-all duration-150
                             flex items-center gap-3 w-full
                             ${active
                               ? 'bg-brand-500/12 border-brand-500/40'

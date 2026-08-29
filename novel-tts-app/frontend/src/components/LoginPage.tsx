@@ -115,9 +115,9 @@ export default function LoginPage() {
         <div className="relative z-10 animate-float-in" style={{ animationDelay: '0.1s' }}>
           <div className="flex items-center gap-3">
             <div className="relative">
-              <div className="absolute inset-0 rounded-2xl bg-brand-500/40 blur-lg" />
+              <div className="absolute inset-0 rounded-lg bg-brand-500/40 blur-lg" />
               <div
-                className="relative w-12 h-12 rounded-2xl grid place-items-center shadow-el-lg"
+                className="relative w-12 h-12 rounded-lg grid place-items-center shadow-el-lg"
                 style={{
                   backgroundImage:
                     'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 55%, #6366f1 100%)',
@@ -177,7 +177,7 @@ export default function LoginPage() {
           {FEATURES.map((f, i) => (
             <div key={i} className="flex items-center gap-3">
               <div
-                className="w-10 h-10 rounded-xl grid place-items-center shrink-0"
+                className="w-10 h-10 rounded-md grid place-items-center shrink-0"
                 style={{
                   background: 'rgba(139,92,246,0.10)',
                   border: '1px solid rgba(139,92,246,0.18)',
@@ -208,7 +208,7 @@ export default function LoginPage() {
           <div className="lg:hidden mb-8 text-center animate-float-in">
             <div className="inline-flex items-center gap-2.5">
               <div
-                className="w-10 h-10 rounded-xl grid place-items-center shadow-el-lg"
+                className="w-10 h-10 rounded-md grid place-items-center shadow-el-lg"
                 style={{
                   backgroundImage:
                     'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
@@ -310,7 +310,7 @@ export default function LoginPage() {
               {/* 错误提示 */}
               {err && (
                 <div
-                  className="text-sm rounded-xl px-3.5 py-2.5 flex items-start gap-2"
+                  className="text-sm rounded-md px-3.5 py-2.5 flex items-start gap-2"
                   style={{
                     borderColor: 'rgba(251,113,133,0.28)',
                     background: 'rgba(251,113,133,0.08)',

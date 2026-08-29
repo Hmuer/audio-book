@@ -126,7 +126,7 @@ export default function AppSidebar({ currentPath }: Props) {
           <div className="relative">
             <button
               onClick={() => setUserMenuOpen((o) => !o)}
-              className="w-full flex items-center gap-3 px-2.5 py-2 rounded-xl
+              className="w-full flex items-center gap-3 px-2.5 py-2
                 hover:bg-white/[0.04] transition-all group"
             >
               <Avatar username={user.username} />
@@ -153,8 +153,9 @@ export default function AppSidebar({ currentPath }: Props) {
             {userMenuOpen && (
               <div
                 className="absolute left-0 right-0 bottom-[calc(100%+6px)] z-40
-                  rounded-2xl border border-white/[0.09] bg-[#14121f]/98 backdrop-blur-md
-                  shadow-[0_16px_48px_-12px_rgba(0,0,0,0.75)] p-1.5 animate-fade-in"
+                  border border-white/[0.09] bg-[#14121f]/98 backdrop-blur-md
+                  shadow-[0_16px_48px_-12px_rgba(0,0,0,0.75)] p-1.5 w-auto animate-fade-in"
+                style={{ borderRadius: 'var(--radius-md)' }}
               >
                 <MenuItemButton
                   label="修改密码"
@@ -209,12 +210,12 @@ function ModuleNav({
         href={m.disabled ? undefined : (m.href || '#')}
         onClick={m.disabled ? (e) => e.preventDefault() : undefined}
         className={[
-          'group relative flex items-center gap-2.5 px-3 h-[38px] rounded-[11px] text-[14px] font-medium transition-all',
-          m.disabled
-            ? 'text-white/28 cursor-not-allowed'
-            : moduleActive
-              ? 'text-white'
-              : 'text-white/68 hover:text-white hover:bg-white/[0.04]',
+          'group relative flex items-center gap-2.5 px-3 h-[38px] text-[14px] font-medium transition-all',
+        m.disabled
+          ? 'text-white/28 cursor-not-allowed'
+          : moduleActive
+            ? 'text-white'
+            : 'text-white/68 hover:text-white hover:bg-white/[0.04]',
         ].join(' ')}
         style={
           !m.disabled && moduleActive
@@ -246,7 +247,7 @@ function ModuleNav({
 
       {/* 二级菜单项：胶囊式内嵌卡片 */}
       {hasChildren && (
-        <div className="ml-2 px-1.5 py-1.5 rounded-[13px] bg-white/[0.025] border border-white/[0.05] space-y-0.5">
+        <div className="ml-2 px-1.5 py-1.5 bg-white/[0.025] border border-white/[0.05] space-y-0.5" style={{ borderRadius: 'var(--radius-sm)' }}>
           {m.children!.map((c) => {
             const active = pathActive(c.href);
             return (
@@ -254,7 +255,7 @@ function ModuleNav({
                 key={c.key}
                 href={c.href}
                 className={[
-                  'relative flex items-center gap-2 px-2.5 h-[34px] rounded-[9px] text-[13px] transition-all',
+                  'relative flex items-center gap-2 px-2.5 h-[34px] text-[13px] transition-all',
                   active
                     ? 'text-white'
                     : 'text-white/58 hover:text-white hover:bg-white/[0.04]',
@@ -299,7 +300,7 @@ function TopLevelLink({ item, active }: { item: MenuItem; active: boolean }) {
     <a
       href={item.href}
       className={[
-        'group relative flex items-center gap-2.5 px-3 h-[38px] rounded-[11px] text-[14px] font-medium transition-all',
+        'group relative flex items-center gap-2.5 px-3 h-[38px] text-[14px] font-medium transition-all',
         active
           ? 'text-white'
           : 'text-white/68 hover:text-white hover:bg-white/[0.04]',
@@ -331,11 +332,11 @@ function IconCell({
 }: { icon: string; active: boolean; disabled?: boolean }) {
   return (
     <div
-      className={`w-7 h-7 shrink-0 rounded-lg grid place-items-center text-[14px] transition-all
+      className={`w-7 h-7 shrink-0 grid place-items-center text-[14px] transition-all
         ${active ? 'bg-brand-500/25 text-brand-100'
           : disabled ? 'bg-white/[0.02] text-white/35'
           : 'bg-white/[0.03] text-white/80 group-hover:bg-white/[0.05]'}`}
-      style={active ? { boxShadow: 'inset 0 0 0 1px rgba(167,139,250,0.25)' } : undefined}
+      style={{ borderRadius: 'var(--radius-sm)', ...(active ? { boxShadow: 'inset 0 0 0 1px rgba(167,139,250,0.25)' } : {}) }}
     >
       {icon}
     </div>
@@ -359,8 +360,9 @@ function Chevron({
 function ComingSoonBadge() {
   return (
     <span
-      className="text-[9.5px] px-1.5 py-0.5 rounded-md font-medium tracking-wide"
+      className="text-[9.5px] px-1.5 py-0.5 font-medium tracking-wide"
       style={{
+        borderRadius: 'var(--radius-xs)',
         background: 'rgba(255,255,255,0.04)',
         color: 'rgba(255,255,255,0.38)',
         border: '1px solid rgba(255,255,255,0.06)',
@@ -375,8 +377,9 @@ function Avatar({ username }: { username: string }) {
   const initial = (username || 'A').slice(0, 1).toUpperCase();
   return (
     <div
-      className="w-9 h-9 rounded-xl grid place-items-center shrink-0 text-[13px] font-bold text-white"
+      className="w-9 h-9 grid place-items-center shrink-0 text-[13px] font-bold text-white"
       style={{
+        borderRadius: 'var(--radius-sm)',
         backgroundImage:
           'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 45%), linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)',
         boxShadow: '0 0 0 1px rgba(167,139,250,0.35), 0 8px 16px -8px rgba(99,102,241,0.5)',
@@ -390,8 +393,9 @@ function Avatar({ username }: { username: string }) {
 function BrandLogo() {
   return (
     <div
-      className="w-10 h-10 rounded-[13px] grid place-items-center shrink-0 relative"
+      className="w-10 h-10 grid place-items-center shrink-0 relative"
       style={{
+        borderRadius: 'var(--radius-md)',
         backgroundImage:
           'linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #6366f1 60%, #22d3ee 100%)',
         boxShadow: '0 0 0 1px rgba(167,139,250,0.35), 0 12px 24px -10px rgba(139,92,246,0.6)',
@@ -423,12 +427,12 @@ function MenuItemButton({
     <button
       type="button"
       onClick={onClick}
-      className={`w-full flex items-center gap-2.5 px-3 h-10 rounded-xl text-[13.5px] transition-all
+      className={`w-full flex items-center gap-2.5 px-3 h-10 text-[13.5px] transition-all
         ${danger
           ? 'text-rose-200/90 hover:bg-rose-500/10 hover:text-rose-100'
           : 'text-white/80 hover:bg-white/[0.06] hover:text-white'}`}
     >
-      <span className="w-6 h-6 rounded-md grid place-items-center text-[13px] bg-white/[0.04]">{icon}</span>
+      <span className="w-6 h-6 grid place-items-center text-[13px] bg-white/[0.04]" style={{ borderRadius: 'var(--radius-xs)' }}>{icon}</span>
       <span className="flex-1 text-left">{label}</span>
     </button>
   );

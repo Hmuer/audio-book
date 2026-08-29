@@ -6,11 +6,17 @@
 
 :root {
   color-scheme: dark light;
-  --radius-sm: 8px;
-  --radius-md: 10px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
-  --radius-2xl: 24px;
+  /* ---- 阿布设计语言 · Design Tokens ----
+   * 圆角规范（收敛为 4 级 + none）
+   *   --radius-none : 0px    菜单项、导航项
+   *   --radius-xs   : 4px    badge、chip、小标签
+   *   --radius-sm   : 6px    按钮、输入框、图标容器、下拉项
+   *   --radius-md   : 8px    面板、卡片、模态框、弹出框、提示框
+   */
+  --radius-none: 0px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
 }
 
 html {
@@ -49,7 +55,7 @@ html.light body {
   }
 
   .card {
-    @apply relative rounded-3xl p-5 sm:p-6 border border-ink-300/70 bg-ink-100/60 backdrop-blur-xl shadow-el;
+    @apply relative rounded-lg p-5 sm:p-6 border border-ink-300/70 bg-ink-100/60 backdrop-blur-xl shadow-el;
     transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
   }
   .card:hover {
@@ -63,7 +69,8 @@ html.light body {
   }
 
   .surface {
-    @apply rounded-2xl border border-ink-300/60 bg-ink-100/80;
+    @apply border bg-ink-100/60;
+    border-radius: var(--radius-md);
   }
   html.light .surface {
     @apply border-gray-200 bg-white;
@@ -71,7 +78,8 @@ html.light body {
 
   /* 玻璃态面板：阿布自定义风格 —— 悬浮浮岛感 + 极细描边 + 内嵌高光 */
   .glass-panel {
-    @apply relative rounded-3xl overflow-hidden;
+    @apply relative overflow-hidden;
+    border-radius: var(--radius-md);
     background:
       linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.005) 100%),
       rgba(22, 20, 34, 0.55);
@@ -84,6 +92,7 @@ html.light body {
     -webkit-backdrop-filter: blur(22px);
   }
   html.light .glass-panel {
+    border-radius: var(--radius-md);
     background:
       linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0.75) 100%);
     border-color: rgba(15,15,18,0.08);
@@ -110,10 +119,11 @@ html.light body {
 
   /* ------ 按钮（Eleven 克制风） ------ */
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-[10px] px-4 py-2 text-sm font-medium
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium
       transition-all duration-200 select-none
       disabled:opacity-40 disabled:cursor-not-allowed
       active:scale-[0.98];
+    border-radius: var(--radius-sm);
     letter-spacing: -0.005em;
   }
 
@@ -180,9 +190,10 @@ html.light body {
 
   /* ------ 输入框 / 文本框 / 下拉 ------ */
   .input, .textarea, select {
-    @apply w-full rounded-[10px] px-3.5 py-2.5 text-sm outline-none
+    @apply w-full px-3.5 py-2.5 text-sm outline-none
       transition-all duration-150
       placeholder:text-ink-500;
+    border-radius: var(--radius-sm);
     background: rgba(255,255,255,0.02);
     border: 1px solid rgba(255,255,255,0.08);
     color: rgba(255,255,255,0.92);
@@ -219,7 +230,8 @@ html.light body {
 
   /* ------ Chip / Badge ------ */
   .chip {
-    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium;
+    @apply inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium;
+    border-radius: var(--radius-xs);
     letter-spacing: 0.01em;
   }
   .chip-soft {
@@ -388,7 +400,8 @@ html.light body {
 
   /* Tab 切换时的小指示器：pill-shaped */
   .tab-indicator {
-    @apply rounded-xl px-3.5 py-2 text-sm font-medium transition-all duration-200;
+    @apply px-3.5 py-2 text-sm font-medium transition-all duration-200;
+    border-radius: var(--radius-sm);
   }
 
   /* 粗体、标题、品牌强调色字体 */
