@@ -358,6 +358,37 @@ html.light ::-webkit-scrollbar-thumb:hover {
   border: 2px solid transparent;
 }
 
+/* ========== 登录页：声波动画 ========== */
+@keyframes wave-bar {
+  0%, 100% { transform: scaleY(0.25); }
+  50% { transform: scaleY(1); }
+}
+
+.wave-bar {
+  animation: wave-bar 1.2s ease-in-out infinite;
+  transform-origin: bottom center;
+  border-radius: 2px;
+}
+
+/* 登录页背景网格 */
+.login-grid-bg {
+  background-image:
+    linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 30%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 30%, transparent 100%);
+}
+
+/* 渐入上浮（登录页用） */
+@keyframes float-in {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-float-in {
+  animation: float-in 0.5s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
 /* ========== 响应式微调 ========== */
 @media (max-width: 640px) {
   .card { @apply p-4; }
