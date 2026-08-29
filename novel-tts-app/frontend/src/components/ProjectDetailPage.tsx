@@ -252,25 +252,28 @@ export default function ProjectDetailPage({
         </div>
       </div>
 
-      {/* ============ 左侧竖排 Tab + 右侧内容 ============ */}
-      <div className="flex gap-5 items-start">
-        {/* 左侧竖排导航（md 及以上显示） */}
-        <nav className="glass-panel !p-2 shrink-0 w-[148px] sm:w-[168px] sticky top-4 hidden md:block">
-          <div className="space-y-1">
+      {/* ============ 顶部水平 Tab + 下方内容 ============ */}
+      <div className="space-y-5">
+        {/* 水平 Tab 导航条 */}
+        <nav className="glass-panel !p-1.5 overflow-x-auto">
+          <div className="flex items-center gap-1 py-0.5 min-w-0">
             {TAB_LABELS.map(t => {
               const active = tab === t.key;
               return (
                 <button
                   key={t.key}
                   onClick={() => setTab(t.key)}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition-all duration-200
+                  className={`flex items-center gap-2 px-3.5 py-2 text-sm font-medium whitespace-nowrap transition-all duration-200
                     ${active
                       ? 'text-white shadow-brand'
                       : 'text-ink-600 hover:text-ink-800 hover:bg-white/[0.04]'
                     }`}
-                  style={active ? {
-                    backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
-                  } : {}}
+                  style={{
+                    borderRadius: 'var(--radius-sm)',
+                    ...(active ? {
+                      backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+                    } : {}),
+                  }}
                 >
                   <span className={active ? 'text-white/90' : ''}>{t.icon}</span>
                   <span>{t.label}</span>
@@ -280,34 +283,8 @@ export default function ProjectDetailPage({
           </div>
         </nav>
 
-        {/* 小屏 pill-tab fallback */}
-        <div className="md:hidden glass-panel !p-1.5 mb-5 overflow-x-auto">
-          <div className="flex items-center gap-1 py-0.5">
-            {TAB_LABELS.map(t => {
-              const active = tab === t.key;
-              return (
-                <button
-                  key={t.key}
-                  onClick={() => setTab(t.key)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all duration-200
-                    ${active
-                      ? 'text-white shadow-brand'
-                      : 'text-ink-600 hover:text-ink-800 hover:bg-white/[0.04]'
-                    }`}
-                  style={active ? {
-                    backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
-                  } : {}}
-                >
-                  <span className={active ? 'text-white/90' : ''}>{t.icon}</span>
-                  <span>{t.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* 右侧内容区 */}
-        <div className="flex-1 min-w-0 space-y-5">
+        {/* 内容区 */}
+        <div className="min-w-0 space-y-5">
           {tab === 'overview' && (
             <OverviewTab project={project!} onTab={setTab} onReload={reload} />
           )}
