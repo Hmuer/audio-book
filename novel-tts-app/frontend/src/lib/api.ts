@@ -287,6 +287,14 @@ export const api = {
     const base = `/api/projects/${projectId}/builds/${buildId}/chapters/${idx}/download`;
     return tok ? `${base}?token=${encodeURIComponent(tok)}` : base;
   },
+
+  // ---------- 系统设置 ----------
+  settingsGet: () => _fetch<SettingItem[]>('/api/settings'),
+  settingsUpdate: (updates: Record<string, string | number | boolean>) =>
+    _fetch<{ ok: boolean; updated: string[]; skipped: string[]; note: string }>('/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ updates }),
+    }),
 };
 
 // ---------- Project 制类型定义 ----------
@@ -529,4 +537,14 @@ export interface BuildResp {
   project_id: string;
   status: string;
   created_at: string;
+}
+
+// ---------- 系统设置 ----------
+export interface SettingItem {
+  key: string;
+  value: string | number | boolean | null;
+  type: 'str' | 'int' | 'bool';
+  group: string;
+  label: string;
+  readonly: boolean;
 }

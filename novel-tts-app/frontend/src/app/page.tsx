@@ -6,6 +6,7 @@ import { useAuth } from '@/components/AuthContext';
 import AppSidebar from '@/components/AppSidebar';
 import ProjectListPage, { RunningTasksBar } from '@/components/ProjectListPage';
 import ProjectDetailPage from '@/components/ProjectDetailPage';
+import SettingsPage from '@/components/SettingsPage';
 import LoginPage from '@/components/LoginPage';
 import { api, ProjectListItem, Voice } from '@/lib/api';
 
@@ -156,7 +157,7 @@ export default function HomePage() {
           {R.name === 'ab-list' && <ProjectListPage />}
           {R.name === 'ab-detail' && <ProjectDetailPage projectId={R.id} voices={voices} />}
           {R.name === 'ab-voices' && <PlaceholderPage title="音色库" desc="音色库功能即将上线" icon="🎙️" />}
-          {R.name === 'settings' && <PlaceholderPage title="设置" desc="设置功能即将上线" icon="⚙️" />}
+          {R.name === 'settings' && <SettingsPage />}
           {R.name === 'unknown' && (
             <PlaceholderPage title="页面不存在" desc="该路由暂未实现" icon="🤔" actionHref="#/audiobooks" actionLabel="返回有声书列表" />
           )}

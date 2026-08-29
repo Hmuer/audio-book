@@ -1001,3 +1001,146 @@ async def api_retry_failed_build(
             exc_info=True,
         )
         raise HTTPException(500, f"失败章重试失败: {type(e).__name__}: {e}")
+
+
+# =====================================================================
+# 系统设置 GET / PUT
+# =====================================================================
+
+# 可通过 API 修改的字段白名单（不含 JWT_SECRET、DISABLE_AUTH 等安全敏感项）
+_EDITABLE_SETTINGS = {
+    # 模型厂商
+    "TTS_API_KEY": ("str", "模型配置", "TTS API Key"),
+    "TTS_BASE_URL": ("str", "模型配置", "TTS Base URL"),
+    "LLM_API_KEY": ("str", "模型配置", "LLM API Key"),
+    "LLM_BASE_URL": ("str", "模型配置", "LLM Base URL"),
+    "LLM_MODEL_PRO": ("str", "模型配置", "LLM Pro 模型"),
+    "LLM_MODEL_FAST": ("str", "模型配置", "LLM Fast 模型"),
+    # 超时
+    "LLM_TIMEOUT": ("int", "超时配置", "LLM 超时（秒）"),
+    "TTS_TIMEOUT": ("int", "超时配置", "TTS 超时（秒）"),
+    "UVICORN_TIMEOUT": ("int", "超时配置", "Uvicorn 超时（秒）"),
+    "BUILD_RUNNING_TIMEOUT_HOURS": ("int", "超时配置", "Build 运行超时（小时）"),
+    # 限流
+    "LLM_MAX_CONCURRENCY": ("int", "限流配置", "LLM 最大并发"),
+    "LLM_CHAR_EXTRACT_SLICE_SIZE": ("int", "限流配置", "角色识别切片大小（字符）"),
+    "DIALOGUE_BATCH_CHAPTERS": ("int", "限流配置", "对白归属批大小（章/批）"),
+    "DIALOGUE_BATCH_CONCURRENCY": ("int", "限流配置", "对白归属批并发度"),
+    "DIALOGUE_BATCH_RETRY_COUNT": ("int", "限流配置", "对白归属重试次数"),
+    "TTS_MAX_CONCURRENCY": ("int", "限流配置", "TTS 最大并发"),
+    "TTS_RPM_LIMIT": ("int", "限流配置", "TTS RPM 限流"),
+    # 缓存
+    "TTS_SEGMENT_CACHE_MAX_ENTRIES": ("int", "缓存配置", "段缓存 LRU 上限（条）"),
+    "TTS_SEGMENT_CACHE_TTL_DAYS": ("int", "缓存配置", "段缓存过期天数"),
+    "TTS_SEGMENT_CACHE_MAX_SIZE_GB": ("int", "缓存配置", "段缓存最大磁盘占用（GB）"),
+    # 章节切分
+    "CHAPTER_SPLIT_MIN_MATCHES": ("int", "章节切分", "最少匹配章节数"),
+    "CHAPTER_SPLIT_HARD_FALLBACK_ENABLED": ("bool", "章节切分", "硬切兜底开关"),
+    "CHAPTER_SPLIT_HARD_FALLBACK_MAX_CHARS": ("int", "章节切分", "硬切每块字符上限"),
+    # 日志
+    "LOG_LEVEL": ("str", "日志配置", "日志级别"),
+    "LOG_FILE": ("str", "日志配置", "日志文件路径"),
+    # 认证
+    "JWT_EXP_DAYS": ("int", "认证配置", "JWT 过期天数"),
+}
+
+# 只读字段（展示用，不可通过 API 修改）
+_READONLY_SETTINGS = {
+    "ENV": ("str", "系统", "运行环境"),
+    "DISABLE_AUTH": ("bool", "系统", "禁用认证"),
+    "STRICT_PROD_SECURITY": ("bool", "系统", "严格生产安全"),
+    "DATABASE_URL": ("str", "系统", "数据库 URL"),
+    "DATA_DIR": ("str", "系统", "数据目录"),
+    "AUDIO_DIR": ("str", "系统", "音频目录"),
+    "BIND_HOST": ("str", "系统", "监听地址"),
+    "PORT": ("int", "系统", "监听端口"),
+}
+
+
+class SettingsResp(BaseModel):
+    """设置项：key、值、类型、分组、标签、是否只读"""
+    key: str
+    value: str | int | bool | None
+    type: str
+    group: str
+    label: str
+    readonly: bool = False
+
+
+class SettingsUpdateReq(BaseModel):
+    updates: dict[str, str | int | bool] = Field(default_factory=dict)
+
+
+@router.get("/settings", response_model=list[SettingsResp])
+async def get_settings(
+    cred: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
+):
+    """返回所有可配置项的当前值"""
+    payload = decode_token(cred.credentials)
+    if not payload:
+        raise HTTPException(401, "无效凭证")
+
+    result: list[SettingsResp] = []
+    # 可编辑项
+    for key, (typ, group, label) in _EDITABLE_SETTINGS.items():
+        val = getattr(settings, key, None)
+        result.append(SettingsResp(
+            key=key, value=val, type=typ, group=group, label=label, readonly=False,
+        ))
+    # 只读项
+    for key, (typ, group, label) in _READONLY_SETTINGS.items():
+        val = getattr(settings, key, None)
+        # 简化：路径转字符串
+        if hasattr(val, "__fspath__"):
+            val = str(val)
+        result.append(SettingsResp(
+            key=key, value=val, type=typ, group=group, label=label, readonly=True,
+        ))
+    return result
+
+
+@router.put("/settings", response_model=dict)
+async def update_settings(
+    req: SettingsUpdateReq,
+    cred: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
+):
+    """更新运行时配置（内存生效，可选写入 .env 持久化）"""
+    payload = decode_token(cred.credentials)
+    if not payload:
+        raise HTTPException(401, "无效凭证")
+
+    updated: list[str] = []
+    skipped: list[str] = []
+
+    for key, val in req.updates.items():
+        if key not in _EDITABLE_SETTINGS:
+            skipped.append(key)
+            continue
+        typ = _EDITABLE_SETTINGS[key][0]
+        # 类型转换
+        try:
+            if typ == "int":
+                val = int(val)
+            elif typ == "bool":
+                if isinstance(val, str):
+                    val = val.lower() in ("1", "true", "yes", "on")
+                val = bool(val)
+            elif typ == "str":
+                val = str(val)
+        except (ValueError, TypeError):
+            skipped.append(f"{key}(类型转换失败)")
+            continue
+
+        setattr(settings, key, val)
+        updated.append(key)
+
+    logger.info(f"[Settings] 更新配置: {updated}")
+    if skipped:
+        logger.warning(f"[Settings] 跳过: {skipped}")
+
+    return {
+        "ok": True,
+        "updated": updated,
+        "skipped": skipped,
+        "note": "配置已即时生效（内存）。重启后端后恢复 .env 默认值，如需持久化请手动写入 .env 文件。",
+    }
