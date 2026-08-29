@@ -29,6 +29,8 @@ export default function WaveformPlayer({
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(false);
+  const [playError, setPlayError] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [loaded, setLoaded] = useState(false);
@@ -46,6 +48,12 @@ export default function WaveformPlayer({
   const durationRef = useRef(0);              // 避免 useCallback 闭包陈旧
   const wasPlayingBeforeDragRef = useRef(false);
   const trackRef = useRef<HTMLDivElement | null>(null);
+  // 防止连点：play() 返回 promise 之前被快速连点 N 次，会出现 UI 和真实播放状态错位
+  const toggleLockRef = useRef(false);
+  // waiting 超时兜底计时器
+  const waitingTimerRef = useRef<number | null>(null);
+  // 自动播放重试计数（src 切换时归零）
+  const autoplayRetriesRef = useRef(0);
 
   // 同步 durationRef（seek 时只读 ref，避免依赖 state 造成陈旧闭包）
   useEffect(() => {
@@ -73,6 +81,13 @@ export default function WaveformPlayer({
     return () => obs.disconnect();
   }, []);
 
+  const clearWaitingTimer = () => {
+    if (waitingTimerRef.current != null) {
+      window.clearTimeout(waitingTimerRef.current);
+      waitingTimerRef.current = null;
+    }
+  };
+
   const fmtTime = (s: number) => {
     if (!s || !isFinite(s)) return '0:00';
     const h = Math.floor(s / 3600);
@@ -82,15 +97,48 @@ export default function WaveformPlayer({
     return `${m}:${sec.toString().padStart(2, '0')}`;
   };
 
-  // 播放 / 暂停
-  const togglePlay = useCallback(() => {
-    if (!audioRef.current || !src) return;
-    if (isPlaying) {
-      audioRef.current.pause();
-    } else {
-      audioRef.current.play().catch(() => {});
+  // 播放 / 暂停：核心是「只以 Promise resolve + 媒体事件为准」来切换 isPlaying，
+  // 避免连点、异步 race 造成 UI 显示"播放中"但实际播放状态暂停、进度条永不前进。
+  const togglePlay = useCallback(async () => {
+    const audio = audioRef.current;
+    if (!audio || !src) return;
+    if (toggleLockRef.current) return;
+    toggleLockRef.current = true;
+    setPlayError(null);
+    try {
+      const paused = audio.paused || audio.ended || audio.readyState < 2;
+      if (paused) {
+        // 若之前 ended，播放需要从头（否则浏览器保持 ended 不动）
+        if (audio.ended) {
+          try { audio.currentTime = 0; } catch {}
+        }
+        // 如果元数据还没好，主动 load
+        if (audio.readyState === 0) {
+          try { audio.load(); } catch {}
+        }
+        const p = audio.play();
+        // 老浏览器没有返回 Promise
+        if (p && typeof p.then === 'function') {
+          await p;
+          // 成功后以 onPlay 事件为准再 setIsPlaying，这里不提前写
+        }
+      } else {
+        audio.pause();
+        // 暂停是同步的
+      }
+    } catch (err: any) {
+      // play() Promise rejected：自动播放策略 / 网络错误 / 资源失效
+      const msg = err && err.message ? String(err.message) : '播放失败';
+      console.warn('[WaveformPlayer] play 失败：', err);
+      setPlayError(msg);
+      // 强制让 UI 回到暂停（因为 onPlay 不会来）
+      setIsPlaying(false);
+      setIsBuffering(false);
+    } finally {
+      // 给媒体事件一点时间，再放锁，避免毫秒级连点
+      window.setTimeout(() => { toggleLockRef.current = false; }, 120);
     }
-  }, [isPlaying, src]);
+  }, [src]);
 
   // 初始化音量 / 倍速
   useEffect(() => {
@@ -103,12 +151,28 @@ export default function WaveformPlayer({
     audioRef.current.playbackRate = speed;
   }, [speed, inView, src]);
 
-  // 自动播放
+  // ===== 播放端清理与兜底恢复（src 变更 / 组件卸载） =====
   useEffect(() => {
-    if (inView && autoPlay && audioRef.current && !isPlaying && src) {
-      audioRef.current.play().catch(() => {});
-    }
-  }, [inView, autoPlay, isPlaying, src]);
+    autoplayRetriesRef.current = 0;
+  }, [src]);
+
+  useEffect(() => {
+    return () => {
+      clearWaitingTimer();
+    };
+  }, []);
+
+  // 自动播放：以 DOM 真实 paused 为准，不依赖 isPlaying state（避免 race）
+  useEffect(() => {
+    if (!inView || !autoPlay || !audioRef.current || !src) return;
+    const audio = audioRef.current;
+    if (!audio.paused) return;
+    autoplayRetriesRef.current += 1;
+    if (autoplayRetriesRef.current > 3) return;  // 浏览器策略拒绝的话就不要无限重试
+    audio.play().catch((err) => {
+      console.debug('[WaveformPlayer] autoPlay 被拒绝', err?.name || err);
+    });
+  }, [inView, autoPlay, src]);
 
   // seek：把百分比转为实际位置。注意：必须直接从 audioRef.duration / durationRef 读取，
   // 避免 useCallback(duration) 陈旧闭包，否则 pointer 事件捕获的 duration=0 会让 seek 被 early return。
@@ -282,15 +346,32 @@ export default function WaveformPlayer({
           )}
         </button>
 
-        {/* 时间：Eleven / Spotify 风格，左当前 / 右总时长 */}
-        <div className="flex items-baseline gap-1 min-w-[108px] shrink-0">
-          <span className="text-[12px] tabular-nums text-white/85">
-            {fmtTime(dragging || duration > 0 ? displayPercent * duration : 0)}
-          </span>
-          <span className="text-[11px] text-white/25">/</span>
-          <span className="text-[11px] tabular-nums text-white/40">
-            {fmtTime(duration)}
-          </span>
+        {/* 时间：Eleven / Spotify 风格，左当前 / 右总时长 + 缓冲/错误提示 */}
+        <div className="flex flex-col items-start justify-center shrink-0 min-w-[130px]">
+          <div className="flex items-baseline gap-1">
+            <span className="text-[12px] tabular-nums text-white/85">
+              {fmtTime(dragging || duration > 0 ? displayPercent * duration : 0)}
+            </span>
+            <span className="text-[11px] text-white/25">/</span>
+            <span className="text-[11px] tabular-nums text-white/40">
+              {fmtTime(duration)}
+            </span>
+          </div>
+          {(isBuffering || playError) && (
+            <div className="flex items-center gap-1 mt-0.5">
+              {isBuffering && (
+                <>
+                  <span className="inline-block w-2 h-2 rounded-full border-2 border-white/30 border-t-white/90 animate-spin" />
+                  <span className="text-[10px] text-white/60">缓冲中…</span>
+                </>
+              )}
+              {playError && (
+                <span className="text-[10px] text-rose-300 truncate max-w-[220px]" title={playError}>
+                  ⚠ {playError}
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* 右侧：音量 + 倍速 + 下载 */}
@@ -464,24 +545,97 @@ export default function WaveformPlayer({
           src={src}
           preload="metadata"
           onLoadedMetadata={(e) => {
-            setDuration(e.currentTarget.duration || 0);
+            const d = e.currentTarget.duration;
+            setDuration(Number.isFinite(d) ? d : 0);
             setLoaded(true);
+            setPlayError(null);
           }}
           onTimeUpdate={(e) => {
             // 拖动时不更新 currentTime（由 onPointerMove 控制）
             if (dragging) return;
             const d = e.currentTarget.duration;
-            setCurrentTime(d > 0 ? e.currentTarget.currentTime : 0);
+            const t = e.currentTarget.currentTime;
+            setCurrentTime(d > 0 ? (Number.isFinite(t) ? t : 0) : 0);
           }}
-          onPlay={() => setIsPlaying(true)}
-          onPause={() => setIsPlaying(false)}
+          onCanPlay={() => {
+            setIsBuffering(false);
+            setPlayError(null);
+            clearWaitingTimer();
+          }}
+          onPlaying={() => {
+            setIsBuffering(false);
+            setPlayError(null);
+            clearWaitingTimer();
+            // onPlaying 比 onPlay 更晚一点触发，此时媒体已真正流出数据，进度会开始走
+            setIsPlaying(true);
+          }}
+          onPlay={() => {
+            // onPlay 先到（播放请求被接受，但是否开始播还看缓冲），不能把 isPlaying 写死 true，
+            // 这里只清错误 / 缓冲待等后续事件
+            setPlayError(null);
+          }}
+          onPause={() => {
+            setIsPlaying(false);
+            setIsBuffering(false);
+            clearWaitingTimer();
+          }}
           onEnded={() => {
             setIsPlaying(false);
+            setIsBuffering(false);
             setCurrentTime(0);
+            clearWaitingTimer();
           }}
-          onLoadedData={() => {
-            // 让浏览器显示首帧即可
+          onWaiting={() => {
+            // 播放器正在缓冲中，没有进度，进度条"不动"不是 Bug，需要有明确提示
+            // 但是，若缓冲超过 12s 仍未恢复，则视为卡住：取消 waiting 并恢复按钮可点
+            setIsBuffering(true);
+            clearWaitingTimer();
+            waitingTimerRef.current = window.setTimeout(() => {
+              const audio = audioRef.current;
+              // 如果真的卡在 waiting：暂停 -> 再调用一次 play 尝试重启拉流（浏览器对 HTTP/1.1 单连接卡住时，这类重试很有用）
+              if (audio && audio.paused === false) {
+                try { audio.pause(); } catch {}
+                window.setTimeout(() => {
+                  if (!audioRef.current) return;
+                  audioRef.current.play().catch(() => {});
+                }, 250);
+              }
+              setIsBuffering(false);
+              setPlayError('缓冲超时，已尝试重试');
+            }, 12000);
           }}
+          onStalled={() => {
+            // 网络中断 / 中间 Range 没拿下来
+            setIsBuffering(true);
+            clearWaitingTimer();
+            waitingTimerRef.current = window.setTimeout(() => {
+              setIsBuffering(false);
+              setIsPlaying(false);
+              setPlayError('加载中断，可再次点击播放重试');
+            }, 12000);
+          }}
+          onAbort={() => {
+            setIsBuffering(false);
+            clearWaitingTimer();
+          }}
+          onError={(e) => {
+            const err = (e.currentTarget as HTMLAudioElement).error;
+            const code = err?.code;
+            // MediaError.code: 1=ABORTED 2=NETWORK 3=DECODE 4=SRC_NOT_SUPPORTED
+            const map: Record<number, string> = {
+              1: '加载被中断',
+              2: '网络错误，请稍后重试',
+              3: '音频解码失败',
+              4: '资源格式不支持',
+            };
+            const msg = err?.message || map[code ?? 0] || '播放失败';
+            console.warn('[WaveformPlayer] audio error code=', code, 'msg=', err?.message);
+            setIsBuffering(false);
+            setIsPlaying(false);
+            clearWaitingTimer();
+            setPlayError(msg);
+          }}
+          onLoadedData={() => {}}
         />
       )}
     </div>
