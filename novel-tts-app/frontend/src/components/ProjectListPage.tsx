@@ -309,7 +309,7 @@ export default function ProjectListPage() {
   const loading = items === null;
 
   return (
-    <section className="space-y-5 p-6">
+    <section className="space-y-5">
       {/* ===== 顶部操作栏 ===== */}
       <div className="flex items-end justify-between gap-4 flex-wrap animate-fade-in">
         <div className="min-w-0">

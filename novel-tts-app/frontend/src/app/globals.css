@@ -69,12 +69,28 @@ html.light body {
     @apply border-gray-200 bg-white;
   }
 
-  /* 玻璃态面板：Eleven 那种「悬浮浮岛」感 */
+  /* 玻璃态面板：阿布自定义风格 —— 悬浮浮岛感 + 极细描边 + 内嵌高光 */
   .glass-panel {
-    @apply relative rounded-3xl border border-white/[0.06] bg-ink-100/70 backdrop-blur-2xl shadow-el-xl overflow-hidden;
+    @apply relative rounded-3xl overflow-hidden;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.005) 100%),
+      rgba(22, 20, 34, 0.55);
+    border: 1px solid rgba(255,255,255,0.06);
+    box-shadow:
+      0 1px 0 0 rgba(255,255,255,0.04) inset,
+      0 0 0 1px rgba(139,92,246,0.04),
+      0 30px 80px -36px rgba(0,0,0,0.7);
+    backdrop-filter: blur(22px);
+    -webkit-backdrop-filter: blur(22px);
   }
   html.light .glass-panel {
-    @apply border-gray-200/80 bg-white/90;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0.75) 100%);
+    border-color: rgba(15,15,18,0.08);
+    box-shadow:
+      0 1px 0 0 rgba(255,255,255,0.9) inset,
+      0 0 0 1px rgba(139,92,246,0.05),
+      0 24px 60px -30px rgba(15,15,18,0.18);
   }
 
   /* 光晕装饰：Eleven 常用品牌紫+青柠的 corner glows（注意 z-index -1） */
@@ -309,7 +325,23 @@ html.light body {
     to   { opacity: 1; transform: translateY(0); }
   }
   .animate-fade-in {
-    animation: fade-in-up 0.38s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+    animation: fade-in-up 0.42s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+  }
+
+  @keyframes scale-in {
+    from { opacity: 0; transform: translateY(6px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0)   scale(1); }
+  }
+  .animate-scale-in {
+    animation: scale-in 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.1) both;
+  }
+
+  @keyframes pulse-soft {
+    0%, 100% { opacity: 0.85; }
+    50%      { opacity: 0.35; }
+  }
+  .animate-pulse-soft {
+    animation: pulse-soft 1.8s ease-in-out infinite;
   }
 
   @keyframes slide-in-right {

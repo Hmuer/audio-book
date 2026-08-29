@@ -122,8 +122,11 @@ export default function HomePage() {
           </button>
         </header>
 
-        {/* 主内容 */}
-        <main className="flex-1 min-w-0">
+        {/* 主内容 —— 统一右侧、底部边距：画布画布 */}
+        <main
+          className="flex-1 min-w-0 p-5 lg:p-7 pb-14 lg:pb-20 animate-fade-in"
+          key={routeInfo.path}
+        >
           {R.name === 'ab-list' && <ProjectListPage />}
           {R.name === 'ab-detail' && <ProjectDetailPage projectId={R.id} voices={voices} />}
           {R.name === 'ab-voices' && <PlaceholderPage title="音色库" desc="音色库功能即将上线" icon="🎙️" />}

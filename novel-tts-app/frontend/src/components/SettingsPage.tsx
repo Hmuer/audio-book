@@ -294,7 +294,7 @@ export default function SettingsPage() {
   };
 
   return (
-    <section className="p-6 max-w-5xl mx-auto space-y-5">
+    <section className="max-w-5xl mx-auto space-y-5">
       {/* 顶部 */}
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>

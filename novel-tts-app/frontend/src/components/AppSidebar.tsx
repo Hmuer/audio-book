@@ -2,70 +2,53 @@
 
 import { useState } from 'react';
 import { useAuth } from '@/components/AuthContext';
+import { ChangePasswordModal } from './UserMenu';
 
-// ---- 菜单结构 ----
+// ================= 类型 =================
 type MenuItem = {
   key: string;
   label: string;
-  icon: string;
-  href: string;          // hash 路由
-  disabled?: boolean;    // 未开放时灰显
-  badge?: number;        // 可运行中项目数等
+  icon: string;   // emoji/SVG char 直接用
+  href: string;
+  disabled?: boolean;
+  badge?: number | string;
 };
 
 type Module = {
   key: string;
   label: string;
   icon: string;
-  href?: string;         // 一级自己也可点击跳转（无子项时）
-  children?: MenuItem[]; // 有子项则展开
-  disabled?: boolean;    // 整个模块未开放
+  href?: string;
+  children?: MenuItem[];
+  disabled?: boolean;
 };
 
+// ================= 菜单数据 =================
 const AUDIOBOOKS_CHILDREN: MenuItem[] = [
   { key: 'list',   label: '我的有声书', href: '#/audiobooks',        icon: '📖' },
   { key: 'voices', label: '音色库',     href: '#/audiobooks/voices', icon: '🎙️' },
 ];
 
 const MODULES: Module[] = [
-  {
-    key: 'audiobooks',
-    label: 'AI有声书',
-    icon: '🔊',
-    children: AUDIOBOOKS_CHILDREN,
-  },
-  {
-    key: 'novel',
-    label: 'AI小说创作',
-    icon: '✍️',
-    disabled: true,
-  },
-  {
-    key: 'drama',
-    label: 'AI短剧',
-    icon: '🎬',
-    disabled: true,
-  },
-  {
-    key: 'comic',
-    label: 'AI漫画',
-    icon: '🎨',
-    disabled: true,
-  },
+  { key: 'audiobooks', label: 'AI有声书',   icon: '🔊', children: AUDIOBOOKS_CHILDREN },
+  { key: 'novel',     label: 'AI小说创作', icon: '✍️', disabled: true },
+  { key: 'drama',     label: 'AI短剧',     icon: '🎬', disabled: true },
+  { key: 'comic',     label: 'AI漫画',     icon: '🎨', disabled: true },
 ];
 
 const SETTINGS_ITEM: MenuItem = {
-  key: 'settings',
-  label: '设置',
-  icon: '⚙️',
-  href: '#/settings',
+  key: 'settings', label: '设置', icon: '⚙️', href: '#/settings',
 };
 
+// 顶部「工作区」section label
+const SECTION_LABEL_WORKSPACE = '工作区';
+const SECTION_LABEL_SYSTEM = '系统';
+
 interface Props {
-  /** 当前 hash 路径（不含 # 前缀），用来高亮 */
   currentPath: string;
 }
 
+// ================= 组件 =================
 export default function AppSidebar({ currentPath }: Props) {
   const { user, logout } = useAuth();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -73,11 +56,9 @@ export default function AppSidebar({ currentPath }: Props) {
 
   if (!user) return null;
 
-  // ---- 高亮逻辑 ----
   const isPathActive = (href: string) => {
     const path = href.replace(/^#/, '');
     if (path === currentPath) return true;
-    // 子路由也高亮父菜单：#/audiobooks/xxx → #/audiobooks 高亮
     if (currentPath.startsWith(path + '/')) return true;
     return false;
   };
@@ -90,206 +71,365 @@ export default function AppSidebar({ currentPath }: Props) {
   return (
     <>
       <aside
-        className="hidden md:flex flex-col w-[220px] shrink-0 h-screen sticky top-0 border-r border-white/[0.06]"
+        className="hidden md:flex flex-col w-[244px] shrink-0 h-screen sticky top-0 border-r border-white/[0.06]"
         style={{
-          background: 'linear-gradient(180deg, rgba(20,20,25,0.9) 0%, rgba(15,15,20,0.95) 100%)',
+          background:
+            'linear-gradient(180deg, rgba(22,20,32,0.95) 0%, rgba(15,14,22,0.98) 100%)',
         }}
       >
-        {/* 品牌 */}
-        <div className="px-5 pt-5 pb-4">
-          <div className="flex items-center gap-2.5">
-            <div
-              className="w-9 h-9 rounded-xl grid place-items-center text-white shadow-brand"
-              style={{
-                backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
-              }}
-            >
-              <span className="text-lg leading-none">🎧</span>
-            </div>
+        {/* ============ 品牌区 ============ */}
+        <div className="px-5 pt-6 pb-4">
+          <div className="flex items-center gap-3">
+            <BrandLogo />
             <div className="min-w-0">
-              <div className="text-[17px] font-semibold text-white leading-none">阿布</div>
-              <div className="text-[10px] text-white/40 mt-1 tracking-wider">ABU · AI 创作平台</div>
+              <div className="text-[17px] font-semibold text-white tracking-tight leading-none">阿布</div>
+              <div className="mt-1 flex items-center gap-1.5">
+                <span
+                  className="inline-block w-1.5 h-1.5 rounded-full animate-pulse-soft"
+                  style={{ background: 'linear-gradient(135deg, #a78bfa, #22d3ee)' }}
+                />
+                <span className="text-[10.5px] text-white/40 tracking-[0.04em] uppercase">
+                  ABU · Creator Studio
+                </span>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* 菜单主体 */}
-        <nav className="flex-1 px-3 pb-3 overflow-y-auto">
-          {MODULES.map(m => {
-            const active = isModuleActive(m);
-            return (
-              <div key={m.key} className="mb-1">
-                {/* 一级 */}
-                <a
-                  href={m.disabled ? undefined : (m.href || '#')}
-                  onClick={m.disabled ? (e) => e.preventDefault() : undefined}
-                  className={[
-                    'flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all',
-                    m.disabled ? 'text-white/30 cursor-not-allowed' :
-                    active ? 'text-white bg-white/[0.06]' : 'text-white/70 hover:text-white hover:bg-white/[0.04]',
-                  ].join(' ')}
-                >
-                  <span className="text-[15px]">{m.icon}</span>
-                  <span className="flex-1">{m.label}</span>
-                </a>
+        {/* ============ 菜单主体 ============ */}
+        <nav className="flex-1 px-3 pb-3 overflow-y-auto space-y-6">
+          {/* ---- 工作区 Section ---- */}
+          <div className="space-y-1">
+            <SectionLabel label={SECTION_LABEL_WORKSPACE} />
+            {MODULES.map((m) => (
+              <ModuleNav
+                key={m.key}
+                m={m}
+                moduleActive={isModuleActive(m)}
+                pathActive={isPathActive}
+              />
+            ))}
+          </div>
 
-                {/* 二级 */}
-                {m.children && !m.disabled && (
-                  <div className="mt-1 ml-2 pl-4 border-l border-white/[0.06] space-y-0.5">
-                    {m.children.map(c => {
-                      const childActive = isPathActive(c.href);
-                      return (
-                        <a
-                          key={c.key}
-                          href={c.href}
-                          className={[
-                            'flex items-center gap-2 px-3 py-1.5 rounded-md text-[13px] transition-colors',
-                            childActive
-                              ? 'text-white bg-white/[0.06]'
-                              : 'text-white/55 hover:text-white hover:bg-white/[0.03]',
-                          ].join(' ')}
-                        >
-                          <span className="text-[12px] opacity-70">{c.icon}</span>
-                          <span>{c.label}</span>
-                          {c.badge ? (
-                            <span className="ml-auto text-[10px] text-white/40">{c.badge}</span>
-                          ) : null}
-                        </a>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          {/* 分隔 */}
-          <div className="h-px bg-white/[0.06] my-3" />
-
-          {/* 设置（一级） */}
-          <a
-            href={SETTINGS_ITEM.href}
-            className={[
-              'flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all',
-              isPathActive(SETTINGS_ITEM.href)
-                ? 'text-white bg-white/[0.06]'
-                : 'text-white/70 hover:text-white hover:bg-white/[0.04]',
-            ].join(' ')}
-          >
-            <span className="text-[15px]">{SETTINGS_ITEM.icon}</span>
-            <span>{SETTINGS_ITEM.label}</span>
-          </a>
+          {/* ---- 系统 Section ---- */}
+          <div className="space-y-1">
+            <SectionLabel label={SECTION_LABEL_SYSTEM} />
+            <TopLevelLink
+              item={SETTINGS_ITEM}
+              active={isPathActive(SETTINGS_ITEM.href)}
+            />
+          </div>
         </nav>
 
-        {/* 底部用户菜单 */}
-        <div className="border-t border-white/[0.06] p-2">
+        {/* ============ 底部用户菜单 ============ */}
+        <div className="border-t border-white/[0.05] px-3 py-3">
           <div className="relative">
             <button
-              onClick={() => setUserMenuOpen(o => !o)}
-              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-white/[0.04] transition-colors"
+              onClick={() => setUserMenuOpen((o) => !o)}
+              className="w-full flex items-center gap-3 px-2.5 py-2 rounded-xl
+                hover:bg-white/[0.04] transition-all group"
             >
-              <span className="w-8 h-8 rounded-full bg-brand-500/30 text-brand-200 grid place-items-center text-xs font-bold shrink-0">
-                {user.username.slice(0, 1).toUpperCase()}
-              </span>
+              <Avatar username={user.username} />
               <div className="min-w-0 flex-1 text-left">
-                <div className="text-sm text-white truncate">{user.username}</div>
-                <div className="text-[11px] text-white/40 truncate">
-                  {user.created_at ? `加入于 ${new Date(user.created_at).toLocaleDateString('zh-CN')}` : ''}
+                <div className="text-[13.5px] font-medium text-white truncate">
+                  {user.username}
+                </div>
+                <div className="text-[11px] text-white/38 truncate">
+                  {user.created_at
+                    ? `加入于 ${new Date(user.created_at).toLocaleDateString('zh-CN')}`
+                    : ''}
                 </div>
               </div>
-              <span className="text-white/30 text-xs shrink-0">▾</span>
+              <svg
+                width="14" height="14" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2.2"
+                strokeLinecap="round" strokeLinejoin="round"
+                className={`text-white/40 transition-transform duration-200 ${userMenuOpen ? 'rotate-180' : ''}`}
+              >
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
             </button>
 
             {userMenuOpen && (
-              <>
-                <div className="fixed inset-0 z-30" onClick={() => setUserMenuOpen(false)} />
-                <div className="absolute bottom-full left-0 right-0 mb-2 bg-zinc-900 border border-white/10 rounded-xl shadow-xl z-40 overflow-hidden">
-                  <button
-                    className="w-full text-left px-3 py-2 text-sm hover:bg-white/5 flex items-center gap-2"
-                    onClick={() => { setUserMenuOpen(false); setPwdModal(true); }}
-                  >
-                    🔒 修改密码
-                  </button>
-                  <button
-                    className="w-full text-left px-3 py-2 text-sm text-red-300 hover:bg-red-500/10 flex items-center gap-2"
-                    onClick={async () => { setUserMenuOpen(false); await logout(); }}
-                  >
-                    ↩ 退出登录
-                  </button>
-                </div>
-              </>
+              <div
+                className="absolute left-0 right-0 bottom-[calc(100%+6px)] z-40
+                  rounded-2xl border border-white/[0.09] bg-[#14121f]/98 backdrop-blur-md
+                  shadow-[0_16px_48px_-12px_rgba(0,0,0,0.75)] p-1.5 animate-fade-in"
+              >
+                <MenuItemButton
+                  label="修改密码"
+                  icon="🔐"
+                  onClick={() => { setPwdModal(true); setUserMenuOpen(false); }}
+                />
+                <MenuItemButton
+                  label="退出登录"
+                  icon="↩"
+                  danger
+                  onClick={() => { logout(); setUserMenuOpen(false); }}
+                />
+              </div>
             )}
           </div>
         </div>
       </aside>
 
-      {/* 修改密码 Modal — 复用 UserMenu 里的逻辑 */}
       {pwdModal && <ChangePasswordModal onClose={() => setPwdModal(false)} />}
     </>
   );
 }
 
-// ---- 修改密码 Modal（与 UserMenu 内部一致，抽出复用） ----
-function ChangePasswordModal({ onClose }: { onClose: () => void }) {
-  const { user } = useAuth();
-  const [oldPwd, setOldPwd] = useState('');
-  const [newPwd, setNewPwd] = useState('');
-  const [confirmPwd, setConfirmPwd] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [ok, setOk] = useState(false);
+// ================= 子组件 =================
+function SectionLabel({ label }: { label: string }) {
+  return (
+    <div className="px-2.5 pt-1 pb-1.5 flex items-center gap-2 select-none">
+      <span
+        className="inline-block h-px w-4 rounded-full"
+        style={{ background: 'linear-gradient(90deg, rgba(167,139,250,0.7), rgba(34,211,238,0.0))' }}
+      />
+      <span className="text-[10.5px] uppercase tracking-[0.14em] text-white/32 font-semibold">
+        {label}
+      </span>
+    </div>
+  );
+}
 
-  const onSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErr(null);
-    if (newPwd.length < 6) { setErr('新密码至少 6 位'); return; }
-    if (newPwd !== confirmPwd) { setErr('两次输入的新密码不一致'); return; }
-    setBusy(true);
-    try {
-      const { api } = await import('@/lib/api');
-      await api.authChangePassword(oldPwd, newPwd);
-      setOk(true);
-      setTimeout(() => onClose(), 1200);
-    } catch (e: any) {
-      const msg = String(e?.message || e);
-      if (msg.includes('原密码')) setErr('原密码不正确');
-      else setErr(msg);
-    } finally { setBusy(false); }
-  };
+function ModuleNav({
+  m, moduleActive, pathActive,
+}: {
+  m: Module;
+  moduleActive: boolean;
+  pathActive: (href: string) => boolean;
+}) {
+  const hasChildren = !!m.children && !m.disabled;
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-sm mx-4" onClick={e => e.stopPropagation()}>
-        <h3 className="text-lg font-semibold mb-1">修改密码</h3>
-        <p className="text-xs text-white/40 mb-4">当前账号：{user?.username}</p>
-
-        {ok ? (
-          <div className="text-center py-6 text-green-300">✓ 密码已修改</div>
-        ) : (
-          <form onSubmit={onSubmit} className="space-y-3">
-            {[
-              { label: '原密码', v: oldPwd,     set: setOldPwd,     auto: 'current-password' },
-              { label: '新密码（≥6位）', v: newPwd,      set: setNewPwd,      auto: 'new-password' },
-              { label: '确认新密码',   v: confirmPwd,  set: setConfirmPwd,  auto: 'new-password' },
-            ].map(f => (
-              <div key={f.label}>
-                <label className="block text-sm text-white/70 mb-1">{f.label}</label>
-                <input
-                  type="password" value={f.v} onChange={e => f.set(e.target.value)}
-                  autoComplete={f.auto} disabled={busy} className="input-base w-full"
-                />
-              </div>
-            ))}
-            {err && <div className="text-sm text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{err}</div>}
-            <div className="flex gap-2 pt-2">
-              <button type="button" onClick={onClose} disabled={busy} className="btn-ghost flex-1 justify-center">取消</button>
-              <button type="submit" disabled={busy || !oldPwd || !newPwd || !confirmPwd} className="btn-primary flex-1 justify-center">
-                {busy ? '提交中…' : '确认修改'}
-              </button>
-            </div>
-          </form>
+    <div className="space-y-1">
+      {/* 一级菜单项 */}
+      <a
+        href={m.disabled ? undefined : (m.href || '#')}
+        onClick={m.disabled ? (e) => e.preventDefault() : undefined}
+        className={[
+          'group relative flex items-center gap-2.5 px-3 h-[38px] rounded-[11px] text-[14px] font-medium transition-all',
+          m.disabled
+            ? 'text-white/28 cursor-not-allowed'
+            : moduleActive
+              ? 'text-white'
+              : 'text-white/68 hover:text-white hover:bg-white/[0.04]',
+        ].join(' ')}
+        style={
+          !m.disabled && moduleActive
+            ? {
+                background:
+                  'linear-gradient(135deg, rgba(139,92,246,0.16) 0%, rgba(139,92,246,0.04) 70%), rgba(255,255,255,0.02)',
+                boxShadow: 'inset 0 0 0 1px rgba(139,92,246,0.18)',
+              }
+            : undefined
+        }
+      >
+        {/* 激活时左侧渐变条 */}
+        {!m.disabled && moduleActive && (
+          <span
+            className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full"
+            style={{ background: 'linear-gradient(180deg, #c4b5fd 0%, #7c3aed 100%)' }}
+          />
         )}
-      </div>
+        <IconCell icon={m.icon} active={!m.disabled && moduleActive} disabled={m.disabled} />
+        <span className="flex-1">{m.label}</span>
+        {m.disabled && <ComingSoonBadge />}
+        {hasChildren && (
+          <Chevron
+            open={!!hasChildren}
+            className={!m.disabled && moduleActive ? 'text-brand-300' : 'text-white/30'}
+          />
+        )}
+      </a>
+
+      {/* 二级菜单项：胶囊式内嵌卡片 */}
+      {hasChildren && (
+        <div className="ml-2 px-1.5 py-1.5 rounded-[13px] bg-white/[0.025] border border-white/[0.05] space-y-0.5">
+          {m.children!.map((c) => {
+            const active = pathActive(c.href);
+            return (
+              <a
+                key={c.key}
+                href={c.href}
+                className={[
+                  'relative flex items-center gap-2 px-2.5 h-[34px] rounded-[9px] text-[13px] transition-all',
+                  active
+                    ? 'text-white'
+                    : 'text-white/58 hover:text-white hover:bg-white/[0.04]',
+                ].join(' ')}
+                style={
+                  active
+                    ? {
+                        background:
+                          'linear-gradient(90deg, rgba(139,92,246,0.22) 0%, rgba(139,92,246,0.06) 100%)',
+                        boxShadow: 'inset 0 0 0 1px rgba(139,92,246,0.18)',
+                      }
+                    : undefined
+                }
+              >
+                {active && (
+                  <span
+                    className="absolute left-1 top-1/2 -translate-y-1/2 w-[2.5px] h-4 rounded-r-full"
+                    style={{ background: 'linear-gradient(180deg,#c4b5fd,#8b5cf6)' }}
+                  />
+                )}
+                <span
+                  className={`w-6 h-6 shrink-0 rounded-md grid place-items-center text-[12px]
+                    ${active ? 'bg-brand-500/20 text-brand-200' : 'bg-white/[0.03] text-white/65'}`}
+                >
+                  {c.icon}
+                </span>
+                <span className="flex-1">{c.label}</span>
+                {c.badge != null && typeof c.badge !== 'undefined' && (
+                  <span className="text-[10px] text-white/35 tabular-nums">{c.badge}</span>
+                )}
+              </a>
+            );
+          })}
+        </div>
+      )}
     </div>
+  );
+}
+
+function TopLevelLink({ item, active }: { item: MenuItem; active: boolean }) {
+  return (
+    <a
+      href={item.href}
+      className={[
+        'group relative flex items-center gap-2.5 px-3 h-[38px] rounded-[11px] text-[14px] font-medium transition-all',
+        active
+          ? 'text-white'
+          : 'text-white/68 hover:text-white hover:bg-white/[0.04]',
+      ].join(' ')}
+      style={
+        active
+          ? {
+              background:
+                'linear-gradient(135deg, rgba(139,92,246,0.16) 0%, rgba(139,92,246,0.04) 70%), rgba(255,255,255,0.02)',
+              boxShadow: 'inset 0 0 0 1px rgba(139,92,246,0.18)',
+            }
+          : undefined
+      }
+    >
+      {active && (
+        <span
+          className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full"
+          style={{ background: 'linear-gradient(180deg, #c4b5fd 0%, #7c3aed 100%)' }}
+        />
+      )}
+      <IconCell icon={item.icon} active={active} />
+      <span className="flex-1">{item.label}</span>
+    </a>
+  );
+}
+
+function IconCell({
+  icon, active, disabled,
+}: { icon: string; active: boolean; disabled?: boolean }) {
+  return (
+    <div
+      className={`w-7 h-7 shrink-0 rounded-lg grid place-items-center text-[14px] transition-all
+        ${active ? 'bg-brand-500/25 text-brand-100'
+          : disabled ? 'bg-white/[0.02] text-white/35'
+          : 'bg-white/[0.03] text-white/80 group-hover:bg-white/[0.05]'}`}
+      style={active ? { boxShadow: 'inset 0 0 0 1px rgba(167,139,250,0.25)' } : undefined}
+    >
+      {icon}
+    </div>
+  );
+}
+
+function Chevron({
+  open, className = '',
+}: { open: boolean; className?: string }) {
+  return (
+    <svg
+      width="14" height="14" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
+      className={`transition-transform duration-200 ${open ? 'rotate-90' : ''} ${className}`}
+    >
+      <polyline points="9 18 15 12 9 6" />
+    </svg>
+  );
+}
+
+function ComingSoonBadge() {
+  return (
+    <span
+      className="text-[9.5px] px-1.5 py-0.5 rounded-md font-medium tracking-wide"
+      style={{
+        background: 'rgba(255,255,255,0.04)',
+        color: 'rgba(255,255,255,0.38)',
+        border: '1px solid rgba(255,255,255,0.06)',
+      }}
+    >
+      SOON
+    </span>
+  );
+}
+
+function Avatar({ username }: { username: string }) {
+  const initial = (username || 'A').slice(0, 1).toUpperCase();
+  return (
+    <div
+      className="w-9 h-9 rounded-xl grid place-items-center shrink-0 text-[13px] font-bold text-white"
+      style={{
+        backgroundImage:
+          'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 45%), linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)',
+        boxShadow: '0 0 0 1px rgba(167,139,250,0.35), 0 8px 16px -8px rgba(99,102,241,0.5)',
+      }}
+    >
+      {initial}
+    </div>
+  );
+}
+
+function BrandLogo() {
+  return (
+    <div
+      className="w-10 h-10 rounded-[13px] grid place-items-center shrink-0 relative"
+      style={{
+        backgroundImage:
+          'linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0) 50%), linear-gradient(135deg, #8b5cf6 0%, #6366f1 60%, #22d3ee 100%)',
+        boxShadow: '0 0 0 1px rgba(167,139,250,0.35), 0 12px 24px -10px rgba(139,92,246,0.6)',
+      }}
+    >
+      {/* 波形 logo */}
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="text-white">
+        <g stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" fill="currentColor">
+          <rect x="4"  y="14" width="2.2" height="6"  rx="1.1" />
+          <rect x="8"  y="10" width="2.2" height="10" rx="1.1" />
+          <rect x="12" y="5"  width="2.2" height="15" rx="1.1" opacity="0.95" />
+          <rect x="16" y="9"  width="2.2" height="11" rx="1.1" />
+          <rect x="20" y="13" width="2.2" height="7"  rx="1.1" />
+        </g>
+      </svg>
+    </div>
+  );
+}
+
+function MenuItemButton({
+  label, icon, danger, onClick,
+}: {
+  label: string;
+  icon: string;
+  danger?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full flex items-center gap-2.5 px-3 h-10 rounded-xl text-[13.5px] transition-all
+        ${danger
+          ? 'text-rose-200/90 hover:bg-rose-500/10 hover:text-rose-100'
+          : 'text-white/80 hover:bg-white/[0.06] hover:text-white'}`}
+    >
+      <span className="w-6 h-6 rounded-md grid place-items-center text-[13px] bg-white/[0.04]">{icon}</span>
+      <span className="flex-1 text-left">{label}</span>
+    </button>
   );
 }
