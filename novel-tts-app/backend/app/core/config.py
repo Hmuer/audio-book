@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     # RPM 限流（多厂商独立桶）
     DOUBAO_TTS_RPM_LIMIT: int = 60
     DOUBAO_SEED_AUDIO_RPM_LIMIT: int = 10
+    # ICL 查询被 worker(每 poll 间隔) + 前端详情轮询双路触发，12/min 不够用
+    DOUBAO_ICL_RPM_LIMIT: int = 60
+
+    # ICL 声音复刻：训练轮询间隔 / 超时 / 参考音频大小上限
+    DOUBAO_ICL_POLL_INTERVAL_SECS: float = 5.0
+    DOUBAO_ICL_TIMEOUT_SECS: int = 1800
+    ICL_MAX_AUDIO_BYTES: int = 10 * 1024 * 1024  # 10MB
 
     # 多播剧严格失败模式（默认 true：任何章节失败 → 整 Build 失败，不占位降级）
     # 留配置点仅用于集成测试做对照回归，线上应保持 True。

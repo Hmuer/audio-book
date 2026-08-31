@@ -126,7 +126,37 @@ export interface Voice {
   id: string;
   name: string;
   gender: string;
-  description: string;
+  /** 仅 minimax 音色保证有值；豆包/ICL 用 zh_tags/scene 兜底（见 voiceUtils.voiceDescription） */
+  description?: string;
+  /** 厂商命名空间：minimax / doubao / icl（icl: 为用户复刻音色，走豆包合成通道） */
+  provider?: string;
+  /** doubao/icl 音色字段：child / teen / youth / middle / old */
+  age?: string;
+  /** doubao/icl 音色字段：适用场景（如 有声书、新闻） */
+  scene?: string[];
+  /** doubao 音色字段：方言（如 sichuan） */
+  dialect?: string;
+  /** doubao/icl 音色字段：中文标签 */
+  zh_tags?: string[];
+  /** icl 音色字段：来源训练任务 id */
+  task_id?: string;
+}
+
+/** ICL 声音复刻训练任务（/api/icl/voices 返回结构） */
+export interface IclTask {
+  task_id: string;
+  user_id: number;
+  voice_name: string;
+  status: number;
+  status_label: string;
+  progress: number;
+  cloned_voice_id: string | null;
+  voice_id: string | null;
+  usable: boolean;
+  doubao_task_id: string | null;
+  error_msg: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface Character {
@@ -179,6 +209,40 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ text, voice_id, speed: speed ?? 1.0 }),
     }),
+
+  // ---------- ICL 声音复刻（豆包 ICL 2.0） ----------
+  // 上传 3~10 秒参考音频，创建训练任务（multipart/form-data）
+  iclCreateVoice: (voiceName: string, file: File) => {
+    const fd = new FormData();
+    fd.append('voice_name', voiceName);
+    fd.append('file', file);
+    const token = getToken();
+    return fetch(`${BASE}/api/icl/voices`, {
+      method: 'POST',
+      body: fd,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).then(async r => {
+      if (r.status === 401) {
+        clearToken();
+        if (_onAuthFail) _onAuthFail();
+        throw new Error('登录已失效，请重新登录');
+      }
+      if (!r.ok) {
+        let msg = `HTTP ${r.status}`;
+        try { const j = await r.json(); if (j.detail) msg += `: ${j.detail}`; } catch {}
+        throw new Error(msg);
+      }
+      return r.json() as Promise<IclTask>;
+    });
+  },
+  // 我的训练任务列表（含进行中/成功/失败）
+  iclListTasks: () =>
+    _fetch<{ tasks: IclTask[] }>('/api/icl/voices').then(r => r.tasks),
+  // 任务详情（进行中会刷新豆包侧状态）
+  iclGetTask: (taskId: string) => _fetch<IclTask>(`/api/icl/voices/${taskId}`),
+  // 删除训练任务（含参考音频）
+  iclDeleteTask: (taskId: string) =>
+    _fetch<{ ok: boolean; task_id: string }>(`/api/icl/voices/${taskId}`, { method: 'DELETE' }),
 
   // ---------- Project 制（项目工作台：唯一入口） ----------
 
@@ -272,6 +336,10 @@ export const api = {
       voice_assignments: Record<string, string>;
       narrator_voice_id: string;
       speed?: number;
+      /** 构建模式：classic（逐句合成）/ multicast（Seed-Audio 多播剧一体化生成） */
+      mode?: 'classic' | 'multicast';
+      /** TTS 厂商：minimax / doubao（multicast 模式必须 doubao） */
+      tts_provider?: 'minimax' | 'doubao';
     }
   ) =>
     _fetch<BuildResp>(`/api/projects/${projectId}/builds`, {
@@ -291,6 +359,12 @@ export const api = {
   buildDelete: (projectId: string, buildId: string) =>
     _fetch<{ ok: boolean }>(`/api/projects/${projectId}/builds/${buildId}`, {
       method: 'DELETE',
+    }),
+  // 重试失败章节（生成新 build，复用成功章节 MP3，继承原 mode/tts_provider）
+  buildRetryFailed: (projectId: string, buildId: string) =>
+    _fetch<BuildResp>(`/api/projects/${projectId}/builds/${buildId}/retry-failed`, {
+      method: 'POST',
+      body: JSON.stringify({ force_restart_failed_only: true }),
     }),
   // 整包 ZIP 下载 URL
   buildDownloadAll: (projectId: string, buildId: string) => {
@@ -516,6 +590,10 @@ export interface BuildListItem {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+  /** 构建模式：classic（逐句合成）/ multicast（Seed-Audio 多播剧） */
+  mode?: 'classic' | 'multicast' | null;
+  /** TTS 厂商：minimax / doubao */
+  tts_provider?: 'minimax' | 'doubao' | null;
 }
 
 // build 详情
@@ -534,6 +612,10 @@ export interface BuildDetailResp {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+  mode?: 'classic' | 'multicast' | null;
+  tts_provider?: 'minimax' | 'doubao' | null;
+  failed_chapters?: number[] | null;
+  is_retry?: boolean;
   artifacts: BuildArtifactResp[];
 }
 
@@ -554,6 +636,9 @@ export interface BuildStatusResp {
   progress_msg: string | null;
   completed_chapters: number;
   total_chapters: number;
+  mode?: 'classic' | 'multicast' | null;
+  tts_provider?: 'minimax' | 'doubao' | null;
+  failed_chapters?: number[] | null;
   artifacts: BuildArtifactResp[];
 }
 
@@ -562,7 +647,11 @@ export interface BuildResp {
   build_id: string;
   project_id: string;
   status: string;
+  total_chapters: number;
+  completed_chapters: number;
   created_at: string;
+  mode?: 'classic' | 'multicast' | null;
+  tts_provider?: 'minimax' | 'doubao' | null;
 }
 
 // ---------- 系统设置 ----------

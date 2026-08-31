@@ -123,6 +123,15 @@ class DoubaoTTSProvider(BaseTTSProvider):
     MAX_SPEED = 3.0
     DEFAULT_ENDPOINT = "https://openspeech.bytedance.com/api/v1/tts"
 
+    @property
+    def _endpoint(self) -> str:
+        """合成端点：优先读 settings.DOUBAO_TTS_BASE_URL（支持 .env 覆写）。"""
+        try:
+            from ...core.config import settings
+            return settings.DOUBAO_TTS_BASE_URL or self.DEFAULT_ENDPOINT
+        except Exception:
+            return self.DEFAULT_ENDPOINT
+
     # 重试参数（与 MiniMaxTTSProvider 对齐）
     MAX_RETRIES = 5
     BASE_BACKOFF_SECS = 0.6
@@ -295,7 +304,7 @@ class DoubaoTTSProvider(BaseTTSProvider):
                 await _doubao_rpm_wait_acquire("tts")
                 # 真正请求
                 mp3_bytes = await self._http_post_bytes(
-                    self.DEFAULT_ENDPOINT, headers, payload
+                    self._endpoint, headers, payload
                 )
                 dur_ms = _estimate_mp3_duration_ms(mp3_bytes)
                 return mp3_bytes, dur_ms

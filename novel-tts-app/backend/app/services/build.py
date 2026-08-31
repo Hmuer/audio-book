@@ -555,6 +555,12 @@ def _validate_tts_namespace(
     # 多播剧必须显式指定 tts_provider
     if norm_mode == "multicast" and not norm_provider:
         raise RuntimeError("mode=multicast（多播剧模式）必须显式指定 tts_provider，不能留空")
+    # 多播剧 = Seed-Audio 一体化生成，仅豆包支持；minimax + multicast 直接拒绝（不降级）
+    if norm_mode == "multicast" and norm_provider and norm_provider != "doubao":
+        raise RuntimeError(
+            f"mode=multicast（多播剧模式）目前仅支持 tts_provider='doubao'（Seed-Audio 一体化生成），"
+            f"当前 tts_provider='{norm_provider}'；请切换豆包或改用 classic 模式。"
+        )
     # provider 合法性
     if norm_provider and norm_provider not in _VALID_PROVIDERS:
         raise RuntimeError(f"未知 tts_provider: {tts_provider}，可选 {sorted(_VALID_PROVIDERS)}")
@@ -580,6 +586,19 @@ def _validate_tts_namespace(
         raise RuntimeError(
             "检测到音色使用了带前缀的命名空间 ID（doubao:/minimax:/icl:），"
             "请显式传 tts_provider，避免合成路由歧义。"
+        )
+
+
+def _validate_multicast_provider(build_mode: str, tts_provider_label: str) -> None:
+    """严格契约：multicast 只能配豆包（Seed-Audio）。
+
+    retry / 历史数据行不会重新走 start_build 校验，_run_build_inner 里兜底拦截，
+    防止静默降级到 classic 逐句合成。
+    """
+    if (build_mode or "classic").lower() == "multicast" and (tts_provider_label or "minimax").lower() != "doubao":
+        raise ValueError(
+            f"mode=multicast（多播剧模式）仅支持 tts_provider='doubao'，"
+            f"当前 tts_provider={tts_provider_label!r}；拒绝降级为 classic 合成。"
         )
 
 
@@ -916,6 +935,10 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
             narrator_voice_id=narrator_voice_id,
             speed=speed,
             voice_assignments_json=new_voice_json,
+            # 重试必须继承源 Build 的合成配置：否则多播剧/豆包 Build 重试会
+            # 静默退化为 classic+MiniMax（模型默认值），违反"不降级"契约
+            mode=(source_build.mode or "classic"),
+            tts_provider=(source_build.tts_provider or "minimax"),
             config_digest=source_build.config_digest,
             is_retry=True,
         )
@@ -992,6 +1015,79 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
         f"project_id={project_id[:8]}... retry_chapters={len(failed_ch_idxs)}"
     )
     return cur_resp
+
+
+# Seed-Audio 分段估算：中文朗读约 4 字/秒（×speed），留安全余量
+_MC_CHARS_PER_SEC = 4.0
+_MC_CHUNK_TARGET_SECS = 100.0
+
+
+def _estimate_multicast_secs(seg_dicts: list[dict], speed: float) -> float:
+    chars = sum(len((s.get("text") or "")) for s in seg_dicts if (s.get("kind") or "") != "silence")
+    return chars / (_MC_CHARS_PER_SEC * max(0.2, float(speed or 1.0)))
+
+
+async def _multicast_synth_chapter(
+    mc: Any,
+    seg_dicts: list[dict],
+    output_path: str,
+    *,
+    speed: float = 1.0,
+    chapter_title: str = "",
+    max_secs: float = 120.0,
+) -> tuple[str, int]:
+    """Seed-Audio 整章合成；预估时长超过单次上限时按 segment 边界分段生成再拼接。
+
+    单次调用音频上限约 120s（MAX_CHAPTER_AUDIO_SECS），常规 3000 字章节约 5 分钟，
+    必须分段：每段目标 ≤_MC_CHUNK_TARGET_SECS，逐段调用后 concat_mp3_files 合并。
+    """
+    total_secs = _estimate_multicast_secs(seg_dicts, speed)
+    if total_secs <= max_secs * 0.85:
+        return await mc.synthesize_chapter_to_file(
+            seg_dicts, output_path, speed=speed, chapter_title=chapter_title,
+        )
+
+    # 按 segment 边界切分（不切断台词行）
+    target_chars = int(_MC_CHUNK_TARGET_SECS * _MC_CHARS_PER_SEC * max(0.2, float(speed or 1.0)))
+    chunks: list[list[dict]] = []
+    cur: list[dict] = []
+    cur_chars = 0
+    for s in seg_dicts:
+        seg_chars = len((s.get("text") or "")) if (s.get("kind") or "") != "silence" else 0
+        if cur and cur_chars + seg_chars > target_chars:
+            chunks.append(cur)
+            cur, cur_chars = [], 0
+        cur.append(s)
+        cur_chars += seg_chars
+    if cur:
+        chunks.append(cur)
+
+    logger.info(
+        f"[multicast] 预估 {total_secs:.0f}s 超过单次上限 {max_secs:.0f}s，"
+        f"分 {len(chunks)} 段生成后拼接"
+    )
+    part_paths: list[str] = []
+    try:
+        for i, chunk in enumerate(chunks):
+            part_path = output_path + f".part{i:03d}"
+            part_paths.append(part_path)
+            title = chapter_title if i == 0 else f"{chapter_title}（续{i}）"
+            await mc.synthesize_chapter_to_file(
+                chunk, part_path, speed=speed, chapter_title=title,
+            )
+        merged = concat_mp3_files(*[Path(p).read_bytes() for p in part_paths])
+        tmp_path = output_path + ".tmp"
+        with open(tmp_path, "wb") as f:
+            f.write(merged)
+        os.replace(tmp_path, output_path)
+        dur_ms = int(len(merged) / 16.0)
+        return output_path, dur_ms
+    finally:
+        for p in part_paths:
+            try:
+                Path(p).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 async def _run_build_inner(
@@ -1078,6 +1174,10 @@ async def _run_build_inner(
         build_mode = (b.mode or "classic").lower()
         strict_mode = _should_strict_fail(build_mode)
         tts_provider_label = b.tts_provider or "minimax"
+        # 严格契约：multicast 只能配豆包（Seed-Audio）。
+        # retry/历史数据行不会重新走 start_build 校验，这里兜底拦截，
+        # 防止静默降级到 classic 逐句合成。
+        _validate_multicast_provider(build_mode, tts_provider_label)
         await s.commit()
 
     logger.info(
@@ -1272,6 +1372,58 @@ async def _run_build_inner(
                 segment_overrides=None,
                 start_idx=0,
             )
+
+            # ---------- 多播剧模式：Seed-Audio 整章一体化生成 ----------
+            if build_mode == "multicast" and (tts_provider_label or "").lower() == "doubao":
+                from ..ai.factory import get_multicast_tts
+                from ..ai.providers.doubao.multicast import MAX_CHAPTER_AUDIO_SECS
+                mc = get_multicast_tts()
+                ch_fname = _audio_filename(build_id, ch_idx, failed=False)
+                ch_fpath = str(audio_dir / ch_fname)
+                seg_dicts = [
+                    {
+                        "kind": s.kind,
+                        "speaker": s.speaker,
+                        "text": apply_pronunciation_rules(
+                            s.text, pronunciation_rules,
+                            character_id=speaker_to_char_id.get(s.speaker or ""),
+                        ) if pronunciation_rules else s.text,
+                        # 角色未分配音色时兜底旁白音色：否则该角色出现在剧本
+                        # prompt 里却没有对应 roles 音色映射
+                        "voice_id": s.voice_id or narrator_voice_id,
+                        "silence_ms": s.silence_ms,
+                    }
+                    for s in segs
+                ]
+                _, ch_dur_ms = await _multicast_synth_chapter(
+                    mc, seg_dicts, ch_fpath,
+                    speed=speed,
+                    chapter_title=ch.title,
+                    max_secs=MAX_CHAPTER_AUDIO_SECS,
+                )
+                chapter_outputs[ch_idx] = (ch_fpath, ch_dur_ms)
+
+                async with factory() as s:
+                    stmt_art = select(BuildArtifact).where(
+                        BuildArtifact.build_id == build_id,
+                        BuildArtifact.chapter_idx == ch_idx,
+                    )
+                    art = (await s.execute(stmt_art)).scalar_one_or_none()
+                    if art:
+                        art.status = "done"
+                        art.audio_filename = Path(ch_fpath).name
+                        art.audio_url = f"/media/{Path(ch_fpath).name}"
+                        art.duration_ms = ch_dur_ms
+                        art.error_msg = None
+                    completed += 1
+                    chapter_ok_flag[ch_idx] = True
+                    await s.commit()
+
+                logger.info(
+                    f"[build_worker] build_id={build_id[:8]}... ch {ch_idx+1}/{total} "
+                    f"multicast done title={ch.title!r} dur_ms={ch_dur_ms}"
+                )
+                continue
 
             async def _synth_seg(s: _Segment) -> tuple[_Segment, bytes, int]:
                 if s.kind == "silence":

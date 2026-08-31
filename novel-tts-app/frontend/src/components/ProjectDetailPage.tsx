@@ -14,6 +14,7 @@ import {
   ChapterDetail,
 } from '@/lib/api';
 import { parseTime, relativeTime } from '@/lib/time';
+import { normalizeGender } from '@/lib/voiceUtils';
 import VoicePicker from './VoicePicker';
 import WaveformPlayer from './WaveformPlayer';
 import { StatusBadge } from './ProjectListPage';
@@ -83,7 +84,11 @@ export default function ProjectDetailPage({
   const [loadingVoice, setLoadingVoice] = useState<string | null>(null);
 
   const narratorDefault = useMemo(
-    () => voices.find(v => v.id === 'male-qn-jingying') || voices[0],
+    // 后端音色 id 已带厂商前缀（minimax:/doubao:/icl:），无前缀匹配会退化成 voices[0]
+    () =>
+      voices.find(v => v.id === 'minimax:male-qn-jingying') ||
+      voices.find(v => v.id.endsWith('male-qn-jingying')) ||
+      voices[0],
     [voices]
   );
 
@@ -778,11 +783,11 @@ function LastBuildSummary({
           style={{
             width: `${pct}%`,
             backgroundColor:
-              build.status === 'done'
+              BUILD_DONE_STATES.includes(build.status)
                 ? 'rgb(var(--status-ready-bg))'
                 : build.status === 'failed'
                 ? 'rgb(var(--status-error-bg))'
-                : build.status === 'synthesizing' || build.status === 'preparing'
+                : isBuildRunning(build.status)
                 ? 'rgb(var(--status-warn-bg))'
                 : 'rgb(var(--brand-500))',
           }}
@@ -798,6 +803,13 @@ function LastBuildSummary({
 
 // =================== Chapters Tab ===================
 // =================== 角色颜色工具 ===================
+// Build 级运行态判定：后端 Build.status ∈ {queued, running, success, partial_success, failed, cancelled}
+// （'synthesizing'/'preparing' 是项目级响应层映射，不用于 build 判断）
+const BUILD_RUNNING_STATES = ['queued', 'running', 'synthesizing', 'preparing'];
+const BUILD_DONE_STATES = ['done', 'success', 'partial_success'];
+function isBuildRunning(status: string): boolean {
+  return BUILD_RUNNING_STATES.includes(status);
+}
 const CHARACTER_COLORS: { bg: string; fg: string; border: string }[] = [
   { bg: 'rgba(var(--palette-purple-bg), 0.14)', fg: 'rgb(var(--palette-purple-fg))', border: 'rgba(var(--palette-purple-bg), 0.30)' },   // 紫
   { bg: 'rgba(var(--palette-pink-bg), 0.14)',   fg: 'rgb(var(--palette-pink-fg))',   border: 'rgba(var(--palette-pink-bg), 0.30)' },    // 粉
@@ -1330,9 +1342,7 @@ function BuildsTab({
   const [showCreate, setShowCreate] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const hasRunning = builds.some(
-    b => b.status === 'synthesizing' || b.status === 'preparing'
-  );
+  const hasRunning = builds.some(b => isBuildRunning(b.status));
 
   useEffect(() => {
     if (!hasRunning) return;
@@ -1429,12 +1439,13 @@ function BuildRow({
   const [detail, setDetail] = useState<BuildDetailResp | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [retrying, setRetrying] = useState(false);
 
   const pct =
     item.total_chapters > 0
       ? Math.round((item.completed_chapters / item.total_chapters) * 100)
       : 0;
-  const isRunning = item.status === 'synthesizing' || item.status === 'preparing';
+  const isRunning = isBuildRunning(item.status);
 
   const loadDetail = async () => {
     setLoadingDetail(true);
@@ -1473,8 +1484,25 @@ function BuildRow({
     }
   };
 
+  // 失败章重试：生成新 build，成功章节复用原 MP3，mode/tts_provider 原样继承
+  const hasFailedChapters =
+    !isRunning &&
+    (item.status === 'failed' || item.status === 'partial_success') &&
+    (detail?.failed_chapters?.length ?? 0) + (item.total_chapters - item.completed_chapters) > 0;
+  const onRetryFailed = async () => {
+    setRetrying(true);
+    try {
+      await api.buildRetryFailed(projectId, item.build_id);
+      await onReload();
+    } catch (e: any) {
+      alert(`重试失败: ${e?.message || e}`);
+    } finally {
+      setRetrying(false);
+    }
+  };
+
   const pctBarBg =
-    item.status === 'done'
+    BUILD_DONE_STATES.includes(item.status)
       ? 'rgb(var(--status-ready-bg))'
       : item.status === 'failed'
       ? 'rgb(var(--status-error-bg))'
@@ -1526,6 +1554,24 @@ function BuildRow({
         <span className="text-xs text-ink-500 ml-auto tabular-nums shrink-0">
           {relativeTime(item.created_at)}
         </span>
+        {hasFailedChapters && (
+          <button
+            onClick={onRetryFailed}
+            disabled={retrying}
+            className="inline-flex items-center justify-center shrink-0 rounded-md
+              border border-amber-500/30 bg-amber-500/10 text-amber-300
+              hover:border-amber-500/50 hover:bg-amber-500/20
+              transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{ width: 34, height: 34 }}
+            title="重试失败章节（生成新构建，成功章节复用原音频，合成模式与引擎保持不变）"
+          >
+            {retrying ? (
+              <span className="inline-block w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
+            )}
+          </button>
+        )}
         <button
           onClick={() => setConfirmDelete(true)}
           className="inline-flex items-center justify-center shrink-0 rounded-md
@@ -1737,8 +1783,17 @@ function CreateBuildModal({
     });
     return m;
   });
+  // 构建模式 & TTS 厂商（Task 10）：multicast 强制 doubao；
+  // 默认厂商从旁白音色前缀推导（doubao:/icl: → 豆包，否则 MiniMax），避免默认组合非法
+  const [mode, setMode] = useState<'classic' | 'multicast'>('classic');
+  const [ttsProvider, setTtsProvider] = useState<'minimax' | 'doubao'>(() =>
+    narrator.startsWith('doubao:') || narrator.startsWith('icl:') ? 'doubao' : 'minimax'
+  );
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const isMulticast = mode === 'multicast';
+  const effectiveProvider: 'minimax' | 'doubao' = isMulticast ? 'doubao' : ttsProvider;
 
   const submit = async () => {
     setErr(null);
@@ -1746,12 +1801,55 @@ function CreateBuildModal({
       setErr('请选择旁白音色');
       return;
     }
+    if (isMulticast && !narrator.startsWith('doubao:') && !narrator.startsWith('icl:')) {
+      setErr('多播剧模式必须使用豆包音色（doubao: / icl:）作为旁白');
+      return;
+    }
+    if (isMulticast) {
+      const bad = Object.entries(charVoices).filter(
+        ([, vid]) => vid && !vid.startsWith('doubao:') && !vid.startsWith('icl:')
+      );
+      if (bad.length > 0) {
+        setErr(`多播剧模式下角色「${bad[0][0]}」使用了非豆包音色，请改用豆包或复刻音色`);
+        return;
+      }
+    }
+    if (!isMulticast && effectiveProvider === 'doubao') {
+      const badNarrator = narrator && !narrator.startsWith('doubao:') && !narrator.startsWith('icl:');
+      if (badNarrator) {
+        setErr('当前 TTS 引擎为豆包，请选择 doubao: / icl: 前缀的旁白音色，或切换引擎为 MiniMax');
+        return;
+      }
+      const bad = Object.entries(charVoices).filter(
+        ([, vid]) => vid && !vid.startsWith('doubao:') && !vid.startsWith('icl:')
+      );
+      if (bad.length > 0) {
+        setErr(`角色「${bad[0][0]}」使用了非豆包音色，请调整音色或切换引擎为 MiniMax`);
+        return;
+      }
+    }
+    if (!isMulticast && effectiveProvider === 'minimax') {
+      const badNarrator = narrator && !narrator.startsWith('minimax:');
+      if (badNarrator) {
+        setErr('当前 TTS 厂商为 MiniMax，请选择 minimax: 前缀的旁白音色，或切换厂商为豆包');
+        return;
+      }
+      const bad = Object.entries(charVoices).filter(
+        ([, vid]) => vid && !vid.startsWith('minimax:')
+      );
+      if (bad.length > 0) {
+        setErr(`角色「${bad[0][0]}」使用了非 MiniMax 音色，请调整音色或切换厂商为豆包`);
+        return;
+      }
+    }
     setBusy(true);
     try {
       await api.buildCreate(projectId, {
         voice_assignments: charVoices,
         narrator_voice_id: narrator,
         speed,
+        mode,
+        tts_provider: effectiveProvider,
       });
       onCreated();
     } catch (e: any) {
@@ -1794,9 +1892,92 @@ function CreateBuildModal({
         </p>
 
         <div className="space-y-5 relative">
+          {/* 构建模式 + TTS 引擎 */}
           <div className="space-y-2">
             <div className="text-sm text-ink-700 flex items-center gap-2">
               <span className="w-6 h-6 rounded-lg grid place-items-center bg-brand-500/20 text-brand-300 text-xs">1</span>
+              合成模式
+            </div>
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                onClick={() => setMode('classic')}
+                className={`text-left rounded-lg border p-3 transition-all
+                  ${!isMulticast
+                    ? 'bg-brand-500/12 border-brand-500/40'
+                    : 'bg-ink-100 border-ink-300/70 hover:bg-ink-200 hover:border-ink-400'}`}
+              >
+                <div className="flex items-center gap-2">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-ink-600">
+                    <path d="M4 12h16" /><path d="M4 6h16" /><path d="M4 18h16" />
+                  </svg>
+                  <span className="text-sm font-medium text-ink-800">经典模式</span>
+                  <span className="chip-soft !px-1.5 !py-0.5 !text-[11px] ml-auto">逐句合成</span>
+                </div>
+                <p className="text-[11px] text-ink-500 mt-1.5 leading-relaxed">
+                  按对白逐句合成后拼接，角色音色与情绪控制更精细
+                </p>
+              </button>
+              <button
+                onClick={() => setMode('multicast')}
+                className={`text-left rounded-lg border p-3 transition-all
+                  ${isMulticast
+                    ? 'bg-brand-500/12 border-brand-500/40'
+                    : 'bg-ink-100 border-ink-300/70 hover:bg-ink-200 hover:border-ink-400'}`}
+              >
+                <div className="flex items-center gap-2">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-ink-600">
+                    <circle cx="9" cy="8" r="3" /><circle cx="17" cy="14" r="3" /><path d="M11 10l4 2" />
+                  </svg>
+                  <span className="text-sm font-medium text-ink-800">多播剧模式</span>
+                  <span className="chip-soft !px-1.5 !py-0.5 !text-[11px] ml-auto">Seed-Audio</span>
+                </div>
+                <p className="text-[11px] text-ink-500 mt-1.5 leading-relaxed">
+                  豆包多模态一体化生成多角色播剧，含情绪/氛围，仅豆包引擎
+                </p>
+              </button>
+            </div>
+
+            {/* TTS 厂商（多播剧锁定豆包） */}
+            {!isMulticast && (
+              <div className="flex items-center gap-1.5 pt-0.5">
+                <span className="text-xs text-ink-600">TTS 引擎：</span>
+                {(['doubao', 'minimax'] as const).map(p => (
+                  <button
+                    key={p}
+                    onClick={() => setTtsProvider(p)}
+                    className={`px-2.5 py-1 rounded-md text-[12px] font-medium border transition-all
+                      ${ttsProvider === p
+                        ? 'bg-brand-500/15 border-brand-500/40 text-brand-300'
+                        : 'bg-ink-100 border-ink-300/60 text-ink-600 hover:bg-ink-200'}`}
+                  >
+                    {p === 'doubao' ? '豆包' : 'MiniMax'}
+                  </button>
+                ))}
+                <span className="text-[11px] text-ink-500 ml-1">
+                  音色需与引擎命名空间匹配（doubao: / minimax: / icl:）
+                </span>
+              </div>
+            )}
+
+            {/* 多播剧严格模式提示 */}
+            {isMulticast && (
+              <div className="rounded-lg px-3.5 py-2.5 text-xs leading-relaxed border border-amber-500/40 bg-amber-500/10 text-amber-200 flex items-start gap-2">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5">
+                  <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                  <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+                <span>
+                  多播剧采用<b>严格失败模式</b>：任一章节合成失败时整个构建立即标记为失败，
+                  <b>不会降级生成占位音频</b>；可在构建详情中对失败章节发起重试。
+                  旁白与角色音色须选择豆包（doubao:）或复刻（icl:）音色。
+                </span>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-sm text-ink-700 flex items-center gap-2">
+              <span className="w-6 h-6 rounded-lg grid place-items-center bg-brand-500/20 text-brand-300 text-xs">2</span>
               旁白音色
             </div>
             <VoicePicker
@@ -1810,7 +1991,7 @@ function CreateBuildModal({
           <div className="space-y-2">
             <div className="flex items-center justify-between mb-1">
               <div className="text-sm text-ink-700 flex items-center gap-2">
-                <span className="w-6 h-6 rounded-lg grid place-items-center bg-brand-500/20 text-brand-300 text-xs">2</span>
+                <span className="w-6 h-6 rounded-lg grid place-items-center bg-brand-500/20 text-brand-300 text-xs">3</span>
                 语速
               </div>
               <span className="chip-soft font-mono tabular-nums text-brand-300">
@@ -1840,7 +2021,7 @@ function CreateBuildModal({
           {project.characters.length > 0 && (
             <div className="space-y-2.5">
               <div className="text-sm text-ink-700 flex items-center gap-2">
-                <span className="w-6 h-6 rounded-lg grid place-items-center bg-brand-500/20 text-brand-300 text-xs">3</span>
+                <span className="w-6 h-6 rounded-lg grid place-items-center bg-brand-500/20 text-brand-300 text-xs">4</span>
                 角色音色
                 <span className="chip-soft ml-1">{project.characters.length} 个角色</span>
                 <span className="ml-auto text-[11px] text-ink-500">已使用项目当前配置</span>
@@ -1882,7 +2063,7 @@ function CreateBuildModal({
                         <option value="">未分配（使用旁白朗读）</option>
                         {voices.map(v => (
                           <option key={v.id} value={v.id}>
-                            {v.name} ({v.gender})
+                            {v.name} ({normalizeGender(v)})
                           </option>
                         ))}
                       </select>

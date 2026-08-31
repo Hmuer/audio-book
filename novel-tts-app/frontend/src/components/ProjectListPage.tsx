@@ -14,6 +14,9 @@ const STATUS_DEFS: Record<string, { label: string; bg: string; color: string; do
   draft:           { label: '草稿',      bg: 'rgba(var(--status-muted-bg), 0.12)',    color: 'rgb(var(--status-muted-fg))',    dot: 'rgb(var(--status-muted-dot))' },
   imported:        { label: '已导入',    bg: 'rgba(var(--status-info-bg), 0.12)',     color: 'rgb(var(--status-info-fg))',     dot: 'rgb(var(--status-info-dot))' },
   preparing:       { label: '识别中',    bg: 'rgba(var(--status-warn-bg), 0.14)',     color: 'rgb(var(--status-warn-fg))',     dot: 'rgb(var(--status-warn-dot))', pulse: true },
+  // Build 级状态（后端 Build.status：queued/running/…）
+  queued:          { label: '排队中',    bg: 'rgba(var(--status-info-bg), 0.12)',     color: 'rgb(var(--status-info-fg))',     dot: 'rgb(var(--status-info-dot))', pulse: true },
+  running:         { label: '合成中',    bg: 'rgba(var(--status-synth-bg), 0.14)',    color: 'rgb(var(--status-synth-fg))',    dot: 'rgb(var(--status-synth-dot))', pulse: true },
   ready:           { label: '就绪',      bg: 'rgba(var(--status-ready-bg), 0.12)',    color: 'rgb(var(--status-ready-fg))',    dot: 'rgb(var(--status-ready-dot))' },
   synthesizing:    { label: '合成中',    bg: 'rgba(var(--status-synth-bg), 0.14)',    color: 'rgb(var(--status-synth-fg))',    dot: 'rgb(var(--status-synth-dot))', pulse: true },
   done:            { label: '已完成',    bg: 'rgba(var(--status-success-bg), 0.12)',  color: 'rgb(var(--status-success-fg))',  dot: 'rgb(var(--status-success-dot))' },

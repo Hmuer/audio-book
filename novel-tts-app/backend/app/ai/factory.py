@@ -1,6 +1,6 @@
 import asyncio
 import time as _time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .base import BaseLLMProvider, BaseTTSProvider
 from .providers.minimax.llm import MiniMaxLLMProvider
@@ -12,6 +12,8 @@ _tts_instances: dict[str, BaseTTSProvider] = {}
 # 遗留单例引用：conftest._isolate_data_dir 通过它注入 mock；保持对外属性一致。
 _tts_instance: BaseTTSProvider | None = None
 _tts_default_instance: BaseTTSProvider | None = None
+# 多播剧（Seed-Audio）provider 单例；测试可注入 mock（同 _tts_instance 模式）。
+_multicast_instance: Any | None = None
 
 # 全局 TTS 并发限流 semaphore（单例）。
 # 所有 worker（整本合成、单章合成、项目 Build）共用同一计数，
@@ -138,6 +140,15 @@ def get_tts_by_voice_id(voice_id: str) -> BaseTTSProvider:
     return get_tts(None)
 
 
+def get_multicast_tts():
+    """多播剧（Seed-Audio 1.0）provider 单例；测试可注入 _multicast_instance mock。"""
+    global _multicast_instance
+    if _multicast_instance is None:
+        from .providers.doubao.multicast import DoubaoMulticastProvider
+        _multicast_instance = DoubaoMulticastProvider()
+    return _multicast_instance
+
+
 def get_tts_sem() -> asyncio.Semaphore:
     """惰性初始化全局 TTS semaphore（事件循环内创建）。"""
     global _tts_sem
@@ -201,8 +212,10 @@ def _doubao_seed_audio_rpm() -> int:
 
 
 def _doubao_icl_rpm() -> int:
-    # ICL 接口调用极低频，默认保守 12/min
-    return 12
+    # ICL 查询被 worker 轮询 + 前端详情轮询双路触发（单任务约 24/min），
+    # 默认 60/min 可配置（DOUBAO_ICL_RPM_LIMIT）
+    from ..core.config import settings
+    return max(1, int(settings.DOUBAO_ICL_RPM_LIMIT))
 
 
 _doubao_tts_bucket = _RPMBucket(_doubao_tts_rpm)

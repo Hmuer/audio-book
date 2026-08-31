@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.session import get_session_factory
 from ..db.models import Build, BuildArtifact, Project, User
-from ..ai.factory import get_tts
+from ..ai.factory import get_tts, get_tts_by_voice_id
 from ..core.config import settings
 from ..services.auth import (
     authenticate,
@@ -278,12 +278,24 @@ async def health():
 
 
 @router.get("/voices")
+async def api_list_voices(
+    tts_provider: str | None = None,
+    current: User = Depends(get_current_user),
+):
+    """列出可用音色（当前用户视角：含其可用 ICL 克隆音色）。"""
+    user_id = getattr(current, "id", None)
+    return await list_voices(tts_provider, icl_user_id=user_id)
+
+
 async def list_voices(
     tts_provider: str | None = None,
+    *,
+    icl_user_id: int | None = None,
 ):
-    """列出可用音色。
+    """列出可用音色（服务层，可直接调用）。
     - tts_provider 未给：返回 minimax + doubao（两套并集，按 id 去重）。
-    - tts_provider ∈ {minimax, doubao}：仅返回对应厂商音色。
+    - tts_provider ∈ {minimax, doubao, icl}：仅返回对应厂商音色。
+    - icl_user_id 给出时：附带该用户已训练可用的 ICL 克隆音色（icl:<clone_id>）。
     每条音色都带有 provider 字段，前端可据此分组。
     """
     import asyncio as _as_nc
@@ -294,15 +306,21 @@ async def list_voices(
     else:
         requested_providers = ["minimax", "doubao"]
 
+    # ICL 音色只在请求 doubao/icl 或全量聚合时附带（icl: 走豆包合成通道）
+    want_icl = icl_user_id is not None and (
+        not tts_provider or tts_provider.lower() in ("doubao", "icl")
+    )
+
     # 并发 list_voices（加速响应）
     async def _fetch(p: str) -> list[dict]:
         from backend.app.ai.factory import get_tts as _get_tts
         tts_inst = _get_tts(p)
         try:
             return await tts_inst.list_voices()
-        except Exception:
+        except Exception as e:
             # 若某 provider 临时不可用（例如 Doubao 未填 AK，但 list_voices 是读 JSON，通常不报错）
             # 吞异常保证另一个仍可返回；真实请求再抛
+            logger.warning(f"[voices] provider={p} list_voices 失败: {type(e).__name__}: {e}")
             return []
 
     tasks = [_fetch(p) for p in requested_providers]
@@ -314,8 +332,118 @@ async def list_voices(
             if not vid:
                 continue
             merged[vid] = v
+
+    if want_icl:
+        try:
+            from ..services.icl import icl_voices_for_user
+            for v in await icl_voices_for_user(icl_user_id):  # type: ignore[arg-type]
+                merged[v["id"]] = v
+        except Exception:
+            logger.exception("ICL 音色聚合失败（忽略）")
+
     final = list(merged.values())
     return {"voices": final, "count": len(final)}
+
+
+# ---------- ICL 声音复刻（豆包 ICL 2.0） ----------
+
+
+@router.post("/icl/voices")
+async def api_icl_create_voice(
+    request: Request,
+    voice_name: str = Form(...),
+    file: UploadFile = File(...),
+    current: User = Depends(get_current_user),
+):
+    """上传 3~10 秒参考音频，创建 ICL 声音复刻训练任务。"""
+    t0 = _time.perf_counter()
+    remote = request.client.host if request.client else "?"
+    # 先按声明的大小拒绝（避免超大上传先整体读入内存）
+    declared = request.headers.get("content-length")
+    if declared and int(declared) > settings.ICL_MAX_AUDIO_BYTES + 64 * 1024:
+        raise HTTPException(413, f"参考音频过大: {declared} > {settings.ICL_MAX_AUDIO_BYTES}")
+    content = await file.read()
+    logger.info(
+        f"[HTTP] POST /api/icl/voices client={remote} user={current.username} "
+        f"name={voice_name!r} filename={file.filename} size={len(content)}"
+    )
+    if not content:
+        raise HTTPException(400, "参考音频为空")
+    if len(content) > settings.ICL_MAX_AUDIO_BYTES:
+        raise HTTPException(413, f"参考音频过大: {len(content)} > {settings.ICL_MAX_AUDIO_BYTES}")
+    try:
+        from ..services.icl import start_icl_training
+        resp = await start_icl_training(
+            user_id=current.id,
+            voice_name=voice_name,
+            audio_bytes=content,
+            filename=file.filename,
+        )
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.info(f"[HTTP] 200 /api/icl/voices task={resp['task_id'][:12]}... total_ms={elapsed_ms}")
+        return resp
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error(f"[HTTP] 500 /api/icl/voices -> {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(500, f"创建训练任务失败: {type(e).__name__}: {e}")
+
+
+@router.get("/icl/voices")
+async def api_icl_list_voices(
+    current: User = Depends(get_current_user),
+):
+    """列出当前用户的 ICL 训练任务（含进行中/成功/失败）。"""
+    try:
+        from ..services.icl import list_icl_tasks
+        return {"tasks": await list_icl_tasks(current.id)}
+    except Exception as e:
+        logger.error(f"[HTTP] 500 /api/icl/voices -> {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(500, f"查询失败: {type(e).__name__}: {e}")
+
+
+@router.get("/icl/voices/{task_id}")
+async def api_icl_get_voice(
+    task_id: str,
+    current: User = Depends(get_current_user),
+):
+    """任务详情（进行中会顺带刷新一次豆包侧状态；归属校验在刷新之前）。"""
+    try:
+        from ..services.icl import get_icl_task
+        resp = await get_icl_task(task_id, current.id)
+        if resp is None:
+            raise HTTPException(404, f"任务不存在或不属于当前用户: {task_id}")
+        return resp
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"[HTTP] 500 /api/icl/voices/{task_id} -> {type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(500, f"查询失败: {type(e).__name__}: {e}")
+
+
+@router.delete("/icl/voices/{task_id}")
+async def api_icl_delete_voice(
+    task_id: str,
+    current: User = Depends(get_current_user),
+):
+    """删除训练任务（含参考音频）。"""
+    try:
+        from ..services.icl import delete_icl_task
+        ok = await delete_icl_task(current.id, task_id)
+        if not ok:
+            raise HTTPException(404, f"任务不存在或不属于当前用户: {task_id}")
+        return {"ok": True, "task_id": task_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"[HTTP] 500 DELETE /api/icl/voices/{task_id} -> {type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(500, f"删除失败: {type(e).__name__}: {e}")
 
 
 # ---------- Chapter & Book 路由已移除（项目制统一入口：/api/projects/*）----------
@@ -342,7 +470,8 @@ async def api_tts_preview(
         f"voice={req.voice_id} text_len={len(req.text)} speed={req.speed}"
     )
     try:
-        tts = get_tts()
+        # 按音色命名空间前缀路由厂商（minimax: → MiniMax；doubao:/icl: → 豆包）
+        tts = get_tts_by_voice_id(req.voice_id)
         audio_dir = Path(settings.AUDIO_DIR)
         audio_dir.mkdir(parents=True, exist_ok=True)
         import uuid as _uuid

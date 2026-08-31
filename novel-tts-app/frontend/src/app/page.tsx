@@ -5,9 +5,11 @@ import { useAuth } from '@/components/AuthContext';
 import AppSidebar from '@/components/AppSidebar';
 import ProjectListPage from '@/components/ProjectListPage';
 import ProjectDetailPage from '@/components/ProjectDetailPage';
+import VoiceLibraryPage from '@/components/VoiceLibraryPage';
 import SettingsPage from '@/components/SettingsPage';
 import LoginPage from '@/components/LoginPage';
 import { api, errToLog, Voice, ProjectListItem } from '@/lib/api';
+import { voiceProvider } from '@/lib/voiceUtils';
 
 // ---- 新路由结构 ----
 type Route =
@@ -97,6 +99,15 @@ export default function HomePage() {
     return () => window.removeEventListener('app:projects-refreshed', onRefresh as EventListener);
   }, []);
 
+  // 自定义事件：ICL 训练任务出现新可用音色时，重拉音色列表
+  useEffect(() => {
+    const onVoicesRefresh = () => {
+      api.voices().then(setVoices).catch(e => console.error('voices 重拉失败:', errToLog(e)));
+    };
+    window.addEventListener('app:voices-refreshed', onVoicesRefresh);
+    return () => window.removeEventListener('app:voices-refreshed', onVoicesRefresh);
+  }, []);
+
   if (authLoading) {
     return (
       <div className="min-h-[60vh] grid place-items-center text-ink-500">
@@ -131,9 +142,14 @@ export default function HomePage() {
       ];
     }
     if (R.name === 'ab-voices') {
+      const iclCount = voices.filter(v => voiceProvider(v) === 'icl').length;
+      const doubaoCount = voices.filter(v => voiceProvider(v) === 'doubao').length;
       return [
-        { label: '音色', value: String(voices.length).padStart(2, '0'), tone: 'brand' as const },
-        { label: '预设', value: '16', tone: 'cold' as const },
+        { label: '音色',   value: String(voices.length).padStart(2, '0'), tone: 'brand' as const },
+        { label: '豆包',   value: String(doubaoCount).padStart(2, '0'),   tone: 'cold' as const },
+        ...(iclCount > 0 ? [
+          { label: '复刻', value: String(iclCount).padStart(2, '0'), tone: 'ok' as const },
+        ] : []),
       ];
     }
     return [
@@ -174,7 +190,7 @@ export default function HomePage() {
         >
           {R.name === 'ab-list' && <ProjectListPage />}
           {R.name === 'ab-detail' && <ProjectDetailPage projectId={R.id} voices={voices} />}
-          {R.name === 'ab-voices' && <PlaceholderPage title="音色库" desc="音色库功能即将上线" iconName="mic" />}
+          {R.name === 'ab-voices' && <VoiceLibraryPage voices={voices} />}
           {R.name === 'settings' && <SettingsPage />}
           {R.name === 'unknown' && (
             <PlaceholderPage title="页面不存在" desc="该路由暂未实现" iconName="unknown" actionHref="#/audiobooks" actionLabel="返回有声书列表" />

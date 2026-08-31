@@ -40,24 +40,28 @@ async def test_multicast_strict_single_chapter_fail_causes_build_failed(_isolate
     from backend.app.core import config as cfgmod
     from backend.app.ai import factory as aifact
 
-    # 开启严格模式 + TTS_PROVIDER=doubao
+    # 开启严格模式 + TTS_PROVIDER=doubao（multicast 仅支持 doubao / Seed-Audio）
     # 注意：monkeypatch 必须在每个测试内部作用（因为有 autouse fixture 已生效）
     import asyncio as _aio
     cfgmod.settings.MULTICAST_STRICT_MODE = True
 
-    # 用一个假的 TTS，第一次调用 synthesize_to_bytes 就抛错（Mock provider 通常不会错）
     from backend.tests.mock_providers import MockTTSProvider, MockLLMProvider
 
-    class _FailOnEvenChapter(MockTTSProvider):
-        async def synthesize_to_bytes(self, text, voice_id, *, emotion="calm", speed=1.0, **kw):
-            # 任何合成都失败（模拟豆包 Seed-Audio / TTS 异常）
-            raise RuntimeError("模拟豆包 TTS 严格失败：第 2 章合成错误")
+    # 多播剧模式走 get_multicast_tts()（Seed-Audio 整章生成）——注入必然失败的 mock
+    class _FailMC:
+        provider = "doubao"
+
+        async def synthesize_chapter_to_file(self, segments, output_path, *, speed=1.0,
+                                             chapter_title="", instruction_text=None):
+            raise RuntimeError("模拟 Seed-Audio 多播剧严格失败：章节合成错误")
 
     # 替换全局单例（get_tts(None) 会读 _tts_instance）
     prev_tts = aifact._tts_instance
     prev_llm = aifact._llm_instance
-    aifact._tts_instance = _FailOnEvenChapter()
+    prev_mc = aifact._multicast_instance
+    aifact._tts_instance = MockTTSProvider()
     aifact._llm_instance = MockLLMProvider()
+    aifact._multicast_instance = _FailMC()
     try:
         await init_db()
         pid = (await create_project("严格模式测试")).project_id
@@ -67,12 +71,12 @@ async def test_multicast_strict_single_chapter_fail_causes_build_failed(_isolate
         resp = await start_build(
             project_id=pid,
             voice_assignments={},
-            narrator_voice_id="minimax:male-qn-jingying",
-            tts_provider="minimax",
+            narrator_voice_id="doubao:zh_female_qingxin",
+            tts_provider="doubao",
             mode="multicast",  # 多播剧模式
         )
         assert resp.mode == "multicast"
-        assert resp.tts_provider == "minimax"
+        assert resp.tts_provider == "doubao"
         bid = resp.build_id
 
         # 等待 worker 完成（最多 60s）
@@ -114,6 +118,7 @@ async def test_multicast_strict_single_chapter_fail_causes_build_failed(_isolate
     finally:
         aifact._tts_instance = prev_tts
         aifact._llm_instance = prev_llm
+        aifact._multicast_instance = prev_mc
         cfgmod.settings.MULTICAST_STRICT_MODE = False
         async with _RUNNING_LOCK:
             _RUNNING_BUILDS.discard(pid)
