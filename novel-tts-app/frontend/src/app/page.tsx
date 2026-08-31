@@ -116,8 +116,12 @@ export default function HomePage() {
   const statusCapsules = (() => {
     if (R.name === 'ab-list' || R.name === 'ab-detail') {
       const total = projects.length;
-      const running = projects.filter(p => p.status === 'processing' || p.status === 'pending').length;
-      const done    = projects.filter(p => p.status === 'ready').length;
+      // 与列表页 isRunning 保持一致：识别中 / 合成中 / 导入中
+      const running = projects.filter(p =>
+        p.status === 'preparing' || p.status === 'synthesizing' || p.status === 'importing'
+      ).length;
+      // 已完成 = 合成完成（done / success），"部分成功"单列不计入
+      const done = projects.filter(p => p.status === 'done' || p.status === 'success').length;
       return [
         { label: '项目',   value: String(total).padStart(2, '0'), tone: 'brand' as const },
         ...(total > 0 ? [
