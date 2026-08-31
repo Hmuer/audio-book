@@ -111,8 +111,15 @@ export default function WaveformPlayer({
     try {
       const paused = audio.paused || audio.ended || audio.readyState < 2;
       if (paused) {
-        // 若之前 ended，播放需要从头（否则浏览器保持 ended 不动）
-        if (audio.ended) {
+        // 若之前 ended，播放需要从头（否则浏览器保持 ended 不动）。
+        // 但 ended=true 期间用户可能已拖动进度条 seek 到中间位置（seek 是异步的，
+        // 'seeked' 事件未回来时 ended 仍为 true）——此时绝不能重置回 0，
+        // 否则会出现「拖到任意位置都从头播放」。仅当播放头确实仍停在末尾才回卷。
+        if (
+          audio.ended &&
+          audio.duration > 0 &&
+          audio.currentTime >= audio.duration - 0.05
+        ) {
           try { audio.currentTime = 0; } catch {}
         }
         // 如果元数据还没好，主动 load
