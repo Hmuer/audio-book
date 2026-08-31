@@ -48,6 +48,9 @@ export default function WaveformPlayer({
   const durationRef = useRef(0);              // 避免 useCallback 闭包陈旧
   const wasPlayingBeforeDragRef = useRef(false);
   const trackRef = useRef<HTMLDivElement | null>(null);
+  // 用户在 duration 未知时点击 / 拖动，目标位置被暂存到这里；
+  // 一旦 onLoadedMetadata 触发就立刻应用，避免「拖到 1:43 但实际从头开始」。
+  const pendingSeekRef = useRef<number | null>(null);
   // 防止连点：play() 返回 promise 之前被快速连点 N 次，会出现 UI 和真实播放状态错位
   const toggleLockRef = useRef(false);
   // waiting 超时兜底计时器
@@ -179,19 +182,29 @@ export default function WaveformPlayer({
   const seekByPercent = useCallback((pct: number) => {
     const audio = audioRef.current;
     if (!audio) return;
-    const dur = Number.isFinite(audio.duration) && audio.duration > 0
-      ? audio.duration
-      : durationRef.current;
-    if (!dur || dur <= 0) return;
+    const audioDur = Number.isFinite(audio.duration) ? audio.duration : 0;
+    const dur = audioDur > 0 ? audioDur : durationRef.current;
     const clamped = Math.max(0, Math.min(1, pct));
-    const target = clamped * dur;
-    try {
-      audio.currentTime = target;
-    } catch (err) {
-      // 某些浏览器在元数据未加载完写 currentTime 会抛错（DOM Exception），吞掉不影响体验
-      console.warn('[WaveformPlayer] seek 失败', err);
+
+    if (dur > 0) {
+      // 元数据已就绪：直接写入 currentTime（这是真正修复"拖到 1:43 但从头播放"的关键）
+      const target = clamped * dur;
+      try {
+        audio.currentTime = target;
+        // 关键：写完立即以 DOM 真实值为准校正 UI，
+        // 防止 onTimeUpdate 在下一帧回写 0 时覆盖显示
+        setCurrentTime(audio.currentTime);
+      } catch (err) {
+        // 极少数浏览器对 readyState < 1 写 currentTime 抛错，暂存待元数据就绪再补
+        pendingSeekRef.current = clamped;
+        console.warn('[WaveformPlayer] seek 暂存（等待元数据）', err);
+      }
+    } else {
+      // 元数据尚未就绪：把用户意图暂存，onLoadedMetadata 时补上
+      pendingSeekRef.current = clamped;
+      // 同时给 UI 一个近似值（避免拖动后显示不更新）
+      setCurrentTime(0);
     }
-    setCurrentTime(target);
   }, []);
 
   // 进度条拖动处理
@@ -211,9 +224,7 @@ export default function WaveformPlayer({
     dragPercentRef.current = pct;
     wasPlayingBeforeDragRef.current = !!audioRef.current && !audioRef.current.paused;
     setDragging(true);
-    // 按下时先更新 UI 预览；是否 seek 立即执行交给 seekByPercent（内部已经能正确处理 duration 未知场景）
-    // 但这里不 seek，按下只是进入拖动态；短按（未移动）的 seek 交给 pointerUp 统一提交，
-    // 这样可以避免"在 duration 还是 0 时 seek"造成的错觉。
+    // 按下时先更新 UI 预览（即使 duration 未就绪也用拖动 percent 作为显示基准）。
     const dur = durationRef.current || (audioRef.current?.duration as number);
     if (Number.isFinite(dur) && dur > 0) {
       setCurrentTime(pct * dur);
@@ -239,6 +250,11 @@ export default function WaveformPlayer({
     setDragging(false);
     // 真正的 seek 只在释放时提交一次
     seekByPercent(pct);
+    // seek 写完后，下一帧 onTimeUpdate 会带回 DOM 真实值，
+    // 但若用户松开后没播放，onTimeUpdate 可能很久不触发——
+    // 这里手动以 DOM 真实 currentTime 校正一次显示，杜绝"显示是 1:43、播放却从头"的双轨。
+    const a = audioRef.current;
+    if (a && Number.isFinite(a.currentTime)) setCurrentTime(a.currentTime);
   };
 
   // 音量：点静音图标切换，记录上次音量
@@ -553,13 +569,22 @@ export default function WaveformPlayer({
             setDuration(Number.isFinite(d) ? d : 0);
             setLoaded(true);
             setPlayError(null);
+            // 元数据就绪 → 应用之前因 duration=0 而被暂存的 seek（修复"拖到 N 但从头播放"）
+            const pending = pendingSeekRef.current;
+            if (pending != null && Number.isFinite(d) && d > 0) {
+              pendingSeekRef.current = null;
+              try {
+                e.currentTarget.currentTime = pending * d;
+                setCurrentTime(e.currentTarget.currentTime);
+              } catch {}
+            }
           }}
           onTimeUpdate={(e) => {
             // 拖动时不更新 currentTime（由 onPointerMove 控制）
             if (dragging) return;
-            const d = e.currentTarget.duration;
             const t = e.currentTarget.currentTime;
-            setCurrentTime(d > 0 ? (Number.isFinite(t) ? t : 0) : 0);
+            // 始终以 audio DOM 的 currentTime 为准（已 seek 但 paused 时也会触发）
+            if (Number.isFinite(t)) setCurrentTime(t);
           }}
           onCanPlay={() => {
             setIsBuffering(false);
