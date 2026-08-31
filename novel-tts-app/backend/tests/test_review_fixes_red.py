@@ -110,8 +110,13 @@ def test_doubao_tts_endpoint_reads_settings(monkeypatch):
     p = DoubaoTTSProvider()
     assert p._endpoint == DoubaoTTSProvider.DEFAULT_ENDPOINT  # 默认值
 
-    monkeypatch.setattr(cfgmod.settings, "DOUBAO_TTS_BASE_URL", "http://mock:9999/api/v1/tts")
-    assert p._endpoint == "http://mock:9999/api/v1/tts"
+    # 直接覆写 settings 单例（不要走 monkeypatch 字符串路径，避免模块解析失败）
+    saved = cfgmod.settings.DOUBAO_TTS_BASE_URL
+    cfgmod.settings.DOUBAO_TTS_BASE_URL = "http://mock:9999/api/v1/tts"
+    try:
+        assert p._endpoint == "http://mock:9999/api/v1/tts"
+    finally:
+        cfgmod.settings.DOUBAO_TTS_BASE_URL = saved
 
 
 # ---------------------------------------------------------------------
@@ -128,7 +133,7 @@ async def test_icl_create_reqid_unique(monkeypatch):
         return {"code": 0, "data": {"task_id": f"dtid-{len(captured)}"}}
 
     monkeypatch.setattr(
-        "backend.app.core.settings.DOUBAO_AK", "test-ak", raising=False
+        "backend.app.core.config.settings.DOUBAO_AK", "test-ak", raising=False
     )
     client = DoubaoICLClient()
     client._http_post_json = _fake_post  # type: ignore[method-assign]
@@ -148,8 +153,10 @@ async def test_icl_create_reqid_unique(monkeypatch):
 # ---------------------------------------------------------------------
 _BOOK_TXT = """第一章 初遇
 今天是美好的一天。阳光透过窗户洒进房间，林小雨伸了个懒腰。
-"""
 
+第二章 启程
+林小雨拿起背包，走出了家门。张伟在门口等她，微笑着说："我们出发吧。"
+"""
 
 @pytest.mark.asyncio
 async def test_retry_failed_inherits_mode_and_provider(_isolate_data_dir):
