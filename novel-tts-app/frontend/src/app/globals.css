@@ -24,7 +24,7 @@
    全站 DARK ONLY：无反转、无 html.light 覆盖块、color-scheme 强制 dark。
 ================================================================ */
 :root {
-  /* Tailwind @apply 展开时会写 `rgb(var(--x)/var(--tw-x-opacity))`；
+  /* Tailwind @apply 展开时会写 `rgba(var(--x), var(--tw-x-opacity))`；
      在 :root 给默认 1，避免未显式指定 alpha 时 fallback 为透明。 */
   --tw-bg-opacity: 1;
   --tw-border-opacity: 1;
@@ -171,7 +171,7 @@ body {
     background: rgb(var(--ink-100));   /* 实心 gray-800，不再玻璃态 */
     border: 1px solid rgb(var(--ink-300)); /* #374151 */
     box-shadow:
-      0 1px 0 0 rgb(var(--color-white) / 0.04) inset,
+      0 1px 0 0 rgba(var(--color-white), 0.04) inset,
       0 10px 30px -18px rgba(0, 0, 0, 0.6);
     transition:
       border-color 0.18s ease,
@@ -180,10 +180,10 @@ body {
       transform 0.18s ease;
   }
   .card:hover {
-    border-color: rgb(var(--brand-500) / 0.45);
+    border-color: rgba(var(--brand-500), 0.45);
     box-shadow:
-      0 1px 0 0 rgb(var(--color-white) / 0.04) inset,
-      0 0 0 1px rgb(var(--brand-600) / 0.22),
+      0 1px 0 0 rgba(var(--color-white), 0.04) inset,
+      0 0 0 1px rgba(var(--brand-600), 0.22),
       0 18px 40px -22px rgba(0, 0, 0, 0.7);
     /* 无抬高 · 工具板不做漂浮 */
   }
@@ -203,7 +203,7 @@ body {
     padding: 16px 18px;
     background: rgb(var(--ink-100));
     border: 1px solid rgb(var(--ink-300));
-    box-shadow: 0 1px 0 0 rgb(var(--color-white) / 0.03) inset;
+    box-shadow: 0 1px 0 0 rgba(var(--color-white), 0.03) inset;
   }
   @media (min-width: 640px) {
     .glass-panel { padding: 20px 22px; }
@@ -225,16 +225,16 @@ body {
     background: rgb(var(--brand-600));
     border: 1px solid rgb(var(--brand-700));
     box-shadow:
-      0 1px 0 0 rgb(var(--color-white) / 0.10) inset,
-      0 8px 20px -10px rgb(var(--brand-600) / 0.70);
+      0 1px 0 0 rgba(var(--color-white), 0.10) inset,
+      0 8px 20px -10px rgba(var(--brand-600), 0.70);
   }
   .btn-primary:hover {
     background: rgb(var(--brand-500));
     border-color: rgb(var(--brand-600));
     box-shadow:
-      0 1px 0 0 rgb(var(--color-white) / 0.14) inset,
-      0 10px 22px -10px rgb(var(--brand-500) / 0.75),
-      0 0 0 3px rgb(var(--brand-500) / 0.18);
+      0 1px 0 0 rgba(var(--color-white), 0.14) inset,
+      0 10px 22px -10px rgba(var(--brand-500), 0.75),
+      0 0 0 3px rgba(var(--brand-500), 0.18);
     /* 无抬高 · 工具按钮不做漂浮 */
   }
   .btn-primary:active { transform: scale(0.99); }
@@ -248,7 +248,7 @@ body {
   }
   .btn-ghost:hover {
     background: rgb(var(--ink-200));
-    border-color: rgb(var(--brand-500) / 0.45);
+    border-color: rgba(var(--brand-500), 0.45);
     color: rgb(var(--ink-900));
   }
 
@@ -259,7 +259,7 @@ body {
     border: 1px solid rgb(var(--ink-300));
   }
   .btn-outline:hover {
-    background: rgb(var(--color-white) / 0.04);
+    background: rgba(var(--color-white), 0.04);
     border-color: rgb(var(--ink-400));
   }
 
@@ -268,12 +268,12 @@ body {
     @apply btn text-white;
     background: rgb(var(--status-error-bg));
     border: 1px solid rgb(var(--status-error-bg));
-    box-shadow: 0 8px 20px -10px rgb(var(--status-error-bg) / 0.6);
+    box-shadow: 0 8px 20px -10px rgba(var(--status-error-bg), 0.6);
   }
   .btn-danger:hover {
     filter: brightness(1.08);
-    box-shadow: 0 10px 24px -10px rgb(var(--status-error-bg) / 0.7),
-                0 0 0 3px rgb(var(--status-error-bg) / 0.18);
+    box-shadow: 0 10px 24px -10px rgba(var(--status-error-bg), 0.7),
+                0 0 0 3px rgba(var(--status-error-bg), 0.18);
   }
 
   /* ---- 输入框 / 下拉 / 文本域 · Edtech 参考 1px #E3E6EA light gray → 转 dark 版 #374151 ---- */
@@ -285,7 +285,7 @@ body {
     background: rgb(var(--ink-100));        /* gray-800 实心，不再玻璃态 */
     border: 1px solid rgb(var(--ink-300));   /* #374151 hairline */
     color: rgb(var(--ink-800));
-    box-shadow: 0 1px 0 0 rgb(var(--color-white) / 0.025) inset;
+    box-shadow: 0 1px 0 0 rgba(var(--color-white), 0.025) inset;
     /* 自定义下拉箭头：靛-400 细线 · UX Pilot 模板风格 */
     background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%23818CF8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
@@ -302,7 +302,7 @@ body {
   }
   select option:checked,
   select option:hover {
-    background: rgb(var(--brand-600) / 0.28);
+    background: rgba(var(--brand-600), 0.28);
     color: rgb(var(--color-white));
   }
   select option:disabled {
@@ -316,13 +316,34 @@ body {
       background-position: right 12px center;
     }
   }
+  /* input-base：.input 的别名（历史类名兼容 · 与 .input 完全同款） */
+  .input-base {
+    @apply w-full px-3.5 py-2.5 text-sm outline-none
+      transition-all duration-150
+      placeholder:text-ink-500;
+    border-radius: var(--radius-sm);
+    background: rgb(var(--ink-100));
+    border: 1px solid rgb(var(--ink-300));
+    color: rgb(var(--ink-800));
+    box-shadow: 0 1px 0 0 rgba(var(--color-white), 0.025) inset;
+  }
+  .input-base:hover { border-color: rgb(var(--ink-400)); }
+  .input-base:focus {
+    background: rgb(var(--ink-100));
+    border-color: rgb(var(--brand-500));
+    color: rgb(var(--ink-900));
+    box-shadow:
+      0 0 0 3px rgb(var(--brand-500), 0.18),
+      0 0 0 1px rgb(var(--brand-500), 0.45) inset;
+  }
+
   .input:focus, .textarea:focus, select:focus {
     background: rgb(var(--ink-100));
     border-color: rgb(var(--brand-500));
     color: rgb(var(--ink-900));
     box-shadow:
-      0 0 0 3px rgb(var(--brand-500) / 0.18),
-      0 0 0 1px rgb(var(--brand-500) / 0.45) inset;
+      0 0 0 3px rgba(var(--brand-500), 0.18),
+      0 0 0 1px rgba(var(--brand-500), 0.45) inset;
   }
   .input:hover, .textarea:hover, select:hover {
     border-color: rgb(var(--ink-400));
@@ -339,7 +360,7 @@ body {
   }
   .chip-soft {
     @apply chip;
-    background: rgb(var(--color-white) / 0.035);
+    background: rgba(var(--color-white), 0.035);
     border: 1px solid rgb(var(--ink-300));
     color: rgb(var(--ink-600));
   }
@@ -351,13 +372,13 @@ body {
   /* ---- 分隔线 ---- */
   .hr-divider {
     @apply border-t;
-    border-color: rgb(var(--ink-300) / 0.70);
+    border-color: rgba(var(--ink-300), 0.70);
   }
 
   /* ---- 进度条 ---- */
   .progress-track {
     @apply h-1.5 w-full rounded-full overflow-hidden;
-    background: rgb(var(--ink-300) / 0.70);
+    background: rgba(var(--ink-300), 0.70);
   }
   .progress-fill {
     @apply h-full rounded-full transition-all duration-300 ease-out;
@@ -381,7 +402,7 @@ body {
     background: rgb(var(--color-white));
     margin-top: -3px;
     border: 2px solid rgb(var(--brand-500));
-    box-shadow: 0 0 0 3px rgb(var(--brand-500) / 0.22), 0 1px 3px rgba(0,0,0,0.5);
+    box-shadow: 0 0 0 3px rgba(var(--brand-500), 0.22), 0 1px 3px rgba(0,0,0,0.5);
     cursor: pointer;
     transition: transform 0.15s ease;
   }
@@ -391,7 +412,7 @@ body {
     width: 12px; height: 12px; border-radius: 9999px;
     background: rgb(var(--color-white));
     border: 2px solid rgb(var(--brand-500));
-    box-shadow: 0 0 0 3px rgb(var(--brand-500) / 0.22), 0 1px 3px rgba(0,0,0,0.5);
+    box-shadow: 0 0 0 3px rgba(var(--brand-500), 0.22), 0 1px 3px rgba(0,0,0,0.5);
     cursor: pointer;
   }
   .volume-slider:focus { outline: none; }
@@ -407,7 +428,7 @@ body {
     color: #ffffff;
     background: rgb(var(--brand-600));
     border: 1px solid rgb(var(--brand-700));
-    box-shadow: 0 0 0 4px rgb(var(--brand-600) / 0.18);
+    box-shadow: 0 0 0 4px rgba(var(--brand-600), 0.18);
   }
   .step-dot.done {
     color: rgb(var(--ink-0));
@@ -462,9 +483,9 @@ body {
   .skeleton {
     background: linear-gradient(
       90deg,
-      rgb(var(--ink-300) / 0.6) 0%,
-      rgb(var(--ink-400) / 0.8) 50%,
-      rgb(var(--ink-300) / 0.6) 100%
+      rgba(var(--ink-300), 0.6) 0%,
+      rgba(var(--ink-400), 0.8) 50%,
+      rgba(var(--ink-300), 0.6) 100%
     );
     background-size: 200% 100%;
     animation: shimmer 2s linear infinite;
@@ -519,7 +540,7 @@ body {
 
   .focus-ring {
     @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-0;
-    --tw-ring-color: rgb(var(--brand-500) / 0.55);
+    --tw-ring-color: rgba(var(--brand-500), 0.55);
   }
 }
 
@@ -527,20 +548,20 @@ body {
    全局选中态 / 滚动条（DARK-ONLY）
 ================================================================ */
 ::selection {
-  background: rgb(var(--brand-500) / 0.38);
+  background: rgba(var(--brand-500), 0.38);
   color: rgb(var(--color-white));
 }
 
 /* 滚动条：Edtech 模板的细、灰、靛 hover */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb {
-  background: rgb(var(--ink-400) / 0.85);
+  background: rgba(var(--ink-400), 0.85);
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgb(var(--brand-500) / 0.55);
+  background: rgba(var(--brand-500), 0.55);
   background-clip: content-box;
   border: 2px solid transparent;
 }

@@ -220,11 +220,7 @@ export default function ProjectDetailPage({
 
       {/* ============ Header ============ */}
       <div className="glass-panel p-5 sm:p-6 relative overflow-hidden mb-5">
-        <div
-          className="stripe rounded-l-3xl"
-          style={{ backgroundColor: project!.cover_color || 'rgb(var(--brand-500))' }}
-        />
-        <div className="pl-3 flex items-center justify-between gap-3 flex-wrap relative">
+        <div className="flex items-center justify-between gap-3 flex-wrap relative">
           <div className="flex items-center gap-3 min-w-0 flex-1">
             <button
               className="btn-ghost shrink-0 !px-2.5 !py-2"
@@ -245,9 +241,10 @@ export default function ProjectDetailPage({
                   <span>{project!.book_title}</span>
                 )}
                 {project!.source_filename && (
-                  <span>
-                    {(project!.book_title && project!.book_title !== project!.name) ? ' · ' : ''}
-                    📄 {project!.source_filename}
+                  <span className="inline-flex items-center gap-1">
+                    {(project!.book_title && project!.book_title !== project!.name) ? '·' : ''}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+                    {project!.source_filename}
                   </span>
                 )}
                 {(!project!.book_title || project!.book_title === project!.name) && !project!.source_filename && project!.chapter_count > 0 && (
@@ -281,17 +278,12 @@ export default function ProjectDetailPage({
                   onClick={() => setTab(t.key)}
                   className={`flex items-center gap-2 px-3.5 py-2 text-sm font-medium whitespace-nowrap transition-all duration-200
                     ${active
-                      ? 'text-white shadow-brand'
-                      : 'text-ink-600 hover:text-ink-800 hover:bg-ink-200'
+                      ? 'text-white bg-brand-600 border border-brand-700'
+                      : 'text-ink-600 hover:text-ink-800 hover:bg-ink-200 border border-transparent'
                     }`}
-                  style={{
-                    borderRadius: 'var(--radius-sm)',
-                    ...(active ? {
-                      backgroundImage: 'linear-gradient(180deg, rgb(var(--color-white) / 0.14) 0%, rgb(var(--color-white) / 0) 50%), linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 100%)',
-                    } : {}),
-                  }}
+                  style={{ borderRadius: 'var(--radius-sm)' }}
                 >
-                  <span className={active ? 'text-white/90' : ''}>{t.icon}</span>
+                  <span className={active ? 'text-white' : ''}>{t.icon}</span>
                   <span>{t.label}</span>
                 </button>
               );
@@ -344,19 +336,29 @@ export default function ProjectDetailPage({
 }
 
 // =================== Overview Tab ===================
+const STAGE_ICONS: Record<string, JSX.Element> = {
+  start: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>,
+  split: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="6" cy="6" r="3"/><path d="M8.12 8.12 12 12"/><path d="M20 4 8.12 15.88"/><circle cx="6" cy="18" r="3"/><path d="M14.8 14.8 20 20"/></svg>,
+  characters: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+  dedup: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>,
+  dialogues: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
+  voice_recs: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>,
+  done: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>,
+};
+
 const PIPELINE_STAGES = [
-  { key: 'start',       label: '初始化',    icon: '🔧' },
-  { key: 'split',       label: '切分章节',  icon: '📑' },
-  { key: 'characters',  label: '角色识别',  icon: '🧑' },
-  { key: 'dedup',       label: '角色去重',  icon: '🔀' },
-  { key: 'dialogues',   label: '对白归属',  icon: '💬' },
-  { key: 'voice_recs',  label: '音色推荐',  icon: '🎙️' },
-  { key: 'done',        label: '完成',      icon: '✅' },
+  { key: 'start',       label: '初始化' },
+  { key: 'split',       label: '切分章节' },
+  { key: 'characters',  label: '角色识别' },
+  { key: 'dedup',       label: '角色去重' },
+  { key: 'dialogues',   label: '对白归属' },
+  { key: 'voice_recs',  label: '音色推荐' },
+  { key: 'done',        label: '完成' },
 ] as const;
 
 function stageLabel(s?: string): string {
   const found = PIPELINE_STAGES.find(st => st.key === s);
-  if (found) return `${found.icon} ${found.label}`;
+  if (found) return found.label;
   return s ? `运行中（${s}）` : '运行中';
 }
 
@@ -374,21 +376,27 @@ function PipelineTimeline({ prog }: { prog: ProjectDetailResp['prepare_progress'
           <div key={st.key} className="flex items-center shrink-0">
             <div className="flex flex-col items-center gap-1.5 px-2">
               <div
-                className={`w-8 h-8 rounded-full grid place-items-center text-sm transition-all ${
+                className={`w-8 h-8 rounded-full grid place-items-center transition-all ${
                   isFailed ? 'bg-red-500/20 text-red-300 border border-red-500/40'
-                  : isDone ? 'bg-lime-500/20 text-lime-300 border border-lime-500/30'
+                  : isDone ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                   : isCurrent ? 'bg-brand-500/20 text-brand-300 border border-brand-500/40 animate-pulse-soft'
-                  : 'bg-ink-200 text-white/30 border border-ink-300/70'
+                  : 'bg-ink-200 text-ink-500 border border-ink-300/70'
                 }`}
               >
-                {isFailed ? '❌' : isDone ? '✓' : st.icon}
+                {isFailed ? (
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                ) : isDone ? (
+                  STAGE_ICONS.done
+                ) : (
+                  STAGE_ICONS[st.key] ?? STAGE_ICONS.start
+                )}
               </div>
-              <span className={`text-[10px] whitespace-nowrap ${
-                isDone || isCurrent ? 'text-white/70' : 'text-white/30'
+              <span className={`text-[11px] whitespace-nowrap ${
+                isDone || isCurrent ? 'text-ink-600' : 'text-ink-500'
               }`}>{st.label}</span>
             </div>
             {i < PIPELINE_STAGES.length - 1 && (
-              <div className={`h-px w-6 ${isDone ? 'bg-lime-500/40' : 'bg-ink-300/60'}`} />
+              <div className={`h-px w-6 ${isDone ? 'bg-emerald-500/40' : 'bg-ink-300/60'}`} />
             )}
           </div>
         );
@@ -461,8 +469,8 @@ function OverviewTab({
       {prepareTip && (
         <div className="rounded-lg px-4 py-3 text-sm flex items-center gap-2"
           style={{
-            border: '1px solid rgb(var(--brand-500) / 0.35)',
-            background: 'rgb(var(--brand-500) / 0.10)',
+            border: '1px solid rgba(var(--brand-500), 0.35)',
+            background: 'rgba(var(--brand-500), 0.10)',
             color: 'rgb(var(--brand-200))',
           }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="m9 12 2 2 4-4"/></svg>
@@ -493,13 +501,15 @@ function OverviewTab({
           {uploadBusy ? (
             <div>
               <div className="inline-block w-8 h-8 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin mb-3" />
-              <div className="text-sm text-white/70">导入中…</div>
+              <div className="text-sm text-ink-600">导入中…</div>
             </div>
           ) : (
             <div>
-              <div className="text-3xl mb-3">📖</div>
-              <div className="text-sm text-white/70 font-medium">拖拽文件到这里，或点击选择</div>
-              <div className="text-xs text-white/40 mt-2">支持 TXT、Markdown、EPUB 格式</div>
+              <div className="mx-auto mb-3 w-12 h-12 rounded-lg grid place-items-center bg-ink-200 border border-ink-300 text-ink-500">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
+              </div>
+              <div className="text-sm text-ink-600 font-medium">拖拽文件到这里，或点击选择</div>
+              <div className="text-xs text-ink-500 mt-2">支持 TXT、Markdown、EPUB 格式</div>
             </div>
           )}
           {uploadErr && (
@@ -533,7 +543,10 @@ function OverviewTab({
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <button className="btn-ghost text-xs !py-1.5" onClick={() => onReload()}>刷新</button>
-              <button className="btn-danger !py-1.5 !px-3 text-xs" onClick={handlePrepare}>🔁 重新识别</button>
+              <button className="btn-danger !py-1.5 !px-3 text-xs" onClick={handlePrepare}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+                重新识别
+              </button>
             </div>
           </div>
           {prog?.prev_error?.msg && (
@@ -562,7 +575,10 @@ function OverviewTab({
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <button className="btn-ghost text-xs !py-1.5" onClick={() => onReload()}>刷新</button>
-              <button className="btn-ghost text-xs !py-1.5" onClick={handlePrepare}>🔁 重跑</button>
+              <button className="btn-ghost text-xs !py-1.5" onClick={handlePrepare}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+                重跑
+              </button>
             </div>
           </div>
 
@@ -572,8 +588,9 @@ function OverviewTab({
           </div>
 
           {hasPartialFailures && !hasPrepareError && (
-            <div className="rounded-lg border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-200">
-              ⚠️ 部分切片/批失败，将在重跑识别时自动补跑：
+            <div className="rounded-lg border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-200 flex items-center gap-1.5">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <span>部分切片/批失败，将在重跑识别时自动补跑：</span>
               {failedCharSlicesN > 0 && <span className="ml-2">角色切片失败 {failedCharSlicesN} 个</span>}
               {failedCharSlicesN > 0 && failedDialogueBatchesN > 0 && '，'}
               {failedDialogueBatchesN > 0 && <span className="ml-2">对白批失败 {failedDialogueBatchesN} 个</span>}
@@ -588,7 +605,7 @@ function OverviewTab({
           <div className="flex items-center justify-between gap-3 flex-wrap relative">
             <div className="flex items-start gap-3 min-w-0 flex-1">
               <div className="w-10 h-10 rounded-md grid place-items-center bg-brand-500/20 text-brand-300 shrink-0">
-                🚀
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
               </div>
               <div className="min-w-0">
                 <div className="font-semibold text-ink-800 mb-0.5">已就绪，开始识别</div>
@@ -598,7 +615,8 @@ function OverviewTab({
               </div>
             </div>
             <button className="btn-primary shrink-0" onClick={handlePrepare}>
-              🚀 开始识别
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              开始识别
             </button>
           </div>
         </div>
@@ -608,7 +626,7 @@ function OverviewTab({
         <div className="glass-panel !border-orange-500/30 !bg-orange-500/[0.05]">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="text-sm">
-              <span className="font-semibold text-ink-800">🔁 可补跑失败部分：</span>{' '}
+              <span className="font-semibold text-ink-800">可补跑失败部分：</span>{' '}
               <span className="text-ink-600">
                 {failedCharSlicesN > 0 && <>角色识别失败切片 {failedCharSlicesN} 个</>}
                 {failedCharSlicesN > 0 && failedDialogueBatchesN > 0 && '，'}
@@ -616,7 +634,8 @@ function OverviewTab({
               </span>
             </div>
             <button className="btn-ghost text-xs !py-1.5" onClick={handlePrepare}>
-              🔁 重新识别（自动补跑失败部分）
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+              重新识别（自动补跑失败部分）
             </button>
           </div>
         </div>
@@ -624,10 +643,18 @@ function OverviewTab({
 
       {/* 概览 4 卡 */}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        <OverviewStat label="章节数" value={String(project.chapter_count)} icon="📜" color="rgb(var(--brand-500))" />
-        <OverviewStat label="角色数" value={String(project.characters.length)} icon="🧑" color="rgb(var(--palette-purple-bg))" />
-        <OverviewStat label="文件大小" value={formatSize(project.source_file_size)} icon="📄" color="rgb(var(--status-info-bg))" />
-        <OverviewStat label="创建时间" value={project.created_at ? parseTime(project.created_at).toLocaleDateString('zh-CN') : '—'} icon="🗓" color="rgb(var(--accent-soft))" />
+        <OverviewStat label="章节数" value={String(project.chapter_count)}
+          icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>}
+          color="rgb(var(--brand-400))" />
+        <OverviewStat label="角色数" value={String(project.characters.length)}
+          icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>}
+          color="rgb(var(--palette-purple-fg))" />
+        <OverviewStat label="文件大小" value={formatSize(project.source_file_size)}
+          icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>}
+          color="rgb(var(--status-info-fg))" />
+        <OverviewStat label="创建时间" value={project.created_at ? parseTime(project.created_at).toLocaleDateString('zh-CN') : '—'}
+          icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>}
+          color="rgb(var(--ink-600))" />
       </div>
 
       {(project.description || (project.tags && project.tags.length > 0)) && (
@@ -656,7 +683,8 @@ function OverviewTab({
             最近一次构建
           </h3>
           <button className="btn-ghost !py-1.5 text-xs" onClick={() => onTab('builds')}>
-            查看全部 →
+            查看全部
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
           </button>
         </div>
         {project.last_build ? (
@@ -706,25 +734,16 @@ function OverviewTab({
 
 function OverviewStat({
   label, value, icon, color,
-}: { label: string; value: string; icon: string; color: string }) {
+}: { label: string; value: string; icon: JSX.Element; color: string }) {
   return (
-    <div className="glass-panel !p-4 relative overflow-hidden group">
-      <div
-        className="absolute -right-8 -top-8 w-24 h-24 rounded-full pointer-events-none opacity-40 transition-opacity group-hover:opacity-70"
-        style={{ background: `radial-gradient(circle, ${color}33 0%, transparent 70%)` }}
-      />
-      <div className="flex items-center justify-between relative">
+    <div className="glass-panel !p-4">
+      <div className="flex items-center justify-between">
         <span className="text-xs text-ink-500 tracking-wide">{label}</span>
-        <span className="text-lg opacity-70">{icon}</span>
+        <span className="grid place-items-center w-7 h-7 rounded-md" style={{ color }}>
+          {icon}
+        </span>
       </div>
-      <div
-        className="text-2xl sm:text-[28px] font-bold tracking-tight mt-2 truncate relative font-sans"
-        style={{
-          background: `linear-gradient(135deg, ${color} 0%, ${color}cc 100%)`,
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent',
-        }}
-      >
+      <div className="text-2xl sm:text-[26px] font-bold tracking-tight mt-2 truncate text-ink-900 tabular-nums">
         {value}
       </div>
     </div>
@@ -758,19 +777,20 @@ function LastBuildSummary({
           className="h-full rounded-full transition-all duration-500"
           style={{
             width: `${pct}%`,
-            backgroundImage:
+            backgroundColor:
               build.status === 'done'
-                ? 'linear-gradient(90deg, rgb(var(--accent-soft)) 0%, rgb(var(--status-ready-bg)) 100%)'
+                ? 'rgb(var(--status-ready-bg))'
                 : build.status === 'failed'
-                ? 'linear-gradient(90deg, rgb(var(--status-error-bg)), rgb(var(--status-error-fg))'
+                ? 'rgb(var(--status-error-bg))'
                 : build.status === 'synthesizing' || build.status === 'preparing'
-                ? 'linear-gradient(90deg, rgb(var(--status-warn-bg)), rgb(var(--status-warn-dot))'
-                : 'linear-gradient(90deg, rgb(var(--brand-500)), rgb(var(--brand-600))',
+                ? 'rgb(var(--status-warn-bg))'
+                : 'rgb(var(--brand-500))',
           }}
         />
       </div>
       <button className="btn-ghost !py-1 text-xs" onClick={onGotoBuilds}>
-        查看构建详情 →
+        查看构建详情
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
       </button>
     </div>
   );
@@ -779,14 +799,14 @@ function LastBuildSummary({
 // =================== Chapters Tab ===================
 // =================== 角色颜色工具 ===================
 const CHARACTER_COLORS: { bg: string; fg: string; border: string }[] = [
-  { bg: 'rgb(var(--palette-purple-bg) / 0.14)', fg: 'rgb(var(--palette-purple-fg))', border: 'rgb(var(--palette-purple-bg) / 0.30)' },   // 紫
-  { bg: 'rgb(var(--palette-pink-bg) / 0.14)',   fg: 'rgb(var(--palette-pink-fg))',   border: 'rgb(var(--palette-pink-bg) / 0.30)' },    // 粉
-  { bg: 'rgb(var(--palette-cyan-bg) / 0.14)',   fg: 'rgb(var(--palette-cyan-fg))',   border: 'rgb(var(--palette-cyan-bg) / 0.30)' },    // 青
-  { bg: 'rgb(var(--palette-green-bg) / 0.14)',  fg: 'rgb(var(--palette-green-fg))',  border: 'rgb(var(--palette-green-bg) / 0.30)' },   // 绿
-  { bg: 'rgb(var(--palette-yellow-bg) / 0.14)', fg: 'rgb(var(--palette-yellow-fg))', border: 'rgb(var(--palette-yellow-bg) / 0.30)' },  // 黄
-  { bg: 'rgb(var(--palette-blue-bg) / 0.14)',   fg: 'rgb(var(--palette-blue-fg))',   border: 'rgb(var(--palette-blue-bg) / 0.30)' },    // 蓝
-  { bg: 'rgb(var(--palette-rose-bg) / 0.14)',   fg: 'rgb(var(--palette-rose-fg))',   border: 'rgb(var(--palette-rose-bg) / 0.30)' },    // 红
-  { bg: 'rgb(var(--palette-mint-bg) / 0.14)',   fg: 'rgb(var(--palette-mint-fg))',   border: 'rgb(var(--palette-mint-bg) / 0.30)' },    // 薄荷
+  { bg: 'rgba(var(--palette-purple-bg), 0.14)', fg: 'rgb(var(--palette-purple-fg))', border: 'rgba(var(--palette-purple-bg), 0.30)' },   // 紫
+  { bg: 'rgba(var(--palette-pink-bg), 0.14)',   fg: 'rgb(var(--palette-pink-fg))',   border: 'rgba(var(--palette-pink-bg), 0.30)' },    // 粉
+  { bg: 'rgba(var(--palette-cyan-bg), 0.14)',   fg: 'rgb(var(--palette-cyan-fg))',   border: 'rgba(var(--palette-cyan-bg), 0.30)' },    // 青
+  { bg: 'rgba(var(--palette-green-bg), 0.14)',  fg: 'rgb(var(--palette-green-fg))',  border: 'rgba(var(--palette-green-bg), 0.30)' },   // 绿
+  { bg: 'rgba(var(--palette-yellow-bg), 0.14)', fg: 'rgb(var(--palette-yellow-fg))', border: 'rgba(var(--palette-yellow-bg), 0.30)' },  // 黄
+  { bg: 'rgba(var(--palette-blue-bg), 0.14)',   fg: 'rgb(var(--palette-blue-fg))',   border: 'rgba(var(--palette-blue-bg), 0.30)' },    // 蓝
+  { bg: 'rgba(var(--palette-rose-bg), 0.14)',   fg: 'rgb(var(--palette-rose-fg))',   border: 'rgba(var(--palette-rose-bg), 0.30)' },    // 红
+  { bg: 'rgba(var(--palette-mint-bg), 0.14)',   fg: 'rgb(var(--palette-mint-fg))',   border: 'rgba(var(--palette-mint-bg), 0.30)' },    // 薄荷
 ];
 
 function charColor(name: string): typeof CHARACTER_COLORS[number] {
@@ -891,7 +911,9 @@ function ChaptersTab({
   if (chapters.length === 0) {
     return (
       <div className="glass-panel text-center py-16 text-ink-500">
-        <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-ink-200 border border-ink-300/70 text-3xl">📭</div>
+        <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-ink-200 border border-ink-300 text-ink-500">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+        </div>
         <div className="text-sm font-medium text-ink-700">还没有章节</div>
         <div className="text-xs text-ink-500 mt-1">请先到「概览」触发识别</div>
       </div>
@@ -904,11 +926,12 @@ function ChaptersTab({
       <div className="glass-panel space-y-3">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <h3 className="font-semibold text-ink-800 flex items-center gap-2">
-            <span className="chip-soft">📖 章节</span>
-            <span className="text-sm text-ink-500">{chapters.length} 章</span>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-400"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
+            章节
+            <span className="text-sm text-ink-500 font-normal">{chapters.length} 章</span>
           </h3>
           {hasAudio && (
-            <span className="chip-soft">🎧 试听来自最近一次完成的构建</span>
+            <span className="chip-soft">试听来自最近一次完成的构建</span>
           )}
         </div>
 
@@ -930,9 +953,9 @@ function ChaptersTab({
                   <span
                     className="text-[11px] font-mono tabular-nums shrink-0 rounded-lg px-2 py-1 border"
                     style={{
-                      background: playing ? 'rgb(var(--brand-500) / 0.15)' : 'rgb(var(--color-white) / 0.04)',
-                      color: playing ? 'rgb(var(--brand-500))' : 'rgb(var(--color-white) / 0.5)',
-                      borderColor: playing ? 'rgb(var(--brand-500) / 0.3)' : 'rgb(var(--color-white) / 0.05)',
+                      background: playing ? 'rgba(var(--brand-500), 0.15)' : 'rgba(var(--color-white), 0.04)',
+                      color: playing ? 'rgb(var(--brand-500))' : 'rgba(var(--color-white), 0.5)',
+                      borderColor: playing ? 'rgba(var(--brand-500), 0.3)' : 'rgba(var(--color-white), 0.05)',
                     }}
                   >
                     #{String(c.idx + 1).padStart(3, '0')}
@@ -995,7 +1018,7 @@ function ChaptersTab({
                         )}
 
                         {/* 逐行渲染 */}
-                        <div className="space-y-1 max-h-[360px] overflow-y-auto pr-1 text-[13.5px] leading-relaxed">
+                        <div className="space-y-1 max-h-[360px] overflow-y-auto pr-1 text-[13px] leading-relaxed">
                           {lines.map(l => {
                             if (!l.text.trim()) {
                               return <div key={l.key} className="h-2" />;
@@ -1011,7 +1034,7 @@ function ChaptersTab({
                                 {isSpeech ? (
                                   <div className="w-6 shrink-0 text-right pt-0.5">
                                     <span
-                                      className="text-[10px] font-bold rounded px-1 py-0.5 border"
+                                      className="text-[11px] font-bold rounded px-1 py-0.5 border"
                                       style={{ background: c!.bg, color: c!.fg, borderColor: c!.border }}
                                       title={l.speaker ?? undefined}
                                     >
@@ -1020,7 +1043,7 @@ function ChaptersTab({
                                   </div>
                                 ) : (
                                   <div className="w-6 shrink-0 text-right pt-0.5">
-                                    <span className="text-[10px] font-bold text-ink-500">N</span>
+                                    <span className="text-[11px] font-bold text-ink-500">N</span>
                                   </div>
                                 )}
                                 <div className="flex-1 min-w-0">
@@ -1126,7 +1149,9 @@ function VoicesTab({
     <div className="space-y-4">
       <div className="glass-panel space-y-5 p-5 sm:p-6 relative overflow-hidden">
         <h3 className="font-semibold text-ink-800 flex items-center gap-2 relative">
-          <div className="w-8 h-8 rounded-md grid place-items-center bg-brand-500/20 text-brand-300">🎙</div>
+          <div className="w-8 h-8 rounded-md grid place-items-center bg-brand-500/20 text-brand-300">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+          </div>
           <div>
             <div>旁白音色 & 语速 <span className="text-xs text-ink-500 font-normal">（项目默认）</span></div>
           </div>
@@ -1172,7 +1197,7 @@ function VoicesTab({
                 onChange={e => setSpeed(parseFloat(e.target.value))}
                 className="w-full h-2 rounded-full appearance-none cursor-pointer"
                 style={{
-                  background: `linear-gradient(90deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-500)) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
+                  background: `linear-gradient(90deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-500)) ${((speed - 0.5) / 1.5) * 100}%, rgba(var(--color-white), 0.08) ${((speed - 0.5) / 1.5) * 100}%, rgba(var(--color-white), 0.08) 100%)`,
                 }}
               />
             </div>
@@ -1195,7 +1220,7 @@ function VoicesTab({
             )}
           </button>
           {savedTip && (
-            <span className="text-xs text-accent-lime flex items-center gap-1">
+            <span className="text-xs text-emerald-400 flex items-center gap-1">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
               已保存
             </span>
@@ -1205,13 +1230,17 @@ function VoicesTab({
 
       <div className="glass-panel space-y-4">
         <h3 className="font-semibold text-ink-800 flex items-center gap-2">
-          <div className="w-8 h-8 rounded-md grid place-items-center bg-accent-rose/20 text-accent-rose">🧑‍🤝‍🧑</div>
+          <div className="w-8 h-8 rounded-md grid place-items-center bg-brand-500/20 text-brand-300">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          </div>
           角色音色
           <span className="chip-soft">{chars.length} 个角色</span>
         </h3>
         {chars.length === 0 ? (
           <div className="rounded-lg border border-dashed border-ink-300 p-10 text-center">
-            <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-ink-200 border border-ink-300/70 text-3xl">🎭</div>
+            <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-ink-200 border border-ink-300 text-ink-500">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            </div>
             <div className="text-sm font-medium text-ink-700">还没有识别到角色</div>
             <div className="text-xs text-ink-500 mt-1">请先到「概览」触发识别，或直接导入章节系统会自动识别角色</div>
           </div>
@@ -1235,7 +1264,7 @@ function VoicesTab({
                         className="w-10 h-10 rounded-md grid place-items-center shrink-0 text-white font-bold"
                         style={{
                           background: `linear-gradient(135deg, ${genderColor}, ${genderColor}aa)`,
-                          boxShadow: `0 0 0 1px rgb(var(--color-white) / 0.12) inset, 0 6px 12px -6px ${genderColor}66`,
+                          boxShadow: `0 0 0 1px rgba(var(--color-white), 0.12) inset, 0 6px 12px -6px ${genderColor}66`,
                         }}
                       >
                         {c.name?.trim()?.[0] || '?'}
@@ -1322,10 +1351,8 @@ function BuildsTab({
     <div className="space-y-4">
       <div className="glass-panel flex items-center justify-between gap-3 flex-wrap p-5 sm:p-6 relative overflow-hidden">
         <div className="flex items-start gap-3 min-w-0">
-          <div className="w-10 h-10 rounded-md grid place-items-center shrink-0 shadow-brand"
-            style={{ backgroundImage: 'linear-gradient(135deg, rgb(var(--brand-500)), rgb(var(--brand-700))' }}
-          >
-            🏗
+          <div className="w-10 h-10 rounded-md grid place-items-center shrink-0 bg-brand-600 text-white">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
           </div>
           <div className="min-w-0">
             <h3 className="font-semibold text-ink-800">构建</h3>
@@ -1346,12 +1373,12 @@ function BuildsTab({
       </div>
 
       {builds.length === 0 ? (
-        <div className="glass-panel text-center py-16 text-ink-500 relative overflow-hidden">
-          <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-ink-200 border border-ink-300/70 text-3xl relative">
-            🏗
+        <div className="glass-panel text-center py-16 text-ink-500">
+          <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-ink-200 border border-ink-300 text-ink-500">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
           </div>
-          <div className="text-sm font-medium text-ink-700 relative">还没有构建记录</div>
-          <div className="text-xs text-ink-500 mt-1 relative">
+          <div className="text-sm font-medium text-ink-700">还没有构建记录</div>
+          <div className="text-xs text-ink-500 mt-1">
             配置好角色音色后，点击上方「开始生成」启动第一次构建
           </div>
         </div>
@@ -1448,12 +1475,12 @@ function BuildRow({
 
   const pctBarBg =
     item.status === 'done'
-      ? 'linear-gradient(90deg, rgb(var(--accent-soft)) 0%, rgb(var(--status-ready-bg)) 100%)'
+      ? 'rgb(var(--status-ready-bg))'
       : item.status === 'failed'
-      ? 'linear-gradient(90deg, rgb(var(--status-error-bg)), rgb(var(--status-error-fg))'
+      ? 'rgb(var(--status-error-bg))'
       : isRunning
-      ? 'linear-gradient(90deg, rgb(var(--status-warn-bg)), rgb(var(--status-warn-dot))'
-      : 'linear-gradient(90deg, rgb(var(--brand-500)), rgb(var(--brand-600))';
+      ? 'rgb(var(--status-warn-bg))'
+      : 'rgb(var(--brand-500))';
 
   return (
     <div className="glass-panel space-y-3 animate-fade-in p-5 relative overflow-hidden">
@@ -1478,9 +1505,9 @@ function BuildRow({
         {isRunning && item.started_at && (
           <span className="chip"
             style={{
-              background: 'linear-gradient(135deg, rgb(var(--status-warn-bg) / 0.22), rgb(var(--status-warn-dot) / 0.12))',
-              color: 'rgb(var(--status-partial-fg))',
-              border: '1px solid rgb(var(--status-warn-bg) / 0.3)',
+              background: 'rgba(var(--status-warn-bg), 0.18)',
+              color: 'rgb(var(--status-warn-fg))',
+              border: '1px solid rgba(var(--status-warn-bg), 0.3)',
             }}
           >
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse mr-1" />
@@ -1529,7 +1556,7 @@ function BuildRow({
       <div className="progress-track h-2">
         <div
           className="h-full rounded-full transition-all duration-500"
-          style={{ width: `${pct}%`, backgroundImage: pctBarBg }}
+          style={{ width: `${pct}%`, backgroundColor: pctBarBg }}
         />
       </div>
 
@@ -1619,9 +1646,9 @@ function BuildDetailContent({
                 <span
                   className="text-[11px] font-mono tabular-nums shrink-0 rounded-lg px-2 py-1"
                   style={{
-                    background: 'rgb(var(--color-white) / 0.04)',
-                    color: playing ? 'rgb(var(--brand-500))' : 'rgb(var(--color-white) / 0.45)',
-                    border: '1px solid rgb(var(--color-white) / 0.05)',
+                    background: 'rgba(var(--color-white), 0.04)',
+                    color: playing ? 'rgb(var(--brand-500))' : 'rgba(var(--color-white), 0.45)',
+                    border: '1px solid rgba(var(--color-white), 0.05)',
                   }}
                 >
                   #{String(a.chapter_idx + 1).padStart(3, '0')}
@@ -1637,8 +1664,9 @@ function BuildDetailContent({
                 )}
               </div>
               {a.status === 'failed' && a.error_msg && (
-                <div className="text-[11px] text-red-300/90 truncate mb-2" title={a.error_msg}>
-                  ❌ {a.error_msg.split('\n')[0]}
+                <div className="text-[11px] text-red-300/90 truncate mb-2 flex items-center gap-1" title={a.error_msg}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                  <span className="truncate">{a.error_msg.split('\n')[0]}</span>
                 </div>
               )}
               {a.status === 'done' && a.audio_url && (
@@ -1664,18 +1692,26 @@ function BuildDetailContent({
 function BuildArtifactStatusIcon({ status }: { status: string }) {
   if (status === 'done')
     return (
-      <span className="inline-flex w-5 h-5 rounded-full bg-accent-lime/20 text-accent-lime items-center justify-center text-[11px]">✓</span>
+      <span className="inline-flex w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-300 items-center justify-center shrink-0">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      </span>
     );
   if (status === 'synthesizing')
     return (
-      <span className="inline-block w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+      <span className="inline-flex w-5 h-5 items-center justify-center shrink-0">
+        <span className="inline-block w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+      </span>
     );
   if (status === 'failed')
     return (
-      <span className="inline-flex w-5 h-5 rounded-full bg-red-500/20 text-red-300 items-center justify-center text-[11px]">✗</span>
+      <span className="inline-flex w-5 h-5 rounded-full bg-red-500/20 text-red-300 items-center justify-center shrink-0">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </span>
     );
   return (
-    <span className="inline-flex w-5 h-5 rounded-full bg-ink-200 border border-ink-300/70 items-center justify-center text-[9px] text-ink-500">○</span>
+    <span className="inline-flex w-5 h-5 rounded-full bg-ink-200 border border-ink-300 items-center justify-center shrink-0">
+      <span className="w-1.5 h-1.5 rounded-full bg-ink-500" />
+    </span>
   );
 }
 
@@ -1738,10 +1774,8 @@ function CreateBuildModal({
 
         <div className="flex items-center justify-between mb-5 relative">
           <div className="flex items-start gap-3 min-w-0">
-            <div className="w-10 h-10 rounded-md grid place-items-center shrink-0 shadow-brand"
-              style={{ backgroundImage: 'linear-gradient(135deg, rgb(var(--brand-500)), rgb(var(--brand-700))' }}
-            >
-              ▶
+            <div className="w-10 h-10 rounded-md grid place-items-center shrink-0 bg-brand-600 text-white">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.29-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z"/></svg>
             </div>
             <div className="min-w-0">
               <h3 className="headline text-xl">启动新构建</h3>
@@ -1795,7 +1829,7 @@ function CreateBuildModal({
                   onChange={e => setSpeed(parseFloat(e.target.value))}
                   className="w-full h-2 rounded-full appearance-none cursor-pointer"
                   style={{
-                    background: `linear-gradient(90deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-500)) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
+                    background: `linear-gradient(90deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-500)) ${((speed - 0.5) / 1.5) * 100}%, rgba(var(--color-white), 0.08) ${((speed - 0.5) / 1.5) * 100}%, rgba(var(--color-white), 0.08) 100%)`,
                   }}
                 />
               </div>
@@ -1834,7 +1868,7 @@ function CreateBuildModal({
                           </div>
                           <div className="min-w-0">
                             <span className="font-medium text-sm text-ink-800 truncate block">{c.name}</span>
-                            <span className="text-[10px] text-ink-500">{c.gender || '—'}</span>
+                            <span className="text-[11px] text-ink-500">{c.gender || '—'}</span>
                           </div>
                         </div>
                       </div>
@@ -1878,7 +1912,8 @@ function CreateBuildModal({
               </>
             ) : (
               <>
-                🚀 开始生成
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.29-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z"/></svg>
+                开始生成
               </>
             )}
           </button>
@@ -1962,7 +1997,7 @@ function SettingsTab({
       <div className="glass-panel p-5 sm:p-6 space-y-5 relative overflow-hidden">
         <h3 className="font-semibold text-ink-800 flex items-center gap-2 relative">
           <div className="w-8 h-8 rounded-md grid place-items-center bg-accent-teal/20 text-accent-teal">
-            ⚙️
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </div>
           项目设置
         </h3>
@@ -2035,7 +2070,7 @@ function SettingsTab({
                 onChange={e => setSpeed(parseFloat(e.target.value))}
                 className="w-full h-2 rounded-full appearance-none cursor-pointer"
                 style={{
-                  background: `linear-gradient(90deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-500)) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) ${((speed - 0.5) / 1.5) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
+                  background: `linear-gradient(90deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-500)) ${((speed - 0.5) / 1.5) * 100}%, rgba(var(--color-white), 0.08) ${((speed - 0.5) / 1.5) * 100}%, rgba(var(--color-white), 0.08) 100%)`,
                 }}
               />
             </div>
@@ -2064,7 +2099,7 @@ function SettingsTab({
             )}
           </button>
           {savedTip && (
-            <span className="text-xs text-accent-lime flex items-center gap-1">
+            <span className="text-xs text-emerald-400 flex items-center gap-1">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
               已保存
             </span>
@@ -2074,7 +2109,9 @@ function SettingsTab({
 
       <div className="glass-panel !border-red-500/30 !bg-red-500/[0.04] space-y-3 relative overflow-hidden">
         <h3 className="font-semibold text-red-300 flex items-center gap-2 relative">
-          <span className="inline-flex w-7 h-7 rounded-md items-center justify-center bg-red-500/20 text-red-300">⚠️</span>
+          <span className="inline-flex w-7 h-7 rounded-md items-center justify-center bg-red-500/20 text-red-300 shrink-0">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          </span>
           危险区
         </h3>
         <p className="text-sm text-ink-500 relative">
@@ -2085,7 +2122,8 @@ function SettingsTab({
             className="btn-danger relative"
             onClick={() => setConfirmDelete(true)}
           >
-            🗑 删除该项目
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            删除该项目
           </button>
         ) : (
           <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 space-y-3 relative">
@@ -2105,7 +2143,7 @@ function SettingsTab({
                 onClick={doDelete}
                 disabled={deleting}
               >
-                {deleting ? '删除中…' : '🗑 确认删除'}
+                {deleting ? '删除中…' : '确认删除'}
               </button>
             </div>
           </div>

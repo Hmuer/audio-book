@@ -44,10 +44,8 @@ module.exports = {
           900: 'rgba(var(--brand-900), <alpha-value>)',
         },
         accent: {
-          lime:  'rgba(var(--accent-lime), <alpha-value>)',
           amber: 'rgba(var(--accent-amber), <alpha-value>)',
           teal:  'rgba(var(--accent-teal), <alpha-value>)',
-          rose:  'rgba(var(--accent-rose), <alpha-value>)',
         },
         // status 语义色 — 深色/浅色模式下自动切换对比度
         status: {
@@ -63,7 +61,7 @@ module.exports = {
       },
       fontFamily: {
         sans: [
-          'Geist',
+          'Inter',
           'ui-sans-serif',
           'system-ui',
           '-apple-system',
@@ -72,22 +70,7 @@ module.exports = {
           'Microsoft YaHei',
           'sans-serif',
         ],
-        // Display/大标题：Sora — 几何锐度、强张力、AI引擎感
-        display: [
-          'Sora',
-          'Geist',
-          'PingFang SC',
-          'ui-sans-serif',
-          'sans-serif',
-        ],
-        serif: [
-          'Sora',
-          'PingFang SC',
-          'ui-sans-serif',
-          'sans-serif',
-        ],
         mono: [
-          'Geist Mono',
           'ui-monospace',
           'SF Mono',
           'Menlo',
@@ -95,20 +78,17 @@ module.exports = {
         ],
       },
       boxShadow: {
-        'el-sm': '0 1px 0 0 rgb(var(--color-white) / 0.04) inset, 0 1px 2px 0 rgba(0,0,0,0.4)',
-        'el': '0 0 0 1px rgb(var(--color-white) / 0.04), 0 8px 24px -6px rgba(0,0,0,0.45), 0 2px 4px -2px rgba(0,0,0,0.3)',
-        'el-lg': '0 0 0 1px rgb(var(--color-white) / 0.06), 0 24px 48px -12px rgba(0,0,0,0.55), 0 4px 8px -4px rgba(0,0,0,0.3)',
-        'el-xl': '0 0 0 1px rgb(var(--color-white) / 0.06), 0 40px 80px -20px rgba(0,0,0,0.6), 0 8px 16px -8px rgba(0,0,0,0.35)',
-        'brand': '0 0 0 1px rgba(168,85,247,0.4), 0 10px 30px -8px rgba(139,92,246,0.5)',
-        'brand-lg': '0 0 0 1px rgba(168,85,247,0.5), 0 16px 40px -10px rgba(139,92,246,0.55)',
+        'el-sm': '0 1px 0 0 rgba(var(--color-white), 0.04) inset, 0 1px 2px 0 rgba(0,0,0,0.4)',
+        'el': '0 0 0 1px rgba(var(--color-white), 0.04), 0 8px 24px -6px rgba(0,0,0,0.45), 0 2px 4px -2px rgba(0,0,0,0.3)',
+        'el-lg': '0 0 0 1px rgba(var(--color-white), 0.06), 0 24px 48px -12px rgba(0,0,0,0.55), 0 4px 8px -4px rgba(0,0,0,0.3)',
+        'el-xl': '0 0 0 1px rgba(var(--color-white), 0.06), 0 40px 80px -20px rgba(0,0,0,0.6), 0 8px 16px -8px rgba(0,0,0,0.35)',
+        'brand': '0 0 0 1px rgba(99,102,241,0.4), 0 10px 30px -8px rgba(79,70,229,0.5)',
+        'brand-lg': '0 0 0 1px rgba(99,102,241,0.5), 0 16px 40px -10px rgba(79,70,229,0.55)',
       },
       borderRadius: {
         '2xl': '1rem',
         '3xl': '1.25rem',
         '4xl': '1.5rem',
-      },
-      backgroundImage: {
-        'hero-grad': 'radial-gradient(1200px 600px at 0% 0%, rgba(139,92,246,0.18), transparent 60%), radial-gradient(800px 500px at 100% 10%, rgba(45,212,191,0.08), transparent 60%), radial-gradient(900px 600px at 50% 120%, rgba(198,244,74,0.06), transparent 60%)',
       },
       keyframes: {
         'pulse-soft': {

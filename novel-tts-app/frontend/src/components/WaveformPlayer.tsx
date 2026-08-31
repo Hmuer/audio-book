@@ -324,8 +324,8 @@ export default function WaveformPlayer({
             borderRadius: '9999px',
             background: 'rgb(var(--brand-600))',
             boxShadow: isPlaying
-              ? '0 0 0 3px rgb(var(--brand-500) / 0.22), 0 10px 24px -8px rgb(var(--brand-700) / 0.95)'
-              : '0 0 0 1px rgb(var(--brand-500) / 0.45), 0 10px 20px -10px rgb(var(--brand-700) / 0.85)',
+              ? '0 0 0 3px rgba(var(--brand-500), 0.22), 0 10px 24px -8px rgba(var(--brand-700), 0.95)'
+              : '0 0 0 1px rgba(var(--brand-500), 0.45), 0 10px 20px -10px rgba(var(--brand-700), 0.85)',
           }}
           title={isPlaying ? '暂停' : '播放'}
         >
@@ -342,7 +342,7 @@ export default function WaveformPlayer({
           {isPlaying && (
             <span
               className="absolute inset-0 rounded-full animate-ping pointer-events-none"
-              style={{ background: 'rgb(var(--brand-500) / 0.20)', animationDuration: '1.8s' }}
+              style={{ background: 'rgba(var(--brand-500), 0.20)', animationDuration: '1.8s' }}
             />
           )}
         </button>
@@ -350,11 +350,11 @@ export default function WaveformPlayer({
         {/* 时间：Edtech 风格更冷静，左当前 / 右总时长 + 缓冲/错误提示 */}
         <div className="flex flex-col items-start justify-center shrink-0 min-w-[130px]">
           <div className="flex items-baseline gap-1">
-            <span className="text-[13px] font-mono tabular-nums text-white/90">
+            <span className="text-[13px] font-mono tabular-nums text-ink-700">
               {fmtTime(dragging || duration > 0 ? displayPercent * duration : 0)}
             </span>
-            <span className="text-[11px] text-white/25">/</span>
-            <span className="text-[12px] font-mono tabular-nums" style={{ color: 'rgb(var(--ink-700) / 0.6)' }}>
+            <span className="text-[11px] text-ink-500">/</span>
+            <span className="text-[12px] font-mono tabular-nums" style={{ color: 'rgba(var(--ink-700), 0.6)' }}>
               {fmtTime(duration)}
             </span>
           </div>
@@ -363,12 +363,13 @@ export default function WaveformPlayer({
               {isBuffering && (
                 <>
                   <span className="inline-block w-2 h-2 rounded-full border-2 border-ink-400/70 border-t-brand-500 animate-spin" />
-                  <span className="text-[10px]" style={{ color: 'rgb(var(--accent-amber))' }}>缓冲中…</span>
+                  <span className="text-[11px]" style={{ color: 'rgb(var(--accent-amber))' }}>缓冲中…</span>
                 </>
               )}
               {playError && (
-                <span className="text-[10px] text-rose-300 truncate max-w-[220px]" title={playError}>
-                  ⚠ {playError}
+                <span className="text-[11px] text-rose-300 truncate max-w-[220px] inline-flex items-center gap-1" title={playError}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  {playError}
                 </span>
               )}
             </div>
@@ -387,7 +388,7 @@ export default function WaveformPlayer({
               disabled={disabled}
               className="shrink-0 grid place-items-center rounded-md
                 w-8 h-8
-                text-white/60 hover:text-white/90
+                text-ink-600 hover:text-ink-700
                 hover:bg-ink-200 border border-ink-300/70 hover:border-ink-400
                 transition-all"
               title={muted || volume === 0 ? '取消静音' : '静音'}
@@ -399,7 +400,7 @@ export default function WaveformPlayer({
               hidden group-hover/vol:flex items-center gap-2 px-2
               ml-1 h-8 rounded-md border border-ink-300/70 bg-ink-200
             ">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-white/35">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-ink-500">
                 <circle cx="11" cy="11" r="8"/>
                 <path d="M21 21l-4.35-4.35"/>
               </svg>
@@ -418,11 +419,11 @@ export default function WaveformPlayer({
                 className="volume-slider w-24 h-1.5"
                 style={{
                   background: muted || volume === 0
-                    ? 'rgb(var(--color-white) / 0.08)'
-                    : `linear-gradient(90deg, rgb(var(--brand-400)) 0%, rgb(var(--brand-500)) ${(muted ? 0 : volume) * 100}%, rgb(var(--color-white) / 0.08) ${(muted ? 0 : volume) * 100}%, rgb(var(--color-white) / 0.08) 100%)`,
+                    ? 'rgba(var(--color-white), 0.08)'
+                    : `linear-gradient(90deg, rgb(var(--brand-400)) 0%, rgb(var(--brand-500)) ${(muted ? 0 : volume) * 100}%, rgba(var(--color-white), 0.08) ${(muted ? 0 : volume) * 100}%, rgba(var(--color-white), 0.08) 100%)`,
                 }}
               />
-              <span className="text-[10px] tabular-nums w-7 text-right text-white/50">
+              <span className="text-[11px] tabular-nums w-7 text-right text-ink-500">
                 {Math.round((muted ? 0 : volume) * 100)}%
               </span>
             </div>
@@ -436,7 +437,7 @@ export default function WaveformPlayer({
               onBlur={() => setTimeout(() => setShowSpeedMenu(false), 120)}
               className="shrink-0 inline-flex items-center justify-center gap-1
                 h-8 px-2.5 rounded-md border border-ink-300/70 bg-ink-200
-                text-white/70 hover:text-white/95 hover:bg-ink-200 hover:border-ink-400
+                text-ink-600 hover:text-ink-800 hover:bg-ink-200 hover:border-ink-400
                 transition-all font-medium text-[11.5px]"
               title="倍速"
             >
@@ -461,11 +462,11 @@ export default function WaveformPlayer({
                     className={`w-full text-left text-[12px] px-2.5 py-1.5 rounded-lg transition-colors
                       ${Math.abs(s - speed) < 1e-6
                         ? 'bg-brand-500/20 text-brand-200'
-                        : 'text-white/70 hover:bg-ink-200 hover:text-white/95'
+                        : 'text-ink-600 hover:bg-ink-200 hover:text-ink-800'
                       }`}
                   >
                     {s.toFixed(2).replace(/\.?0+$/, '') || '1'}x
-                    {s === 1 && <span className="text-white/25 ml-1">默认</span>}
+                    {s === 1 && <span className="text-ink-500 ml-1">默认</span>}
                   </button>
                 ))}
               </div>
@@ -479,7 +480,7 @@ export default function WaveformPlayer({
               onClick={onDownload}
               className="shrink-0 grid place-items-center rounded-md
                 w-8 h-8
-                text-white/60 hover:text-brand-300
+                text-ink-600 hover:text-brand-300
                 hover:bg-brand-500/10 border border-ink-300/70 hover:border-brand-500/30
                 transition-all"
               title="下载 MP3"
@@ -506,7 +507,7 @@ export default function WaveformPlayer({
           style={{
             touchAction: 'none',
             background: 'rgb(var(--ink-0))',
-            boxShadow: 'inset 0 0 0 1px rgb(var(--ink-300) / 0.9)',
+            boxShadow: 'inset 0 0 0 1px rgba(var(--ink-300), 0.9)',
           }}
         >
           {/* 已播放部分：indigo-600 → sky-400 渐变 */}
@@ -515,7 +516,7 @@ export default function WaveformPlayer({
             style={{
               width: `${displayPercent * 100}%`,
               background: edtechProgressGradient,
-              boxShadow: '0 0 12px 0 rgb(var(--brand-500) / 0.30)',
+              boxShadow: '0 0 12px 0 rgba(var(--brand-500), 0.30)',
             }}
           />
           {/* 缓冲进度（buffered） */}
@@ -534,8 +535,8 @@ export default function WaveformPlayer({
               height: dragging ? 16 : 14,
               background: dragging ? 'rgb(var(--brand-500))' : '#fff',
               boxShadow: dragging
-                ? '0 0 0 5px rgb(var(--brand-500) / 0.22), 0 4px 10px rgba(0,0,0,0.5)'
-                : '0 0 0 3px rgb(var(--brand-500) / 0.22), 0 2px 6px rgba(0,0,0,0.45)',
+                ? '0 0 0 5px rgba(var(--brand-500), 0.22), 0 4px 10px rgba(0,0,0,0.5)'
+                : '0 0 0 3px rgba(var(--brand-500), 0.22), 0 2px 6px rgba(0,0,0,0.45)',
             }}
           />
         </div>
@@ -678,7 +679,7 @@ function BufferedBar({
       className="absolute top-0 left-0 h-full rounded-full pointer-events-none"
       style={{
         width: `${display * 100}%`,
-        background: 'rgb(var(--color-white) / 0.06)',
+        background: 'rgba(var(--color-white), 0.06)',
         zIndex: -1,
       }}
     />

@@ -52,7 +52,7 @@ export default function LoginPage() {
             style={{
               borderRadius: 'var(--radius-md)',
               background: 'rgb(var(--brand-600))',
-              boxShadow: '0 0 0 1px rgb(var(--brand-500) / 0.4), 0 10px 20px -10px rgb(var(--brand-600) / 0.6)',
+              boxShadow: '0 0 0 1px rgba(var(--brand-500), 0.4), 0 10px 20px -10px rgba(var(--brand-600), 0.6)',
             }}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="text-white">
@@ -67,7 +67,7 @@ export default function LoginPage() {
           </div>
           <div>
             <div className="text-[15px] font-semibold text-white leading-none">阿布</div>
-            <div className="mt-1 text-[11px] text-white/35 leading-none">AI 内容创作平台</div>
+            <div className="mt-1 text-[11px] text-ink-500 leading-none">AI 内容创作平台</div>
           </div>
         </div>
 
@@ -137,8 +137,8 @@ export default function LoginPage() {
               <div
                 className="text-sm rounded-md px-3 py-2"
                 style={{
-                  borderColor: 'rgb(var(--status-error-bg) / 0.28)',
-                  background: 'rgb(var(--status-error-bg) / 0.08)',
+                  borderColor: 'rgba(var(--status-error-bg), 0.28)',
+                  background: 'rgba(var(--status-error-bg), 0.08)',
                   color: 'rgb(var(--status-error-fg))',
                   borderWidth: 1,
                   borderStyle: 'solid',

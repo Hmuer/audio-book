@@ -82,7 +82,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
               type="button"
               onClick={onClose}
               aria-label="关闭"
-              className="w-7 h-7 grid place-items-center transition-all text-ink-600 hover:text-white hover:bg-ink-200"
+              className="w-7 h-7 grid place-items-center transition-all text-ink-600 hover:text-ink-900 hover:bg-ink-200"
               style={{ borderRadius: 'var(--radius-xs)' }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -109,7 +109,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                 >{i + 1}</div>
                 <div className="min-w-0">
                   <div className="text-[11.5px] font-medium leading-tight truncate"
-                    style={{ color: i === 0 ? 'rgb(var(--ink-900))' : 'rgb(var(--ink-700) / 0.55)' }}
+                    style={{ color: i === 0 ? 'rgb(var(--ink-900))' : 'rgba(var(--ink-700), 0.55)' }}
                   >{t}</div>
                 </div>
               </div>
@@ -122,7 +122,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
             {/* 项目名 */}
             <div>
               <label className="block text-[13px] font-medium mb-1.5"
-                style={{ color: 'rgb(var(--ink-900)0.8))' }}>有声书名称
+                style={{ color: 'rgba(var(--ink-900), 0.8)' }}>有声书名称
               </label>
               <input
                 type="text"
@@ -160,8 +160,8 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                     style={{
                       borderRadius: 'calc(calc(var(--radius-sm) - 2px))',
                       background: active ? 'rgb(var(--brand-600))' : 'transparent',
-                      color: active ? '#fff' : 'rgb(var(--ink-700) / 0.75)',
-                      boxShadow: active ? '0 0 0 1px rgb(var(--brand-500) / 0.4)' : undefined,
+                      color: active ? '#fff' : 'rgba(var(--ink-700), 0.75)',
+                      boxShadow: active ? '0 0 0 1px rgba(var(--brand-500), 0.4)' : undefined,
                     }}
                   >
                     <span className={`w-8 h-8 shrink-0 grid place-items-center rounded-[6px] ${
@@ -171,7 +171,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                     </span>
                     <span className="min-w-0">
                       <span className="block text-[13px] font-semibold leading-tight">{it.label}</span>
-                      <span className={`block text-[11px] mt-0.5 ${active ? 'text-white/75' : 'text-white/35'}`}>{it.desc}</span>
+                      <span className={`block text-[11px] mt-0.5 ${active ? 'text-ink-700' : 'text-ink-500'}`}>{it.desc}</span>
                     </span>
                   </button>
                 );
@@ -203,7 +203,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                   <div>
                     <div className="mx-auto w-10 h-10 grid place-items-center mb-2"
                       style={{
-                        background: 'rgb(var(--brand-600) / 0.18)',
+                        background: 'rgba(var(--brand-600), 0.18)',
                         borderRadius: 'var(--radius-sm)',
                         color: 'rgb(var(--brand-400))',
                       }}
@@ -213,11 +213,11 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                       </svg>
                     </div>
                     <div className="text-sm text-white font-medium truncate max-w-[300px] mx-auto">{file.name}</div>
-                    <div className="text-xs text-white/40 mt-1">{(file.size / 1024).toFixed(1)} KB</div>
+                    <div className="text-xs text-ink-500 mt-1">{(file.size / 1024).toFixed(1)} KB</div>
                     <button
                       type="button"
                       onClick={e => { e.stopPropagation(); setFile(null); }}
-                      className="mt-3 text-xs text-white/40 hover:text-white/70"
+                      className="mt-3 text-xs text-ink-500 hover:text-ink-600"
                     >
                       重新选择
                     </button>
@@ -236,8 +236,8 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                         <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
                       </svg>
                     </div>
-                    <div className="text-sm text-white/70 font-medium">拖拽文件到这里，或点击选择</div>
-                    <div className="text-xs text-white/40 mt-2">支持 TXT、Markdown、EPUB 格式</div>
+                    <div className="text-sm text-ink-600 font-medium">拖拽文件到这里，或点击选择</div>
+                    <div className="text-xs text-ink-500 mt-2">支持 TXT、Markdown、EPUB 格式</div>
                   </div>
                 )}
               </div>
@@ -251,7 +251,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                   rows={10}
                   className="input-base w-full resize-none font-mono text-[13px] leading-relaxed"
                 />
-                <div className="mt-1.5 text-[11px] text-white/40 text-right">
+                <div className="mt-1.5 text-[11px] text-ink-500 text-right">
                   {text.length.toLocaleString()} 字符
                 </div>
               </div>
@@ -260,8 +260,8 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
             {err && (
               <div className="rounded-lg px-3 py-2 text-xs"
                 style={{
-                  border: '1px solid rgb(var(--status-error-bg) / 0.28)',
-                  background: 'rgb(var(--status-error-bg) / 0.06)',
+                  border: '1px solid rgba(var(--status-error-bg), 0.28)',
+                  background: 'rgba(var(--status-error-bg), 0.06)',
                   color: 'rgb(var(--status-error-fg))',
                 }}
               >{err}</div>

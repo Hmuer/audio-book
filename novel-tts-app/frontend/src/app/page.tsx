@@ -99,7 +99,7 @@ export default function HomePage() {
 
   if (authLoading) {
     return (
-      <div className="min-h-[60vh] grid place-items-center text-white/40">
+      <div className="min-h-[60vh] grid place-items-center text-ink-500">
         <div className="text-center">
           <div className="inline-block w-8 h-8 border-2 border-ink-400/70 border-t-brand-500 rounded-full animate-spin mb-3" />
           <div className="text-sm">加载中…</div>
@@ -148,7 +148,7 @@ export default function HomePage() {
         <header className="h-12 shrink-0 border-b border-ink-300/70 px-5 lg:px-7 flex items-center justify-between bg-ink-50">
           <div className="flex items-center gap-3 min-w-0">
             {/* 面包屑（收敛字距） */}
-            <div className="text-[11px] font-semibold text-ink-700/50">
+            <div className="text-[11px] font-semibold text-ink-500">
               {R.name === 'ab-list' && '有声书 · 我的作品库'}
               {R.name === 'ab-detail' && '有声书 · 工作台'}
               {R.name === 'ab-voices' && '有声书 · 音色库'}
@@ -161,8 +161,6 @@ export default function HomePage() {
               ))}
             </div>
           </div>
-          {/* 右侧（GreenSpring风格：无多余主CTA，仅保留功能入口） */}
-          <div className="flex items-center gap-3"></div>
         </header>
 
         {/* 主内容 —— 统一右侧、底部边距：画布画布 */}
@@ -210,7 +208,7 @@ function StatusCapsule({
         {label}
       </span>
       <span
-        className="text-[12px] font-semibold tabular-nums text-white/85"
+        className="text-[12px] font-semibold tabular-nums text-ink-700"
       >{value}</span>
     </div>
   );
@@ -239,7 +237,7 @@ function PlaceholderPage({
           }
         </div>
         <h2 className="text-xl font-semibold mb-1 text-white">{title}</h2>
-        <p className="text-sm text-white/50 mb-6">{desc}</p>
+        <p className="text-sm text-ink-500 mb-6">{desc}</p>
         {actionHref && actionLabel && (
           <a href={actionHref} className="btn-primary inline-flex justify-center">
             {actionLabel}

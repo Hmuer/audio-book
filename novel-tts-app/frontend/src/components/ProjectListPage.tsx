@@ -11,16 +11,16 @@ const POLL_INTERVAL_MS = 3000;
 // 状态定义（Eleven 风格：柔和、克制，不是浓重的半透明块）
 // 颜色全部引用 status CSS 变量，深浅主题自动切换
 const STATUS_DEFS: Record<string, { label: string; bg: string; color: string; dot: string; pulse?: boolean }> = {
-  draft:           { label: '草稿',      bg: 'rgb(var(--status-muted-bg) / 0.12)',    color: 'rgb(var(--status-muted-fg))',    dot: 'rgb(var(--status-muted-dot))' },
-  imported:        { label: '已导入',    bg: 'rgb(var(--status-info-bg) / 0.12)',     color: 'rgb(var(--status-info-fg))',     dot: 'rgb(var(--status-info-dot))' },
-  preparing:       { label: '识别中',    bg: 'rgb(var(--status-warn-bg) / 0.14)',     color: 'rgb(var(--status-warn-fg))',     dot: 'rgb(var(--status-warn-dot))', pulse: true },
-  ready:           { label: '就绪',      bg: 'rgb(var(--status-ready-bg) / 0.12)',    color: 'rgb(var(--status-ready-fg))',    dot: 'rgb(var(--status-ready-dot))' },
-  synthesizing:    { label: '合成中',    bg: 'rgb(var(--status-synth-bg) / 0.14)',    color: 'rgb(var(--status-synth-fg))',    dot: 'rgb(var(--status-synth-dot))', pulse: true },
-  done:            { label: '已完成',    bg: 'rgb(var(--status-success-bg) / 0.12)',  color: 'rgb(var(--status-success-fg))',  dot: 'rgb(var(--status-success-dot))' },
-  success:         { label: '已完成',    bg: 'rgb(var(--status-success-bg) / 0.12)',  color: 'rgb(var(--status-success-fg))',  dot: 'rgb(var(--status-success-dot))' },
-  partial_success: { label: '部分成功',  bg: 'rgb(var(--status-partial-bg) / 0.12)',  color: 'rgb(var(--status-partial-fg))',  dot: 'rgb(var(--status-partial-dot))' },
-  failed:          { label: '失败',      bg: 'rgb(var(--status-error-bg) / 0.12)',    color: 'rgb(var(--status-error-fg))',    dot: 'rgb(var(--status-error-dot))' },
-  cancelled:       { label: '已取消',    bg: 'rgb(var(--status-muted-bg) / 0.12)',    color: 'rgb(var(--status-muted-fg))',    dot: 'rgb(var(--status-muted-dot))' },
+  draft:           { label: '草稿',      bg: 'rgba(var(--status-muted-bg), 0.12)',    color: 'rgb(var(--status-muted-fg))',    dot: 'rgb(var(--status-muted-dot))' },
+  imported:        { label: '已导入',    bg: 'rgba(var(--status-info-bg), 0.12)',     color: 'rgb(var(--status-info-fg))',     dot: 'rgb(var(--status-info-dot))' },
+  preparing:       { label: '识别中',    bg: 'rgba(var(--status-warn-bg), 0.14)',     color: 'rgb(var(--status-warn-fg))',     dot: 'rgb(var(--status-warn-dot))', pulse: true },
+  ready:           { label: '就绪',      bg: 'rgba(var(--status-ready-bg), 0.12)',    color: 'rgb(var(--status-ready-fg))',    dot: 'rgb(var(--status-ready-dot))' },
+  synthesizing:    { label: '合成中',    bg: 'rgba(var(--status-synth-bg), 0.14)',    color: 'rgb(var(--status-synth-fg))',    dot: 'rgb(var(--status-synth-dot))', pulse: true },
+  done:            { label: '已完成',    bg: 'rgba(var(--status-success-bg), 0.12)',  color: 'rgb(var(--status-success-fg))',  dot: 'rgb(var(--status-success-dot))' },
+  success:         { label: '已完成',    bg: 'rgba(var(--status-success-bg), 0.12)',  color: 'rgb(var(--status-success-fg))',  dot: 'rgb(var(--status-success-dot))' },
+  partial_success: { label: '部分成功',  bg: 'rgba(var(--status-partial-bg), 0.12)',  color: 'rgb(var(--status-partial-fg))',  dot: 'rgb(var(--status-partial-dot))' },
+  failed:          { label: '失败',      bg: 'rgba(var(--status-error-bg), 0.12)',    color: 'rgb(var(--status-error-fg))',    dot: 'rgb(var(--status-error-dot))' },
+  cancelled:       { label: '已取消',    bg: 'rgba(var(--status-muted-bg), 0.12)',    color: 'rgb(var(--status-muted-fg))',    dot: 'rgb(var(--status-muted-dot))' },
 };
 
 const STAGE_LABELS: Record<string, string> = {
@@ -125,9 +125,9 @@ export function PrepareProgressInline({
           )}
           {prog.last_error && (
             <span className="chip" style={{
-              background: 'rgb(var(--status-error-bg) / 0.08)',
+              background: 'rgba(var(--status-error-bg), 0.08)',
               color: 'rgb(var(--status-error-fg))',
-              border: '1px solid rgb(var(--status-error-bg) / 0.22)',
+              border: '1px solid rgba(var(--status-error-bg), 0.22)',
             }}>
               {prog.last_error}
             </span>
@@ -241,8 +241,8 @@ export function RunningTasksBar({ items }: { items: ProjectListItem[] }) {
                       {p.name}
                     </div>
                     {p.book_title && p.book_title !== p.name && (
-                      <div className="text-[11px] text-white/40 truncate mt-0.5">
-                        📚 {p.book_title}
+                      <div className="text-[11px] text-ink-500 truncate mt-0.5">
+                        {p.book_title}
                       </div>
                     )}
                   </div>
@@ -275,10 +275,10 @@ function StepperRow({
 }) {
   const palette =
     status === 'done'
-      ? { ring: 'rgb(var(--ink-200))',          fg: 'rgb(var(--ink-700))',        text: 'rgb(var(--ink-800))',     muted: 'rgb(var(--ink-700) / 0.65)' }
+      ? { ring: 'rgb(var(--ink-200))',          fg: 'rgb(var(--ink-700))',        text: 'rgb(var(--ink-800))',     muted: 'rgba(var(--ink-700), 0.65)' }
       : status === 'current'
-      ? { ring: 'rgb(var(--brand-600))',        fg: '#fff',                        text: 'rgb(var(--ink-900))',     muted: 'rgb(var(--ink-700) / 0.65)' }
-      : { ring: 'rgb(var(--ink-200))',          fg: 'rgb(var(--ink-500))',         text: 'rgb(var(--ink-700) / 0.55)', muted: 'rgb(var(--ink-700) / 0.4)' };
+      ? { ring: 'rgb(var(--brand-600))',        fg: '#fff',                        text: 'rgb(var(--ink-900))',     muted: 'rgba(var(--ink-700), 0.65)' }
+      : { ring: 'rgb(var(--ink-200))',          fg: 'rgb(var(--ink-500))',         text: 'rgba(var(--ink-700), 0.55)', muted: 'rgba(var(--ink-700), 0.4)' };
 
   return (
     <li className="relative grid grid-cols-[48px_minmax(0,1fr)] gap-3 items-start">
@@ -286,7 +286,7 @@ function StepperRow({
       {step < 3 && (
         <span
           className="absolute left-[23px] top-[40px] bottom-[-16px] w-px"
-          style={{ background: 'rgb(var(--ink-300) / 0.9)' }}
+          style={{ background: 'rgba(var(--ink-300), 0.9)' }}
         />
       )}
       {/* 左侧：实心方 + SVG 图标（Edtech 工具感） */}
@@ -297,7 +297,7 @@ function StepperRow({
             borderRadius: 'var(--radius-sm)',
             background: palette.ring,
             boxShadow: status === 'current'
-              ? `0 0 0 3px rgb(var(--brand-500) / 0.18), 0 6px 16px -8px rgb(var(--brand-700) / 0.85)`
+              ? `0 0 0 3px rgba(var(--brand-500), 0.18), 0 6px 16px -8px rgba(var(--brand-700), 0.85)`
               : undefined,
             color: palette.fg,
             opacity: status === 'pending' ? 0.9 : 1,
@@ -307,13 +307,13 @@ function StepperRow({
         </div>
         {/* Step 编号（简单 · 无装饰） */}
         <span
-          className="mt-1.5 text-[10px] font-medium px-1.5 py-0.5"
+          className="mt-1.5 text-[11px] font-medium px-1.5 py-0.5"
           style={{
             borderRadius: 4,
             background: status === 'pending'
-              ? 'rgb(var(--ink-300) / 0.45)'
-              : 'rgb(var(--brand-500) / 0.14)',
-            color: status === 'pending' ? 'rgb(var(--ink-700) / 0.7)' : 'rgb(var(--brand-300))',
+              ? 'rgba(var(--ink-300), 0.45)'
+              : 'rgba(var(--brand-500), 0.14)',
+            color: status === 'pending' ? 'rgba(var(--ink-700), 0.7)' : 'rgb(var(--brand-300))',
           }}
         >
           0{step}
@@ -326,20 +326,20 @@ function StepperRow({
             {title}
           </h4>
           {status === 'current' && (
-            <span className="text-[10px] font-medium px-1.5 py-0.5"
+            <span className="text-[11px] font-medium px-1.5 py-0.5"
               style={{
                 borderRadius: 'var(--radius-xs)',
-                background: 'rgb(var(--ink-300) / 0.65)',
+                background: 'rgba(var(--ink-300), 0.65)',
                 color: 'rgb(var(--ink-700))',
-                border: '1px solid rgb(var(--ink-400) / 0.65)',
+                border: '1px solid rgba(var(--ink-400), 0.65)',
               }}
             >进行中</span>
           )}
           {status === 'done' && (
-            <span className="text-[10px] font-medium px-1.5 py-0.5"
+            <span className="text-[11px] font-medium px-1.5 py-0.5"
               style={{
                 borderRadius: 'var(--radius-xs)',
-                background: 'rgb(var(--ink-300) / 0.55)',
+                background: 'rgba(var(--ink-300), 0.55)',
                 color: 'rgb(var(--ink-600))',
               }}
             >已就绪</span>
@@ -428,10 +428,12 @@ export default function ProjectListPage() {
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button className="btn-ghost" onClick={reload} title="立即刷新">
-            <span className="opacity-80">⟳</span> 刷新
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+            刷新
           </button>
           <button className="btn-primary" onClick={() => setShowCreateDialog(true)}>
-            <span className="text-base leading-none">＋</span> 新建有声书
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            新建有声书
           </button>
         </div>
       </div>
@@ -439,8 +441,8 @@ export default function ProjectListPage() {
       {err && (
         <div className="rounded-md px-4 py-3 text-sm"
           style={{
-            border: '1px solid rgb(var(--status-error-bg) / 0.28)',
-            background: 'rgb(var(--status-error-bg) / 0.06)',
+            border: '1px solid rgba(var(--status-error-bg), 0.28)',
+            background: 'rgba(var(--status-error-bg), 0.06)',
             color: 'rgb(var(--status-error-fg))',
           }}
         >{err}</div>
@@ -450,7 +452,7 @@ export default function ProjectListPage() {
       {loading && (
         <div className="rounded-lg border border-ink-300/70 bg-ink-200 text-center py-16">
           <div className="mx-auto w-9 h-9 rounded-full border-2 border-brand-500/30 border-t-brand-500 animate-spin mb-4" />
-          <div className="text-sm text-white/50">加载项目列表…</div>
+          <div className="text-sm text-ink-500">加载项目列表…</div>
         </div>
       )}
 
@@ -468,25 +470,25 @@ export default function ProjectListPage() {
                   border: '1px solid rgb(var(--ink-300))',
                 }}
               >
-                <span className="text-[10.5px] uppercase tracking-[0.08em] font-medium"
+                <span className="text-[11px] uppercase tracking-[0.08em] font-medium"
                   style={{ color: 'rgb(var(--ink-600))' }}
                 >快速开始 · 三步流程</span>
               </div>
               <h3 className="text-[22px] lg:text-[24px] font-semibold text-white leading-[1.22] tracking-tight mb-2">
                 创建你的第一个有声书
               </h3>
-              <p className="text-[13.5px] leading-6" style={{ color: 'rgb(var(--ink-500))' }}>
+              <p className="text-[13px] leading-6" style={{ color: 'rgb(var(--ink-500))' }}>
                 上传 TXT 或 EPUB，AI 自动识别章节、角色与对白；匹配音色后一键合成多角色 MP3。
               </p>
               <div className="mt-5 flex flex-wrap items-center gap-2.5">
                 <button
-                  className="btn-primary !h-10 !px-4.5 text-[13.5px] font-semibold"
+                  className="btn-primary !h-10 !px-4.5 text-[13px] font-semibold"
                   onClick={() => setShowCreateDialog(true)}
                 >
                   新建有声书
                 </button>
                 <a href="#/audiobooks/voices"
-                  className="btn-ghost !h-10 !px-4 text-[13.5px]"
+                  className="btn-ghost !h-10 !px-4 text-[13px]"
                 >
                   浏览音色库
                 </a>
@@ -526,7 +528,7 @@ export default function ProjectListPage() {
         <div className="card overflow-hidden !p-0">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-[11px] text-white/40 uppercase tracking-[0.08em] border-b border-ink-300/60">
+              <tr className="text-left text-[11px] text-ink-500 uppercase tracking-[0.08em] border-b border-ink-300/60">
                 <th className="px-5 py-3 font-medium">有声书</th>
                 <th className="px-4 py-3 font-medium w-[100px]">状态</th>
                 <th className="px-4 py-3 font-medium w-[200px]">进度</th>
@@ -566,7 +568,7 @@ export default function ProjectListPage() {
                               {p.name}
                             </div>
                             {((p.book_title && p.book_title !== p.name) || p.source_filename) && (
-                              <div className="text-[11px] text-white/40 truncate mt-0.5 flex items-center gap-3 flex-wrap">
+                              <div className="text-[11px] text-ink-500 truncate mt-0.5 flex items-center gap-3 flex-wrap">
                                 {p.book_title && p.book_title !== p.name && (
                                   <span>{p.book_title}</span>
                                 )}
@@ -607,20 +609,20 @@ export default function ProjectListPage() {
                         </div>
                       )}
                       {['ready', 'done', 'success', 'partial_success'].includes(p.status) && (
-                        <div className="text-xs text-white/40">—</div>
+                        <div className="text-xs text-ink-500">—</div>
                       )}
                     </td>
 
                     {/* 章节数 */}
-                    <td className="px-4 py-4 text-right tabular-nums text-white/70">
+                    <td className="px-4 py-4 text-right tabular-nums text-ink-600">
                       {p.chapter_count}
                     </td>
 
                     {/* 更新时间 */}
-                    <td className="px-4 py-4 text-xs text-white/40">
+                    <td className="px-4 py-4 text-xs text-ink-500">
                       {relativeTime(p.updated_at)}
                       {isRunning && (
-                        <span className="ml-1 inline-flex items-center gap-1 text-[10px]" style={{ color: 'rgb(var(--ink-500))' }}>
+                        <span className="ml-1 inline-flex items-center gap-1 text-[11px]" style={{ color: 'rgb(var(--ink-500))' }}>
                           <span className="badge-dot animate-pulse-soft !w-1 !h-1" style={{ background: 'rgb(var(--ink-500))' }} />
                           自动刷新
                         </span>
@@ -645,7 +647,7 @@ export default function ProjectListPage() {
                         )}
                         <button
                           className="btn-ghost !px-2.5 !py-1 text-xs"
-                          style={{ color: 'rgb(var(--status-error-fg) / 0.85)' }}
+                          style={{ color: 'rgba(var(--status-error-fg), 0.85)' }}
                           onClick={() => setConfirmDeleteId(p.project_id)}
                           title="删除"
                         >
@@ -673,7 +675,7 @@ export default function ProjectListPage() {
             onClick={e => e.stopPropagation()}
           >
             <div className="mx-auto w-11 h-11 rounded-lg grid place-items-center mb-3"
-              style={{ background: 'rgb(var(--status-error-bg) / 0.12)' }}>
+              style={{ background: 'rgba(var(--status-error-bg), 0.12)' }}>
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="rgb(var(--status-error-fg))" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
                 <line x1="12" y1="9" x2="12" y2="13"/>
@@ -681,7 +683,7 @@ export default function ProjectListPage() {
               </svg>
             </div>
             <div className="font-semibold text-white mb-1.5">确认删除？</div>
-            <div className="text-xs text-white/50 mb-5 leading-relaxed">
+            <div className="text-xs text-ink-500 mb-5 leading-relaxed">
               删除后无法恢复，所有章节、角色识别、音色配置与构建历史都会丢失。
             </div>
             <div className="flex gap-2">
@@ -691,9 +693,9 @@ export default function ProjectListPage() {
               <button
                 className="flex-1 rounded-lg text-sm font-medium transition-all"
                 style={{
-                  background: 'rgb(var(--status-error-bg) / 0.15)',
+                  background: 'rgba(var(--status-error-bg), 0.15)',
                   color: 'rgb(var(--status-error-fg))',
-                  border: '1px solid rgb(var(--status-error-bg) / 0.3)',
+                  border: '1px solid rgba(var(--status-error-bg), 0.3)',
                 }}
                 onClick={() => onDelete(confirmDeleteId)}
               >

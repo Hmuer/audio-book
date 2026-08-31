@@ -38,7 +38,7 @@ function avatarBg(gender: string, id: string): string {
 
 function Avatar({ voice, size = 32 }: { voice: Voice; size?: number }) {
   const bg = avatarBg(voice.gender, voice.id);
-  const initial = voice.name?.trim()?.[0] || '♪';
+  const initial = voice.name?.trim()?.[0] || '音';
   return (
     <div
       className="shrink-0 grid place-items-center rounded-full font-semibold text-white select-none"
@@ -47,7 +47,7 @@ function Avatar({ voice, size = 32 }: { voice: Voice; size?: number }) {
         height: size,
         fontSize: Math.floor(size * 0.42),
         background: `linear-gradient(135deg, ${bg} 0%, ${bg}bb 100%)`,
-        boxShadow: `0 0 0 1px rgb(var(--color-white) / 0.12) inset, 0 4px 10px -4px ${bg}77`,
+        boxShadow: `0 0 0 1px rgba(var(--color-white), 0.12) inset, 0 4px 10px -4px ${bg}77`,
       }}
     >
       {initial}
@@ -247,7 +247,7 @@ export default function VoicePicker({
                       }}
                     />
                     {k}
-                    <span className="ml-1 tracking-normal text-[10px] text-ink-600">({list.length})</span>
+                    <span className="ml-1 tracking-normal text-[11px] text-ink-600">({list.length})</span>
                   </div>
                   <div className={`grid ${compact ? 'gap-1.5' : 'gap-2'}`}>
                     {list.map(v => {
@@ -277,7 +277,7 @@ export default function VoicePicker({
                               <span className="text-sm font-medium text-ink-800 truncate">
                                 {v.name}
                               </span>
-                              <span className="chip-soft !px-1.5 !py-0.5 !text-[10px]">
+                              <span className="chip-soft !px-1.5 !py-0.5 !text-[11px]">
                                 {v.gender}
                               </span>
                             </div>

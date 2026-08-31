@@ -22,7 +22,7 @@ export default function UserMenu() {
           {user.username.slice(0, 1).toUpperCase()}
         </span>
         <span className="text-sm">{user.username}</span>
-        <span className="text-white/40 text-xs">▾</span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className={`text-ink-500 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}><polyline points="6 9 12 15 18 9"/></svg>
       </button>
 
       {open && (
@@ -32,7 +32,7 @@ export default function UserMenu() {
           <div className="absolute right-0 mt-1 w-56 bg-ink-50 border border-ink-300/70 rounded-md shadow-xl z-20 overflow-hidden">
             <div className="px-4 py-3 border-b border-ink-300/60">
               <div className="text-sm font-medium">{user.username}</div>
-              <div className="text-xs text-white/40 mt-0.5">
+              <div className="text-xs text-ink-500 mt-0.5">
                 {user.created_at
                   ? `创建于 ${formatDate(user.created_at)}`
                   : ''}
@@ -123,7 +123,7 @@ export function ChangePasswordModal({ onClose }: { onClose: () => void }) {
         onClick={e => e.stopPropagation()}
       >
         <h3 className="text-lg font-semibold mb-1">修改密码</h3>
-        <p className="text-xs text-white/40 mb-4">当前账号：{user?.username}</p>
+        <p className="text-xs text-ink-500 mb-4">当前账号：{user?.username}</p>
 
         {ok ? (
           <div className="text-center py-6" style={{ color: 'rgb(var(--status-success-fg))' }}>
@@ -132,7 +132,7 @@ export function ChangePasswordModal({ onClose }: { onClose: () => void }) {
         ) : (
           <form onSubmit={onSubmit} className="space-y-3">
             <div>
-              <label className="block text-sm text-white/70 mb-1">原密码</label>
+              <label className="block text-sm text-ink-600 mb-1">原密码</label>
               <input
                 type="password"
                 value={oldPwd}
@@ -144,7 +144,7 @@ export function ChangePasswordModal({ onClose }: { onClose: () => void }) {
               />
             </div>
             <div>
-              <label className="block text-sm text-white/70 mb-1">新密码（≥6 位）</label>
+              <label className="block text-sm text-ink-600 mb-1">新密码（≥6 位）</label>
               <input
                 type="password"
                 value={newPwd}
@@ -155,7 +155,7 @@ export function ChangePasswordModal({ onClose }: { onClose: () => void }) {
               />
             </div>
             <div>
-              <label className="block text-sm text-white/70 mb-1">确认新密码</label>
+              <label className="block text-sm text-ink-600 mb-1">确认新密码</label>
               <input
                 type="password"
                 value={confirmPwd}

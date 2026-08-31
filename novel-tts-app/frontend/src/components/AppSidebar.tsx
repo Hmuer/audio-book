@@ -108,7 +108,7 @@ export default function AppSidebar({ currentPath }: Props) {
             <BrandLogo />
             <div className="min-w-0">
               <div className="text-[15px] font-semibold text-white tracking-tight leading-none">阿布</div>
-              <div className="mt-1 text-[11px] text-white/35 leading-none">AI 内容创作平台</div>
+              <div className="mt-1 text-[11px] text-ink-500 leading-none">AI 内容创作平台</div>
             </div>
           </div>
         </div>
@@ -149,10 +149,10 @@ export default function AppSidebar({ currentPath }: Props) {
             >
               <Avatar username={user.username} />
               <div className="min-w-0 flex-1 text-left">
-                <div className="text-[13.5px] font-medium text-white truncate">
+                <div className="text-[13px] font-medium text-white truncate">
                   {user.username}
                 </div>
-                <div className="text-[11px] text-white/38 truncate">
+                <div className="text-[11px] text-ink-500 truncate">
                   {user.created_at
                     ? `加入于 ${formatDate(user.created_at)}`
                     : ''}
@@ -162,7 +162,7 @@ export default function AppSidebar({ currentPath }: Props) {
                 width="14" height="14" viewBox="0 0 24 24" fill="none"
                 stroke="currentColor" strokeWidth="2.2"
                 strokeLinecap="round" strokeLinejoin="round"
-                className={`text-white/40 transition-transform duration-200 ${userMenuOpen ? 'rotate-180' : ''}`}
+                className={`text-ink-500 transition-transform duration-200 ${userMenuOpen ? 'rotate-180' : ''}`}
               >
                 <polyline points="6 9 12 15 18 9" />
               </svg>
@@ -202,7 +202,7 @@ function SectionLabel({ label }: { label: string }) {
   // Edtech：简单中文分区标题 · 不做 uppercase / tracking 装饰
   return (
     <div className="px-3 pt-1 pb-2 flex items-center select-none">
-      <span className="text-[11px] text-ink-700/45 font-medium">{label}</span>
+      <span className="text-[11px] text-ink-500 font-medium">{label}</span>
     </div>
   );
 }
@@ -221,26 +221,21 @@ function ModuleNav({
   const headerClass = [
     'group relative flex items-center gap-2.5 px-3 h-[40px] text-[14px] font-medium transition-all',
     m.disabled
-      ? 'text-white/28 cursor-not-allowed'
+      ? 'text-ink-500 cursor-not-allowed'
       : moduleActive
-        ? 'text-white bg-brand-600 shadow-[0_0_0_1px_rgb(var(--brand-500)/0.45),0_6px_16px_-8px_rgb(var(--brand-700)/0.85)]'
-        : 'text-ink-700/78 hover:text-white hover:bg-ink-200',
+        ? 'text-white bg-brand-600'
+        : 'text-ink-600 hover:text-ink-900 hover:bg-ink-200',
   ].join(' ');
 
   const headerInner = (
     <>
-      {/* Edtech：激活时左侧 solid sky-400 hairline */}
-      {!m.disabled && moduleActive && (
-        <span className="absolute left-0 top-0 bottom-0 w-[3px]"
-          style={{ background: 'rgb(var(--accent-cold))' }} />
-      )}
       <IconCell icon={m.icon} active={!m.disabled && moduleActive} disabled={m.disabled} />
       <span className="flex-1">{m.label}</span>
       {m.disabled && <ComingSoonBadge />}
       {hasChildren && (
         <Chevron
           open={expanded}
-          className={!m.disabled && moduleActive ? 'text-white/90' : 'text-white/30 group-hover:text-white/60'}
+          className={!m.disabled && moduleActive ? 'text-ink-700' : 'text-ink-500 group-hover:text-ink-600'}
         />
       )}
     </>
@@ -290,23 +285,19 @@ function ModuleNav({
                   className={[
                     'relative flex items-center gap-2 px-2.5 h-[34px] text-[13px] transition-all',
                     active
-                      ? 'text-white bg-brand-600/90 shadow-[0_0_0_1px_rgb(var(--brand-500)/0.4)]'
-                      : 'text-ink-700/68 hover:text-white hover:bg-ink-200',
+                      ? 'text-white bg-brand-600'
+                      : 'text-ink-600 hover:text-ink-900 hover:bg-ink-200',
                   ].join(' ')}
                   style={{ borderRadius: 'var(--radius-xs)' }}
                 >
-                  {active && (
-                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-[14px] rounded-r-full"
-                      style={{ background: 'rgb(var(--accent-cold))' }} />
-                  )}
                   <MenuIcon
                     name={c.icon}
                     size={14}
-                    className={`shrink-0 ${active ? 'text-white' : 'text-white/70'}`}
+                    className={`shrink-0 ${active ? 'text-white' : 'text-ink-600'}`}
                   />
                   <span className="flex-1">{c.label}</span>
                   {c.badge != null && typeof c.badge !== 'undefined' && (
-                    <span className="text-[10px] text-white/35 tabular-nums">{c.badge}</span>
+                    <span className="text-[11px] text-ink-500 tabular-nums">{c.badge}</span>
                   )}
                 </a>
               );
@@ -325,15 +316,11 @@ function TopLevelLink({ item, active }: { item: MenuItem; active: boolean }) {
       className={[
         'group relative flex items-center gap-2.5 px-3 h-[40px] text-[14px] font-medium transition-all',
         active
-          ? 'text-white bg-brand-600 shadow-[0_0_0_1px_rgb(var(--brand-500)/0.45),0_6px_16px_-8px_rgb(var(--brand-700)/0.85)]'
-          : 'text-ink-700/78 hover:text-white hover:bg-ink-200',
+          ? 'text-white bg-brand-600'
+          : 'text-ink-600 hover:text-ink-900 hover:bg-ink-200',
       ].join(' ')}
       style={{ borderRadius: 'var(--radius-sm)' }}
     >
-      {active && (
-        <span className="absolute left-0 top-0 bottom-0 w-[3px]"
-          style={{ background: 'rgb(var(--accent-cold))' }} />
-      )}
       <IconCell icon={item.icon} active={active} />
       <span className="flex-1">{item.label}</span>
     </a>
@@ -344,15 +331,12 @@ function IconCell({
   icon, active, disabled,
 }: { icon: string; active: boolean; disabled?: boolean }) {
   return (
-    <div
-      className={`w-7 h-7 shrink-0 grid place-items-center transition-all
-        ${active ? 'bg-ink-200 text-white ring-1 ring-ink-300/80'
-          : disabled ? 'bg-ink-200 text-white/35'
-          : 'bg-ink-200 text-white/85 ring-1 ring-ink-300/50 group-hover:bg-ink-200'}`}
-      style={{ borderRadius: 'var(--radius-xs)' }}
+    <span
+      className={`shrink-0 grid place-items-center w-5 transition-colors
+        ${active ? 'text-white' : disabled ? 'text-ink-500' : 'text-ink-600 group-hover:text-ink-700'}`}
     >
-      <MenuIcon name={icon} size={15} />
-    </div>
+      <MenuIcon name={icon} size={17} />
+    </span>
   );
 }
 
@@ -374,12 +358,12 @@ function ComingSoonBadge() {
   // Edtech：冷灰「即将上线」小标签
   return (
     <span
-      className="text-[10px] px-1.5 py-0.5 font-medium"
+      className="text-[11px] px-1.5 py-0.5 font-medium"
       style={{
         borderRadius: 'var(--radius-xs)',
-        background: 'rgb(var(--ink-300) / 0.55)',
+        background: 'rgba(var(--ink-300), 0.55)',
         color: 'rgb(var(--ink-600))',
-        border: '1px solid rgb(var(--ink-400) / 0.55)',
+        border: '1px solid rgba(var(--ink-400), 0.55)',
       }}
     >
       即将上线
@@ -395,8 +379,8 @@ function Avatar({ username }: { username: string }) {
       style={{
         borderRadius: 'var(--radius-sm)',
         backgroundImage:
-          'linear-gradient(180deg, rgb(var(--color-white) / 0.14) 0%, rgb(var(--color-white) / 0) 45%), linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 100%)',
-        boxShadow: '0 0 0 1px rgb(var(--brand-400) / 0.35), 0 8px 16px -8px rgb(var(--brand-600) / 0.5)',
+          'linear-gradient(180deg, rgba(var(--color-white), 0.14) 0%, rgba(var(--color-white), 0) 45%), linear-gradient(135deg, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 100%)',
+        boxShadow: '0 0 0 1px rgba(var(--brand-400), 0.35), 0 8px 16px -8px rgba(var(--brand-600), 0.5)',
       }}
     >
       {initial}
@@ -412,7 +396,7 @@ function BrandLogo() {
       style={{
         borderRadius: 'var(--radius-md)',
         background: 'rgb(var(--brand-600))',
-        boxShadow: '0 0 0 1px rgb(var(--brand-500) / 0.4), 0 10px 20px -10px rgb(var(--brand-600) / 0.6)',
+        boxShadow: '0 0 0 1px rgba(var(--brand-500), 0.4), 0 10px 20px -10px rgba(var(--brand-600), 0.6)',
       }}
     >
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="text-white">
@@ -472,10 +456,10 @@ function MenuItemButton({
     <button
       type="button"
       onClick={onClick}
-      className={`w-full flex items-center gap-2.5 px-3 h-10 text-[13.5px] transition-all
+      className={`w-full flex items-center gap-2.5 px-3 h-10 text-[13px] transition-all
         ${danger
           ? 'text-rose-200/90 hover:bg-rose-500/10 hover:text-rose-100'
-          : 'text-white/80 hover:bg-ink-200 hover:text-white'}`}
+          : 'text-ink-700 hover:bg-ink-200 hover:text-ink-900'}`}
       style={{ borderRadius: 'var(--radius-xs)' }}
     >
       <span className="w-6 h-6 grid place-items-center bg-ink-200" style={{ borderRadius: 'var(--radius-xs)' }}>
