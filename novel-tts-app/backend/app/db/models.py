@@ -104,6 +104,9 @@ class Project(Base):
     # 项目级默认配置
     default_narrator_voice_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     default_speed: Mapped[float] = mapped_column(Float, default=1.0)
+    # 项目级 TTS 厂商 + 构建模式默认值（可被 start_build 入参覆写）
+    default_tts_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    default_build_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     # 元信息
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -147,6 +150,9 @@ class Build(Base):
     narrator_voice_id: Mapped[str] = mapped_column(String(128), default="")
     speed: Mapped[float] = mapped_column(Float, default=1.0)
     voice_assignments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 多厂商 + 多模式（classic/multicast）
+    mode: Mapped[str] = mapped_column(String(32), default="classic")
+    tts_provider: Mapped[str] = mapped_column(String(32), default="minimax")
 
     # 配置哈希：同一个 project + (narrator,speed,voice_assignments) 相同 → 若上次 build 成功，
     # 可直接返回已存在的 build_id（Synthesize 幂等第一层去重）；
@@ -300,3 +306,33 @@ class ChapterResult(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     job: Mapped[Job] = relationship(back_populates="chapter_results")
+
+
+# =====================================================================
+# ICL 声音复刻（豆包 ICL 2.0 训练任务）
+# =====================================================================
+
+class IclTrainingTask(Base):
+    """豆包 ICL 声音复刻训练任务。
+
+    status 语义同豆包官方：
+        0 排队 / 1 训练中 / 2 成功 / 3 失败 / 4 可用
+    （豆包 ICL 2.0 通常把 2/4 都视为可用，本实现 4 视为可合成状态）
+    """
+    __tablename__ = "icl_training_tasks"
+
+    task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    voice_name: Mapped[str] = mapped_column(String(128), default="")
+    reference_audio_path: Mapped[str] = mapped_column(String(512), default="")
+    reference_audio_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    # 0 排队 / 1 训练中 / 2 成功 / 3 失败 / 4 可用
+    status: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    doubao_task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 训练完成后豆包返回的自定义音色 id，合成接口把 icl:<cloned_voice_id> 映射到这个值
+    cloned_voice_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+

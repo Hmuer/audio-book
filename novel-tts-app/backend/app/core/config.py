@@ -17,6 +17,29 @@ class Settings(BaseSettings):
     # M3 可通过 thinking:{type:disabled} 真正关闭 thinking，反而更快更稳。
     LLM_MODEL_FAST: str = "MiniMax-M3"
 
+    # ============ 多厂商 TTS 路由 ============
+    # 全局默认 TTS 厂商（minimax | doubao）。Project.default_tts_provider 可覆写。
+    TTS_PROVIDER: str = "minimax"
+
+    # ============ 豆包语音全家桶 ============
+    # 凭据：留空表示不启用豆包能力，系统降级仅用 MiniMax 且不报错。
+    DOUBAO_AK: str = ""
+    DOUBAO_SK: str = ""
+    DOUBAO_APP_ID: str = ""
+
+    # 三个服务端点（使用豆包直连域名时，可按需覆写）
+    DOUBAO_TTS_BASE_URL: str = "https://openspeech.bytedance.com/api/v1/tts"
+    DOUBAO_ICL_BASE_URL: str = "https://openspeech.bytedance.com/api/v1/voice_clone"
+    DOUBAO_SEED_AUDIO_BASE_URL: str = "https://openspeech.bytedance.com/api/v1/seed_audio"
+
+    # RPM 限流（多厂商独立桶）
+    DOUBAO_TTS_RPM_LIMIT: int = 60
+    DOUBAO_SEED_AUDIO_RPM_LIMIT: int = 10
+
+    # 多播剧严格失败模式（默认 true：任何章节失败 → 整 Build 失败，不占位降级）
+    # 留配置点仅用于集成测试做对照回归，线上应保持 True。
+    MULTICAST_STRICT_MODE: bool = True
+
     # Server
     ENV: str = "dev"  # dev / test / prod / stage
     BIND_HOST: str = "127.0.0.1"

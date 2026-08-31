@@ -51,16 +51,40 @@ _JOB_NEW_COLUMNS = {
     "zip_filename": "VARCHAR(256)",
 }
 
+# Doubao 扩展：项目/构建新增列（FR-18/FR-19）
+_PROJECT_NEW_COLUMNS = {
+    "default_tts_provider": "VARCHAR(32)",
+    "default_build_mode": "VARCHAR(32)",
+}
+_BUILD_NEW_COLUMNS = {
+    # 注意：必须保留 SQL 级默认值，旧行自动补齐 classic / minimax（符合 T-TR3 向后兼容）
+    "mode": "VARCHAR(32) DEFAULT 'classic'",
+    "tts_provider": "VARCHAR(32) DEFAULT 'minimax'",
+}
+
 
 def _migrate_existing_sync(conn) -> None:
-    """检测旧 schema 的 jobs 表，自动 ALTER TABLE 补齐缺失字段。"""
+    """检测旧 schema 的 jobs/projects/builds 表，自动 ALTER TABLE 补齐缺失字段。"""
     insp = inspect(conn)
-    if "jobs" not in insp.get_table_names():
-        return
-    existing_cols = {c["name"] for c in insp.get_columns("jobs")}
-    for col, ddl in _JOB_NEW_COLUMNS.items():
-        if col not in existing_cols:
-            conn.execute(text(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}"))
+    tables = insp.get_table_names()
+
+    if "jobs" in tables:
+        existing_cols = {c["name"] for c in insp.get_columns("jobs")}
+        for col, ddl in _JOB_NEW_COLUMNS.items():
+            if col not in existing_cols:
+                conn.execute(text(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}"))
+
+    if "projects" in tables:
+        existing_cols = {c["name"] for c in insp.get_columns("projects")}
+        for col, ddl in _PROJECT_NEW_COLUMNS.items():
+            if col not in existing_cols:
+                conn.execute(text(f"ALTER TABLE projects ADD COLUMN {col} {ddl}"))
+
+    if "builds" in tables:
+        existing_cols = {c["name"] for c in insp.get_columns("builds")}
+        for col, ddl in _BUILD_NEW_COLUMNS.items():
+            if col not in existing_cols:
+                conn.execute(text(f"ALTER TABLE builds ADD COLUMN {col} {ddl}"))
 
 
 async def init_db() -> None:

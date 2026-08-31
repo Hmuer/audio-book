@@ -278,10 +278,44 @@ async def health():
 
 
 @router.get("/voices")
-async def list_voices():
-    tts = get_tts()
-    voices = await tts.list_voices()
-    return {"voices": voices, "count": len(voices)}
+async def list_voices(
+    tts_provider: str | None = None,
+):
+    """列出可用音色。
+    - tts_provider 未给：返回 minimax + doubao（两套并集，按 id 去重）。
+    - tts_provider ∈ {minimax, doubao}：仅返回对应厂商音色。
+    每条音色都带有 provider 字段，前端可据此分组。
+    """
+    import asyncio as _as_nc
+
+    requested_providers: list[str]
+    if tts_provider:
+        requested_providers = [tts_provider.lower()]
+    else:
+        requested_providers = ["minimax", "doubao"]
+
+    # 并发 list_voices（加速响应）
+    async def _fetch(p: str) -> list[dict]:
+        from backend.app.ai.factory import get_tts as _get_tts
+        tts_inst = _get_tts(p)
+        try:
+            return await tts_inst.list_voices()
+        except Exception:
+            # 若某 provider 临时不可用（例如 Doubao 未填 AK，但 list_voices 是读 JSON，通常不报错）
+            # 吞异常保证另一个仍可返回；真实请求再抛
+            return []
+
+    tasks = [_fetch(p) for p in requested_providers]
+    results = await _as_nc.gather(*tasks)
+    merged: dict[str, dict] = {}
+    for voices in results:
+        for v in voices:
+            vid = v.get("id")
+            if not vid:
+                continue
+            merged[vid] = v
+    final = list(merged.values())
+    return {"voices": final, "count": len(final)}
 
 
 # ---------- Chapter & Book 路由已移除（项目制统一入口：/api/projects/*）----------
@@ -371,6 +405,9 @@ class StartBuildRequest(BaseModel):
     voice_assignments: dict[str, str] = Field(default_factory=dict)
     narrator_voice_id: str = ""
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    # 多厂商 & 构建模式（Task 4/8 新增）
+    mode: str = Field(default="classic")  # classic | multicast
+    tts_provider: str | None = Field(default=None)
 
 
 class CancelBuildRequest(BaseModel):
@@ -752,6 +789,8 @@ async def api_start_build(
             voice_assignments=req.voice_assignments,
             narrator_voice_id=req.narrator_voice_id,
             speed=req.speed,
+            mode=req.mode,
+            tts_provider=req.tts_provider,
         )
         elapsed_ms = int((_time.perf_counter() - t0) * 1000)
         logger.info(

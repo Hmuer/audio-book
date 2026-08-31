@@ -108,6 +108,8 @@ class BuildResp(BaseModel):
     completed_chapters: int
     narrator_voice_id: str
     speed: float
+    mode: str = "classic"
+    tts_provider: str = "minimax"
     created_at: str | None
     failed_chapters: list[int] | None
     is_retry: bool
@@ -133,6 +135,8 @@ class BuildDetailResp(BaseModel):
     completed_chapters: int
     narrator_voice_id: str
     speed: float
+    mode: str = "classic"
+    tts_provider: str = "minimax"
     zip_url: str | None
     total_size_kb: int | None
     total_duration_sec: float | None
@@ -150,6 +154,8 @@ class BuildListItem(BaseModel):
     status: str
     total_chapters: int
     completed_chapters: int
+    mode: str = "classic"
+    tts_provider: str = "minimax"
     started_at: str | None
     completed_at: str | None
     created_at: str | None
@@ -164,9 +170,10 @@ class BuildStatusResp(BaseModel):
     progress_msg: str | None
     completed_chapters: int
     total_chapters: int
+    mode: str = "classic"
+    tts_provider: str = "minimax"
     artifacts: list[BuildArtifactResp]
     failed_chapters: list[int] | None
-    is_retry: bool
 
 
 # =====================================================================
@@ -186,14 +193,16 @@ def _parse_failed_chapters_json(s: str | None) -> list[int] | None:
 
 
 async def _ensure_default_narrator(narrator_voice_id: str | None) -> str:
-    """narrator 为空时兜底到 male-qn-jingying；音色库无此 id 时取第一个。"""
+    """narrator 为空时兜底到 minimax:male-qn-jingying；音色库无此 id 时取第一个。
+    注意：新命名空间已统一加 minimax: 前缀；同时兼容「无前缀 legacy id」。
+    """
     if narrator_voice_id:
         return narrator_voice_id
     tts = get_tts()
     voices = await tts.list_voices()
     if voices:
         vid = (
-            next((v["id"] for v in voices if v.get("id") == "male-qn-jingying"), None)
+            next((v["id"] for v in voices if v.get("id") in ("minimax:male-qn-jingying", "male-qn-jingying")), None)
             or voices[0].get("id", "")
         )
         return vid
@@ -383,16 +392,26 @@ async def tts_segment_cache_put(
 
 # =====================================================================
 # Build 配置哈希：同 project + (narrator, speed, voice_assignments) 相同 → 视为同一配置
+# 扩展：新增 mode + tts_provider 作为 key（Task 4 / Task 8）
 # =====================================================================
 
 
-def _calc_config_digest(narrator_voice_id: str, speed: float, voice_assignments: dict[str, str]) -> str:
+def _calc_config_digest(
+    narrator_voice_id: str,
+    speed: float,
+    voice_assignments: dict[str, str],
+    *,
+    mode: str = "classic",
+    tts_provider: str = "minimax",
+) -> str:
     sorted_va = dict(sorted((voice_assignments or {}).items()))
     raw = json.dumps(
         {
             "narrator": narrator_voice_id or "",
             "speed": round(float(speed), 6),
             "va": sorted_va,
+            "mode": (mode or "classic").lower(),
+            "tts_provider": (tts_provider or "minimax").lower(),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -413,6 +432,8 @@ def _build_to_resp(b: Build) -> BuildResp:
         completed_chapters=b.completed_chapters,
         narrator_voice_id=b.narrator_voice_id,
         speed=b.speed,
+        mode=b.mode or "classic",
+        tts_provider=b.tts_provider or "minimax",
         created_at=b.created_at.isoformat() if b.created_at else None,
         failed_chapters=_parse_failed_chapters_json(b.failed_chapters_json),
         is_retry=bool(b.is_retry),
@@ -430,6 +451,8 @@ def _build_to_detail(b: Build, artifacts: list[BuildArtifact]) -> BuildDetailRes
         completed_chapters=b.completed_chapters,
         narrator_voice_id=b.narrator_voice_id,
         speed=b.speed,
+        mode=b.mode or "classic",
+        tts_provider=b.tts_provider or "minimax",
         zip_url=f"/media/{b.zip_filename}" if b.zip_filename else None,
         total_size_kb=total_kb,
         total_duration_sec=round((b.total_duration_ms or 0) / 1000.0, 2),
@@ -458,12 +481,113 @@ def _build_to_list_item(b: Build) -> BuildListItem:
         status=b.status,
         total_chapters=b.total_chapters,
         completed_chapters=b.completed_chapters,
+        mode=b.mode or "classic",
+        tts_provider=b.tts_provider or "minimax",
         started_at=b.started_at.isoformat() if b.started_at else None,
         completed_at=b.completed_at.isoformat() if b.completed_at else None,
         created_at=b.created_at.isoformat() if b.created_at else None,
         failed_chapters=_parse_failed_chapters_json(b.failed_chapters_json),
         is_retry=bool(b.is_retry),
     )
+
+
+def _build_to_status_resp(b: Build, artifacts: list[BuildArtifact]) -> BuildStatusResp:
+    return BuildStatusResp(
+        build_id=b.build_id,
+        status=b.status,
+        progress_msg=b.progress_msg,
+        completed_chapters=b.completed_chapters,
+        total_chapters=b.total_chapters,
+        mode=b.mode or "classic",
+        tts_provider=b.tts_provider or "minimax",
+        artifacts=[
+            BuildArtifactResp(
+                chapter_idx=a.chapter_idx,
+                title=a.title,
+                status=a.status,
+                audio_url=a.audio_url,
+                duration_ms=a.duration_ms,
+                error_msg=a.error_msg,
+            )
+            for a in artifacts
+        ],
+        failed_chapters=_parse_failed_chapters_json(b.failed_chapters_json),
+    )
+
+
+# =====================================================================
+# TTS 命名空间校验（Task 4 / Task 8）
+# =====================================================================
+
+_VALID_PROVIDERS = {"minimax", "doubao"}
+_VALID_MODES = {"classic", "multicast"}
+# 前缀 → 归属哪个 tts_provider
+_PREFIX_TO_PROVIDER: dict[str, str] = {
+    "minimax": "minimax",
+    "doubao": "doubao",
+    "icl": "doubao",
+}
+
+
+def _voice_id_provider_of(voice_id: str) -> str | None:
+    """根据 voice_id 前缀推断所属 TTS 厂商；无前缀返回 None。"""
+    if not voice_id:
+        return None
+    if ":" in voice_id:
+        prefix = voice_id.split(":", 1)[0].lower()
+        return _PREFIX_TO_PROVIDER.get(prefix)
+    return None
+
+
+def _validate_tts_namespace(
+    tts_provider: str,
+    mode: str,
+    narrator_voice_id: str,
+    voice_assignments: dict[str, str],
+) -> None:
+    """校验 tts_provider / mode / voice_assignments 是否兼容。不兼容则抛 RuntimeError。"""
+    norm_mode = (mode or "classic").lower()
+    norm_provider = (tts_provider or "").lower()
+
+    # mode 合法性
+    if norm_mode not in _VALID_MODES:
+        raise RuntimeError(f"未知 build.mode: {mode}，可选 {sorted(_VALID_MODES)}")
+    # 多播剧必须显式指定 tts_provider
+    if norm_mode == "multicast" and not norm_provider:
+        raise RuntimeError("mode=multicast（多播剧模式）必须显式指定 tts_provider，不能留空")
+    # provider 合法性
+    if norm_provider and norm_provider not in _VALID_PROVIDERS:
+        raise RuntimeError(f"未知 tts_provider: {tts_provider}，可选 {sorted(_VALID_PROVIDERS)}")
+
+    provider_for_check = norm_provider  # 空字符串时，仍可能 narrator 无前缀 → 走 Legacy
+    # narrator 校验
+    n_provider = _voice_id_provider_of(narrator_voice_id)
+    if n_provider and provider_for_check and n_provider != provider_for_check:
+        raise RuntimeError(
+            f"narrator_voice_id '{narrator_voice_id}' 属于 {n_provider}，"
+            f"但当前 tts_provider='{provider_for_check}'，两者不兼容；请更换 narrator 或调整 tts_provider。"
+        )
+    # voice_assignments 校验
+    for ch, vid in (voice_assignments or {}).items():
+        v_provider = _voice_id_provider_of(vid)
+        if v_provider and provider_for_check and v_provider != provider_for_check:
+            raise RuntimeError(
+                f"角色 '{ch}' 的音色 '{vid}' 属于 {v_provider}，"
+                f"但当前 tts_provider='{provider_for_check}'，两者不兼容；请更换角色音色或调整 tts_provider。"
+            )
+    # 若 tts_provider 未给出，但 narrator 或某角色音色有前缀 → 要求显式 provider 防止歧义
+    if not norm_provider and (n_provider or any(_voice_id_provider_of(v) for v in (voice_assignments or {}).values())):
+        raise RuntimeError(
+            "检测到音色使用了带前缀的命名空间 ID（doubao:/minimax:/icl:），"
+            "请显式传 tts_provider，避免合成路由歧义。"
+        )
+
+
+def _should_strict_fail(mode: str) -> bool:
+    """严格失败判定（用户需求 #4）：选了多播剧模式 + MULTICAST_STRICT_MODE=True → 任何章节失败直接 Build 失败，不降级（不生成占位静音 MP3）。"""
+    from ..core.config import settings
+    return bool(settings.MULTICAST_STRICT_MODE) and (mode or "classic").lower() == "multicast"
+
 
 
 # =====================================================================
@@ -475,21 +599,69 @@ async def start_build(
     voice_assignments: dict[str, str],
     narrator_voice_id: str,
     speed: float = 1.0,
+    *,
+    mode: str = "classic",
+    tts_provider: str | None = None,
 ) -> BuildResp:
     """
     创建 Build + 每章 BuildArtifact（pending），启动后台 worker，立即返回。
 
-    合成幂等（三层去重）：
+    新增参数：
+      - mode: 'classic'（默认，逐章节分段 TTS 拼接）/'multicast'（多播剧，Seed-Audio 一体化，失败直接抛错）
+      - tts_provider: 'minimax' | 'doubao' | None（None 时从 Project.default_tts_provider 读取，再兜底 settings.TTS_PROVIDER）
+
+    合成幂等（三层去重，mode/tts_provider 已纳入 config_digest）：
       1) 内存锁 _RUNNING_BUILDS：单 worker 内同一 project 不重复
       2) DB Build.status：若已有 running/queued 的 build，直接复用
-      3) **config_digest 命中**：同一 project + 相同 narrator/speed/voice_assignments，
+      3) **config_digest 命中**：同一 project + 相同 narrator/speed/voice_assignments/mode/tts_provider，
          且历史已有**成功** Build（ZIP 生成过）→ 直接返回旧 build_id，不重建。
-         （细粒度"某章没完成"的情况，由 worker 内部章级 skip 继续补做，而不是直接复用整个 build）
     """
+    from ..core.config import settings as _settings_mod
+
     _run_seg_cache_gc_if_needed(force=False)
 
     narrator_voice_id = await _ensure_default_narrator(narrator_voice_id)
-    digest = _calc_config_digest(narrator_voice_id, speed, voice_assignments)
+
+    # 解析 tts_provider （优先级：参数 > Project.default_tts_provider > settings.TTS_PROVIDER > 'minimax'）
+    effective_provider = (tts_provider or "").lower() or None
+    resolved_mode = (mode or "classic").lower()
+    if not effective_provider:
+        factory_sess = get_session_factory()
+        try:
+            async with factory_sess() as s:
+                p = await s.get(Project, project_id)
+                if p and p.default_tts_provider:
+                    effective_provider = p.default_tts_provider.lower()
+        except Exception:
+            pass
+    if not effective_provider:
+        effective_provider = (_settings_mod.TTS_PROVIDER or "minimax").lower()
+
+    # mode 默认值：若 Project.default_build_mode 显式设定则覆盖
+    if not mode or resolved_mode == "classic":
+        factory_sess2 = get_session_factory()
+        try:
+            async with factory_sess2() as s:
+                p = await s.get(Project, project_id)
+                if p and p.default_build_mode:
+                    resolved_mode = p.default_build_mode.lower()
+        except Exception:
+            pass
+    else:
+        resolved_mode = mode.lower()
+
+    # 命名空间校验（不兼容直接抛 RuntimeError）
+    _validate_tts_namespace(
+        tts_provider=effective_provider,
+        mode=resolved_mode,
+        narrator_voice_id=narrator_voice_id,
+        voice_assignments=voice_assignments,
+    )
+
+    digest = _calc_config_digest(
+        narrator_voice_id, speed, voice_assignments,
+        mode=resolved_mode, tts_provider=effective_provider,
+    )
 
     async with _RUNNING_LOCK:
         if project_id in _RUNNING_BUILDS:
@@ -572,6 +744,8 @@ async def start_build(
             total_chapters=len(chapters),
             narrator_voice_id=narrator_voice_id,
             speed=speed,
+            mode=resolved_mode,
+            tts_provider=effective_provider,
             voice_assignments_json=voice_json,
             config_digest=digest,
         )
@@ -901,12 +1075,18 @@ async def _run_build_inner(
         b.status = "running"
         b.started_at = datetime.now(UTC).replace(tzinfo=None)
         b.progress_msg = f"开始合成 1/{total} 章…"
+        build_mode = (b.mode or "classic").lower()
+        strict_mode = _should_strict_fail(build_mode)
+        tts_provider_label = b.tts_provider or "minimax"
         await s.commit()
 
-    logger.info(f"[build_worker] build_id={build_id[:8]}... total_chapters={total}")
+    logger.info(
+        f"[build_worker] build_id={build_id[:8]}... total_chapters={total} "
+        f"mode={build_mode} strict={strict_mode} tts_provider={tts_provider_label}"
+    )
 
     from ..ai.factory import get_tts_sem
-    tts = get_tts()
+    tts = get_tts(None if tts_provider_label in ("", None) else tts_provider_label)
     audio_dir = Path(settings.AUDIO_DIR)
     audio_dir.mkdir(parents=True, exist_ok=True)
     sem = get_tts_sem()
@@ -915,8 +1095,28 @@ async def _run_build_inner(
     completed = 0
     failed_count = 0
     chapter_ok_flag: dict[int, bool] = {}
+    strict_abort_flag = False  # strict 模式下首次失败即标记后续章节 skip
 
     for ch_idx, ch in enumerate(chapters):
+        # strict 模式一旦出现失败，后续章节直接 skip 标记 failed（不写文件）
+        if strict_abort_flag:
+            chapter_ok_flag[ch_idx] = False
+            failed_count += 1
+            chapter_outputs[ch_idx] = (None, None)
+            async with factory() as s:
+                stmt_art = select(BuildArtifact).where(
+                    BuildArtifact.build_id == build_id,
+                    BuildArtifact.chapter_idx == ch_idx,
+                )
+                art = (await s.execute(stmt_art)).scalar_one_or_none()
+                if art:
+                    art.status = "failed"
+                    art.error_msg = "strict 模式：前序章节失败，已中止后续章节合成"
+                    art.audio_filename = None
+                    art.audio_url = None
+                    art.duration_ms = None
+                await s.commit()
+            continue
         cancelled_now = False
         async with factory() as s:
             b_check = await s.get(Build, build_id)
@@ -1143,6 +1343,43 @@ async def _run_build_inner(
             )
             failed_count += 1
             chapter_ok_flag[ch_idx] = False
+
+            # strict 模式（multicast + MULTICAST_STRICT_MODE）：
+            #   - 不写占位静音 MP3
+            #   - BuildArtifact 仅 status=failed + error_msg，audio_filename/audio_url 留空
+            #   - 置 strict_abort_flag，后续章跳过多走 failed
+            if strict_mode:
+                strict_abort_flag = True
+                chapter_outputs[ch_idx] = (None, None)
+                async with factory() as s:
+                    stmt_art = select(BuildArtifact).where(
+                        BuildArtifact.build_id == build_id,
+                        BuildArtifact.chapter_idx == ch_idx,
+                    )
+                    art = (await s.execute(stmt_art)).scalar_one_or_none()
+                    if art:
+                        art.status = "failed"
+                        art.audio_filename = None
+                        art.audio_url = None
+                        art.duration_ms = None
+                        art.error_msg = f"{type(ch_err).__name__}: {ch_err}"[:500]
+                    b = await s.get(Build, build_id)
+                    if b:
+                        b.completed_chapters = completed
+                        if b.status == "cancelled":
+                            logger.warning(f"[build_worker] cancelled after fail ch {ch_idx+1}")
+                            b.progress_msg = f"已取消：已完成 {completed}/{total} 章"
+                            b.completed_at = datetime.now(UTC).replace(tzinfo=None)
+                    await s.commit()
+                    if b and b.status == "cancelled":
+                        break
+                # strict 模式：首次失败立即终止后续章节合成
+                logger.warning(
+                    f"[build_worker] strict 模式下中止：build_id={build_id[:8]}... "
+                    f"ch {ch_idx+1}/{total} 失败 → 直接整包 failed"
+                )
+                break  # 退出 for ch_idx, ch in enumerate(chapters)
+            # --- 非 strict：降级逻辑（占位静音 MP3 + partial_success）---
             placeholder_bytes = make_silent_mp3(1000)
             ph_fname = _audio_filename(build_id, ch_idx, failed=True)
             ph_fpath = str(audio_dir / ph_fname)
@@ -1201,22 +1438,29 @@ async def _run_build_inner(
                 pass
         total_ms += _d or 0
 
-    zip_fname = _zip_filename(build_id)
-    zip_path = str(audio_dir / zip_fname)
-    _build_book_zip(
-        zip_path,
-        job_id=build_id,
-        job_title=job_title,
-        chapter_outputs=chapter_outputs,
-        chapter_titles=[c.title for c in chapters],
-    )
-
-    if failed_count == 0:
-        final_status = "success"
-    elif completed >= 1 and total >= 1:
-        final_status = "partial_success"
-    else:
+    # strict 模式 + 有失败：不生成 ZIP（避免打包无意义文件），最终状态强制 failed
+    strict_final_failed = False
+    if strict_mode and failed_count > 0:
+        strict_final_failed = True
         final_status = "failed"
+        zip_fname = None  # type: ignore
+    else:
+        zip_fname = _zip_filename(build_id)
+        zip_path = str(audio_dir / zip_fname)
+        _build_book_zip(
+            zip_path,
+            job_id=build_id,
+            job_title=job_title,
+            chapter_outputs=chapter_outputs,
+            chapter_titles=[c.title for c in chapters],
+        )
+
+        if failed_count == 0:
+            final_status = "success"
+        elif completed >= 1 and total >= 1:
+            final_status = "partial_success"
+        else:
+            final_status = "failed"
 
     if only_set is not None:
         this_retry_failed = sorted([ch_idx for ch_idx, ok in chapter_ok_flag.items() if ch_idx in only_set and not ok])
@@ -1227,13 +1471,18 @@ async def _run_build_inner(
         b = await s.get(Build, build_id)
         if b:
             b.status = final_status
-            b.progress_msg = (
-                f"全部完成 {completed}/{total} 章"
-                + (f"（{failed_count} 章失败已用静音占位）" if failed_count else "")
-            )
+            if strict_final_failed:
+                b.progress_msg = (
+                    f"strict 多播剧模式合成失败：{failed_count}/{total} 章出错，已中止（无占位降级）"
+                )
+            else:
+                b.progress_msg = (
+                    f"全部完成 {completed}/{total} 章"
+                    + (f"（{failed_count} 章失败已用静音占位）" if failed_count else "")
+                )
             b.zip_filename = zip_fname
-            b.total_size_bytes = total_size_bytes
-            b.total_duration_ms = total_ms
+            b.total_size_bytes = 0 if strict_final_failed else total_size_bytes
+            b.total_duration_ms = 0 if strict_final_failed else total_ms
             b.completed_at = datetime.now(UTC).replace(tzinfo=None)
             b.failed_chapters_json = json.dumps(sorted(this_retry_failed), ensure_ascii=False)
             await s.commit()
@@ -1306,26 +1555,7 @@ async def get_build_status(build_id: str) -> BuildStatusResp:
             BuildArtifact.build_id == build_id
         ).order_by(BuildArtifact.chapter_idx)
         arts = list((await session.execute(stmt)).scalars().all())
-        return BuildStatusResp(
-            build_id=build_id,
-            status=b.status,
-            progress_msg=b.progress_msg,
-            completed_chapters=b.completed_chapters,
-            total_chapters=b.total_chapters,
-            artifacts=[
-                BuildArtifactResp(
-                    chapter_idx=a.chapter_idx,
-                    title=a.title,
-                    status=a.status,
-                    audio_url=a.audio_url,
-                    duration_ms=a.duration_ms,
-                    error_msg=a.error_msg,
-                )
-                for a in arts
-            ],
-            failed_chapters=_parse_failed_chapters_json(b.failed_chapters_json),
-            is_retry=bool(b.is_retry),
-        )
+        return _build_to_status_resp(b, arts)
 
 
 async def delete_build(project_id: str, build_id: str) -> None:

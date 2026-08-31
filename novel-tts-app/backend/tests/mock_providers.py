@@ -120,9 +120,9 @@ class MockLLMProvider(BaseLLMProvider):
             # 从 prompt 抽取角色名，给每个挑一个默认音色
             import re as _re
             recs = [
-                {"character_name": "林若雪", "suggested_voice_id": "female-tianmei", "reason": "少女匹配甜美音色"},
-                {"character_name": "李明", "suggested_voice_id": "male-qn-qingse", "reason": "青年男声"},
-                {"character_name": "王大爷", "suggested_voice_id": "male-qn-badao", "reason": "老年沧桑"},
+                {"character_name": "林若雪", "suggested_voice_id": "minimax:female-tianmei", "reason": "少女匹配甜美音色"},
+                {"character_name": "李明", "suggested_voice_id": "minimax:male-qn-qingse", "reason": "青年男声"},
+                {"character_name": "王大爷", "suggested_voice_id": "minimax:male-qn-badao", "reason": "老年沧桑"},
             ]
             # 从 prompt 抽取实际角色名，替换默认值
             try:
@@ -132,14 +132,14 @@ class MockLLMProvider(BaseLLMProvider):
                 names = _re.findall(r'"name"\s*:\s*"([^"]+)"', char_block)
                 if names:
                     default_voices = {
-                        "林若雪": "female-tianmei",
-                        "李明": "male-qn-qingse",
-                        "王大爷": "male-qn-badao",
+                        "林若雪": "minimax:female-tianmei",
+                        "李明": "minimax:male-qn-qingse",
+                        "王大爷": "minimax:male-qn-badao",
                     }
                     recs = [
                         {
                             "character_name": n,
-                            "suggested_voice_id": default_voices.get(n, "male-qn-jingying"),
+                            "suggested_voice_id": default_voices.get(n, "minimax:male-qn-jingying"),
                             "reason": f"{n} 默认推荐",
                         }
                         for n in names
@@ -207,16 +207,34 @@ def _extract_text_block(p: str, start: str, end: str) -> str:
 class MockTTSProvider(BaseTTSProvider):
     """返回静音 MP3，不需要真的调 TTS。每段按长度估算时长。"""
     name = "mock_tts"
+    provider = "minimax"
 
     def __init__(self):
         with open(VOICES_FILE, "r", encoding="utf-8") as f:
-            self._voices = _json.load(f)
+            raw = _json.load(f)
+        # 注入 provider 前缀命名空间，与 MiniMaxTTSProvider.list_voices 行为一致
+        normalized: list[dict[str, Any]] = []
+        for v in raw:
+            vv = dict(v)
+            vid = vv.get("id", "")
+            if vid and not vid.startswith("minimax:"):
+                vv["id"] = f"minimax:{vid}"
+            vv.setdefault("provider", "minimax")
+            normalized.append(vv)
+        self._voices = normalized
 
     async def list_voices(self) -> list[dict[str, Any]]:
         return self._voices
 
     async def synthesize_to_bytes(
-        self, text: str, voice_id: str, *, emotion: str = "calm", speed: float = 1.0
+        self,
+        text: str,
+        voice_id: str,
+        *,
+        emotion: str = "calm",
+        speed: float = 1.0,
+        instruction_text: str | None = None,
+        speaker_style: str | None = None,
     ) -> tuple[bytes, int]:
         # 每 5 个字约 1s，用静音 MP3
         dur_ms = max(200, int(len(text) * 200 / max(0.5, min(2.0, float(speed)))))
@@ -230,8 +248,13 @@ class MockTTSProvider(BaseTTSProvider):
         *,
         emotion: str = "calm",
         speed: float = 1.0,
+        instruction_text: str | None = None,
+        speaker_style: str | None = None,
     ) -> tuple[str, int]:
-        data, dur = await self.synthesize_to_bytes(text, voice_id, emotion=emotion, speed=speed)
+        data, dur = await self.synthesize_to_bytes(
+            text, voice_id, emotion=emotion, speed=speed,
+            instruction_text=instruction_text, speaker_style=speaker_style,
+        )
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "wb") as f:
             f.write(data)
