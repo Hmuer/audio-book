@@ -350,6 +350,9 @@ export interface ProjectListItem {
   prepare_stage?: string | null;
   /** prepare 进度白名单：刷新/重开标签页后列表直接显示进度条 & 阶段，无需进详情。 */
   prepare_progress?: PrepareProgress | null;
+  /** 构建进度（存在 queued/running 的 build 时填充，status 同时映射为 synthesizing） */
+  build_completed?: number | null;
+  build_total?: number | null;
 }
 
 // 项目详情

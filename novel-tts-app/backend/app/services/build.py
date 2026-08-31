@@ -1238,6 +1238,21 @@ async def _run_build_inner(
             b.failed_chapters_json = json.dumps(sorted(this_retry_failed), ensure_ascii=False)
             await s.commit()
 
+    # 构建结束同步项目状态：全量成功 → done（前端"已完成"）；
+    # 部分成功 → partial_success；失败/取消保持 ready（用户可重新构建）。
+    # 仅当这是该项目最近一次构建时才回写，避免旧 build 完成覆盖新状态。
+    if final_status in ("success", "partial_success"):
+        async with factory() as s:
+            stmt_latest = select(Build).where(
+                Build.project_id == project_id
+            ).order_by(Build.created_at.desc()).limit(1)
+            latest_b = (await s.execute(stmt_latest)).scalar_one_or_none()
+            if latest_b and latest_b.build_id == build_id:
+                p = await s.get(Project, project_id)
+                if p:
+                    p.status = "done" if final_status == "success" else "partial_success"
+                    await s.commit()
+
     total_elapsed_ms = int((_time.perf_counter() - t0) * 1000)
     logger.info(
         f"[build_worker] DONE build_id={build_id[:8]}... total_ms={total_elapsed_ms} "

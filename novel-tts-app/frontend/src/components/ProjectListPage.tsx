@@ -594,9 +594,29 @@ export default function ProjectListPage() {
                         </span>
                       )}
                       {p.status === 'synthesizing' && (
-                        <div className="text-xs" style={{ color: 'rgb(var(--status-synth-fg))' }}>
-                          合成中…
-                        </div>
+                        p.build_total != null && p.build_total > 0 ? (
+                          <div className="space-y-1.5 min-w-[110px]">
+                            <div className="flex items-center justify-between text-xs tabular-nums">
+                              <span style={{ color: 'rgb(var(--status-synth-fg))' }}>合成中</span>
+                              <span className="text-ink-500">
+                                {p.build_completed ?? 0}/{p.build_total} 章
+                              </span>
+                            </div>
+                            <div className="progress-track">
+                              <div
+                                className="h-full rounded-full transition-all duration-500"
+                                style={{
+                                  width: `${Math.round(((p.build_completed ?? 0) / p.build_total) * 100)}%`,
+                                  background: 'rgb(var(--status-synth-dot))',
+                                }}
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-xs" style={{ color: 'rgb(var(--status-synth-fg))' }}>
+                            合成中…
+                          </div>
+                        )
                       )}
                       {p.status === 'importing' && (
                         <div className="text-xs" style={{ color: 'rgb(var(--status-info-fg))' }}>

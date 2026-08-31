@@ -167,6 +167,9 @@ class ProjectListItem(BaseModel):
     # prepare 进度白名单（同 ProjectDetailResp.prepare_progress）—— 列表页直接显示进度条，
     # 关闭标签页/刷新后用户仍能在项目工作台看到"角色切片 2/60 · 对白批 3/72"等。
     prepare_progress: dict | None = None
+    # 构建进度（存在 queued/running 的 build 时填充；status 同时映射为 synthesizing）
+    build_completed: int | None = None
+    build_total: int | None = None
 
 
 class ProjectPrepareResp(BaseModel):
@@ -1548,6 +1551,10 @@ async def get_project(project_id: str) -> ProjectDetailResp:
             else None
         )
 
+        # 存在活跃构建（queued/running）时，响应层把 status 映射为 synthesizing
+        # （DB 中构建期间项目 status 保持 ready，不改状态机）
+        has_active_build = last_build_row is not None and last_build_row.status in ("queued", "running")
+
         # prepare_progress：从 progress_json 解析出的白名单 dict（前端渲染 角色/对白 子阶段进度）
         prog_dict: dict | None = None
         if p.progress_json:
@@ -1562,7 +1569,7 @@ async def get_project(project_id: str) -> ProjectDetailResp:
             project_id=p.project_id,
             name=p.name,
             book_title=p.book_title,
-            status=p.status,
+            status="synthesizing" if has_active_build else p.status,
             source_filename=p.source_filename,
             source_file_size=p.source_file_size,
             chapter_count=p.chapter_count,
@@ -1586,8 +1593,21 @@ async def list_projects() -> list[ProjectListItem]:
     async with factory() as session:
         stmt = select(Project).order_by(Project.created_at.desc())
         rows = list((await session.execute(stmt)).scalars().all())
+
+        # 批量查活跃构建（queued/running）：项目构建期间 status 仍为 ready，
+        # 这里在响应层映射为 synthesizing 并附带构建进度（不改 DB 状态）
+        active_builds: dict[str, Build] = {}
+        if rows:
+            stmt_ab = select(Build).where(
+                Build.project_id.in_([p.project_id for p in rows]),
+                Build.status.in_(("queued", "running")),
+            )
+            for b in (await session.execute(stmt_ab)).scalars().all():
+                active_builds[b.project_id] = b
+
         result: list[ProjectListItem] = []
         for p in rows:
+            ab = active_builds.get(p.project_id)
             prog: dict | None = None
             if p.progress_json:
                 try:
@@ -1606,7 +1626,7 @@ async def list_projects() -> list[ProjectListItem]:
                 project_id=p.project_id,
                 name=p.name,
                 book_title=p.book_title,
-                status=p.status,
+                status="synthesizing" if ab else p.status,
                 source_filename=p.source_filename,
                 chapter_count=p.chapter_count,
                 cover_color=p.cover_color,
@@ -1614,6 +1634,8 @@ async def list_projects() -> list[ProjectListItem]:
                 updated_at=p.updated_at.isoformat() if p.updated_at else None,
                 prepare_stage=prepare_stage,
                 prepare_progress=prepare_progress_pub,
+                build_completed=ab.completed_chapters if ab else None,
+                build_total=ab.total_chapters if ab else None,
             ))
         return result
 
