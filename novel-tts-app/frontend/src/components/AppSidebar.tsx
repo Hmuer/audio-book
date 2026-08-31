@@ -41,6 +41,13 @@ const SETTINGS_ITEM: MenuItem = {
   key: 'settings', label: '设置', icon: 'cog', href: '#/settings',
 };
 
+// 所有拥有独立菜单项的路径（去掉 # 前缀）。
+// 用于消歧：currentPath 精确命中其中某项时，仅有那一项激活。
+const EXACT_NAV_PATHS: Set<string> = new Set<string>(
+  [SETTINGS_ITEM.href, ...AUDIOBOOKS_CHILDREN.map(c => c.href)]
+    .map(h => h.replace(/^#/, ''))
+);
+
 // Edtech 工具化：分区标题使用中文简洁标签
 const SECTION_LABEL_WORKSPACE = '创作中心';
 const SECTION_LABEL_SYSTEM    = '系统';
@@ -85,7 +92,13 @@ export default function AppSidebar({ currentPath }: Props) {
   const isPathActive = (href: string) => {
     const path = href.replace(/^#/, '');
     if (path === currentPath) return true;
-    if (currentPath.startsWith(path + '/')) return true;
+    // 前缀匹配仅用于详情页等更深路径（如 /audiobooks/:id → 我的有声书）。
+    // 若 currentPath 精确命中了另一个菜单项（如 /audiobooks/voices → 音色库），
+    // 则短前缀项（我的有声书）不得激活，避免两项同时高亮。
+    if (currentPath.startsWith(path + '/')) {
+      const exactHit = EXACT_NAV_PATHS.has(currentPath);
+      return !exactHit;
+    }
     return false;
   };
   const isModuleActive = (m: Module) => {
