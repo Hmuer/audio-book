@@ -2,11 +2,11 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { api, SettingItem } from '@/lib/api';
+import ProviderModelsEditor from './ProviderModelsEditor';
 
 // ---------- 常量 ----------
-type IconName = 'cpu' | 'clock' | 'gauge' | 'database' | 'scissors' | 'file-text' | 'lock' | 'cog' | 'box';
+type IconName = 'cpu' | 'clock' | 'gauge' | 'database' | 'scissors' | 'file-text' | 'lock' | 'cog' | 'box' | 'layers';
 const GROUP_META: Record<string, { icon: IconName; desc: string }> = {
-  '模型配置': { icon: 'cpu', desc: 'TTS / LLM 厂商 API 地址、密钥与模型选择' },
   '超时配置': { icon: 'clock', desc: '各环节请求超时与 Build 运行超时' },
   '限流配置': { icon: 'gauge', desc: '并发度、RPM 限流、批处理参数' },
   '缓存配置': { icon: 'database', desc: 'TTS 段缓存 LRU / 磁盘过期策略' },
@@ -32,6 +32,7 @@ function GroupIcon({ name, size = 16 }: { name: IconName; size?: number }) {
     case 'file-text': return (<svg {...common}><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>);
     case 'lock': return (<svg {...common}><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>);
     case 'cog': return (<svg {...common}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 01-4 0v-.1A1.7 1.7 0 009 19.4a1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 010-4h.1A1.7 1.7 0 004.6 9a1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 014 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 010 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>);
+    case 'layers': return (<svg {...common}><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>);
     default: return (<svg {...common}><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>);
   }
 }
@@ -72,7 +73,10 @@ function regexValidate(pattern: string): string | null {
 }
 
 // ---------- 主组件 ----------
+type SettingsTab = 'models' | 'advanced';
+
 export default function SettingsPage() {
+  const [tab, setTab] = useState<SettingsTab>('models');
   const [items, setItems] = useState<SettingItem[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftMap>({});
@@ -102,7 +106,9 @@ export default function SettingsPage() {
     return g;
   }, [items]);
 
-  const groupOrder = ['模型配置', '超时配置', '限流配置', '缓存配置', '章节切分', '日志配置', '认证配置', '系统'];
+  // 注：模型配置组改为单独的 "模型厂商" 标签页（ProviderModelsEditor），
+  // 这里只展示高级配置。
+  const groupOrder = ['超时配置', '限流配置', '缓存配置', '章节切分', '日志配置', '认证配置', '系统'];
 
   const dirtyKeys = useMemo(() => {
     if (!items) return [];
@@ -327,20 +333,47 @@ export default function SettingsPage() {
             管理模型厂商、限流、超时、切章正则等系统配置 · 修改即时生效
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button className="btn-ghost" onClick={onReset} disabled={loading || saving || dirtyKeys.length === 0}>
-            重置
-          </button>
-          <button
-            className="btn-primary"
-            onClick={onSave}
-            disabled={loading || saving || dirtyKeys.length === 0}
-          >
-            {saving ? '保存中…' : `保存${dirtyKeys.length > 0 ? ` (${dirtyKeys.length})` : ''}`}
-          </button>
-        </div>
+        {tab === 'advanced' && (
+          <div className="flex items-center gap-2">
+            <button className="btn-ghost" onClick={onReset} disabled={loading || saving || dirtyKeys.length === 0}>
+              重置
+            </button>
+            <button
+              className="btn-primary"
+              onClick={onSave}
+              disabled={loading || saving || dirtyKeys.length === 0}
+            >
+              {saving ? '保存中…' : `保存${dirtyKeys.length > 0 ? ` (${dirtyKeys.length})` : ''}`}
+            </button>
+          </div>
+        )}
       </div>
 
+      {/* 标签页切换 */}
+      <div className="border-b border-ink-300/70 flex items-center gap-1">
+        <TabButton
+          active={tab === 'models'}
+          onClick={() => setTab('models')}
+          icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>}
+          label="模型厂商"
+          desc="多厂商 · 多模型 · 激活选择"
+        />
+        <TabButton
+          active={tab === 'advanced'}
+          onClick={() => setTab('advanced')}
+          icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 01-4 0v-.1A1.7 1.7 0 009 19.4a1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 010-4h.1A1.7 1.7 0 004.6 9a1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 014 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 010 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>}
+          label="高级配置"
+          desc="超时、限流、切章、日志等"
+        />
+      </div>
+
+      {/* 模型厂商标签 */}
+      {tab === 'models' && (
+        <ProviderModelsEditor />
+      )}
+
+      {/* 高级配置标签 */}
+      {tab === 'advanced' && (<>
       {/* 提示信息 */}
       {savedMsg && (
         <div
@@ -428,6 +461,37 @@ export default function SettingsPage() {
           配置修改即时生效（内存级）。重启后端后恢复 .env 默认值，如需持久化请手动写入 .env 文件。
         </div>
       )}
+      </>)}
     </section>
+  );
+}
+
+// 子组件：标签按钮
+function TabButton({
+  active, onClick, icon, label, desc,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+  desc: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`relative px-4 py-2.5 -mb-px inline-flex items-center gap-2 text-sm transition-colors ${
+        active
+          ? 'text-white border-b-2 border-brand-500'
+          : 'text-ink-500 hover:text-ink-700 border-b-2 border-transparent'
+      }`}
+    >
+      <span className={`w-6 h-6 grid place-items-center rounded ${active ? 'text-brand-300 bg-brand-500/10 border border-brand-500/20' : 'text-ink-500 bg-white/[0.04]'}`}>
+        {icon}
+      </span>
+      <span>
+        <span className="font-medium">{label}</span>
+        <span className="ml-2 text-[11px] text-ink-500">{desc}</span>
+      </span>
+    </button>
   );
 }

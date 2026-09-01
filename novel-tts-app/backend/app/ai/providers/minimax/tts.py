@@ -123,9 +123,29 @@ class MiniMaxTTSProvider(BaseTTSProvider):
     name = "minimax"
     provider = "minimax"
 
-    def __init__(self):
-        self.api_key = settings.TTS_API_KEY
-        self.base_url = settings.TTS_BASE_URL.rstrip("/")
+    def __init__(self, api_key: str | None = None, base_url: str | None = None,
+                 model: str | None = None, extra_headers: dict[str, str] | None = None):
+        # 优先取多厂商配置（来自 get_active_tts_provider() 的 override），兜底 .env 扁平字段
+        from ....core.config import get_active_tts_provider
+        prov = get_active_tts_provider()
+        if prov and prov.get("id") == "minimax" and prov.get("api_key"):
+            self.api_key = api_key or prov["api_key"]
+            self.base_url = (base_url or prov.get("base_url") or settings.TTS_BASE_URL).rstrip("/")
+            self.model = model or settings.ACTIVE_TTS_MODEL or "speech-2.8-turbo"
+            # 模型 ID 形如 "MiniMax-speech-01"，去掉厂商前缀得 "speech-01"
+            mid = self.model
+            if ":" in mid:
+                mid = mid.split(":", 1)[1]
+            if mid.startswith("MiniMax-"):
+                mid = mid[len("MiniMax-"):]
+            self._internal_model = mid
+            self.extra_headers = dict(prov.get("extra_headers") or {})
+        else:
+            self.api_key = api_key or settings.TTS_API_KEY
+            self.base_url = (base_url or settings.TTS_BASE_URL).rstrip("/")
+            self.model = model or "speech-2.8-turbo"
+            self._internal_model = "speech-2.8-turbo"
+            self.extra_headers = dict(extra_headers or {})
         self.timeout = httpx.Timeout(
             connect=settings.TTS_TIMEOUT,
             read=settings.TTS_TIMEOUT,
@@ -171,7 +191,8 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             return make_silent_mp3(50), 50
         text = apply_onomatopoeia(text, voice_id=voice_id)
         text_chars = len(text)
-        model = "speech-2.8-turbo"
+        # 多厂商激活模型：取自 PROVIDERS_CONFIG.active.tts；兜底硬编码值
+        model = getattr(self, "_internal_model", None) or "speech-2.8-turbo"
         speed = max(0.5, min(2.0, float(speed)))
         # voice_id 若含 minimax: 前缀，合成前剥离（API 端要求纯 id）
         if voice_id.startswith("minimax:"):

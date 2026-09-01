@@ -1198,13 +1198,18 @@ async def api_retry_failed_build(
 
 # 可通过 API 修改的字段白名单（不含 JWT_SECRET、DISABLE_AUTH 等安全敏感项）
 _EDITABLE_SETTINGS = {
-    # 模型厂商
-    "TTS_API_KEY": ("str", "模型配置", "TTS API Key"),
-    "TTS_BASE_URL": ("str", "模型配置", "TTS Base URL"),
-    "LLM_API_KEY": ("str", "模型配置", "LLM API Key"),
-    "LLM_BASE_URL": ("str", "模型配置", "LLM Base URL"),
-    "LLM_MODEL_PRO": ("str", "模型配置", "LLM Pro 模型"),
-    "LLM_MODEL_FAST": ("str", "模型配置", "LLM Fast 模型"),
+    # ---- 多厂商模型配置（新结构；前端按厂商卡片编辑）----
+    "PROVIDERS_CONFIG": ("json", "模型配置", "厂商配置 JSON（前端按卡片管理）"),
+    "ACTIVE_TTS_PROVIDER": ("str", "模型配置", "激活的 TTS 厂商"),
+    "ACTIVE_TTS_MODEL": ("str", "模型配置", "激活的 TTS 模型"),
+    "ACTIVE_LLM_PROVIDER": ("str", "模型配置", "激活的 LLM 厂商"),
+    "ACTIVE_LLM_MODEL": ("str", "模型配置", "激活的 LLM 模型"),
+    # ---- 遗留扁平字段（保留兜底；新 UI 不再展示）----
+    "TTS_API_KEY": ("str", "模型配置", "TTS API Key（遗留）"),
+    "TTS_BASE_URL": ("str", "模型配置", "TTS Base URL（遗留）"),
+    "LLM_API_KEY": ("str", "模型配置", "LLM API Key（遗留）"),
+    "LLM_BASE_URL": ("str", "模型配置", "LLM Base URL（遗留）"),
+    "LLM_MODEL_PRO": ("str", "模型配置", "LLM 模型（遗留）"),
     # 超时
     "LLM_TIMEOUT": ("int", "超时配置", "LLM 超时（秒）"),
     "TTS_TIMEOUT": ("int", "超时配置", "TTS 超时（秒）"),
@@ -1258,7 +1263,74 @@ class SettingsResp(BaseModel):
 
 
 class SettingsUpdateReq(BaseModel):
-    updates: dict[str, str | int | bool | list[str]] = Field(default_factory=dict)
+    updates: dict[str, str | int | bool | list[str] | dict] = Field(default_factory=dict)
+
+
+# =====================================================================
+# 多厂商模型配置（/api/providers GET/PUT）
+# 设计：独立于 settings 通用接口，避免把超长 JSON 塞进 settingsUpdate.updates。
+# =====================================================================
+
+
+@router.get("/providers")
+async def get_providers(
+    cred: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
+):
+    """返回所有厂商配置（含未启用）和当前激活模型。"""
+    from ..core.config import list_providers, get_active
+    payload = decode_token(cred.credentials)
+    if not payload:
+        raise HTTPException(401, "无效凭证")
+    tts_pid, tts_mid, _ = get_active("tts")
+    llm_pid, llm_mid, _ = get_active("llm")
+    return {
+        "providers": list_providers(),
+        "active": {
+            "tts": {"provider_id": tts_pid, "model_id": tts_mid},
+            "llm": {"provider_id": llm_pid, "model_id": llm_mid},
+        },
+    }
+
+
+@router.put("/providers")
+async def update_providers(
+    cfg: dict,
+    cred: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
+):
+    """覆盖式保存多厂商结构；同时同步刷新 ACTIVE_* 字段，确保 TTS/LLM 即时生效。"""
+    from ..core.config import save_providers_config, get_provider
+    payload = decode_token(cred.credentials)
+    if not payload:
+        raise HTTPException(401, "无效凭证")
+    if not isinstance(cfg, dict) or "providers" not in cfg:
+        raise HTTPException(400, "请求体必须包含 providers 列表")
+
+    providers_in = cfg.get("providers") or []
+    active_in = cfg.get("active") or {}
+    # 校验结构
+    for i, p in enumerate(providers_in):
+        if not isinstance(p, dict):
+            raise HTTPException(400, f"providers[{i}] 不是对象")
+        if "id" not in p or not p["id"]:
+            raise HTTPException(400, f"providers[{i}].id 必填")
+    # 激活项：必须是已存在的 provider
+    for kind in ("tts", "llm"):
+        a = (active_in.get(kind) or {})
+        pid = a.get("provider_id")
+        if pid and not get_provider(pid):
+            raise HTTPException(400, f"active.{kind}.provider_id={pid!r} 不存在")
+
+    # 写回
+    save_providers_config(cfg)
+    # 同步激活字段到 settings
+    tts_a = active_in.get("tts") or {}
+    llm_a = active_in.get("llm") or {}
+    settings.ACTIVE_TTS_PROVIDER = tts_a.get("provider_id") or ""
+    settings.ACTIVE_TTS_MODEL = tts_a.get("model_id") or ""
+    settings.ACTIVE_LLM_PROVIDER = llm_a.get("provider_id") or ""
+    settings.ACTIVE_LLM_MODEL = llm_a.get("model_id") or ""
+
+    return {"ok": True, "providers": providers_in, "note": "已保存到内存（重启后端后恢复 .env 默认）"}
 
 
 @router.get("/settings", response_model=list[SettingsResp])
@@ -1327,11 +1399,23 @@ async def update_settings(
                         ln.strip() for ln in str(val).splitlines()
                         if ln.strip()
                     ]
+            elif typ == "json":
+                # 接受 dict 或 string；序列化后再写回 settings
+                import json as _json_mod
+                if isinstance(val, (dict, list)):
+                    # 简单结构校验
+                    val = _json_mod.dumps(val, ensure_ascii=False)
+                elif isinstance(val, str):
+                    # 校验 JSON 合法
+                    parsed = _json_mod.loads(val)
+                    val = _json_mod.dumps(parsed, ensure_ascii=False)
+                else:
+                    raise ValueError(f"json 字段类型不支持: {type(val)}")
             else:
                 skipped.append(f"{key}(未知类型 {typ})")
                 continue
-        except (ValueError, TypeError):
-            skipped.append(f"{key}(类型转换失败)")
+        except (ValueError, TypeError) as e:
+            skipped.append(f"{key}(类型转换失败: {e})")
             continue
 
         setattr(settings, key, val)

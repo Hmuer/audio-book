@@ -35,11 +35,28 @@ def _get_llm_sem() -> asyncio.Semaphore:
 class MiniMaxLLMProvider(BaseLLMProvider):
     name = "minimax"
 
-    def __init__(self):
-        self.api_key = settings.LLM_API_KEY
-        self.base_url = settings.LLM_BASE_URL.rstrip("/")
-        self.model_pro = settings.LLM_MODEL_PRO
-        self.model_fast = settings.LLM_MODEL_FAST
+    def __init__(self, api_key: str | None = None, base_url: str | None = None,
+                 model_pro: str | None = None, model_fast: str | None = None,
+                 extra_headers: dict[str, str] | None = None):
+        # 优先取多厂商配置；不再需要 fast/pro 双模型区分（用户要求合并为一个激活模型）
+        from ....core.config import get_active_llm_provider
+        prov = get_active_llm_provider()
+        if prov and prov.get("id") == "minimax" and prov.get("api_key"):
+            self.api_key = api_key or prov["api_key"]
+            self.base_url = (base_url or prov.get("base_url") or settings.LLM_BASE_URL).rstrip("/")
+            # 单一激活模型：fast/pro 共用
+            single = settings.ACTIVE_LLM_MODEL or "MiniMax-M3"
+            self.model_pro = single
+            self.model_fast = single
+            self.extra_headers = dict(prov.get("extra_headers") or {})
+        else:
+            self.api_key = api_key or settings.LLM_API_KEY
+            self.base_url = (base_url or settings.LLM_BASE_URL).rstrip("/")
+            # 兜底：.env LLM_MODEL_PRO / LLM_MODEL_FAST；用户已确认 fast/pro 合并
+            single = settings.ACTIVE_LLM_MODEL or settings.LLM_MODEL_PRO or "MiniMax-M3"
+            self.model_pro = single
+            self.model_fast = single
+            self.extra_headers = dict(extra_headers or {})
         self.timeout = httpx.Timeout(
             connect=settings.LLM_TIMEOUT,
             read=settings.LLM_TIMEOUT,

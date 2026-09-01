@@ -392,6 +392,14 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ updates }),
     }),
+
+  // ---------- 多厂商模型配置 ----------
+  providersGet: () => _fetch<ProvidersConfig>('/api/providers'),
+  providersUpdate: (cfg: ProvidersConfig) =>
+    _fetch<{ ok: boolean; providers: ProviderConfig[]; note?: string }>('/api/providers', {
+      method: 'PUT',
+      body: JSON.stringify(cfg),
+    }),
 };
 
 // ---------- Project 制类型定义 ----------
@@ -658,8 +666,36 @@ export interface BuildResp {
 export interface SettingItem {
   key: string;
   value: string | number | boolean | string[] | null;
-  type: 'str' | 'int' | 'bool' | 'list[str]';
+  type: 'str' | 'int' | 'bool' | 'list[str]' | 'json';
   group: string;
   label: string;
   readonly: boolean;
+}
+
+// ---------- 多厂商模型配置 ----------
+export interface ProviderModel {
+  id: string;
+  label: string;
+  kind: 'tts' | 'llm';
+}
+export interface ProviderConfig {
+  id: string;
+  label: string;
+  enabled: boolean;
+  api_key: string;
+  base_url: string;
+  tts_endpoint?: string;
+  extra_headers?: Record<string, string>;
+  models: ProviderModel[];
+}
+export interface ActiveModel {
+  provider_id: string | null;
+  model_id: string | null;
+}
+export interface ProvidersConfig {
+  providers: ProviderConfig[];
+  active: {
+    tts: ActiveModel;
+    llm: ActiveModel;
+  };
 }

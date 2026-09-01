@@ -1,5 +1,43 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from __future__ import annotations
+
+import json as _json
 from pathlib import Path
+from typing import Any
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# ============================================================
+# 默认厂商模板（前端新建厂商时可参考；settings.PROVIDERS_CONFIG 初值）
+# ============================================================
+DEFAULT_PROVIDERS_TEMPLATE: list[dict[str, Any]] = [
+    {
+        "id": "minimax",
+        "label": "MiniMax",
+        "enabled": True,
+        "api_key": "",
+        "base_url": "https://api.minimaxi.com/v1",
+        "tts_endpoint": "/v1/t2a_v2",
+        "extra_headers": {},
+        "models": [
+            {"id": "MiniMax-speech-01", "label": "Speech-01 (TTS 2.0)", "kind": "tts"},
+            {"id": "MiniMax-M3", "label": "MiniMax-M3", "kind": "llm"},
+        ],
+    },
+    {
+        "id": "doubao",
+        "label": "火山引擎豆包语音",
+        "enabled": False,
+        "api_key": "",
+        "base_url": "https://openspeech.bytedance.com/api/v1",
+        "tts_endpoint": "/tts",
+        "extra_headers": {},
+        "models": [
+            {"id": "volcano_tts", "label": "豆包语音合成 2.0", "kind": "tts"},
+            {"id": "Doubao-pro-32k", "label": "Doubao-pro-32k", "kind": "llm"},
+        ],
+    },
+]
 
 
 class Settings(BaseSettings):
@@ -46,6 +84,39 @@ class Settings(BaseSettings):
     # 多播剧严格失败模式（默认 true：任何章节失败 → 整 Build 失败，不占位降级）
     # 留配置点仅用于集成测试做对照回归，线上应保持 True。
     MULTICAST_STRICT_MODE: bool = True
+
+    # =====================================================================
+    # 多厂商模型配置（PROVIDERS_CONFIG）
+    # 顶层 JSON 持久化结构；前端设置页按此渲染"厂商卡片"。
+    # schema:
+    #   {
+    #     "providers": [
+    #       {"id": "minimax", "label": "MiniMax", "enabled": true,
+    #        "api_key": "...", "base_url": "https://...",
+    #        "tts_endpoint": "/v1/t2a_v2",
+    #        "extra_headers": {"X-Trace": "1"},
+    #        "models": [
+    #          {"id": "MiniMax-speech-01", "label": "Speech-01", "kind": "tts"},
+    #          {"id": "MiniMax-M3", "label": "M3", "kind": "llm"},
+    #        ]
+    #       }, ...
+    #     ],
+    #     "active": {
+    #       "tts": {"provider_id": "minimax", "model_id": "MiniMax-speech-01"},
+    #       "llm": {"provider_id": "minimax", "model_id": "MiniMax-M3"},
+    #     }
+    #   }
+    # 注：初值从 .env 的扁平 TTS_/LLM_ 字段一次性迁移；
+    # 改 PROVIDERS_CONFIG 会原地覆盖（不重置）。
+    # =====================================================================
+    PROVIDERS_CONFIG: str = ""
+
+    # 当前激活模型（指向 PROVIDERS_CONFIG 中的某个 provider.model）；
+    # 用扁平字段便于 settings page 直接绑定与回填。
+    ACTIVE_TTS_PROVIDER: str = "minimax"
+    ACTIVE_TTS_MODEL: str = "MiniMax-speech-01"
+    ACTIVE_LLM_PROVIDER: str = "minimax"
+    ACTIVE_LLM_MODEL: str = "MiniMax-M3"
 
     # Server
     ENV: str = "dev"  # dev / test / prod / stage
@@ -170,3 +241,108 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# ============================================================
+# 启动期迁移：如果 PROVIDERS_CONFIG 为空（首次启动 / 老配置），
+# 将扁平 TTS_API_KEY / LLM_API_KEY 等一次性迁移到厂商结构。
+# 老字段保留为兜底（兼容未来回滚 / 未迁移代码）。
+# ============================================================
+def _migrate_legacy_providers() -> None:
+    if settings.PROVIDERS_CONFIG:
+        return  # 已有结构化配置，跳过迁移
+    providers = []
+    for tmpl in DEFAULT_PROVIDERS_TEMPLATE:
+        prov = dict(tmpl)
+        prov["models"] = [dict(m) for m in tmpl["models"]]
+        providers.append(prov)
+    # 注入 miniMax 老凭据
+    for prov in providers:
+        if prov["id"] == "minimax":
+            prov["api_key"] = settings.TTS_API_KEY or settings.LLM_API_KEY
+            prov["base_url"] = settings.TTS_BASE_URL or settings.LLM_BASE_URL
+            # 找到 LLM 模型
+            for m in prov["models"]:
+                if m["kind"] == "llm":
+                    m["id"] = settings.LLM_MODEL_PRO or "MiniMax-M3"
+    # 注入 doubao 老凭据（如有）
+    for prov in providers:
+        if prov["id"] == "doubao":
+            prov["enabled"] = bool(settings.DOUBAO_AK)
+            if settings.DOUBAO_AK:
+                prov["api_key"] = settings.DOUBAO_AK
+    payload = {
+        "providers": providers,
+        "active": {
+            "tts": {"provider_id": "minimax", "model_id": "MiniMax-speech-01"},
+            "llm": {"provider_id": "minimax", "model_id": settings.LLM_MODEL_PRO or "MiniMax-M3"},
+        },
+    }
+    settings.PROVIDERS_CONFIG = _json.dumps(payload, ensure_ascii=False)
+
+
+_migrate_legacy_providers()
+
+
+# ============================================================
+# 厂商查询助手
+# ============================================================
+def _parse_providers_config() -> dict[str, Any]:
+    """解析 PROVIDERS_CONFIG JSON；解析失败回退空结构。"""
+    try:
+        cfg = _json.loads(settings.PROVIDERS_CONFIG or "{}")
+        if not isinstance(cfg, dict):
+            return {"providers": [], "active": {"tts": {}, "llm": {}}}
+        cfg.setdefault("providers", [])
+        cfg.setdefault("active", {"tts": {}, "llm": {}})
+        return cfg
+    except Exception:
+        return {"providers": [], "active": {"tts": {}, "llm": {}}}
+
+
+def list_providers() -> list[dict[str, Any]]:
+    """返回所有已配置的厂商（含未启用）。"""
+    return list(_parse_providers_config().get("providers", []))
+
+
+def get_provider(provider_id: str) -> dict[str, Any] | None:
+    for p in list_providers():
+        if p.get("id") == provider_id:
+            return p
+    return None
+
+
+def get_active(kind: str) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    """返回 (provider_id, model_id, provider_dict)；找不到则 (None, None, None)。
+    kind ∈ {"tts", "llm"}。
+    """
+    cfg = _parse_providers_config()
+    active = cfg.get("active", {}).get(kind, {}) or {}
+    pid = active.get("provider_id") or (
+        settings.ACTIVE_TTS_PROVIDER if kind == "tts" else settings.ACTIVE_LLM_PROVIDER
+    )
+    mid = active.get("model_id") or (
+        settings.ACTIVE_TTS_MODEL if kind == "tts" else settings.ACTIVE_LLM_MODEL
+    )
+    prov = get_provider(pid) if pid else None
+    return pid, mid, prov
+
+
+def get_active_tts_provider() -> dict[str, Any] | None:
+    _, _, prov = get_active("tts")
+    return prov
+
+
+def get_active_llm_provider() -> dict[str, Any] | None:
+    _, _, prov = get_active("llm")
+    return prov
+
+
+def save_providers_config(cfg: dict[str, Any]) -> None:
+    """原样写回 PROVIDERS_CONFIG（前端 PUT /settings 入口调用）。"""
+    settings.PROVIDERS_CONFIG = _json.dumps(cfg, ensure_ascii=False)
+
+
+def is_provider_enabled(provider_id: str) -> bool:
+    p = get_provider(provider_id)
+    return bool(p and p.get("enabled") and p.get("api_key"))
