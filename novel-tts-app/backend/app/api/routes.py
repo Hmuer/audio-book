@@ -1273,14 +1273,9 @@ class SettingsUpdateReq(BaseModel):
 
 
 @router.get("/providers")
-async def get_providers(
-    cred: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
-):
+async def get_providers(current: User = Depends(get_current_user)):
     """返回所有厂商配置（含未启用）和当前激活模型。"""
     from ..core.config import list_providers, get_active
-    payload = decode_token(cred.credentials)
-    if not payload:
-        raise HTTPException(401, "无效凭证")
     tts_pid, tts_mid, _ = get_active("tts")
     llm_pid, llm_mid, _ = get_active("llm")
     return {
@@ -1295,13 +1290,10 @@ async def get_providers(
 @router.put("/providers")
 async def update_providers(
     cfg: dict,
-    cred: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
+    current: User = Depends(get_current_user),
 ):
     """覆盖式保存多厂商结构；同时同步刷新 ACTIVE_* 字段，确保 TTS/LLM 即时生效。"""
     from ..core.config import save_providers_config, get_provider
-    payload = decode_token(cred.credentials)
-    if not payload:
-        raise HTTPException(401, "无效凭证")
     if not isinstance(cfg, dict) or "providers" not in cfg:
         raise HTTPException(400, "请求体必须包含 providers 列表")
 
@@ -1313,15 +1305,29 @@ async def update_providers(
             raise HTTPException(400, f"providers[{i}] 不是对象")
         if "id" not in p or not p["id"]:
             raise HTTPException(400, f"providers[{i}].id 必填")
-    # 激活项：必须是已存在的 provider
+
+    # 写回（先持久化，再校验 active；这样 active 可以指向本次请求里新增的 model）
+    save_providers_config(cfg)
+
+    # 激活项：必须是已存在的 provider，且 model_id 必须是该 provider 下的 model 且 kind 一致
     for kind in ("tts", "llm"):
         a = (active_in.get(kind) or {})
         pid = a.get("provider_id")
-        if pid and not get_provider(pid):
+        mid = a.get("model_id")
+        if not pid:
+            continue
+        prov = get_provider(pid)
+        if not prov:
             raise HTTPException(400, f"active.{kind}.provider_id={pid!r} 不存在")
-
-    # 写回
-    save_providers_config(cfg)
+        if mid:
+            model = next((m for m in (prov.get("models") or []) if m.get("id") == mid), None)
+            if not model:
+                raise HTTPException(400, f"active.{kind}.model_id={mid!r} 不在厂商 {pid!r} 的模型列表中")
+            if model.get("kind") != kind:
+                raise HTTPException(
+                    400,
+                    f"active.{kind}.model_id={mid!r} 的 kind={model.get('kind')!r}，与角色 {kind!r} 不匹配",
+                )
     # 同步激活字段到 settings
     tts_a = active_in.get("tts") or {}
     llm_a = active_in.get("llm") or {}

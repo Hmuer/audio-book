@@ -46,9 +46,9 @@ class Settings(BaseSettings):
         case_sensitive=True,
         extra="ignore",
     )
-    TTS_API_KEY: str
+    TTS_API_KEY: str = ""
     TTS_BASE_URL: str = "https://api.minimaxi.com/v1"
-    LLM_API_KEY: str
+    LLM_API_KEY: str = ""
     LLM_BASE_URL: str = "https://api.minimaxi.com/v1"
     LLM_MODEL_PRO: str = "MiniMax-M3"
     # fast 模型也用 M3：M2.x 的 thinking 无法关闭，会偶发陷入循环耗尽 token；
