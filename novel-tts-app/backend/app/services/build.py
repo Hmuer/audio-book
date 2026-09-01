@@ -5,7 +5,7 @@
 - start_build: 创建 Build 记录 + 每章一条 pending BuildArtifact，启动后台任务立即返回
 - _run_build_inner: 后台 worker（独立 session），逐章合成→更新 BuildArtifact；失败章写占位静音 MP3
 - 幂等（合成阶段三层去重）：
-  1) start_build 内存锁 _RUNNING_BUILDS（按 project_id）+ DB Build.status=running/queued
+  1) start_build 内存锁 _ACTIVE_BUILDS（按 build_id 持有）+ DB Build.status=running/queued
   2) **Build.config_digest 命中**：同一 project + 相同 narrator/speed/voice_assignments 且历史已有成功 Build，直接复用
   3) **段级 + 章级 skip**：worker 每章发现 BuildArtifact.status=done 且 MP3 存在 → 整章跳过；
      段级再走 tts_segment_cache_get/put（sha256(voice+speed+text) → 复用已有 MP3）
@@ -209,14 +209,33 @@ async def _ensure_default_narrator(narrator_voice_id: str | None) -> str:
     raise RuntimeError("音色库为空，无法合成")
 
 
-_RUNNING_BUILDS: set[str] = set()
+# 进程级运行锁：按 build_id（而非 project_id）维度持有，避免
+# 「cancel → retry → 同 project 立即重入」时的误判/竞态：
+# - cancel 仅修改 Build.status='cancelled'，不抢锁；
+# - worker 在 finally 只释放自己的 build_id；
+# - retry 启动新 build_id 时加新锁，不会与旧 worker 相互覆盖。
+_ACTIVE_BUILDS: dict[str, str] = {}  # build_id -> project_id
 _RUNNING_LOCK = asyncio.Lock()
 
 
 async def _ensure_project_not_running(project_id: str, action: str):
     async with _RUNNING_LOCK:
-        if project_id in _RUNNING_BUILDS:
+        if any(pid == project_id for pid in _ACTIVE_BUILDS.values()):
             raise ValueError(f"项目 {project_id[:8]} 正在合成（Build 运行中），无法{action}。请先取消当前 Build。")
+
+
+async def _register_active_build(build_id: str, project_id: str) -> None:
+    """注册当前活跃 build（retry 时 build_id 一定是新的，不会与旧 worker 冲突）。"""
+    async with _RUNNING_LOCK:
+        _ACTIVE_BUILDS[build_id] = project_id
+
+
+async def _unregister_active_build(build_id: str, expected_project_id: str) -> None:
+    """释放当前 build 的运行锁：仅当 build_id 仍指向同一 project 时才释放。"""
+    async with _RUNNING_LOCK:
+        cur = _ACTIVE_BUILDS.get(build_id)
+        if cur == expected_project_id:
+            _ACTIVE_BUILDS.pop(build_id, None)
 
 
 def _audio_filename(build_id: str, ch_idx: int, failed: bool = False) -> str:
@@ -630,7 +649,7 @@ async def start_build(
       - tts_provider: 'minimax' | 'doubao' | None（None 时从 Project.default_tts_provider 读取，再兜底 settings.TTS_PROVIDER）
 
     合成幂等（三层去重，mode/tts_provider 已纳入 config_digest）：
-      1) 内存锁 _RUNNING_BUILDS：单 worker 内同一 project 不重复
+      1) 内存锁 _ACTIVE_BUILDS（按 build_id 持有）：单进程内同一 project 不重复
       2) DB Build.status：若已有 running/queued 的 build，直接复用
       3) **config_digest 命中**：同一 project + 相同 narrator/speed/voice_assignments/mode/tts_provider，
          且历史已有**成功** Build（ZIP 生成过）→ 直接返回旧 build_id，不重建。
@@ -683,7 +702,7 @@ async def start_build(
     )
 
     async with _RUNNING_LOCK:
-        if project_id in _RUNNING_BUILDS:
+        if any(pid == project_id for pid in _ACTIVE_BUILDS.values()):
             logger.info(f"[build_start] project_id={project_id[:8]}... already running")
             factory = get_session_factory()
             async with factory() as s:
@@ -780,8 +799,7 @@ async def start_build(
         await session.refresh(b)
         cur_resp = _build_to_resp(b)
 
-    async with _RUNNING_LOCK:
-        _RUNNING_BUILDS.add(project_id)
+    await _register_active_build(build_id, project_id)
 
     async def _runner() -> None:
         """后台 worker：独立 session，完成后释放锁。"""
@@ -813,8 +831,7 @@ async def start_build(
             except Exception as e2:
                 logger.error(f"[build_worker] final status write fail: {e2}")
         finally:
-            async with _RUNNING_LOCK:
-                _RUNNING_BUILDS.discard(project_id)
+            await _unregister_active_build(build_id, project_id)
 
     asyncio.create_task(_runner(), name=f"build_{build_id[:8]}")
     logger.info(
@@ -843,8 +860,15 @@ async def cancel_build(project_id: str, build_id: str, reason: str | None = None
         await session.commit()
         await session.refresh(b)
 
+    # 不主动抢 _RUNNING_LOCK：worker 会在下一轮循环看到 status='cancelled'
+    # 后自然退出并 finally 释放自己的 build_id 锁；这样即便 cancel 紧跟着
+    # retry（生成新的 build_id），两条锁也不会互相覆盖。
+    # 但为了让 _ensure_project_not_running 立即可见"该 project 已没有 active build"，
+    # 这里只在锁存在时按 build_id 精准释放一次；不存在则说明 worker 已自然退出。
     async with _RUNNING_LOCK:
-        _RUNNING_BUILDS.discard(project_id)
+        cur = _ACTIVE_BUILDS.get(build_id)
+        if cur == project_id:
+            _ACTIVE_BUILDS.pop(build_id, None)
 
     return _build_to_resp(b)
 
@@ -895,7 +919,7 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
             raise ValueError("没有失败章可重试")
 
         async with _RUNNING_LOCK:
-            if project_id in _RUNNING_BUILDS:
+            if any(pid == project_id for pid in _ACTIVE_BUILDS.values()):
                 logger.info(f"[retry_build] project_id={project_id[:8]}... already running, returning last build")
                 stmt_last = select(Build).where(
                     Build.project_id == project_id
@@ -974,8 +998,7 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
         await session.refresh(new_b)
         cur_resp = _build_to_resp(new_b)
 
-    async with _RUNNING_LOCK:
-        _RUNNING_BUILDS.add(project_id)
+    await _register_active_build(new_build_id, project_id)
 
     async def _runner() -> None:
         try:
@@ -1006,8 +1029,7 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
             except Exception as e2:
                 logger.error(f"[retry_worker] final status write fail: {e2}")
         finally:
-            async with _RUNNING_LOCK:
-                _RUNNING_BUILDS.discard(project_id)
+            await _unregister_active_build(new_build_id, project_id)
 
     asyncio.create_task(_runner(), name=f"retry_{new_build_id[:8]}")
     logger.info(

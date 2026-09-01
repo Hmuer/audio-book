@@ -148,6 +148,23 @@ async def get_current_user(
 router.dependencies = [Depends(get_current_user)]
 
 
+def _decode_token_for_static(raw_token: str, settings) -> None:
+    """供 StaticFiles 调用的精简鉴权：校验 token 签名/有效性，失败抛异常。
+
+    与 get_current_user 共享 decode_token，行为一致；唯一区别是不返回 User 对象
+    （/media 只判断"是不是当前用户的请求"，无需加载 User 进 ORM）。
+    """
+    if settings.DISABLE_AUTH:
+        return
+    username = decode_token(raw_token)
+    if not username:
+        raise HTTPException(
+            status_code=401,
+            detail="token 无效或已过期",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 # ---------- Auth Requests ----------
 
 class LoginRequest(BaseModel):
@@ -313,7 +330,11 @@ async def list_voices(
 
     # 并发 list_voices（加速响应）
     async def _fetch(p: str) -> list[dict]:
-        from backend.app.ai.factory import get_tts as _get_tts
+        # 修复：原来用 `from backend.app.ai.factory import get_tts as _get_tts`，
+        # 该写法依赖 PYTHONPATH 包含项目根目录，导致直接 `cd backend && uvicorn ...`
+        # 启动后 GET /api/voices 抛 ModuleNotFoundError: No module named 'backend'。
+        # 改用包内相对导入，避免对启动 cwd 的隐式依赖。
+        from ..ai.factory import get_tts as _get_tts
         tts_inst = _get_tts(p)
         try:
             return await tts_inst.list_voices()

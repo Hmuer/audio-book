@@ -163,7 +163,7 @@ async def test_retry_failed_inherits_mode_and_provider(_isolate_data_dir):
     from backend.app.services.project import create_project, import_file, prepare_project
     from backend.app.services.build import (
         start_build, get_build_status, retry_failed_build,
-        _RUNNING_BUILDS, _RUNNING_LOCK,
+        _ACTIVE_BUILDS, _RUNNING_LOCK,
     )
     from backend.app.db.session import init_db, get_session_factory
     from backend.app.db.models import Build
@@ -229,4 +229,7 @@ async def test_retry_failed_inherits_mode_and_provider(_isolate_data_dir):
         aifact._multicast_instance = prev_mc
         cfgmod.settings.MULTICAST_STRICT_MODE = False
         async with _RUNNING_LOCK:
-            _RUNNING_BUILDS.discard(pid)
+            # 清掉可能残留的 (build_id -> pid) 键，避免污染后续测试
+            stale_keys = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]
+            for k in stale_keys:
+                _ACTIVE_BUILDS.pop(k, None)

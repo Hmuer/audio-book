@@ -34,7 +34,7 @@ _BOOK_TXT = """第一章 初遇
 @pytest.mark.asyncio
 async def test_multicast_strict_single_chapter_fail_causes_build_failed(_isolate_data_dir):
     from backend.app.services.project import create_project, import_file, prepare_project
-    from backend.app.services.build import start_build, get_build_status, _RUNNING_BUILDS, _RUNNING_LOCK
+    from backend.app.services.build import start_build, get_build_status, _ACTIVE_BUILDS, _RUNNING_LOCK
     from backend.app.db.session import init_db, get_session_factory
     from backend.app.db.models import Build, BuildArtifact
     from backend.app.core import config as cfgmod
@@ -88,7 +88,9 @@ async def test_multicast_strict_single_chapter_fail_causes_build_failed(_isolate
         else:
             # 强制释放
             async with _RUNNING_LOCK:
-                _RUNNING_BUILDS.discard(pid)
+                stale = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]
+                for k in stale:
+                    _ACTIVE_BUILDS.pop(k, None)
             pytest.fail("build worker 超时未结束")
 
         factory = get_session_factory()
@@ -121,7 +123,9 @@ async def test_multicast_strict_single_chapter_fail_causes_build_failed(_isolate
         aifact._multicast_instance = prev_mc
         cfgmod.settings.MULTICAST_STRICT_MODE = False
         async with _RUNNING_LOCK:
-            _RUNNING_BUILDS.discard(pid)
+            stale = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]
+            for k in stale:
+                _ACTIVE_BUILDS.pop(k, None)
 
 
 # ---------------------------------------------------------------------
@@ -130,7 +134,7 @@ async def test_multicast_strict_single_chapter_fail_causes_build_failed(_isolate
 @pytest.mark.asyncio
 async def test_classic_nonstrict_build_survives_chapter_failure(_isolate_data_dir):
     from backend.app.services.project import create_project, import_file, prepare_project
-    from backend.app.services.build import start_build, get_build_status, _RUNNING_BUILDS, _RUNNING_LOCK
+    from backend.app.services.build import start_build, get_build_status, _ACTIVE_BUILDS, _RUNNING_LOCK
     from backend.app.db.session import init_db
     from backend.app.core import config as cfgmod
     from backend.app.ai import factory as aifact
@@ -170,7 +174,9 @@ async def test_classic_nonstrict_build_survives_chapter_failure(_isolate_data_di
             await asyncio.sleep(0.5)
         else:
             async with _RUNNING_LOCK:
-                _RUNNING_BUILDS.discard(pid)
+                stale = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]
+                for k in stale:
+                    _ACTIVE_BUILDS.pop(k, None)
             pytest.fail("build worker 超时未结束")
         # 非严格模式：不应当因为单章失败就直接 failed
         from backend.app.db.session import get_session_factory
@@ -198,7 +204,9 @@ async def test_classic_nonstrict_build_survives_chapter_failure(_isolate_data_di
         aifact._llm_instance = prev_llm
         cfgmod.settings.MULTICAST_STRICT_MODE = False
         async with _RUNNING_LOCK:
-            _RUNNING_BUILDS.discard(pid)
+            stale = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]
+            for k in stale:
+                _ACTIVE_BUILDS.pop(k, None)
 
 
 # ---------------------------------------------------------------------

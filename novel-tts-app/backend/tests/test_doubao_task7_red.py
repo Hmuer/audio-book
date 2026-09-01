@@ -141,7 +141,7 @@ async def test_build_pipeline_uses_multicast_provider(_isolate_data_dir):
     from backend.app.db.session import init_db, get_session_factory
     from backend.app.db.models import Build, BuildArtifact
     from backend.app.services.project import create_project, import_file, prepare_project
-    from backend.app.services.build import start_build, get_build_status, _RUNNING_BUILDS, _RUNNING_LOCK
+    from backend.app.services.build import start_build, get_build_status, _ACTIVE_BUILDS, _RUNNING_LOCK
     from backend.app.ai import factory as aifact
     from backend.tests.mock_providers import MockTTSProvider, MockLLMProvider
     from backend.app.core import config as cfgmod
@@ -189,7 +189,9 @@ async def test_build_pipeline_uses_multicast_provider(_isolate_data_dir):
             await asyncio.sleep(0.25)
         else:
             async with _RUNNING_LOCK:
-                _RUNNING_BUILDS.discard(pid)
+                stale = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]
+                for k in stale:
+                    _ACTIVE_BUILDS.pop(k, None)
             pytest.fail("build worker 超时未结束")
 
         assert s.status == "success", f"期望 success，实际 {s.status} msg={s.progress_msg!r}"
@@ -221,4 +223,6 @@ async def test_build_pipeline_uses_multicast_provider(_isolate_data_dir):
         aifact._tts_instance = prev_tts
         aifact._llm_instance = prev_llm
         async with _RUNNING_LOCK:
-            _RUNNING_BUILDS.discard(pid)
+            stale = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]
+            for k in stale:
+                _ACTIVE_BUILDS.pop(k, None)

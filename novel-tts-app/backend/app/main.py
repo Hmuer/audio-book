@@ -155,15 +155,90 @@ app.include_router(auth_router)
 app.include_router(public_router)
 app.include_router(api_router)
 
-# /media -> audio files
+# /media -> audio files（鉴权 + Range 支持）
 media_dir = Path(settings.AUDIO_DIR)
 media_dir.mkdir(parents=True, exist_ok=True)
 
-# 自定义 StaticFiles 支持 Range（浏览器 <audio> 拖动）
-class _RangedStaticFiles(StaticFiles):
-    pass
 
-app.mount("/media", _RangedStaticFiles(directory=str(media_dir)), name="media")
+def _token_from_scope(scope: dict) -> str | None:
+    """从 ASGI scope 提取 token：Authorization: Bearer > ?token=…。
+
+    StaticFiles.get_response(scope) 没有 Request 对象；我们直接解析 scope['headers'] 与 query string。
+    """
+    # headers（bytes）
+    for k, v in scope.get("headers") or []:
+        if k == b"authorization":
+            try:
+                decoded = v.decode("latin", errors="replace")
+            except Exception:
+                continue
+            scheme, _, value = decoded.partition(" ")
+            if scheme.lower() == "bearer" and value:
+                return value.strip()
+    # query string
+    qs = scope.get("query_string") or b""
+    if qs:
+        try:
+            from urllib.parse import parse_qs
+            params = parse_qs(qs.decode("utf-8", errors="replace"))
+            tok_list = params.get("token") or []
+            if tok_list and tok_list[0]:
+                return tok_list[0].strip()
+        except Exception:
+            return None
+    return None
+
+
+# 自定义 StaticFiles 支持 Range（浏览器 <audio> 拖动）+ JWT 鉴权
+class _RangedAuthStaticFiles(StaticFiles):
+    """需要有效 JWT 才能访问的静态文件服务。
+
+    校验方式： Authorization: Bearer <token> 或 ?token=<token>（后者供
+    <audio src="...?token=..."> 等浏览器原生标签消费；前者供 fetch 用）。
+
+    目录解析：每次请求都重新读 settings.AUDIO_DIR，这样测试中通过
+    monkeypatch 修改 settings.AUDIO_DIR 也能立即生效（无需重启进程）。
+    """
+
+    def lookup_path(self, path: str):  # type: ignore[override]
+        """每次请求实时解析 settings.AUDIO_DIR，避免 mount 时锁死目录。"""
+        import os as _os
+        directory = _os.path.realpath(str(settings.AUDIO_DIR))
+        joined = _os.path.join(directory, path)
+        full_path = _os.path.realpath(joined)
+        if _os.path.commonpath([full_path, directory]) != directory:
+            return "", None
+        try:
+            return full_path, _os.stat(full_path)
+        except (FileNotFoundError, NotADirectoryError):
+            return "", None
+
+    async def get_response(self, path, scope):  # type: ignore[override]
+        from starlette.responses import JSONResponse
+
+        # DISABLE_AUTH（调试模式）：直接放行，不要求 token
+        if settings.DISABLE_AUTH:
+            return await super().get_response(path, scope)
+
+        token = _token_from_scope(scope)
+        if not token:
+            return JSONResponse(
+                {"detail": "Missing token"}, status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        try:
+            from .api.routes import _decode_token_for_static
+            _decode_token_for_static(token, settings)
+        except Exception as e:
+            logger.warning(f"[media] 鉴权失败: {type(e).__name__}: {e}")
+            return JSONResponse(
+                {"detail": "Invalid token"}, status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return await super().get_response(path, scope)
+
+
+app.mount("/media", _RangedAuthStaticFiles(directory=str(media_dir)), name="media")
 
 # 前端 out 目录：先尝试相对 repo 根路径
 FRONTEND_OUT_CANDIDATES = [

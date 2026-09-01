@@ -127,7 +127,7 @@ class DoubaoTTSProvider(BaseTTSProvider):
     def _endpoint(self) -> str:
         """合成端点：优先读 settings.DOUBAO_TTS_BASE_URL（支持 .env 覆写）。"""
         try:
-            from backend.app.core.config import settings
+            # settings 已在模块顶部导入；不重复导入，避免对启动 cwd 的隐式依赖
             return settings.DOUBAO_TTS_BASE_URL or self.DEFAULT_ENDPOINT
         except Exception:
             return self.DEFAULT_ENDPOINT
