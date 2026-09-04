@@ -496,7 +496,7 @@ def _enqueue_prepare_task(project_id: str, trigger: str) -> None:
         return  # 已经在跑，不重复启动
     token = f"{trigger}-{os.urandom(4).hex()}"
     task = asyncio.create_task(
-        _run_prepare_project_in_background(project_id),
+        _run_prepare_project_in_background(project_id, trigger=trigger),
         name=f"prepare:{project_id[:8]}:{trigger}",
     )
     import time as _time
@@ -544,53 +544,109 @@ async def _write_prepare_last_error(project_id: str, err_type: str, err_msg: str
         )
 
 
-async def _run_prepare_project_in_background(project_id: str) -> None:
+async def _run_prepare_project_in_background(project_id: str, *, trigger: str = "api") -> None:
     """
     后台任务：真正执行 prepare。
     - 所有异常不往外抛，全部：
         1) logger.error(exc_info=True)
         2) 写 last_error 到 progress_json
         3) 把项目 status 置为 failed（若 stage 不在"有部分 checkpoint 可恢复"的阶段）
+
+    P1 #7：在最外层用 JobTask 跟踪：注册 → 周期心跳 → 终态写入。
+    启动恢复 / 看门狗都通过 JobTask 表判定孤儿。
     """
+    from .job_tasks import (
+        register_task,
+        HeartbeatContext,
+        finish_task,
+        update_task_progress,
+    )
+
+    # 注册 JobTask；如果注册都失败（DB 长期挂），不要让用户看不到错误
+    job_task_id: str | None = None
     try:
-        await _do_prepare_project_async(project_id)
-    except (ValueError, RuntimeError, ChapterSplitError) as e:
-        logger.error(
-            f"[project_prepare] 业务失败 project_id={project_id[:8]}... "
-            f"{type(e).__name__}: {e}",
-            exc_info=True,
-        )
-        await _write_prepare_last_error(project_id, type(e).__name__, str(e))
-        await _mark_project_failed(project_id)
+        job = await register_task("prepare", project_id, trigger=trigger)
+        job_task_id = job.task_id
     except Exception as e:
         logger.error(
-            f"[project_prepare] 未捕获异常 project_id={project_id[:8]}... "
+            f"[project_prepare] 注册 JobTask 失败 project_id={project_id[:8]}... "
             f"{type(e).__name__}: {e}",
             exc_info=True,
         )
-        await _write_prepare_last_error(project_id, type(e).__name__, str(e))
-        await _mark_project_failed(project_id)
+        # 不阻塞真正 prepare 的执行；JobTask 不可用只意味着无法做启动恢复
+        job_task_id = None
+
+    final_job_status: str = "failed"
+    final_error: str | None = None
+    try:
+        # 心跳只对 JobTask 生效：未注册时整个 context 是 no-op
+        async with HeartbeatContext(job_task_id) as hb:
+            try:
+                await _do_prepare_project_async(project_id)
+                final_job_status = "success"
+            except (ValueError, RuntimeError, ChapterSplitError) as e:
+                logger.error(
+                    f"[project_prepare] 业务失败 project_id={project_id[:8]}... "
+                    f"{type(e).__name__}: {e}",
+                    exc_info=True,
+                )
+                await _write_prepare_last_error(project_id, type(e).__name__, str(e))
+                await _mark_project_failed(project_id)
+                final_job_status = "failed"
+                final_error = f"{type(e).__name__}: {e}"
+            except asyncio.CancelledError:
+                # 用户取消 / 看门狗主动 kill → 记 cancelled
+                logger.warning(
+                    f"[project_prepare] 被取消 project_id={project_id[:8]}..."
+                )
+                await _write_prepare_last_error(
+                    project_id, "Cancelled", "task cancelled",
+                )
+                await _mark_project_failed(project_id)
+                final_job_status = "cancelled"
+                final_error = "task cancelled"
+                raise
+            except Exception as e:
+                logger.error(
+                    f"[project_prepare] 未捕获异常 project_id={project_id[:8]}... "
+                    f"{type(e).__name__}: {e}",
+                    exc_info=True,
+                )
+                await _write_prepare_last_error(project_id, type(e).__name__, str(e))
+                await _mark_project_failed(project_id)
+                final_job_status = "failed"
+                final_error = f"{type(e).__name__}: {e}"
     finally:
-        # 从运行中任务集合里移除
+        if job_task_id:
+            try:
+                await finish_task(
+                    job_task_id,
+                    status=final_job_status,
+                    error_msg=final_error,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[project_prepare] 写 JobTask 终态失败 task_id={job_task_id}: {e}"
+                )
+        # 收尾：从运行中任务集合里移除
         info = _prepare_running_tasks.get(project_id)
-        task = info["task"] if info else None
-        # 只移除"和自己登记时同一条 token"的记录；防止刚清完、别的入口在同一事件循环 tick 里
-        # 又塞了一条新 task（token 不同）被我们误 pop。
         if info is not None:
             cur = _prepare_running_tasks.get(project_id)
             if cur is info:
                 _prepare_running_tasks.pop(project_id, None)
-        if task is not None:
-            # 清理 task 的异常（不然 asyncio 会报 Task exception was never retrieved）
-            try:
-                if not task.done():
+        # 清理 task 的异常（不然 asyncio 会报 Task exception was never retrieved）
+        if info is not None:
+            task = info.get("task")
+            if task is not None:
+                try:
+                    if not task.done():
+                        pass
+                    else:
+                        _ = task.exception()
+                except asyncio.CancelledError:
                     pass
-                else:
-                    _ = task.exception()
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
 
 async def _mark_project_failed(project_id: str) -> None:
@@ -1867,136 +1923,16 @@ async def update_character_voice(
 
 
 # =====================================================================
-# 发音规则（pronunciation rules）
+# 发音规则（pronunciation rules）：实现已迁移到 services/pronunciation.py
+# 这里 re-export 保持既有 import 兼容（routes / build 仍在用）：
+#   from .project import PronunciationRule, apply_pronunciation_rules, ...
 # =====================================================================
-class PronunciationRule(BaseModel):
-    id: int
-    project_id: str
-    character_id: int | None = None
-    rule_type: str = "alias"   # alias | regex
-    pattern: str
-    replacement: str
-    priority: int = 0
-    enabled: bool = True
-    note: str = ""
-
-
-class PronunciationRuleInput(BaseModel):
-    character_id: int | None = None
-    rule_type: str = "alias"
-    pattern: str
-    replacement: str
-    priority: int = 0
-    enabled: bool = True
-    note: str = ""
-
-
-async def list_pronunciation_rules(project_id: str) -> list[PronunciationRule]:
-    factory = get_session_factory()
-    async with factory() as session:
-        stmt = select(ProjectPronunciationRule).where(
-            ProjectPronunciationRule.project_id == project_id,
-        ).order_by(
-            ProjectPronunciationRule.priority.asc(),
-            ProjectPronunciationRule.id.asc(),
-        )
-        rows = (await session.execute(stmt)).scalars().all()
-        return [PronunciationRule.model_validate(r, from_attributes=True) for r in rows]
-
-
-async def create_pronunciation_rule(project_id: str, inp: PronunciationRuleInput) -> PronunciationRule:
-    factory = get_session_factory()
-    async with factory() as session:
-        if not inp.pattern.strip() or not inp.replacement.strip():
-            raise ValueError("pattern 和 replacement 不能为空")
-        if inp.rule_type not in ("alias", "regex"):
-            raise ValueError(f"不支持的 rule_type: {inp.rule_type}")
-        if inp.rule_type == "regex":
-            try:
-                _re.compile(inp.pattern)
-            except _re.error as e:
-                raise ValueError(f"正则 pattern 不合法: {e}")
-        r = ProjectPronunciationRule(
-            project_id=project_id,
-            character_id=inp.character_id,
-            rule_type=inp.rule_type,
-            pattern=inp.pattern,
-            replacement=inp.replacement,
-            priority=inp.priority,
-            enabled=inp.enabled,
-            note=inp.note,
-        )
-        session.add(r)
-        await session.commit()
-        await session.refresh(r)
-        return PronunciationRule.model_validate(r, from_attributes=True)
-
-
-async def update_pronunciation_rule(
-    project_id: str, rule_id: int, inp: PronunciationRuleInput
-) -> PronunciationRule:
-    factory = get_session_factory()
-    async with factory() as session:
-        stmt = select(ProjectPronunciationRule).where(
-            ProjectPronunciationRule.id == rule_id,
-            ProjectPronunciationRule.project_id == project_id,
-        )
-        r = (await session.execute(stmt)).scalar_one_or_none()
-        if not r:
-            raise ValueError(f"发音规则不存在: rule_id={rule_id}")
-        r.character_id = inp.character_id
-        r.rule_type = inp.rule_type
-        r.pattern = inp.pattern
-        r.replacement = inp.replacement
-        r.priority = inp.priority
-        r.enabled = inp.enabled
-        r.note = inp.note
-        r.updated_at = datetime.now().isoformat(timespec="seconds")
-        await session.commit()
-        await session.refresh(r)
-        return PronunciationRule.model_validate(r, from_attributes=True)
-
-
-async def delete_pronunciation_rule(project_id: str, rule_id: int) -> None:
-    factory = get_session_factory()
-    async with factory() as session:
-        stmt = select(ProjectPronunciationRule).where(
-            ProjectPronunciationRule.id == rule_id,
-            ProjectPronunciationRule.project_id == project_id,
-        )
-        r = (await session.execute(stmt)).scalar_one_or_none()
-        if not r:
-            raise ValueError(f"发音规则不存在: rule_id={rule_id}")
-        await session.delete(r)
-        await session.commit()
-
-
-def apply_pronunciation_rules(
-    text: str, rules: list[PronunciationRule], *, character_id: int | None = None
-) -> str:
-    """应用发音规则到单个 segment 文本。
-
-    - 只应用 enabled=True 的规则
-    - character_id=None 的全局规则永远生效；指定角色专属规则仅当匹配时生效
-    - 按 priority 升序 → id 升序依次应用
-    """
-    if not text or not rules:
-        return text
-    active = [
-        r for r in rules
-        if r.enabled
-        and (r.character_id is None or r.character_id == character_id)
-        and r.pattern
-    ]
-    active.sort(key=lambda x: (x.priority, x.id))
-
-    result = text
-    for r in active:
-        try:
-            if r.rule_type == "regex":
-                result = _re.sub(r.pattern, r.replacement, result)
-            else:
-                result = result.replace(r.pattern, r.replacement)
-        except Exception as e:
-            logger.warning(f"[pronunciation] 规则忽略 id={r.id}: {e}")
-    return result
+from .pronunciation import (  # noqa: E402,F401
+    PronunciationRule,
+    PronunciationRuleInput,
+    apply_pronunciation_rules,
+    create_pronunciation_rule,
+    delete_pronunciation_rule,
+    list_pronunciation_rules,
+    update_pronunciation_rule,
+)

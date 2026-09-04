@@ -1,5 +1,6 @@
 """pytest 共享 fixtures."""
 from __future__ import annotations
+import asyncio
 import os
 import sys
 import tempfile
@@ -22,6 +23,21 @@ os.environ.setdefault("SEED_ADMIN_PASS", "admin")
 @pytest.fixture(autouse=True)
 def _isolate_data_dir(tmp_path, monkeypatch):
     """每个测试独立 data 目录和 DB。"""
+    # P1 #9：先重置 rate_limit（不抛异常），让任何重置异常暴露
+    # 注意：conftest 用 backend.app... 而 test_providers_api_red.py 用 app...，
+    # sys.modules 中两个 key 各自指向不同的模块对象，所以必须两边都重置。
+    from collections import defaultdict
+    import sys
+    for mod_name in (
+        "backend.app.services.rate_limit",
+        "app.services.rate_limit",
+    ):
+        mod_obj = sys.modules.get(mod_name)
+        if mod_obj is None:
+            continue
+        mod_obj._recent_events = defaultdict(mod_obj._recent_events_factory)
+        mod_obj._events_lock = asyncio.Lock()
+
     data_dir = tmp_path / "data"
     audio_dir = data_dir / "audio"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -46,6 +62,8 @@ def _isolate_data_dir(tmp_path, monkeypatch):
     from backend.app.db import session as sessmod
     monkeypatch.setattr(sessmod, "_engine", None)
     monkeypatch.setattr(sessmod, "_session_factory", None)
+
+    # P1 #9：每个测试也清空 rate_limit 计数（避免一个测试跑了 5 次 login 把后续测试挡掉）
 
     # monkeypatch factory 返回 mock
     from backend.app.ai import factory as _aifactory_mod  # noqa: F401

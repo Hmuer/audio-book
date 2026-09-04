@@ -47,10 +47,15 @@ cd novel-tts-app
 ```bash
 cd novel-tts-app
 backend/.venv/bin/python -m pytest backend/tests -q
-# 当前：99 passed
+# 当前：123 passed
 ```
 
-测试覆盖：鉴权 / 资源归属 / 媒体鉴权 / 厂商 API 脱敏 / 上传限制 / Build 取消竞态 / 修复合重 等。
+测试覆盖：鉴权 / 资源归属 / 媒体鉴权（一次性签名 URL）/ 后台任务持久化（启动恢复+看门狗）/ 速率限制（login/prepare/build）/ 配置持久化（providers + settings 重启回填）/ 厂商 API 脱敏 / 上传限制 / Build 取消竞态 / 修复合重 等。
+
+CI / 依赖：
+- 依赖锁定见 `backend/requirements.lock` 与 `requirements-dev.txt`；
+- Dependabot 配置 `.github/dependabot.yml`（每周一自动开 PR）；
+- CI 流水线 `.github/workflows/ci.yml`（lint + pytest + pip-audit + 前端构建）。
 
 ---
 

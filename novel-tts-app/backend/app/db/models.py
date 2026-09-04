@@ -345,3 +345,55 @@ class IclTrainingTask(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
+
+# P1 #6：媒体签名 URL（一次性 + 资源绑定 + 短时），用于避免在 URL 里
+# 携带完整登录 JWT。
+class MediaSignToken(Base):
+    __tablename__ = "media_sign_tokens"
+
+    jti: Mapped[str] = mapped_column(String(64), primary_key=True)
+    build_id: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(16))   # chapter_mp3 | all_zip
+    chapter_idx: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+# P1 #7：后台任务持久化表 —— 用于服务重启 / 进程崩溃后，
+# 把"上次没跑完"的后台作业自动恢复/标记失败，避免 UI 永远显示"合成中"。
+#
+# 关键设计：
+# - 后台 worker 启动时 register(pending → running)，结束 write_terminal(success/failed/cancelled)
+# - worker 每隔 ~HEARTBEAT_INTERVAL_SECONDS 更新 last_heartbeat_at
+# - lifespan startup 扫 `status=running AND last_heartbeat_at < now - ORPHAN_THRESHOLD` → 视为孤儿
+#   - prepare 孤儿 → 走 _recover_one_preparing_project 从 progress_json checkpoint 恢复
+#   - build 孤儿 → 走 _run_build_inner 从 BuildArtifact 已 done 章跳过继续
+#   - 其它 kind → 直接置 failed 写 last_error
+# - 与现有 _prepare_running_tasks / _ACTIVE_BUILDS 进程锁兼容：
+#   - 启动恢复时如果发现本进程内已经有同 target 的活跃 task，跳过注册，避免双跑
+class JobTask(Base):
+    __tablename__ = "job_tasks"
+
+    task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # prepare | build | icl_train | media_clean | …（便于未来扩展更多后台任务）
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    # project_id / build_id / task_id：分别对应不同 kind 的"业务实体 id"
+    target_id: Mapped[str] = mapped_column(String(64), index=True)
+    # pending / running / success / failed / cancelled
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    # 触发来源：api / startup / watchdog / retry
+    trigger: Mapped[str] = mapped_column(String(32), default="api")
+    # 重启次数：服务恢复 / 看门狗检测到孤儿后递增；前端可显示"已自动恢复 N 次"
+    restart_count: Mapped[int] = mapped_column(Integer, default=0)
+    # 心跳：worker 周期性写当前时间；与 now 差 > 阈值视为孤儿
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 透传进度（白名单 JSON，例如 prepare 的 stage / dialogue_completed_chapters_count）
+    progress_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime)
+

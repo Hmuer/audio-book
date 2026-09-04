@@ -366,23 +366,34 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ force_restart_failed_only: true }),
     }),
-  // 整包 ZIP 下载 URL
-  buildDownloadAll: (projectId: string, buildId: string) => {
-    const tok = getToken();
-    const base = `/api/projects/${projectId}/builds/${buildId}/download-all`;
-    return tok ? `${base}?token=${encodeURIComponent(tok)}` : base;
+  // 整包 ZIP 下载 URL（P1 #6：使用一次性签名 token，而非完整登录 JWT）
+  buildDownloadAll: async (projectId: string, buildId: string): Promise<string> => {
+    const info = await _fetch<{ url: string }>(
+      `/api/media/sign?build_id=${encodeURIComponent(buildId)}&kind=all_zip`
+    );
+    return info.url;
   },
-  // 单章 MP3 下载 URL
-  buildChapterDownload: (projectId: string, buildId: string, idx: number) => {
-    const tok = getToken();
-    const base = `/api/projects/${projectId}/builds/${buildId}/chapters/${idx}/download`;
-    return tok ? `${base}?token=${encodeURIComponent(tok)}` : base;
+  // 单章 MP3 下载 URL（P1 #6：使用一次性签名 token）
+  buildChapterDownload: async (
+    projectId: string,
+    buildId: string,
+    idx: number
+  ): Promise<string> => {
+    const info = await _fetch<{ url: string }>(
+      `/api/media/sign?build_id=${encodeURIComponent(buildId)}&kind=chapter_mp3&idx=${idx}`
+    );
+    return info.url;
   },
-  // 单章 MP3 音频 URL（用于 <audio src> 试听，需要 token 认证）
-  buildChapterAudioUrl: (projectId: string, buildId: string, idx: number) => {
-    const tok = getToken();
-    const base = `/api/projects/${projectId}/builds/${buildId}/chapters/${idx}/download`;
-    return tok ? `${base}?token=${encodeURIComponent(tok)}` : base;
+  // 单章 MP3 音频 URL（用于 <audio src> 试听，P1 #6：使用签名 token）
+  buildChapterAudioUrl: async (
+    projectId: string,
+    buildId: string,
+    idx: number
+  ): Promise<string> => {
+    const info = await _fetch<{ url: string }>(
+      `/api/media/sign?build_id=${encodeURIComponent(buildId)}&kind=chapter_mp3&idx=${idx}`
+    );
+    return info.url;
   },
 
   // ---------- 系统设置 ----------

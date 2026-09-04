@@ -864,6 +864,8 @@ function ChaptersTab({
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [chapterDetail, setChapterDetail] = useState<ChapterDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  // P1 #6：每个章节的签名音频 URL（一次性 token，5 分钟过期）
+  const [audioUrls, setAudioUrls] = useState<Record<number, string>>({});
 
   // speaker 归属 map（dialogue 里 anchor_text → speaker）
   const speakerMap = useMemo(() => {
@@ -890,6 +892,32 @@ function ChaptersTab({
       .finally(() => { if (!cancelled) setLoadingDetail(false); });
     return () => { cancelled = true; };
   }, [expandedIdx, project.project_id]);
+
+  // P1 #6：展开任意章节 / 进入项目时，为每个 chapter 批量签发一次性音频 URL。
+  // 5 分钟过期，过期后 audio tag 会报 401，前端应自动重新签发。
+  useEffect(() => {
+    if (!hasAudio || !lastBuild) return;
+    let cancelled = false;
+    const signAll = async () => {
+      const updates: Record<number, string> = {};
+      for (const c of chapters) {
+        if (audioUrls[c.idx]) continue;
+        try {
+          updates[c.idx] = await api.buildChapterAudioUrl(
+            project.project_id, lastBuild.build_id, c.idx
+          );
+        } catch (e) {
+          console.warn('sign audio url failed', c.idx, e);
+        }
+      }
+      if (!cancelled && Object.keys(updates).length) {
+        setAudioUrls(prev => ({ ...prev, ...updates }));
+      }
+    };
+    signAll();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasAudio, lastBuild?.build_id, chapters.length]);
 
   const onExpand = (idx: number) => {
     setExpandedIdx(prev => (prev === idx ? null : idx));
@@ -952,9 +980,7 @@ function ChaptersTab({
             const isOpen = expandedIdx === c.idx;
             const key = `ch_${c.idx}`;
             const playing = playingKey === key;
-            const audioUrl = hasAudio
-              ? api.buildChapterAudioUrl(project.project_id, lastBuild!.build_id, c.idx)
-              : null;
+            const audioUrl = hasAudio ? (audioUrls[c.idx] ?? null) : null;
             return (
               <div key={c.idx} className="rounded-lg border bg-ink-200 border-ink-300/70 overflow-hidden transition-all duration-200">
                 {/* 章首行（始终可见） */}
@@ -988,10 +1014,15 @@ function ChaptersTab({
                       src={audioUrl}
                       compact
                       onDownload={() => {
-                        const a = document.createElement('a');
-                        a.href = api.buildChapterDownload(project.project_id, lastBuild!.build_id, c.idx);
-                        a.download = '';
-                        a.click();
+                        // P1 #6：先签发一次性下载 URL，再触发浏览器下载
+                        api.buildChapterDownload(project.project_id, lastBuild!.build_id, c.idx)
+                          .then(url => {
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = '';
+                            a.click();
+                          })
+                          .catch(e => console.error('sign download url:', e));
                       }}
                     />
                   </div>
@@ -1440,6 +1471,16 @@ function BuildRow({
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  // P1 #6：整包 ZIP 签名 URL（一次性 token）
+  const [zipUrl, setZipUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!expanded) return;
+    let cancelled = false;
+    api.buildDownloadAll(projectId, item.build_id)
+      .then(u => { if (!cancelled) setZipUrl(u); })
+      .catch(() => { /* 静默 — 没有 zip 是正常的（运行中 / 失败） */ });
+    return () => { cancelled = true; };
+  }, [expanded, projectId, item.build_id]);
 
   const pct =
     item.total_chapters > 0
@@ -1583,14 +1624,14 @@ function BuildRow({
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
         </button>
-        {!isRunning && (
+        {!isRunning && zipUrl && (
           <a
             className="inline-flex items-center justify-center shrink-0 rounded-md
               border border-brand-500/25 bg-brand-500/10 text-brand-200
               hover:border-brand-500/50 hover:bg-brand-500/20 hover:text-brand-100
               transition-all duration-150"
             style={{ width: 34, height: 34 }}
-            href={api.buildDownloadAll(projectId, item.build_id)}
+            href={zipUrl}
             download
             title="打包下载全部 MP3 (ZIP)"
           >
@@ -1651,16 +1692,49 @@ function BuildDetailContent({
   playingKey: string | null;
   onTogglePlay: (key: string, url: string | null) => void;
 }) {
+  // P1 #6：每个 BuildArtifact 的签名音频 URL（一次性 token，5 分钟过期）
+  const [signedUrls, setSignedUrls] = useState<Record<number, string>>({});
+  const [zipUrl, setZipUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const signAll = async () => {
+      const updates: Record<number, string> = {};
+      for (const a of detail.artifacts ?? []) {
+        if (a.status === 'done') {
+          try {
+            updates[a.chapter_idx] = await api.buildChapterAudioUrl(
+              projectId, detail.build_id, a.chapter_idx
+            );
+          } catch (e) {
+            console.warn('sign chapter url failed', a.chapter_idx, e);
+          }
+        }
+      }
+      if (!cancelled) setSignedUrls(prev => ({ ...prev, ...updates }));
+
+      // 整包 ZIP
+      if (detail.zip_url) {
+        try {
+          const u = await api.buildDownloadAll(projectId, detail.build_id);
+          if (!cancelled) setZipUrl(u);
+        } catch (e) {
+          console.warn('sign zip url failed', e);
+        }
+      }
+    };
+    signAll();
+    return () => { cancelled = true; };
+  }, [detail.build_id, projectId, (detail.artifacts ?? []).length]);
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3 flex-wrap text-xs text-ink-500">
         <span className="chip-soft">语速 {detail.speed?.toFixed(1) ?? '1.0'}x</span>
         <span className="chip-soft">总时长 {formatDuration(detail.total_duration_sec)}</span>
         <span className="chip-soft">总大小 {formatSize(detail.total_size_kb ? detail.total_size_kb * 1024 : null)}</span>
-        {detail.zip_url && (detail.status === 'success' || detail.status === 'partial_success' || detail.status === 'done') && (
+        {detail.zip_url && (detail.status === 'success' || detail.status === 'partial_success' || detail.status === 'done') && zipUrl && (
           <a
             className="btn-primary !py-1.5 !px-3 text-xs ml-auto"
-            href={api.buildDownloadAll(projectId, detail.build_id)}
+            href={zipUrl}
             download
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="mr-1"><rect x="2" y="7" width="13" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V18a2 2 0 0 1-2 2"/></svg>
@@ -1715,15 +1789,20 @@ function BuildDetailContent({
                   <span className="truncate">{a.error_msg.split('\n')[0]}</span>
                 </div>
               )}
-              {a.status === 'done' && a.audio_url && (
+              {a.status === 'done' && signedUrls[a.chapter_idx] && (
                 <WaveformPlayer
-                  src={a.audio_url}
+                  src={signedUrls[a.chapter_idx]}
                   compact
                   onDownload={() => {
-                    const a_ = document.createElement('a');
-                    a_.href = api.buildChapterDownload(projectId, detail.build_id, a.chapter_idx);
-                    a_.download = '';
-                    a_.click();
+                    // P1 #6：签发一次性下载 URL 后再触发浏览器下载
+                    api.buildChapterDownload(projectId, detail.build_id, a.chapter_idx)
+                      .then(url => {
+                        const a_ = document.createElement('a');
+                        a_.href = url;
+                        a_.download = '';
+                        a_.click();
+                      })
+                      .catch(e => console.error('sign download url:', e));
                   }}
                 />
               )}

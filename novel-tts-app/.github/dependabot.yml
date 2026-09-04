@@ -1,0 +1,56 @@
+# P2 #13：Dependabot 配置 —— 自动开 PR 提示依赖升级。
+#
+# 覆盖：
+# - Python 后端（backend/requirements*.txt）：每周一拉新
+# - 前端 Node 包（frontend/package.json）：每周一拉新
+# - GitHub Actions（.github/workflows/）：每周一拉新
+#
+# 注意：升级触发的是「开 PR」，不是「自动 merge」。
+# merge 前由 CI（.github/workflows/ci.yml）跑 pytest + pip-audit 验证。
+
+version: 2
+
+updates:
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "backend"
+    groups:
+      # 关键安全补丁优先单独 PR，便于快速 review
+      security-patches:
+        applies-to: security-updates
+      # 普通升级分批，避免一次 PR 合并几十个
+      production-dependencies:
+        dependency-type: "production"
+      development-dependencies:
+        dependency-type: "development"
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "frontend"
+    groups:
+      production-dependencies:
+        dependency-type: "production"
+      development-dependencies:
+        dependency-type: "development"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "ci"

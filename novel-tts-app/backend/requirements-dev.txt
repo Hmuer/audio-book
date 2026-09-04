@@ -1,0 +1,13 @@
+# P2 #13：开发/测试/审计工具
+#
+# 用法：
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+# 注意：本文件同时被 CI 与本地开发复用。运行时镜像只装 requirements.txt。
+
+# pytest + 异步测试
+pytest>=8.3.3
+pytest-asyncio>=0.24.0
+
+# 安全审计（CI 跑 pip-audit）
+pip-audit>=2.7,<3.0

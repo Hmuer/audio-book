@@ -339,8 +339,188 @@ def get_active_llm_provider() -> dict[str, Any] | None:
 
 
 def save_providers_config(cfg: dict[str, Any]) -> None:
-    """原样写回 PROVIDERS_CONFIG（前端 PUT /settings 入口调用）。"""
+    """原样写回 PROVIDERS_CONFIG（前端 PUT /settings 入口调用）。
+
+    P2 #14：同步落盘到 data/providers_config.json，服务重启后回填，
+    避免「重启后丢失自定义 API Key / base_url」。
+    """
     settings.PROVIDERS_CONFIG = _json.dumps(cfg, ensure_ascii=False)
+    try:
+        import os as _os
+        settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        path = settings.DATA_DIR / "providers_config.json"
+        # 文件权限 600：包含明文 api_key，避免被同机其他用户读取
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            _json.dumps(cfg, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        try:
+            _os.chmod(tmp, 0o600)
+        except Exception:
+            pass
+        tmp.replace(path)
+    except Exception as e:
+        # 落盘失败只警告；下次重启还是会回退 .env 默认
+        import logging
+        logging.getLogger(__name__).warning(
+            f"[providers_config] 落盘失败: {type(e).__name__}: {e}"
+        )
+
+
+def load_providers_config_from_disk() -> bool:
+    """P2 #14：启动时从 data/providers_config.json 回填到 PROVIDERS_CONFIG。
+
+    文件存在 + 解析成功 + 是 dict → 替换 settings.PROVIDERS_CONFIG；
+    其它情况返回 False（保持 _migrate_legacy_providers 推出来的初始结构）。
+    """
+    try:
+        path = settings.DATA_DIR / "providers_config.json"
+        if not path.is_file():
+            return False
+        raw = path.read_text(encoding="utf-8")
+        parsed = _json.loads(raw)
+        if not isinstance(parsed, dict) or "providers" not in parsed:
+            return False
+        settings.PROVIDERS_CONFIG = _json.dumps(parsed, ensure_ascii=False)
+        import logging
+        logging.getLogger(__name__).info(
+            f"[providers_config] 从 {path} 回填（providers={len(parsed.get('providers', []))}）"
+        )
+        return True
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"[providers_config] 从磁盘回填失败: {type(e).__name__}: {e}"
+        )
+        return False
+
+
+# 键名白名单：仅这部分键可被 PUT /settings 持久化；
+# 其它键（如 ENV / SECRET / API Key 等）即使前端 PUT 也不写盘。
+_PERSISTABLE_EDITABLE_KEYS: set[str] = set()  # 在 _init_persistable_keys() 里填充
+
+
+def _init_persistable_keys() -> None:
+    """扫描 _EDITABLE_SETTINGS（来自 routes 模块），把 int / str / bool / list[str] /
+    json 类的非敏感键加入白名单。运行时配置由 routes._EDITABLE_SETTINGS 集中维护。
+    """
+    try:
+        from ..api.routes import _EDITABLE_SETTINGS  # type: ignore
+    except Exception:
+        return
+    for key, info in _EDITABLE_SETTINGS.items():
+        typ = info[0] if isinstance(info, tuple) and info else None
+        if typ in ("int", "str", "bool", "list[str]", "json"):
+            _PERSISTABLE_EDITABLE_KEYS.add(key)
+
+
+def save_runtime_settings_to_disk(updates: dict[str, Any]) -> dict[str, Any]:
+    """P2 #14：把 PUT /settings 的 updates 持久化到 data/runtime_settings.json。
+
+    仅白名单内的键被落盘；敏感字段（带 key/secret/token/password 的）一律忽略。
+    返回 {"saved": [...], "skipped": [...]}。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    saved: list[str] = []
+    skipped: list[str] = []
+    try:
+        path = settings.DATA_DIR / "runtime_settings.json"
+        # 读旧
+        old: dict[str, Any] = {}
+        if path.is_file():
+            try:
+                old = _json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(old, dict):
+                    old = {}
+            except Exception:
+                old = {}
+        # 过滤敏感 + 白名单
+        for key, val in updates.items():
+            if not isinstance(key, str):
+                skipped.append(f"{key}(非字符串键)")
+                continue
+            kl = key.lower()
+            if any(s in kl for s in (
+                "key", "secret", "token", "password", "passwd",
+            )):
+                skipped.append(f"{key}(敏感字段不持久化)")
+                continue
+            if key not in _PERSISTABLE_EDITABLE_KEYS:
+                skipped.append(f"{key}(不在白名单)")
+                continue
+            old[key] = val
+            saved.append(key)
+        # 写
+        if saved:
+            import os as _os
+            settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(
+                _json.dumps(old, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            try:
+                _os.chmod(tmp, 0o600)
+            except Exception:
+                pass
+            tmp.replace(path)
+            logger.info(f"[runtime_settings] 持久化 {len(saved)} 个键到 {path}")
+    except Exception as e:
+        logger.warning(f"[runtime_settings] 持久化失败: {type(e).__name__}: {e}")
+    return {"saved": saved, "skipped": skipped}
+
+
+def load_runtime_settings_from_disk() -> int:
+    """P2 #14：启动时从 data/runtime_settings.json 恢复 settings.* 字段。
+
+    返回恢复的键数。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        path = settings.DATA_DIR / "runtime_settings.json"
+        if not path.is_file():
+            return 0
+        raw = path.read_text(encoding="utf-8")
+        data = _json.loads(raw)
+        if not isinstance(data, dict):
+            return 0
+        n = 0
+        for key, val in data.items():
+            if not isinstance(key, str) or not hasattr(settings, key):
+                continue
+            # 类型校验：尝试转换（与 routes.update_settings 同样的转换规则简化版）
+            try:
+                current = getattr(settings, key)
+                if isinstance(current, bool):
+                    if isinstance(val, str):
+                        val = val.lower() in ("1", "true", "yes", "on")
+                    val = bool(val)
+                elif isinstance(current, int):
+                    val = int(val)
+                elif isinstance(current, str):
+                    val = str(val)
+                elif isinstance(current, list):
+                    if isinstance(val, str):
+                        val = [
+                            ln.strip() for ln in val.splitlines()
+                            if ln.strip()
+                        ]
+                    elif not isinstance(val, list):
+                        raise ValueError("list expected")
+                setattr(settings, key, val)
+                n += 1
+            except Exception as e:
+                logger.warning(
+                    f"[runtime_settings] 跳过 {key}: {type(e).__name__}: {e}"
+                )
+        logger.info(f"[runtime_settings] 从 {path} 恢复 {n} 个键")
+        return n
+    except Exception as e:
+        logger.warning(f"[runtime_settings] 从磁盘恢复失败: {type(e).__name__}: {e}")
+        return 0
 
 
 def is_provider_enabled(provider_id: str) -> bool:

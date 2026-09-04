@@ -803,34 +803,87 @@ async def start_build(
 
     async def _runner() -> None:
         """后台 worker：独立 session，完成后释放锁。"""
+        # P1 #7：用 JobTask 跟踪 build worker 生命周期（启动恢复 / 看门狗依赖）
+        from .job_tasks import register_task, HeartbeatContext, finish_task
+        job_task_id: str | None = None
         try:
-            await _run_build_inner(
-                build_id=build_id,
-                project_id=project_id,
-                voice_assignments=voice_assignments,
-                narrator_voice_id=narrator_voice_id,
-                speed=speed,
-                only_chapter_idxs=None,
-                source_build_id=None,
-            )
+            job = await register_task("build", build_id, trigger="api")
+            job_task_id = job.task_id
         except Exception as e:
-            logger.error(
-                f"[build_worker] FAIL build_id={build_id[:8]}... "
-                f"{type(e).__name__}: {e}",
-                exc_info=True,
+            logger.warning(
+                f"[build_worker] 注册 JobTask 失败 build_id={build_id[:8]}... "
+                f"{type(e).__name__}: {e}"
             )
+            job_task_id = None
+
+        final_status = "failed"
+        final_error: str | None = None
+        try:
+            async with HeartbeatContext(job_task_id):
+                try:
+                    await _run_build_inner(
+                        build_id=build_id,
+                        project_id=project_id,
+                        voice_assignments=voice_assignments,
+                        narrator_voice_id=narrator_voice_id,
+                        speed=speed,
+                        only_chapter_idxs=None,
+                        source_build_id=None,
+                    )
+                    # 终态由 _run_build_inner 写 Build.status；这里尝试把对应终态同步给 JobTask
+                    f1 = get_session_factory()
+                    async with f1() as s1:
+                        b_after = await s1.get(Build, build_id)
+                        if b_after and b_after.status in ("success", "partial_success"):
+                            final_status = "success"
+                        elif b_after and b_after.status == "cancelled":
+                            final_status = "cancelled"
+                        elif b_after and b_after.status == "failed":
+                            final_status = "failed"
+                except Exception as e:
+                    logger.error(
+                        f"[build_worker] FAIL build_id={build_id[:8]}... "
+                        f"{type(e).__name__}: {e}",
+                        exc_info=True,
+                    )
+                    final_error = f"{type(e).__name__}: {e}"
+                    try:
+                        f2 = get_session_factory()
+                        async with f2() as s:
+                            b2 = await s.get(Build, build_id)
+                            if b2:
+                                b2.status = "failed"
+                                b2.progress_msg = f"合成失败: {type(e).__name__}: {e}"[:200]
+                                b2.completed_at = datetime.now(UTC).replace(tzinfo=None)
+                                await s.commit()
+                    except Exception as e2:
+                        logger.error(f"[build_worker] final status write fail: {e2}")
+                    final_status = "failed"
+        except asyncio.CancelledError:
+            final_status = "cancelled"
+            final_error = "build worker cancelled"
             try:
                 f2 = get_session_factory()
                 async with f2() as s:
                     b2 = await s.get(Build, build_id)
                     if b2:
-                        b2.status = "failed"
-                        b2.progress_msg = f"合成失败: {type(e).__name__}: {e}"[:200]
+                        b2.status = "cancelled"
+                        b2.progress_msg = "build worker cancelled"
                         b2.completed_at = datetime.now(UTC).replace(tzinfo=None)
                         await s.commit()
-            except Exception as e2:
-                logger.error(f"[build_worker] final status write fail: {e2}")
+            except Exception:
+                pass
+            raise
         finally:
+            if job_task_id:
+                try:
+                    await finish_task(
+                        job_task_id, status=final_status, error_msg=final_error,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[build_worker] 写 JobTask 终态失败 task_id={job_task_id}: {e}"
+                    )
             await _unregister_active_build(build_id, project_id)
 
     asyncio.create_task(_runner(), name=f"build_{build_id[:8]}")
@@ -1001,34 +1054,86 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
     await _register_active_build(new_build_id, project_id)
 
     async def _runner() -> None:
+        # P1 #7：retry 路径同样注册 JobTask
+        from .job_tasks import register_task, HeartbeatContext, finish_task
+        job_task_id: str | None = None
         try:
-            await _run_build_inner(
-                build_id=new_build_id,
-                project_id=project_id,
-                voice_assignments=voice_assignments,
-                narrator_voice_id=narrator_voice_id,
-                speed=speed,
-                only_chapter_idxs=failed_ch_idxs,
-                source_build_id=source_build_id,
-            )
+            job = await register_task("build", new_build_id, trigger="retry")
+            job_task_id = job.task_id
         except Exception as e:
-            logger.error(
-                f"[retry_worker] FAIL build_id={new_build_id[:8]}... "
-                f"{type(e).__name__}: {e}",
-                exc_info=True,
+            logger.warning(
+                f"[retry_worker] 注册 JobTask 失败 build_id={new_build_id[:8]}... "
+                f"{type(e).__name__}: {e}"
             )
+            job_task_id = None
+
+        final_status = "failed"
+        final_error: str | None = None
+        try:
+            async with HeartbeatContext(job_task_id):
+                try:
+                    await _run_build_inner(
+                        build_id=new_build_id,
+                        project_id=project_id,
+                        voice_assignments=voice_assignments,
+                        narrator_voice_id=narrator_voice_id,
+                        speed=speed,
+                        only_chapter_idxs=failed_ch_idxs,
+                        source_build_id=source_build_id,
+                    )
+                    f1 = get_session_factory()
+                    async with f1() as s1:
+                        b_after = await s1.get(Build, new_build_id)
+                        if b_after and b_after.status in ("success", "partial_success"):
+                            final_status = "success"
+                        elif b_after and b_after.status == "cancelled":
+                            final_status = "cancelled"
+                        elif b_after and b_after.status == "failed":
+                            final_status = "failed"
+                except Exception as e:
+                    logger.error(
+                        f"[retry_worker] FAIL build_id={new_build_id[:8]}... "
+                        f"{type(e).__name__}: {e}",
+                        exc_info=True,
+                    )
+                    final_error = f"{type(e).__name__}: {e}"
+                    try:
+                        f2 = get_session_factory()
+                        async with f2() as s:
+                            b2 = await s.get(Build, new_build_id)
+                            if b2:
+                                b2.status = "failed"
+                                b2.progress_msg = f"合成失败: {type(e).__name__}: {e}"[:200]
+                                b2.completed_at = datetime.now(UTC).replace(tzinfo=None)
+                                await s.commit()
+                    except Exception as e2:
+                        logger.error(f"[retry_worker] final status write fail: {e2}")
+                    final_status = "failed"
+        except asyncio.CancelledError:
+            final_status = "cancelled"
+            final_error = "retry worker cancelled"
             try:
                 f2 = get_session_factory()
                 async with f2() as s:
                     b2 = await s.get(Build, new_build_id)
                     if b2:
-                        b2.status = "failed"
-                        b2.progress_msg = f"合成失败: {type(e).__name__}: {e}"[:200]
+                        b2.status = "cancelled"
+                        b2.progress_msg = "retry worker cancelled"
                         b2.completed_at = datetime.now(UTC).replace(tzinfo=None)
                         await s.commit()
-            except Exception as e2:
-                logger.error(f"[retry_worker] final status write fail: {e2}")
+            except Exception:
+                pass
+            raise
         finally:
+            if job_task_id:
+                try:
+                    await finish_task(
+                        job_task_id, status=final_status, error_msg=final_error,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[retry_worker] 写 JobTask 终态失败 task_id={job_task_id}: {e}"
+                    )
             await _unregister_active_build(new_build_id, project_id)
 
     asyncio.create_task(_runner(), name=f"retry_{new_build_id[:8]}")

@@ -59,6 +59,11 @@ from ..services.ownership import (
     assert_project_writable,
     claim_orphan_projects,
 )
+from ..services.media_sign import (
+    issue_media_token,
+    consume_media_token,
+    ensure_cleanup_started as ensure_media_cleanup_started,
+)
 from ..services.build import (
     start_build,
     get_build,
@@ -219,6 +224,9 @@ class ChangePasswordRequest(BaseModel):
 @auth_router.post("/login", response_model=LoginResp)
 async def api_auth_login(req: LoginRequest, request: Request):
     """登录：用户名 + 密码 → JWT。"""
+    # P1 #9 速率限制：每 IP 每分钟 5 次登录尝试
+    from ..services.rate_limit import enforce_login_rate_limit
+    await enforce_login_rate_limit(request)
     t0 = _time.perf_counter()
     remote = request.client.host if request.client else "?"
     logger.info(
@@ -856,6 +864,9 @@ async def api_project_prepare(
       - dialogue_total_batches / dialogue_completed_chapters_count / dialogue_failed_batches：对白归属进度
     P1 #5：写权限校验。
     """
+    # P1 #9 速率限制：每 (user, project) 每分钟 3 次 prepare 触发
+    from ..services.rate_limit import enforce_prepare_rate_limit
+    await enforce_prepare_rate_limit(request, user_id=current.id, project_id=project_id)
     factory = get_session_factory()
     async with factory() as s:
         await assert_project_writable(s, project_id, current)
@@ -1067,6 +1078,135 @@ async def api_delete_pronunciation_rule(
 
 # ---------- Build 任务 ----------
 
+
+# ---- P1 #6：媒体签名 URL（避免完整 JWT 出现在 URL） ----
+
+@router.get("/media/sign")
+async def api_media_sign(
+    build_id: str,
+    kind: str,
+    idx: int | None = None,
+    ttl_seconds: int = 300,
+    current: User = Depends(get_current_user),
+):
+    """签发一次性媒体签名 token（短时 + 资源绑定 + 单用途）。
+
+    - kind=chapter_mp3   必须带 idx（章节号）
+    - kind=all_zip       整包 ZIP
+    - ttl_seconds        1~600（默认 300 = 5 分钟）
+    """
+    if kind == "chapter_mp3":
+        if idx is None:
+            raise HTTPException(400, "kind=chapter_mp3 时必须提供 idx")
+        kind_norm = "chapter_mp3"
+    elif kind == "all_zip":
+        kind_norm = "all_zip"
+    else:
+        raise HTTPException(400, f"不支持的 kind: {kind!r}")
+    ttl = max(1, min(int(ttl_seconds), 600))
+
+    factory = get_session_factory()
+    async with factory() as s:
+        b = await s.get(Build, build_id)
+        if not b:
+            raise HTTPException(404, "build 不存在")
+        await get_project_for_user(s, b.project_id, current)
+        token_info = await issue_media_token(
+            s,
+            build_id=build_id,
+            kind=kind_norm,
+            chapter_idx=idx,
+            user_id=current.id,
+            ttl_seconds=ttl,
+        )
+    return token_info
+
+
+@public_router.get("/media/stream")
+async def api_media_stream(
+    token: str,
+    request: Request,
+):
+    """用一次性 token 取出媒体文件。
+
+    不接受完整登录 JWT，只接受媒体签名 token（sub_kind=media）。
+    """
+    payload = await consume_media_token(token)
+    if not payload:
+        raise HTTPException(
+            401,
+            "media token 无效、已过期或已使用",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    build_id = payload["build_id"]
+    kind = payload["kind"]
+    idx = payload["idx"]
+
+    # 反查 artifact / zip 文件名
+    from sqlalchemy import select as _select
+    factory = get_session_factory()
+    async with factory() as s:
+        b = await s.get(Build, build_id)
+        if not b:
+            raise HTTPException(404, "build 不存在")
+        if kind == "chapter_mp3":
+            art = (
+                await s.execute(
+                    _select(BuildArtifact).where(
+                        BuildArtifact.build_id == build_id,
+                        BuildArtifact.chapter_idx == idx,
+                    )
+                )
+            ).scalar_one_or_none()
+            if not art or not art.audio_filename:
+                raise HTTPException(404, f"章节 {idx} 尚未生成")
+            audio_filename = art.audio_filename
+            art_title = art.title
+        elif kind == "all_zip":
+            if not b.zip_filename:
+                raise HTTPException(400, "整包 ZIP 尚未生成")
+            audio_filename = b.zip_filename
+            art_title = "all"
+        else:
+            raise HTTPException(400, f"unknown kind {kind!r}")
+
+    audio_dir = Path(settings.AUDIO_DIR)
+    fpath = audio_dir / audio_filename
+    if not fpath.is_file():
+        raise HTTPException(404, "文件不存在")
+    if kind == "chapter_mp3":
+        clean_title = strip_chapter_prefix(art_title or '')
+        fname = f"第{idx+1:03d}章 {clean_title or '章节'}.mp3"
+        for ch in '\\/:*?"<>|\r\n\t':
+            fname = fname.replace(ch, "_")
+        return FileResponse(
+            path=str(fpath),
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": f"inline; filename*=UTF-8''{urllib.parse.quote(fname.encode('utf-8'), safe='')}",
+                "Cache-Control": "private, max-age=300",
+            },
+            filename=fname,
+        )
+    else:  # all_zip
+        # 取 book_title 拼中文文件名
+        proj = None
+        async with factory() as s2:
+            from ..db.models import Project
+            proj = await s2.get(Project, b.project_id)
+        book_title = proj.book_title if proj else None
+        download_name = _safe_download_name_build(book_title, build_id, ".zip")
+        return FileResponse(
+            path=str(fpath),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(download_name.encode('utf-8'), safe='')}",
+                "Cache-Control": "private, max-age=300",
+            },
+            filename=download_name,
+        )
+
+
 @router.post("/projects/{project_id}/builds", response_model=BuildResp)
 async def api_start_build(
     project_id: str,
@@ -1075,6 +1215,9 @@ async def api_start_build(
     current: User = Depends(get_current_user),
 ):
     """创建并启动 Build（后台任务，立即返回）。P1 #5：写权限校验。"""
+    # P1 #9 速率限制：每 (user, project) 每分钟 3 次 build 启动
+    from ..services.rate_limit import enforce_build_rate_limit
+    await enforce_build_rate_limit(request, user_id=current.id, project_id=project_id)
     factory = get_session_factory()
     async with factory() as s:
         await assert_project_writable(s, project_id, current)
@@ -1349,6 +1492,9 @@ async def api_retry_failed_build(
 ):
     """创建一个 retry build：仅重跑 source build 中失败的章节，其余章节直接复用原 MP3（完整 ZIP）。
     P1 #5：写权限校验。"""
+    # P1 #9 速率限制：retry 也算 build 启动，复用同一个 key
+    from ..services.rate_limit import enforce_build_rate_limit
+    await enforce_build_rate_limit(request, user_id=current.id, project_id=project_id)
     factory = get_session_factory()
     async with factory() as s:
         await assert_project_writable(s, project_id, current)
@@ -1673,6 +1819,22 @@ async def update_settings(
         except Exception as e:
             skipped.append(f"CHAPTER_SPLIT_PATTERNS(编译异常: {e})")
             updated.remove("CHAPTER_SPLIT_PATTERNS")
+
+    # P2 #14：把 updates 中白名单内非敏感键持久化到 data/runtime_settings.json
+    try:
+        from ..core.config import save_runtime_settings_to_disk
+        persist_res = save_runtime_settings_to_disk(
+            {k: getattr(settings, k, None) for k in updated}
+        )
+        if persist_res.get("saved"):
+            note_extras.append(
+                f"已持久化 {len(persist_res['saved'])} 个键，重启后自动生效"
+            )
+        for s in persist_res.get("skipped", []):
+            # 不影响 PUT 响应；只在日志记
+            logger.debug(f"[runtime_settings] skip: {s}")
+    except Exception as e:
+        logger.warning(f"[runtime_settings] persist err: {type(e).__name__}: {e}")
 
     logger.info(f"[Settings] 更新配置: {updated}")
     if skipped:

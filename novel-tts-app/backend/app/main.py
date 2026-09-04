@@ -71,6 +71,20 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # P2 #14：从 data/providers_config.json 和 data/runtime_settings.json 回填
+    # settings，避免「重启后丢失前端通过 PUT /providers 和 PUT /settings 写入的配置」。
+    # 必须在 init_db / startup 钩子之前先跑。
+    try:
+        from .core.config import (
+            load_providers_config_from_disk,
+            load_runtime_settings_from_disk,
+            _init_persistable_keys,
+        )
+        _init_persistable_keys()
+        load_providers_config_from_disk()
+        load_runtime_settings_from_disk()
+    except Exception as e:
+        logger.warning(f"[startup] 配置回填失败: {type(e).__name__}: {e}")
     await init_db()
     logger.info("DB initialized")
     # 启动时确保默认 admin 账号存在
@@ -102,6 +116,19 @@ async def lifespan(app: FastAPI):
     #     视为卡死自动恢复
     from .services.project import ensure_prepare_watchdog_started
     ensure_prepare_watchdog_started()
+    # P1 #6：启动一次性媒体签名 token 过期清理后台任务
+    try:
+        from .services.media_sign import ensure_cleanup_started
+        ensure_cleanup_started()
+    except Exception as e:
+        logger.error(f"[media_sign] 启动清理后台任务失败: {type(e).__name__}: {e}")
+    # P1 #7：启动后台任务持久化（JobTask 表）的启动恢复 + 看门狗；
+    # 把上次没跑完的孤儿任务自动 enqueue 一次，避免 UI 永远卡"合成中"。
+    try:
+        from .services.job_tasks import ensure_job_task_watchdog_started
+        ensure_job_task_watchdog_started()
+    except Exception as e:
+        logger.error(f"[job_task] 启动 watchdog 失败: {type(e).__name__}: {e}")
     yield
 
 

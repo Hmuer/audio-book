@@ -55,6 +55,8 @@ _JOB_NEW_COLUMNS = {
 _PROJECT_NEW_COLUMNS = {
     "default_tts_provider": "VARCHAR(32)",
     "default_build_mode": "VARCHAR(32)",
+    # P1 #5：资源归属字段
+    "owner_user_id": "INTEGER REFERENCES users(id) ON DELETE SET NULL",
 }
 _BUILD_NEW_COLUMNS = {
     # 注意：必须保留 SQL 级默认值，旧行自动补齐 classic / minimax（符合 T-TR3 向后兼容）
