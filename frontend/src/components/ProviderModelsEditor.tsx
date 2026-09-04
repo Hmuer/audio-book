@@ -92,8 +92,10 @@ function ToggleSwitch({
         }`}
       >
         <span
-          className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${
-            enabled ? 'translate-x-[22px]' : 'translate-x-0.5'
+          className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${
+            // 凹槽 w-9(36) - 拨片 w-3(12) - left-0.5(2) = 22，
+            // 启用时再 translate-x-[22px] → 拨片右边沿贴齐凹槽右边沿，不再溢出。
+            enabled ? 'translate-x-[22px]' : 'translate-x-0'
           }`}
         />
       </span>

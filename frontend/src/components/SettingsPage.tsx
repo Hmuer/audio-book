@@ -193,8 +193,10 @@ export default function SettingsPage() {
           }`}
         >
           <span
-            className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform ${
-              val === 'true' ? 'translate-x-[22px]' : 'translate-x-0.5'
+            // 凹槽 w-11(44) - 拨片 w-5(20) - left-0.5(2) = 22，
+            // 启用时再 translate-x-[22px] → 拨片右边沿贴齐凹槽右边沿，不再溢出。
+            className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${
+              val === 'true' ? 'translate-x-[22px]' : 'translate-x-0'
             }`}
           />
         </button>
