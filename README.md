@@ -34,7 +34,7 @@ cd novel-tts-app
 
 ### 2. 打开浏览器
 
-访问 **http://127.0.0.1:8000/**
+访问 **http://127.0.0.1:28000/**
 
 - `/api/health` — 健康检查（无需登录）
 - `/docs` — FastAPI Swagger 文档
@@ -77,7 +77,7 @@ cp .env.example .env
 | `ENV` | | `dev` | `prod` 时启动会强制校验 `JWT_SECRET` / 默认密码 / `DISABLE_AUTH` |
 | `DISABLE_AUTH` | | `false` | **生产环境严禁 `true`**，否则启动直接失败 |
 | `BIND_HOST` | | `127.0.0.1` | 强制只绑定本地环回，不要改 0.0.0.0 |
-| `PORT` | | `8000` | 监听端口 |
+| `PORT` | | `28000` | 监听端口 |
 | `DATA_DIR` | | `./data` | DB + audio 根目录（**已被 `.gitignore` 完全排除**） |
 | `AUDIO_DIR` | | `./data/audio` | MP3 / ZIP 存放位置 |
 | `DATABASE_URL` | | `sqlite+aiosqlite:///./data/app.db` | SQLite URL |
@@ -228,7 +228,7 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 
 ## 验收项对照
 
-- ✅ **一条命令启动**：`./start.sh`，监听 `127.0.0.1:8000`
+- ✅ **一条命令启动**：`./start.sh`，监听 `127.0.0.1:28000`
 - ✅ 浏览器可跑完"输入 → 识别 → 生成 → 试听 → 下载"全流程
 - ✅ 后端单进程 Python：`ps aux` 只看到 1 个 uvicorn，前端用 StaticFiles 挂载（无 Node 进程）
 - ✅ 多厂商并存：MiniMax / Doubao / OpenAI 兼容 / 自定义 OpenAI 兼容端点
@@ -285,7 +285,7 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 
 若想后台跑：
 ```bash
-PORT=8000 nohup ./start.sh > app.log 2>&1 &
+PORT=28000 nohup ./start.sh > app.log 2>&1 &
 # 停服：pkill -f "uvicorn backend.app.main"
 ```
 

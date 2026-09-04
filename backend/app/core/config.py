@@ -121,7 +121,7 @@ class Settings(BaseSettings):
     # Server
     ENV: str = "dev"  # dev / test / prod / stage
     BIND_HOST: str = "127.0.0.1"
-    PORT: int = 8000
+    PORT: int = 28000
 
     # Paths
     DATA_DIR: Path = Path("./data")
