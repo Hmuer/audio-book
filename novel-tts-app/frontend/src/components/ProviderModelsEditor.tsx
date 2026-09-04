@@ -56,6 +56,59 @@ function Icon({ name, size = 14 }: { name: IconName; size?: number }) {
   }
 }
 
+/**
+ * 显眼的开关：左侧状态徽标 + 大号拨片
+ * - 启用：品牌色背景 + 右侧"已启用"文字 + 拨片右移
+ * - 停用：灰底 + 右侧"已停用"文字 + 拨片左移
+ * 用 button 而不是 checkbox，键盘 / 屏幕阅读器友好；
+ * 视觉上比"两个小圆点"明显得多。
+ */
+function ToggleSwitch({
+  enabled, onChange, disabled,
+}: {
+  enabled: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      onClick={() => !disabled && onChange(!enabled)}
+      disabled={disabled}
+      title={enabled ? '点击停用此厂商' : '点击启用此厂商'}
+      className={`group inline-flex items-center gap-2 rounded-full border pl-1 pr-3 h-7 transition-all shrink-0 select-none
+        ${enabled
+            ? 'bg-brand-500/20 border-brand-500/50 hover:bg-brand-500/30'
+            : 'bg-white/[0.04] border-white/[0.08] hover:border-white/[0.2] hover:bg-white/[0.07]'}
+        ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
+      `}
+    >
+      {/* 拨片 */}
+      <span
+        className={`relative inline-block w-9 h-4 rounded-full transition-colors ${
+          enabled ? 'bg-brand-500' : 'bg-white/[0.15]'
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${
+            enabled ? 'translate-x-[22px]' : 'translate-x-0.5'
+          }`}
+        />
+      </span>
+      {/* 文字徽标 */}
+      <span
+        className={`text-[11px] font-semibold tracking-wide ${
+          enabled ? 'text-brand-200' : 'text-ink-500'
+        }`}
+      >
+        {enabled ? '已启用' : '已停用'}
+      </span>
+    </button>
+  );
+}
+
 function MicIcon({ size = 12 }: { size?: number }) {
   const c = {
     width: size, height: size, viewBox: '0 0 24 24', fill: 'none',
@@ -335,7 +388,18 @@ export default function ProviderModelsEditor() {
       {/* 厂商卡片列表 */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-white">厂商列表</h3>
+          <div className="flex items-center gap-3">
+            <h3 className="text-sm font-semibold text-white">厂商列表</h3>
+            <div className="flex items-center gap-1.5">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-brand-500/15 text-brand-200 border border-brand-500/30">
+                <span className="w-1.5 h-1.5 rounded-full bg-brand-400" />
+                {draft.providers.filter(p => p.enabled).length} 已启用
+              </span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-white/[0.04] text-ink-500 border border-white/[0.08]">
+                {draft.providers.filter(p => !p.enabled).length} 已停用
+              </span>
+            </div>
+          </div>
           <button onClick={addProvider} className="btn-ghost !py-1 !px-3 text-xs">
             <Icon name="plus" size={13} />
             新增厂商
@@ -393,17 +457,30 @@ function ProviderCard({
 
   return (
     <div
-      className={`rounded-lg border overflow-hidden transition-colors ${
-        p.enabled ? 'border-brand-500/40 bg-brand-500/[0.02]' : 'border-ink-300/70 bg-ink-200'
+      className={`relative rounded-lg border overflow-hidden transition-colors ${
+        p.enabled
+          ? 'border-brand-500/40 bg-brand-500/[0.03]'
+          : 'border-ink-300/70 bg-ink-200 opacity-90'
       }`}
     >
+      {/* 卡片左侧启用状态条（颜色条） */}
+      <div
+        aria-hidden
+        className={`absolute left-0 top-0 bottom-0 w-1 transition-colors ${
+          p.enabled ? 'bg-brand-500' : 'bg-white/[0.06]'
+        }`}
+      />
       {/* 卡片头 */}
-      <div className="px-4 py-3 flex items-center gap-3 border-b border-white/[0.04]">
+      <div className={`pl-5 pr-4 py-3 flex items-center gap-3 border-b border-white/[0.04] transition-colors ${
+        p.enabled ? '' : 'bg-white/[0.015]'
+      }`}>
         <div className="flex items-center gap-2 flex-1 min-w-0">
           <input
             value={p.label}
             onChange={e => onUpdateProvider(pIdx, { label: e.target.value })}
-            className="bg-transparent text-sm font-semibold text-white outline-none border-b border-transparent focus:border-brand-500/50 min-w-0 flex-1"
+            className={`bg-transparent text-sm font-semibold outline-none border-b border-transparent focus:border-brand-500/50 min-w-0 flex-1 ${
+              p.enabled ? 'text-white' : 'text-ink-500'
+            }`}
             placeholder="厂商名（如 MiniMax、火山引擎）"
           />
           <input
@@ -416,20 +493,11 @@ function ProviderCard({
             spellCheck={false}
           />
         </div>
-        {/* 启用开关 */}
-        <button
-          onClick={() => onUpdateProvider(pIdx, { enabled: !p.enabled })}
-          className={`relative w-10 h-5.5 rounded-full transition-colors shrink-0 ${
-            p.enabled ? 'bg-brand-500/80' : 'bg-white/10'
-          }`}
-          title={p.enabled ? '点击停用' : '点击启用'}
-        >
-          <span
-            className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-              p.enabled ? 'translate-x-[20px]' : 'translate-x-0.5'
-            }`}
-          />
-        </button>
+        {/* 启用开关（高对比度 + 文字徽标） */}
+        <ToggleSwitch
+          enabled={p.enabled}
+          onChange={next => onUpdateProvider(pIdx, { enabled: next })}
+        />
         <button
           onClick={() => onRemove(pIdx)}
           className="w-7 h-7 grid place-items-center rounded-md text-ink-500 hover:text-rose-300 hover:bg-rose-500/10 transition-colors shrink-0"
