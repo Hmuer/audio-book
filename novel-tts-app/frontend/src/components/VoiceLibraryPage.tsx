@@ -13,6 +13,8 @@ import {
   ageOptions,
   filterVoices,
   AGE_LABELS,
+  DIALECT_LABELS,
+  dialectLabel,
 } from '@/lib/voiceUtils';
 
 /**
@@ -85,7 +87,7 @@ export default function VoiceLibraryPage({ voices }: { voices: Voice[] }) {
           <div className="min-w-0 flex-1">
             <h1 className="headline text-xl">音色库</h1>
             <p className="text-xs text-ink-500 mt-1">
-              共 {voices.length} 个音色 · MiniMax / 豆包双厂商，支持声音复刻自定义音色
+              共 {voices.length} 个音色 · MiniMax / 豆包官方 / 自定义声音复刻
             </p>
           </div>
           <div className="flex items-center gap-1 shrink-0">
@@ -315,28 +317,43 @@ function LibraryTab({ voices }: { voices: Voice[] }) {
         </div>
       </div>
 
-      {/* 音色网格 */}
-      <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+      {/* 音色列表（一行一个） */}
+      <div className="glass-panel overflow-hidden divide-y divide-ink-300/50">
         {filtered.map(v => {
           const pv = playingId === v.id;
           const lv = loadingId === v.id;
+          const tags = (v.zh_tags || []).slice(0, 4);
           return (
             <div
               key={v.id}
-              className="glass-panel !p-3.5 flex items-center gap-3 hover:border-ink-400 transition-all group"
+              className={`flex items-center gap-3 px-4 py-2.5 hover:bg-ink-100/60 transition-colors group ${
+                pv ? 'bg-brand-500/[0.06]' : ''
+              }`}
             >
-              <VoiceAvatar voice={v} />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-sm font-semibold text-ink-800 truncate">{v.name}</span>
-                  <span className="chip-soft !px-1.5 !py-0.5 !text-[11px]">{normalizeGender(v)}</span>
-                  <span className="chip-soft !px-1.5 !py-0.5 !text-[11px]">
-                    {PROVIDER_LABELS[voiceProvider(v)]}
+              <VoiceAvatar voice={v} size={32} />
+              <div className="flex-1 min-w-0 flex items-center gap-3 flex-wrap">
+                <span className="text-sm font-semibold text-ink-800 truncate">{v.name}</span>
+                <span className="chip-soft !px-1.5 !py-0.5 !text-[10px] !font-medium">
+                  {normalizeGender(v)}
+                </span>
+                {v.age && AGE_LABELS[v.age] && (
+                  <span className="chip-soft !px-1.5 !py-0.5 !text-[10px] !font-medium">
+                    {AGE_LABELS[v.age]}
                   </span>
-                </div>
-                <div className="text-[11px] text-ink-500 truncate mt-0.5">
-                  {voiceDescription(v)}
-                </div>
+                )}
+                {v.dialect && (
+                  <span className="chip-soft !px-1.5 !py-0.5 !text-[10px] !font-medium !text-amber-300">
+                    {dialectLabel(v.dialect)}
+                  </span>
+                )}
+                {tags.map(t => (
+                  <span key={t} className="text-[10px] text-ink-500 px-1.5 py-0.5 rounded bg-white/[0.04] border border-white/[0.04]">
+                    {t}
+                  </span>
+                ))}
+                <span className="text-[10px] text-ink-500 font-mono ml-auto opacity-60 hidden md:inline">
+                  {v.id.replace(/^(minimax|doubao|icl):/, '')}
+                </span>
               </div>
               <button
                 onClick={() => preview(v.id)}
@@ -347,17 +364,17 @@ function LibraryTab({ voices }: { voices: Voice[] }) {
                     ? 'border-brand-500/50 bg-brand-500/15 text-brand-300 ring-2 ring-brand-500/25'
                     : 'border-ink-300/70 bg-ink-100 text-ink-600 hover:border-brand-500/30 hover:bg-brand-500/10 hover:text-brand-300'}
                   disabled:opacity-40 disabled:cursor-not-allowed`}
-                style={{ width: 36, height: 36 }}
+                style={{ width: 32, height: 32 }}
               >
                 {lv ? (
                   <span className="w-3.5 h-3.5 border-2 border-brand-400/50 border-t-brand-300 rounded-full animate-spin" />
                 ) : pv ? (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
                     <rect x="6" y="5" width="4" height="14" rx="1" />
                     <rect x="14" y="5" width="4" height="14" rx="1" />
                   </svg>
                 ) : (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.29-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z" />
                   </svg>
                 )}

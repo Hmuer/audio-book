@@ -61,6 +61,27 @@ export const AGE_LABELS: Record<string, string> = {
   old: '老年',
 };
 
+/** 方言 key → 中文显示 */
+export const DIALECT_LABELS: Record<string, string> = {
+  sichuan: '四川话',
+  cantonese: '粤语',
+  dongbei: '东北话',
+  shaanxi: '陕西话',
+  shanghai: '上海话',
+  minnan: '闽南语',
+  changsha: '长沙话',
+  hefei: '合肥话',
+  tianjin: '天津话',
+  shandong: '山东话',
+  henan: '河南话',
+  xinjiang: '新疆话',
+};
+
+export function dialectLabel(d: string | undefined | null): string {
+  if (!d) return '';
+  return DIALECT_LABELS[d] || d;
+}
+
 export function ageOptions(voices: Voice[]): string[] {
   const s = new Set<string>();
   voices.forEach(v => v.age && s.add(v.age));

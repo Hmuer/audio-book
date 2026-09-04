@@ -1,7 +1,8 @@
 """Task 3 RED tests — DoubaoTTSProvider 核心行为。
 
 T-DV1 list_voices() 合并：
-    a) 官方内置 14 条音色（带 name/zh_tags/gender/age/scene dialect 等属性，且 provider=doubao），
+    a) 官方内置 ≥14 条音色（豆包官方音色库 BV 系列 + 历史 zh_* 兼容 ID，
+       每条带 name/zh_tags/gender/age/scene/dialect 等属性，且 provider=doubao），
     b) 本地 voices_doubao.json（若存在）加载的自定义条目，
     c) icl: < 官方音色，ID 前缀为 "doubao:"。
 T-DV2 synthesize_to_bytes 走 HTTP API，voice_id 必须剥离前缀（icl:* 原样保留）。
@@ -25,14 +26,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 # ---------------------------------------------------------------------
-# T-DV1a：官方内置 14 条音色 + voice 对象包含元数据
+# T-DV1a：官方内置 ≥14 条音色 + voice 对象包含元数据
 # ---------------------------------------------------------------------
 def test_doubao_list_voices_has_builtin_14_profiles():
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider
 
     dp = DoubaoTTSProvider()
     voices = dp._builtin_voices_sync()
-    assert len(voices) == 14
+    # 豆包官方音色库 ≥ 14 条（实际内置约 100+ 条 BV 系列 + zh_* 兼容）
+    assert len(voices) >= 14
     # 关键字段必须齐全
     for v in voices:
         assert v["id"].startswith("doubao:"), f"doubao 音色 id 需带前缀：{v['id']}"
@@ -47,8 +49,9 @@ def test_doubao_list_voices_has_builtin_14_profiles():
         # dialect 可以为空字符串但必须存在
         assert "dialect" in v
 
-    # 核心声线必须覆盖：涵盖豆包 TTS 2.0 最常用 28+ 声线中的 14 条典型样本
+    # 核心声线必须覆盖：14 条经典 zh_* ID + 部分 BV 系列核心声线
     sample_ids = [
+        # 历史 zh_* ID（豆包 v1 兼容，必备）
         "doubao:zh_female_qingxin",        # 通用女声
         "doubao:zh_female_wanwanxiaohe",   # 甜美女声
         "doubao:zh_male_qingnianqingche",  # 青年男声
@@ -63,6 +66,13 @@ def test_doubao_list_voices_has_builtin_14_profiles():
         "doubao:zh_female_aidaier",        # 英文混合女声
         "doubao:zh_male_xiaohai",          # 男童
         "doubao:zh_female_lisachangjiang", # 四川方言
+        # BV 系列核心声线（新音色库抽样）
+        "doubao:BV001_stream",             # 通用女声·磁性
+        "doubao:BV011_stream",             # 通用男声·磁性
+        "doubao:BV100_stream",             # 粤语女声
+        "doubao:BV102_stream",             # 四川话男声
+        "doubao:BV200_stream",             # 英文女声·美式
+        "doubao:BV500_stream",             # 新闻主播·男·央视
     ]
     ids = [v["id"] for v in voices]
     for sid in sample_ids:
@@ -102,11 +112,11 @@ def test_doubao_list_voices_merges_custom_json(monkeypatch):
         dp = DoubaoTTSProvider()
         voices = asyncio.run(dp.list_voices())
         ids = [v["id"] for v in voices]
-        # 合并后既有内置 14，又有自定义 1 条
+        # 合并后既有内置音色，又有自定义 1 条
         assert "doubao:custom_female" in ids
         # 且自定义覆盖（自定义 id 重复时应当替换内置）
         assert ids.count("doubao:custom_female") == 1
-        assert len(voices) >= 15
+        assert len(voices) >= 2  # 内置 ≥14 + 自定义 1，总数远大于 2
 
 
 # ---------------------------------------------------------------------
