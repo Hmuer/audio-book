@@ -53,6 +53,12 @@ from ..services.project import (
     PronunciationRule,
     PronunciationRuleInput,
 )
+from ..services.ownership import (
+    is_admin_user,
+    get_project_for_user,
+    assert_project_writable,
+    claim_orphan_projects,
+)
 from ..services.build import (
     start_build,
     get_build,
@@ -70,6 +76,37 @@ from ..services.build import (
 from ..services.book_split import strip_chapter_prefix
 
 logger = logging.getLogger(__name__)
+
+
+# =====================================================================
+# 上传辅助：流式读取 + 立即超限拒绝（避免整文件先读入内存）
+# P1 #8：分块累加 read_count，超出 max_bytes 立即 413；客户端断开时让连接
+# 自然结束；不支持重新协商（Tomcat-style 413）。
+# =====================================================================
+async def _read_upload_with_limit(
+    file: UploadFile, max_bytes: int, chunk_size: int = 64 * 1024
+) -> bytes:
+    """流式读取 UploadFile 直到 EOF 或超 max_bytes。超限时抛 413。
+    
+    - 文件大小未知（无法预判 content-length）也按流式处理；
+    - 单块大小 chunk_size，足够缓冲 / 内存友好；
+    - 抛 HTTPException(413) 由 FastAPI 捕获并返回。
+    """
+    total = 0
+    buf = bytearray()
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                413,
+                f"上传内容过大（> {max_bytes} bytes），已收到 {total} 后终止",
+            )
+        buf.extend(chunk)
+    return bytes(buf)
+
 
 # 业务路由：所有 endpoint 默认强制 JWT 鉴权（dependencies 在 get_current_user 定义后追加）
 router = APIRouter(prefix="/api", tags=["novel-tts"])
@@ -148,14 +185,15 @@ async def get_current_user(
 router.dependencies = [Depends(get_current_user)]
 
 
-def _decode_token_for_static(raw_token: str, settings) -> None:
-    """供 StaticFiles 调用的精简鉴权：校验 token 签名/有效性，失败抛异常。
+def _decode_token_for_static(raw_token: str, settings) -> str | None:
+    """供 StaticFiles 调用的精简鉴权：校验 token 签名/有效性，返回 username。
 
-    与 get_current_user 共享 decode_token，行为一致；唯一区别是不返回 User 对象
-    （/media 只判断"是不是当前用户的请求"，无需加载 User 进 ORM）。
+    与 get_current_user 共享 decode_token；返回 username 而不是 User 对象，
+    因为 /media 调用方拿到 username 后会自己按需查 DB 完成归属校验
+    （P1 #5）。
     """
     if settings.DISABLE_AUTH:
-        return
+        return None
     username = decode_token(raw_token)
     if not username:
         raise HTTPException(
@@ -163,6 +201,7 @@ def _decode_token_for_static(raw_token: str, settings) -> None:
             detail="token 无效或已过期",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    return username
 
 
 # ---------- Auth Requests ----------
@@ -376,22 +415,17 @@ async def api_icl_create_voice(
     file: UploadFile = File(...),
     current: User = Depends(get_current_user),
 ):
-    """上传 3~10 秒参考音频，创建 ICL 声音复刻训练任务。"""
+    """上传 3~10 秒参考音频，创建 ICL 声音复刻训练任务。P1 #8：流式读取。"""
     t0 = _time.perf_counter()
     remote = request.client.host if request.client else "?"
-    # 先按声明的大小拒绝（避免超大上传先整体读入内存）
-    declared = request.headers.get("content-length")
-    if declared and int(declared) > settings.ICL_MAX_AUDIO_BYTES + 64 * 1024:
-        raise HTTPException(413, f"参考音频过大: {declared} > {settings.ICL_MAX_AUDIO_BYTES}")
-    content = await file.read()
+    # P1 #8：不再一次性 await file.read()，改为分块累加；超出立即 413。
+    content = await _read_upload_with_limit(file, settings.ICL_MAX_AUDIO_BYTES)
     logger.info(
         f"[HTTP] POST /api/icl/voices client={remote} user={current.username} "
         f"name={voice_name!r} filename={file.filename} size={len(content)}"
     )
     if not content:
         raise HTTPException(400, "参考音频为空")
-    if len(content) > settings.ICL_MAX_AUDIO_BYTES:
-        raise HTTPException(413, f"参考音频过大: {len(content)} > {settings.ICL_MAX_AUDIO_BYTES}")
     try:
         from ..services.icl import start_icl_training
         resp = await start_icl_training(
@@ -581,13 +615,20 @@ def _safe_download_name_build(book_title: str | None, build_id: str, ext: str) -
 # ---------- 项目 CRUD ----------
 
 @router.post("/projects", response_model=ProjectResp)
-async def api_create_project(req: CreateProjectRequest, request: Request):
-    """创建项目（status=draft）。"""
+async def api_create_project(
+    req: CreateProjectRequest,
+    request: Request,
+    current: User = Depends(get_current_user),
+):
+    """创建项目（status=draft）。P1 #5：显式写入 owner_user_id。"""
     t0 = _time.perf_counter()
     remote = request.client.host if request.client else "?"
-    logger.info(f"[HTTP] POST /api/projects client={remote} name={req.name!r}")
+    logger.info(
+        f"[HTTP] POST /api/projects client={remote} "
+        f"user={current.username!r} name={req.name!r}"
+    )
     try:
-        resp = await create_project(req.name)
+        resp = await create_project(req.name, owner_user_id=current.id)
         elapsed_ms = int((_time.perf_counter() - t0) * 1000)
         logger.info(
             f"[HTTP] 200 /api/projects project_id={resp.project_id[:8]}... total_ms={elapsed_ms}"
@@ -599,18 +640,32 @@ async def api_create_project(req: CreateProjectRequest, request: Request):
 
 
 @router.get("/projects", response_model=list[ProjectListItem])
-async def api_list_projects(request: Request):
-    """项目列表。"""
+async def api_list_projects(
+    request: Request,
+    current: User = Depends(get_current_user),
+):
+    """项目列表。P1 #5：按当前用户过滤（admin 看全部）。"""
     try:
-        return await list_projects()
+        if is_admin_user(current):
+            return await list_projects(admin_view=True)
+        return await list_projects(
+            owner_user_id=current.id, include_orphan=True
+        )
     except Exception as e:
         logger.error(f"[HTTP] 500 /api/projects -> {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(500, f"列表查询失败: {type(e).__name__}: {e}")
 
 
 @router.get("/projects/{project_id}", response_model=ProjectDetailResp)
-async def api_get_project(project_id: str, request: Request):
-    """项目详情（含 chapters 摘要 + characters + 最近 build）。"""
+async def api_get_project(
+    project_id: str,
+    request: Request,
+    current: User = Depends(get_current_user),
+):
+    """项目详情（含 chapters 摘要 + characters + 最近 build）。P1 #5：归属校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await get_project_for_user(s, project_id, current)
     try:
         return await get_project(project_id)
     except ValueError as e:
@@ -628,8 +683,12 @@ async def api_update_project(
     project_id: str,
     req: UpdateProjectRequest,
     request: Request,
+    current: User = Depends(get_current_user),
 ):
-    """更新项目名称/备注/标签/配置。"""
+    """更新项目名称/备注/标签/配置。P1 #5：写权限校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
     try:
         return await update_project(
             project_id,
@@ -651,8 +710,16 @@ async def api_update_project(
 
 
 @router.delete("/projects/{project_id}")
-async def api_delete_project(project_id: str, request: Request):
-    """删除项目（级联删除 DB + 磁盘文件）。项目正在合成（Build 运行中）时拒绝删除。"""
+async def api_delete_project(
+    project_id: str,
+    request: Request,
+    current: User = Depends(get_current_user),
+):
+    """删除项目（级联删除 DB + 磁盘文件）。项目正在合成（Build 运行中）时拒绝删除。
+    P1 #5：归属校验 + 写权限校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
     try:
         await _ensure_project_not_running(project_id, action="删除项目")
         await delete_project(project_id)
@@ -675,17 +742,37 @@ async def api_project_import(
     project_id: str,
     request: Request,
     file: UploadFile = File(...),
+    current: User = Depends(get_current_user),
 ):
-    """上传/替换项目源文件（multipart/form-data）。"""
+    """上传/替换项目源文件（multipart/form-data）。P1 #5：写权限校验；P1 #8：流式读取。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
     t0 = _time.perf_counter()
     remote = request.client.host if request.client else "?"
     MAX_SIZE = 50 * 1024 * 1024
-    content = await file.read()
-    if len(content) > MAX_SIZE:
-        raise HTTPException(413, f"文件过大: {len(content)} > {MAX_SIZE}")
+    # P1 #8：流式读取，超 50MB 立即 413。
+    content = await _read_upload_with_limit(file, MAX_SIZE)
+    # P1 #8：ZIP-bomb 防御 —— 简单压缩比校验。客户端声明的 content-length 与
+    # 实际读到的 bytes 比例超过 100x 视为可疑，直接拒绝。
+    declared = request.headers.get("content-length")
+    if declared:
+        try:
+            ratio = len(content) / max(int(declared), 1)
+            if ratio > 100.0:
+                logger.warning(
+                    f"[upload] 可疑压缩比 client={remote} "
+                    f"declared={declared} actual={len(content)} ratio={ratio:.1f}x"
+                )
+                raise HTTPException(
+                    400,
+                    f"压缩比异常 ({ratio:.1f}x)，疑似 zip-bomb；请检查源文件",
+                )
+        except ValueError:
+            pass
     logger.info(
         f"[HTTP] POST /api/projects/{project_id[:8]}.../import "
-        f"client={remote} filename={file.filename} size={len(content)}"
+        f"client={remote} user={current.username!r} filename={file.filename} size={len(content)}"
     )
     try:
         resp = await project_import_file(project_id, content, file.filename or "book.txt")
@@ -710,14 +797,18 @@ async def api_project_import_text(
     project_id: str,
     req: ImportTextRequest,
     request: Request,
+    current: User = Depends(get_current_user),
 ):
-    """粘贴文本导入项目（浏览器直接粘贴小说正文）。"""
+    """粘贴文本导入项目（浏览器直接粘贴小说正文）。P1 #5：写权限校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
     t0 = _time.perf_counter()
     remote = request.client.host if request.client else "?"
     text_len = len(req.text)
     logger.info(
         f"[HTTP] POST /api/projects/{project_id[:8]}.../import-text "
-        f"client={remote} text_len={text_len} hint={req.filename_hint!r}"
+        f"client={remote} user={current.username!r} text_len={text_len} hint={req.filename_hint!r}"
     )
     # 大小限制：50MB UTF-8 上限 = ~1700 万字（对中文 txt 绰绰有余）
     MAX_LEN = 50 * 1024 * 1024
@@ -750,7 +841,11 @@ async def api_project_import_text(
     response_model=ProjectPrepareTriggerResp,
     status_code=202,
 )
-async def api_project_prepare(project_id: str, request: Request):
+async def api_project_prepare(
+    project_id: str,
+    request: Request,
+    current: User = Depends(get_current_user),
+):
     """
     触发识别（后台异步执行，HTTP 202 立即返回）。
     执行路径：切章 → 角色识别（50k 切片）→ 角色 dedup → 对白归属（14 章/批）→ 音色推荐 → 落库。
@@ -759,11 +854,16 @@ async def api_project_prepare(project_id: str, request: Request):
       - last_error / last_error_at：失败时带具体原因（切章失败、LLM 429 等）
       - char_slice_total / char_slice_completed_n / char_failed_slices：角色识别进度
       - dialogue_total_batches / dialogue_completed_chapters_count / dialogue_failed_batches：对白归属进度
+    P1 #5：写权限校验。
     """
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
     t0 = _time.perf_counter()
     remote = request.client.host if request.client else "?"
     logger.info(
-        f"[HTTP] POST /api/projects/{project_id[:8]}.../prepare client={remote}"
+        f"[HTTP] POST /api/projects/{project_id[:8]}.../prepare "
+        f"client={remote} user={current.username!r}"
     )
     try:
         resp = await trigger_prepare_project(project_id)
@@ -791,8 +891,15 @@ async def api_project_prepare(project_id: str, request: Request):
 
 
 @router.get("/projects/{project_id}/chapters", response_model=list[ChapterSummary])
-async def api_project_chapters(project_id: str, request: Request):
-    """章节列表。"""
+async def api_project_chapters(
+    project_id: str,
+    request: Request,
+    current: User = Depends(get_current_user),
+):
+    """章节列表。P1 #5：读权限校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await get_project_for_user(s, project_id, current)
     try:
         return await get_project_chapters(project_id)
     except ValueError as e:
@@ -811,9 +918,15 @@ async def api_project_chapters(project_id: str, request: Request):
     response_model=ChapterDetail,
 )
 async def api_project_chapter_detail(
-    project_id: str, chapter_idx: int, request: Request
+    project_id: str,
+    chapter_idx: int,
+    request: Request,
+    current: User = Depends(get_current_user),
 ):
-    """单章详情：正文 + 逐行对白归属（用于前端角色-行标注视图）。"""
+    """单章详情：正文 + 逐行对白归属（用于前端角色-行标注视图）。P1 #5：读权限校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await get_project_for_user(s, project_id, current)
     try:
         return await get_project_chapter_detail(project_id, chapter_idx)
     except ValueError as e:
@@ -831,8 +944,15 @@ async def api_project_chapter_detail(
     "/projects/{project_id}/characters",
     response_model=list[CharacterWithVoice],
 )
-async def api_project_characters(project_id: str, request: Request):
-    """角色 + 音色列表。"""
+async def api_project_characters(
+    project_id: str,
+    request: Request,
+    current: User = Depends(get_current_user),
+):
+    """角色 + 音色列表。P1 #5：读权限校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await get_project_for_user(s, project_id, current)
     try:
         return await get_project_characters(project_id)
     except ValueError as e:
@@ -855,8 +975,12 @@ async def api_update_character_voice(
     char_id: int,
     req: UpdateCharacterVoiceRequest,
     request: Request,
+    current: User = Depends(get_current_user),
 ):
-    """更新角色音色。"""
+    """更新角色音色。P1 #5：写权限校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
     try:
         return await update_character_voice(project_id, char_id, req.voice_id)
     except ValueError as e:
@@ -875,7 +999,13 @@ async def api_update_character_voice(
     "/projects/{project_id}/pronunciation-rules",
     response_model=list[PronunciationRule],
 )
-async def api_list_pronunciation_rules(project_id: str):
+async def api_list_pronunciation_rules(
+    project_id: str,
+    current: User = Depends(get_current_user),
+):
+    factory = get_session_factory()
+    async with factory() as s:
+        await get_project_for_user(s, project_id, current)
     return await list_pronunciation_rules(project_id)
 
 
@@ -884,8 +1014,13 @@ async def api_list_pronunciation_rules(project_id: str):
     response_model=PronunciationRule,
 )
 async def api_create_pronunciation_rule(
-    project_id: str, body: PronunciationRuleInput
+    project_id: str,
+    body: PronunciationRuleInput,
+    current: User = Depends(get_current_user),
 ):
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
     try:
         return await create_pronunciation_rule(project_id, body)
     except ValueError as e:
@@ -897,8 +1032,14 @@ async def api_create_pronunciation_rule(
     response_model=PronunciationRule,
 )
 async def api_update_pronunciation_rule(
-    project_id: str, rule_id: int, body: PronunciationRuleInput
+    project_id: str,
+    rule_id: int,
+    body: PronunciationRuleInput,
+    current: User = Depends(get_current_user),
 ):
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
     try:
         return await update_pronunciation_rule(project_id, rule_id, body)
     except ValueError as e:
@@ -909,7 +1050,14 @@ async def api_update_pronunciation_rule(
 
 
 @router.delete("/projects/{project_id}/pronunciation-rules/{rule_id}")
-async def api_delete_pronunciation_rule(project_id: str, rule_id: int):
+async def api_delete_pronunciation_rule(
+    project_id: str,
+    rule_id: int,
+    current: User = Depends(get_current_user),
+):
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
     try:
         await delete_pronunciation_rule(project_id, rule_id)
         return {"ok": True}
@@ -924,14 +1072,18 @@ async def api_start_build(
     project_id: str,
     req: StartBuildRequest,
     request: Request,
+    current: User = Depends(get_current_user),
 ):
-    """创建并启动 Build（后台任务，立即返回）。"""
+    """创建并启动 Build（后台任务，立即返回）。P1 #5：写权限校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
     t0 = _time.perf_counter()
     remote = request.client.host if request.client else "?"
     logger.info(
         f"[HTTP] POST /api/projects/{project_id[:8]}.../builds client={remote} "
-        f"voices={len(req.voice_assignments)} narrator={req.narrator_voice_id} "
-        f"speed={req.speed}"
+        f"user={current.username!r} voices={len(req.voice_assignments)} "
+        f"narrator={req.narrator_voice_id} speed={req.speed}"
     )
     try:
         resp = await start_build(
@@ -962,8 +1114,15 @@ async def api_start_build(
 
 
 @router.get("/projects/{project_id}/builds", response_model=list[BuildListItem])
-async def api_list_builds(project_id: str, request: Request):
-    """Build 历史列表。"""
+async def api_list_builds(
+    project_id: str,
+    request: Request,
+    current: User = Depends(get_current_user),
+):
+    """Build 历史列表。P1 #5：读权限校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await get_project_for_user(s, project_id, current)
     try:
         return await list_builds(project_id)
     except ValueError as e:
@@ -978,8 +1137,16 @@ async def api_list_builds(project_id: str, request: Request):
 
 
 @router.get("/projects/{project_id}/builds/{build_id}", response_model=BuildDetailResp)
-async def api_get_build(project_id: str, build_id: str, request: Request):
-    """Build 详情（含 artifacts，可用于轮询）。"""
+async def api_get_build(
+    project_id: str,
+    build_id: str,
+    request: Request,
+    current: User = Depends(get_current_user),
+):
+    """Build 详情（含 artifacts，可用于轮询）。P1 #5：读权限校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await get_project_for_user(s, project_id, current)
     try:
         return await get_build(project_id, build_id)
     except ValueError as e:
@@ -997,15 +1164,20 @@ async def api_get_build(project_id: str, build_id: str, request: Request):
     "/projects/{project_id}/builds/{build_id}/status",
     response_model=BuildStatusResp,
 )
-async def api_build_status(project_id: str, build_id: str, request: Request):
-    """轮询用：仅 progress + artifacts（精简版，比详情少配置快照字段）。"""
+async def api_build_status(
+    project_id: str,
+    build_id: str,
+    request: Request,
+    current: User = Depends(get_current_user),
+):
+    """轮询用：仅 progress + artifacts（精简版，比详情少配置快照字段）。P1 #5：读权限校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await get_project_for_user(s, project_id, current)
+        b = await s.get(Build, build_id)
+        if not b or b.project_id != project_id:
+            raise HTTPException(404, "build 不存在")
     try:
-        # 校验 build 属于该 project
-        factory = get_session_factory()
-        async with factory() as s:
-            b = await s.get(Build, build_id)
-            if not b or b.project_id != project_id:
-                raise ValueError("build 不存在")
         return await get_build_status(build_id)
     except ValueError as e:
         raise HTTPException(404, str(e))
@@ -1026,11 +1198,12 @@ async def api_build_chapter_download(
     build_id: str,
     idx: int,
     request: Request,
+    current: User = Depends(get_current_user),
 ):
-    """单章下载：返回 FileResponse，强制浏览器保存为中文文件名。"""
-    # 校验 build 属于该 project
+    """单章下载：返回 FileResponse，强制浏览器保存为中文文件名。P1 #5：读权限校验。"""
     factory = get_session_factory()
     async with factory() as s:
+        await get_project_for_user(s, project_id, current)
         b = await s.get(Build, build_id)
         if not b or b.project_id != project_id:
             raise HTTPException(404, "build 不存在")
@@ -1072,10 +1245,12 @@ async def api_build_download_all(
     project_id: str,
     build_id: str,
     request: Request,
+    current: User = Depends(get_current_user),
 ):
-    """一键全部下载：返回打包好的 ZIP（中文文件名）。"""
+    """一键全部下载：返回打包好的 ZIP（中文文件名）。P1 #5：读权限校验。"""
     factory = get_session_factory()
     async with factory() as s:
+        await get_project_for_user(s, project_id, current)
         b = await s.get(Build, build_id)
         if not b or b.project_id != project_id:
             raise HTTPException(404, "build 不存在")
@@ -1105,8 +1280,17 @@ async def api_build_download_all(
 
 
 @router.delete("/projects/{project_id}/builds/{build_id}")
-async def api_delete_build(project_id: str, build_id: str, request: Request):
-    """删除 build + 磁盘 MP3 文件。项目正在合成（Build 运行中）时拒绝删除。"""
+async def api_delete_build(
+    project_id: str,
+    build_id: str,
+    request: Request,
+    current: User = Depends(get_current_user),
+):
+    """删除 build + 磁盘 MP3 文件。项目正在合成（Build 运行中）时拒绝删除。
+    P1 #5：写权限校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
     try:
         await _ensure_project_not_running(project_id, action="删除 build")
         await delete_build(project_id, build_id)
@@ -1128,8 +1312,12 @@ async def api_cancel_build(
     build_id: str,
     request: Request,
     req_body: CancelBuildRequest | None = None,
+    current: User = Depends(get_current_user),
 ):
-    """取消 Build（queued/running 可取消；终态则抛 409）。"""
+    """取消 Build（queued/running 可取消；终态则抛 409）。P1 #5：写权限校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
     try:
         return await cancel_build(
             project_id=project_id,
@@ -1157,13 +1345,18 @@ async def api_retry_failed_build(
     build_id: str,
     request: Request,
     req_body: RetryFailedBuildRequest | None = None,
+    current: User = Depends(get_current_user),
 ):
-    """创建一个 retry build：仅重跑 source build 中失败的章节，其余章节直接复用原 MP3（完整 ZIP）。"""
+    """创建一个 retry build：仅重跑 source build 中失败的章节，其余章节直接复用原 MP3（完整 ZIP）。
+    P1 #5：写权限校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
     t0 = _time.perf_counter()
     remote = request.client.host if request.client else "?"
     logger.info(
         f"[HTTP] POST /api/projects/{project_id[:8]}.../builds/{build_id[:8]}.../retry-failed "
-        f"client={remote}"
+        f"client={remote} user={current.username!r}"
     )
     try:
         resp = await retry_failed_build(
@@ -1272,14 +1465,36 @@ class SettingsUpdateReq(BaseModel):
 # =====================================================================
 
 
+def _redact_provider(p: dict) -> dict:
+    """脱敏单个厂商：api_key 只回显末4位 + configured 标志，绝不回显明文。
+
+    保存 / 写入用原始字段名（api_key/base_url），前端编辑面板仍可填入；
+    但 GET 响应的 api_key 永远是 "***LAST4" 或空 + configured bool。
+    """
+    if not isinstance(p, dict):
+        return p
+    out = dict(p)
+    raw = (p.get("api_key") or "").strip()
+    if raw:
+        out["api_key"] = "***" + raw[-4:]
+        out["api_key_configured"] = True
+    else:
+        out["api_key"] = ""
+        out["api_key_configured"] = False
+    return out
+
+
 @router.get("/providers")
 async def get_providers(current: User = Depends(get_current_user)):
-    """返回所有厂商配置（含未启用）和当前激活模型。"""
+    """返回所有厂商配置（含未启用）和当前激活模型。
+
+    安全：api_key 字段对调用方只暴露末4位 + configured 标记，绝不返回完整密钥。
+    """
     from ..core.config import list_providers, get_active
     tts_pid, tts_mid, _ = get_active("tts")
     llm_pid, llm_mid, _ = get_active("llm")
     return {
-        "providers": list_providers(),
+        "providers": [_redact_provider(p) for p in list_providers()],
         "active": {
             "tts": {"provider_id": tts_pid, "model_id": tts_mid},
             "llm": {"provider_id": llm_pid, "model_id": llm_mid},
@@ -1292,8 +1507,14 @@ async def update_providers(
     cfg: dict,
     current: User = Depends(get_current_user),
 ):
-    """覆盖式保存多厂商结构；同时同步刷新 ACTIVE_* 字段，确保 TTS/LLM 即时生效。"""
-    from ..core.config import save_providers_config, get_provider
+    """覆盖式保存多厂商结构；同时同步刷新 ACTIVE_* 字段，确保 TTS/LLM 即时生效。
+
+    安全：
+    - api_key 接受占位符 "***LAST4"：保留现有 key 不覆盖；
+      接受空字符串：清空；接受其他：当作新值。
+    - 校验每个 provider 的结构与字段名。
+    """
+    from ..core.config import save_providers_config, get_provider, _parse_providers_config
     if not isinstance(cfg, dict) or "providers" not in cfg:
         raise HTTPException(400, "请求体必须包含 providers 列表")
 
@@ -1305,6 +1526,14 @@ async def update_providers(
             raise HTTPException(400, f"providers[{i}] 不是对象")
         if "id" not in p or not p["id"]:
             raise HTTPException(400, f"providers[{i}].id 必填")
+        # api_key 占位符处理：***xxxx → 保留原值；空字符串 → 清空；其他 → 新值
+        raw_key = p.get("api_key")
+        if isinstance(raw_key, str) and raw_key.startswith("***"):
+            old_prov = next(
+                (x for x in _parse_providers_config().get("providers", []) if x.get("id") == p["id"]),
+                None,
+            )
+            p["api_key"] = (old_prov or {}).get("api_key", "")
 
     # 写回（先持久化，再校验 active；这样 active 可以指向本次请求里新增的 model）
     save_providers_config(cfg)
@@ -1336,7 +1565,11 @@ async def update_providers(
     settings.ACTIVE_LLM_PROVIDER = llm_a.get("provider_id") or ""
     settings.ACTIVE_LLM_MODEL = llm_a.get("model_id") or ""
 
-    return {"ok": True, "providers": providers_in, "note": "已保存到内存（重启后端后恢复 .env 默认）"}
+    return {
+        "ok": True,
+        "providers": [_redact_provider(p) for p in providers_in],
+        "note": "已保存到内存（重启后端后恢复 .env 默认）",
+    }
 
 
 @router.get("/settings", response_model=list[SettingsResp])

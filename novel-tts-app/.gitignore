@@ -21,13 +21,21 @@ npm-debug.log*
 .env
 backend/.env
 
-# Data
-data/app.db
+# Data —— 用户上传文本 / 生成的音频包 / 数据库 / 日志
+# 全部运行时产物与用户内容，绝不能提交。
+data/
+backend/data/
+data/**/*
+!data/.gitkeep
 data/audio/*.mp3
 data/audio/*.wav
-# 运行时日志（RotatingFileHandler 写入）
+data/audio/*.zip
+data/audio/_seg_cache/
+data/uploads/
 data/logs/
-backend/data/
+data/app.db
+data/app.db-*
+data/voices_*.json
 
 # OS
 .DS_Store

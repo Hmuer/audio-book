@@ -75,6 +75,26 @@ async def lifespan(app: FastAPI):
     logger.info("DB initialized")
     # 启动时确保默认 admin 账号存在
     await seed_admin_user()
+    # P1 #5：把 owner_user_id IS NULL 的孤儿项目一次性归属到 admin，
+    # 让资源归属过滤立刻生效（不再泄露给"任意登录用户"）。
+    try:
+        from sqlalchemy import select
+        from .db.session import get_session_factory
+        from .db.models import User
+        from .services.ownership import claim_orphan_projects
+        factory = get_session_factory()
+        async with factory() as s:
+            admin = (
+                await s.execute(
+                    select(User).where(User.username == settings.SEED_ADMIN_USER)
+                )
+            ).scalar_one_or_none()
+            if admin:
+                n = await claim_orphan_projects(s, admin)
+                if n:
+                    logger.info(f"[ownership] 启动时已将 {n} 个孤儿项目归属到 admin")
+    except Exception as e:
+        logger.error(f"[ownership] 孤儿项目归属失败: {type(e).__name__}: {e}")
     # 启动 prepare 的启动恢复 + 看门狗：
     #   - 3s 后扫 DB 中 status=preparing 的项目，从 checkpoint 自动恢复
     #     （解决服务重启 / uvicorn reload / 杀进程后 status 卡死 preparing）
@@ -196,6 +216,14 @@ class _RangedAuthStaticFiles(StaticFiles):
     校验方式： Authorization: Bearer <token> 或 ?token=<token>（后者供
     <audio src="...?token=..."> 等浏览器原生标签消费；前者供 fetch 用）。
 
+    P1 #5 资源归属：除 JWT 校验外，从请求文件名反解 build_id，查 DB 拿到
+    project 的 owner_user_id；当前登录用户必须是 owner 或是 admin 才能访问。
+    文件名模式：
+      - build_<build_id>_ch<NNNN>.mp3   → 单章 MP3
+      - build_<build_id>_ch<NNNN>_failed.mp3
+      - build_<build_id>_all.zip        → 整包 ZIP
+    其它文件（seg_cache 等）只做 JWT 校验，不查 DB（性能优先）。
+
     目录解析：每次请求都重新读 settings.AUDIO_DIR，这样测试中通过
     monkeypatch 修改 settings.AUDIO_DIR 也能立即生效（无需重启进程）。
     """
@@ -226,15 +254,70 @@ class _RangedAuthStaticFiles(StaticFiles):
                 {"detail": "Missing token"}, status_code=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        username: str | None = None
         try:
             from .api.routes import _decode_token_for_static
-            _decode_token_for_static(token, settings)
+            username = _decode_token_for_static(token, settings)
         except Exception as e:
             logger.warning(f"[media] 鉴权失败: {type(e).__name__}: {e}")
             return JSONResponse(
                 {"detail": "Invalid token"}, status_code=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        if not username:
+            return JSONResponse(
+                {"detail": "Invalid token"}, status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # P1 #5：资源归属校验 —— 只对 build_* 命名的产出生效
+        import re as _re
+        import asyncio as _asyncio
+        m = _re.match(
+            r"build_(?P<build_id>[A-Za-z0-9]+)_(?:ch\d+(?:_failed)?\.mp3|all\.zip)$",
+            path,
+        )
+        if m:
+            bid = m.group("build_id")
+            try:
+                from .db.session import get_session_factory
+                from .db.models import Build, Project, User
+                from .services.ownership import is_admin_user
+                from sqlalchemy import select
+
+                async def _check_owner() -> bool:
+                    factory = get_session_factory()
+                    async with factory() as s:
+                        user = (
+                            await s.execute(
+                                select(User).where(User.username == username)
+                            )
+                        ).scalar_one_or_none()
+                        if not user:
+                            return False
+                        if is_admin_user(user):
+                            return True
+                        b = await s.get(Build, bid)
+                        if not b:
+                            return False
+                        p = await s.get(Project, b.project_id)
+                        if not p:
+                            return False
+                        # 自己的；或孤儿池 owner=0（仅 admin；上面已 return True 放过 admin）
+                        return p.owner_user_id == user.id
+
+                allowed = await _check_owner()
+                if not allowed:
+                    return JSONResponse(
+                        {"detail": "无权访问该媒体资源"}, status_code=403,
+                    )
+            except Exception as e:
+                # DB 故障保守拒绝，避免越权
+                logger.error(f"[media] 归属校验异常: {type(e).__name__}: {e}")
+                return JSONResponse(
+                    {"detail": "media auth check failed"}, status_code=503,
+                )
+
         return await super().get_response(path, scope)
 
 

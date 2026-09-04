@@ -89,6 +89,15 @@ class Project(Base):
     chapters_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     chapter_count: Mapped[int] = mapped_column(Integer, default=0)
 
+    # P1 #5 修复 — 资源归属。
+    # nullable=True 是为兼容旧项目（DB 演进）；历史 NULL owner 在启动时一次性
+    # 由 claim_orphan_projects() 归属到 SEED_ADMIN_USER。新建项目永远显式写 owner。
+    # 0 表示"管理员孤儿池"（任意登录用户可读；仅 admin 可写/删），
+    # 正常用户项目 owner_user_id = 当前 User.id。
+    owner_user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
     # Prepare 进度 checkpoint（prepare_project 中断后重跑可恢复）
     # 结构：
     # {

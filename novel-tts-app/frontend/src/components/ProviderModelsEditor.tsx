@@ -455,6 +455,14 @@ function ProviderCard({
   const ttsModels = getModelsOfKind(p, 'tts');
   const llmModels = getModelsOfKind(p, 'llm');
 
+  // 后端返回的 api_key 是脱敏占位 "***LAST4" 或完整字符串。
+  // - 用户没改 → 直接当作占位符提交（后端会保留原 key）
+  // - 用户改了 → 当作新 key 提交（覆盖）
+  // 输入框本身显示占位符，避免展示完整 key；
+  // 单独用一个 boolean keyDirty 标识用户输入了内容。
+  const isPlaceholder = typeof p.api_key === 'string' && p.api_key.startsWith('***');
+  const apiKeyDisplay = isPlaceholder ? p.api_key : (p.api_key || '');
+
   return (
     <div
       className={`relative rounded-lg border overflow-hidden transition-colors ${
@@ -510,22 +518,54 @@ function ProviderCard({
       {/* 凭据 + Base URL */}
       <div className="p-4 grid gap-3 md:grid-cols-2">
         <div>
-          <div className="text-[11px] text-ink-500 mb-1">API Key（TTS 与 LLM 共用）</div>
+          <div className="text-[11px] text-ink-500 mb-1 flex items-center gap-2">
+            <span>API Key（TTS 与 LLM 共用）</span>
+            {isPlaceholder && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-brand-500/10 text-brand-300 border border-brand-500/20">
+                <span className="w-1 h-1 rounded-full bg-brand-400" />
+                已配置（{apiKeyDisplay}）
+              </span>
+            )}
+          </div>
           <div className="relative">
             <input
               type={keyShown ? 'text' : 'password'}
               value={p.api_key}
-              onChange={e => onUpdateProvider(pIdx, { api_key: e.target.value })}
-              placeholder="sk-..."
-              className="input-base w-full !pr-16 font-mono !text-xs"
+              onChange={e => {
+                // 第一次输入时如果还是占位符，则清空让用户重新填入完整 key
+                const v = e.target.value;
+                if (isPlaceholder && v === p.api_key) return;
+                // 占位符状态下用户改了内容：替换为空（避免把占位符当完整 key 提交）
+                const next = isPlaceholder && v.startsWith('***') ? '' : v;
+                onUpdateProvider(pIdx, { api_key: next });
+              }}
+              placeholder={isPlaceholder ? '点击「重写」按钮以填入新的 API Key' : 'sk-...'}
+              className="input-base w-full !pr-24 font-mono !text-xs"
             />
-            <button
-              onClick={onToggleKey}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-ink-500 hover:text-ink-700 px-1.5 py-0.5"
-            >
-              {keyShown ? '隐藏' : '显示'}
-            </button>
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+              {isPlaceholder && (
+                <button
+                  type="button"
+                  onClick={() => onUpdateProvider(pIdx, { api_key: '' })}
+                  className="text-[11px] text-ink-500 hover:text-brand-300 px-1.5 py-0.5"
+                  title="清空当前 key，填入新的"
+                >
+                  重写
+                </button>
+              )}
+              <button
+                onClick={onToggleKey}
+                className="text-[11px] text-ink-500 hover:text-ink-700 px-1.5 py-0.5"
+              >
+                {keyShown ? '隐藏' : '显示'}
+              </button>
+            </div>
           </div>
+          {isPlaceholder && p.api_key === '' && (
+            <div className="text-[10px] text-amber-300 mt-1">
+              已清空，保存后该厂商的 API Key 会被移除
+            </div>
+          )}
         </div>
         <div>
           <div className="text-[11px] text-ink-500 mb-1">Base URL</div>

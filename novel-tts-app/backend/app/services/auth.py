@@ -129,31 +129,46 @@ async def seed_admin_user() -> bool:
     - 已存在 → 跳过（不覆盖密码，避免重启覆盖用户改过的密码）
 
     返回 True 表示本次新建了 admin，False 表示已存在。
+
+    安全策略（生产环境强制，绝不允许默认值启动）：
+    - ENV=prod 时：
+        * JWT_SECRET 仍以 "change-me" 开头 → 拒绝启动
+        * SEED_ADMIN_USER 或 SEED_ADMIN_PASS 仍是默认值（admin / admin）→ 拒绝启动
+        * DISABLE_AUTH=true → 拒绝启动（认证不能被生产关闭）
+    - ENV=dev / test：保留 warning 提示，但不阻断启动
     """
-    if settings.ENV.lower() in ("prod", "production", "live"):
+    env_prod = settings.ENV.lower() in ("prod", "production", "live")
+
+    # ----- 生产环境硬性安全门槛 -----
+    if env_prod:
         if settings.JWT_SECRET.startswith("change-me"):
-            if settings.STRICT_PROD_SECURITY:
-                raise RuntimeError(
-                    "ENV=prod 且 STRICT_PROD_SECURITY=true：请把 JWT_SECRET 改成非默认值（至少 32 字符随机串），否则启动失败。"
-                )
-            else:
-                logging.getLogger(__name__).warning(
-                    "⚠️ ENV=prod 且 JWT_SECRET 仍为默认 change-me* 弱密钥。请立刻修改；或设置 STRICT_PROD_SECURITY=true 强制拒绝启动。"
-                )
-        default_admin = settings.SEED_ADMIN_USER == "admin" and settings.SEED_ADMIN_PASS == "admin"
-        if default_admin:
-            if settings.STRICT_PROD_SECURITY:
-                raise RuntimeError(
-                    "ENV=prod 且 STRICT_PROD_SECURITY=true：请修改 SEED_ADMIN_PASS 为非默认 admin/admin 强密码，避免被默认口令扫。"
-                )
-            else:
-                logging.getLogger(__name__).warning(
-                    "⚠️ ENV=prod 且 SEED_ADMIN_PASS 仍为默认 admin/admin。请立刻修改密码；或设置 STRICT_PROD_SECURITY=true 强制拒绝启动。"
-                )
+            raise RuntimeError(
+                "[auth] ENV=prod 但 JWT_SECRET 仍为默认值（change-me*）。"
+                "请通过环境变量或 .env 提供至少 32 字符的随机密钥后再启动。"
+            )
+        if settings.SEED_ADMIN_USER == "admin" and settings.SEED_ADMIN_PASS == "admin":
+            raise RuntimeError(
+                "[auth] ENV=prod 但 SEED_ADMIN_USER/SEED_ADMIN_PASS 仍为默认 admin/admin。"
+                "请设置强密码后再启动，避免被默认口令扫描攻击。"
+            )
+        if settings.DISABLE_AUTH:
+            raise RuntimeError(
+                "[auth] ENV=prod 但 DISABLE_AUTH=true。生产环境严禁关闭认证。"
+                "请设置 DISABLE_AUTH=false 后再启动。"
+            )
+    else:
+        # 非生产环境：保留告警（向后兼容）
+        if settings.JWT_SECRET.startswith("change-me"):
+            logger.warning(
+                "[auth] JWT_SECRET 仍为默认值（change-me*），仅在 ENV=prod 之前会拒绝启动。"
+            )
+        if settings.SEED_ADMIN_USER == "admin" and settings.SEED_ADMIN_PASS == "admin":
+            logger.warning(
+                "[auth] 默认管理员账号 admin/admin，仅在 ENV=prod 之前会拒绝启动。"
+            )
 
     factory = get_session_factory()
     async with factory() as session:
-        existing = await session.get(User, 1) if False else None  # 占位，下面按 username 查
         stmt = select(User).where(User.username == settings.SEED_ADMIN_USER)
         existing = (await session.execute(stmt)).scalar_one_or_none()
         if existing:
@@ -166,10 +181,10 @@ async def seed_admin_user() -> bool:
         )
         session.add(user)
         await session.commit()
+        # P0 #3 修复：日志绝不写明文密码；只写"已创建管理员" + 用户名。
         logger.warning(
-            f"[auth_seed] 已创建默认管理员账号 "
-            f"username={settings.SEED_ADMIN_USER!r} "
-            f"password={settings.SEED_ADMIN_PASS!r}（请尽快登录修改密码）"
+            f"[auth_seed] 已创建默认管理员账号 username={settings.SEED_ADMIN_USER!r}。"
+            "（请尽快登录并修改密码；密码不会写入日志）"
         )
         return True
 
@@ -290,21 +305,21 @@ async def login(username: str, password: str) -> LoginResp:
     """
     登录服务：用户名密码校验 → LoginResp。
 
-    ENV=prod + STRICT_PROD_SECURITY=true 时，如果登录的是默认 SEED_ADMIN_USER 且
-    密码仍为 SEED_ADMIN_PASS（默认 admin/admin），直接拒绝。
+    安全策略：生产环境只要默认 admin 账号密码未改，就拒绝登录（不再依赖
+    STRICT_PROD_SECURITY 标志位）。
     """
     user = await authenticate(username, password)
     if not user:
         raise ValueError("用户名或密码错误")
 
+    env_prod = settings.ENV.lower() in ("prod", "production", "live")
     if (
-        settings.ENV.lower() in ("prod", "production", "live")
-        and settings.STRICT_PROD_SECURITY
+        env_prod
         and username == settings.SEED_ADMIN_USER
         and verify_password(settings.SEED_ADMIN_PASS, user.password_hash)
     ):
         raise ValueError(
-            "生产环境需先修改默认 admin 密码，请联系管理员；STRICT_PROD_SECURITY 已开启。"
+            "生产环境需先修改默认 admin 密码，请联系管理员。"
         )
 
     return create_access_token_for_user(user)

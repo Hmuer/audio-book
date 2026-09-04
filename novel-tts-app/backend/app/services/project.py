@@ -269,8 +269,11 @@ def _to_project_resp(p: Project) -> ProjectResp:
 # CRUD
 # =====================================================================
 
-async def create_project(name: str) -> ProjectResp:
-    """创建空项目（status=draft）。"""
+async def create_project(name: str, owner_user_id: int | None = None) -> ProjectResp:
+    """创建空项目（status=draft）。
+
+    P1 #5：owner_user_id 显式传入，避免任何登录用户都能创建项目但归属混乱。
+    """
     project_id = uuid.uuid4().hex
     factory = get_session_factory()
     async with factory() as session:
@@ -279,6 +282,7 @@ async def create_project(name: str) -> ProjectResp:
             name=name or "未命名项目",
             status="draft",
             cover_color=_pick_cover_color(project_id),
+            owner_user_id=owner_user_id,
         )
         session.add(p)
         await session.commit()
@@ -1587,11 +1591,30 @@ async def get_project(project_id: str) -> ProjectDetailResp:
         )
 
 
-async def list_projects() -> list[ProjectListItem]:
-    """项目列表（按创建时间倒序）。"""
+async def list_projects(
+    owner_user_id: int | None = None,
+    include_orphan: bool = False,
+    admin_view: bool = False,
+) -> list[ProjectListItem]:
+    """项目列表（按创建时间倒序）。
+
+    P1 #5 资源归属过滤：
+    - owner_user_id 给出时：只返回 owner_user_id == 该值的项目 + （可选）owner_user_id == 0 的孤儿池
+    - admin_view=True：跳过过滤，返回所有项目（仅供 seed admin 使用）
+    - 都不传：兼容旧调用方（不推荐，路由层应显式传）
+    """
     factory = get_session_factory()
     async with factory() as session:
         stmt = select(Project).order_by(Project.created_at.desc())
+        if not admin_view:
+            if owner_user_id is not None:
+                if include_orphan:
+                    stmt = stmt.where(
+                        (Project.owner_user_id == owner_user_id)
+                        | (Project.owner_user_id == 0)
+                    )
+                else:
+                    stmt = stmt.where(Project.owner_user_id == owner_user_id)
         rows = list((await session.execute(stmt)).scalars().all())
 
         # 批量查活跃构建（queued/running）：项目构建期间 status 仍为 ready，
