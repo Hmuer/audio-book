@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import uuid
 from typing import Any
 
@@ -29,9 +30,23 @@ class DoubaoICLClient:
         return (settings.DOUBAO_ICL_BASE_URL or "").rstrip("/")
 
     def _auth_headers(self) -> dict[str, str]:
-        ak = settings.DOUBAO_AK
+        # 优先级：PROVIDERS_CONFIG[id=doubao].api_key → .env DOUBAO_AK → ENV 兜底
+        ak = ""
+        try:
+            from ....core.config import get_provider
+            prov = get_provider("doubao")
+            ak = (prov or {}).get("api_key") or ""
+        except Exception:
+            ak = ""
         if not ak:
-            raise RuntimeError("未配置豆包凭据：请设置 DOUBAO_AK 后再使用声音复刻")
+            ak = settings.DOUBAO_AK
+        if not ak:
+            ak = os.environ.get("MEGACORE_ACCESS_KEY_FROM_ENV") or ""
+        if not ak:
+            raise RuntimeError(
+                "未配置豆包凭据：请在「设置 → 模型厂商 → 火山引擎豆包语音」"
+                "启用并填入 API Key 后保存，或设置 DOUBAO_AK 环境变量。"
+            )
         auth = ak if " " in ak else f"Bearer;{ak}"
         return {"Content-Type": "application/json", "Authorization": auth}
 

@@ -709,20 +709,42 @@ class DoubaoTTSProvider(BaseTTSProvider):
     # HTTP / 配置 辅助方法
     # -----------------------------------------------------------------
     def _get_authorization(self) -> str:
-        """优先取 DOUBAO_AK（TTS 访问令牌），不存在则尝试 MEGACORE_ACCESS_KEY_FROM_ENV。"""
-        ak = settings.DOUBAO_AK
+        """取豆包访问令牌。
+
+        优先级（与 MiniMax 厂商结构对齐）：
+          1) PROVIDERS_CONFIG 中 id="doubao" 厂商的 api_key
+             （设置页「火山引擎豆包语音」启用后填入并保存，会持久化到这里）
+          2) settings.DOUBAO_AK（.env 扁平字段，兼容老部署）
+          3) 进程环境变量 MEGACORE_ACCESS_KEY_FROM_ENV（容器/部署平台注入）
+        任一来源非空都视为有效凭据；返回时按 "是否含空格" 判断走 Bearer 分号风格。
+        """
+        # 1) 多厂商配置
+        try:
+            from ....core.config import get_provider
+            prov = get_provider("doubao")
+            ak = (prov or {}).get("api_key") or ""
+        except Exception:
+            ak = ""
         if ak:
-            # 豆包 TTS 令牌通常是 Bearer/直接 AK 两种风格都可，这里原样传
             if " " in ak:
                 return ak.strip()
             return f"Bearer;{ak}"
-        # 兜底尝试 MegaCore ENV 名称（与 config 保持一致）
+        # 2) .env 扁平字段
+        ak = settings.DOUBAO_AK
+        if ak:
+            if " " in ak:
+                return ak.strip()
+            return f"Bearer;{ak}"
+        # 3) 进程 ENV 兜底（与原行为兼容）
         fallback = os.environ.get("MEGACORE_ACCESS_KEY_FROM_ENV") or ""
         if fallback:
             if " " in fallback:
                 return fallback.strip()
             return f"Bearer;{fallback}"
-        raise RuntimeError("未配置豆包凭据：请设置 DOUBAO_AK 环境变量（或 MEGACORE_ACCESS_KEY_FROM_ENV）")
+        raise RuntimeError(
+            "未配置豆包凭据：请在「设置 → 模型厂商 → 火山引擎豆包语音」"
+            "启用并填入 API Key 后保存，或设置 DOUBAO_AK 环境变量。"
+        )
 
     async def _http_post_bytes(
         self,
