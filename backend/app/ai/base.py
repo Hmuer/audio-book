@@ -29,6 +29,7 @@ class BaseLLMProvider(ABC):
 
 class BaseTTSProvider(ABC):
     name: str = "base"
+    provider: str = "base"  # minimax / doubao / icl / ... 命名空间标识
 
     @abstractmethod
     async def list_voices(self) -> list[dict[str, Any]]:
@@ -37,9 +38,20 @@ class BaseTTSProvider(ABC):
 
     @abstractmethod
     async def synthesize_to_bytes(
-        self, text: str, voice_id: str, *, emotion: str = "calm", speed: float = 1.0
+        self,
+        text: str,
+        voice_id: str,
+        *,
+        emotion: str = "calm",
+        speed: float = 1.0,
+        instruction_text: str | None = None,
+        speaker_style: str | None = None,
     ) -> tuple[bytes, int]:
-        """同步合成音频，返回 (MP3 bytes, duration_ms)"""
+        """同步合成音频，返回 (MP3 bytes, duration_ms)。
+
+        - instruction_text: 风格/情绪描述指令（豆包 TTS 2.0 / Seed-Audio 支持，MiniMax 可选）
+        - speaker_style: 官方音色预置风格 id（部分豆包音色支持，如"亲切""热情"）
+        """
         ...
 
     @abstractmethod
@@ -51,6 +63,8 @@ class BaseTTSProvider(ABC):
         *,
         emotion: str = "calm",
         speed: float = 1.0,
+        instruction_text: str | None = None,
+        speaker_style: str | None = None,
     ) -> tuple[str, int]:
         """
         合成音频并写入文件。

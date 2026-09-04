@@ -27,8 +27,12 @@ export function getToken(): string | null {
 export function setToken(token: string, expiresAtIso: string): void {
   if (typeof window === 'undefined') return;
   localStorage.setItem(TOKEN_KEY, token);
-  const expMs = new Date(expiresAtIso).getTime();
-  if (!isNaN(expMs)) {
+  // 后端 isoformat() 不带时区后缀，必须按 UTC 解析，否则 Asia/Shanghai 差 +8h
+  // 会让 JWT 过期检查提前 8 小时误判
+  const iso = expiresAtIso.replace(' ', 'T');
+  const hasTz = /Z|[+-]\d{2}:?\d{2}$/.test(iso);
+  const expMs = new Date(hasTz ? iso : iso + 'Z').getTime();
+  if (!Number.isNaN(expMs)) {
     localStorage.setItem(TOKEN_EXP_KEY, String(expMs));
   }
 }
@@ -47,6 +51,25 @@ export function isLoggedIn(): boolean {
 let _onAuthFail: (() => void) | null = null;
 export function setOnAuthFail(cb: () => void): void {
   _onAuthFail = cb;
+}
+
+/**
+ * 把任意 caught value 转成 console.error 友好的可打印结构。
+ * 直接 console.error('prefix:', err) 在某些工具/日志序列化时会写成 'prefix: {}'，
+ * 因为 Error 实例的 message/stack 属性不可枚举，JSON.stringify(new Error('x')) === '{}'。
+ */
+export function errToLog(e: unknown): { message: string; name?: string; cause?: unknown } | unknown {
+  if (e instanceof Error) {
+    return {
+      name: e.name,
+      message: e.message,
+      cause:
+        e.cause instanceof Error
+          ? { name: e.cause.name, message: e.cause.message }
+          : (e.cause as unknown) ?? undefined,
+    };
+  }
+  return e;
 }
 
 async function _fetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -103,7 +126,37 @@ export interface Voice {
   id: string;
   name: string;
   gender: string;
-  description: string;
+  /** 仅 minimax 音色保证有值；豆包/ICL 用 zh_tags/scene 兜底（见 voiceUtils.voiceDescription） */
+  description?: string;
+  /** 厂商命名空间：minimax / doubao / icl（icl: 为用户复刻音色，走豆包合成通道） */
+  provider?: string;
+  /** doubao/icl 音色字段：child / teen / youth / middle / old */
+  age?: string;
+  /** doubao/icl 音色字段：适用场景（如 有声书、新闻） */
+  scene?: string[];
+  /** doubao 音色字段：方言（如 sichuan） */
+  dialect?: string;
+  /** doubao/icl 音色字段：中文标签 */
+  zh_tags?: string[];
+  /** icl 音色字段：来源训练任务 id */
+  task_id?: string;
+}
+
+/** ICL 声音复刻训练任务（/api/icl/voices 返回结构） */
+export interface IclTask {
+  task_id: string;
+  user_id: number;
+  voice_name: string;
+  status: number;
+  status_label: string;
+  progress: number;
+  cloned_voice_id: string | null;
+  voice_id: string | null;
+  usable: boolean;
+  doubao_task_id: string | null;
+  error_msg: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface Character {
@@ -143,104 +196,221 @@ export const api = {
       body: JSON.stringify({ username, password }),
     }),
   authMe: () => _fetch<UserInfo>('/api/auth/me'),
-  authChangePassword: (old_pw: string, new_pw: string) =>
-    _fetch<{ ok: boolean }>('/api/auth/change-password', {
-      method: 'POST',
-      body: JSON.stringify({ old_password: old_pw, new_password: new_pw }),
-    }),
   authLogout: () =>
     _fetch<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
-  // ---------- Projects ----------
-  projects: () =>
-    _fetch<{ items: import('./types_gen').ProjectListItem[] }>('/api/projects'),
-  projectCreate: (data: { name: string }) =>
-    _fetch<import('./types_gen').ProjectResp>('/api/projects', {
+  authChangePassword: (oldPassword: string, newPassword: string) =>
+    _fetch<{ ok: boolean }>('/api/auth/change-password', {
       method: 'POST',
-      body: JSON.stringify(data),
+      body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
     }),
-  project: (id: string) =>
-    _fetch<import('./types_gen').ProjectDetailResp>(`/api/projects/${id}`),
-  projectUpdate: (id: string, data: { name?: string; narrator_voice_id?: string }) =>
-    _fetch<import('./types_gen').ProjectResp>(`/api/projects/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(data),
+  // ---------- 业务：TTS 音色试听 ----------
+  preview: (text: string, voice_id: string, speed?: number) =>
+    _fetch<{ audio_url: string; duration_ms: number; audio_filename: string }>('/api/tts/preview', {
+      method: 'POST',
+      body: JSON.stringify({ text, voice_id, speed: speed ?? 1.0 }),
     }),
-  projectDelete: (id: string) =>
-    _fetch<{ ok: boolean }>(`/api/projects/${id}`, { method: 'DELETE' }),
-  projectImportFile: (id: string, file: File) => {
+
+  // ---------- ICL 声音复刻（豆包 ICL 2.0） ----------
+  // 上传 3~10 秒参考音频，创建训练任务（multipart/form-data）
+  iclCreateVoice: (voiceName: string, file: File) => {
     const fd = new FormData();
+    fd.append('voice_name', voiceName);
     fd.append('file', file);
-    return _fetch<import('./types_gen').ProjectResp>(`/api/projects/${id}/import`, {
+    const token = getToken();
+    return fetch(`${BASE}/api/icl/voices`, {
       method: 'POST',
       body: fd,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).then(async r => {
+      if (r.status === 401) {
+        clearToken();
+        if (_onAuthFail) _onAuthFail();
+        throw new Error('登录已失效，请重新登录');
+      }
+      if (!r.ok) {
+        let msg = `HTTP ${r.status}`;
+        try { const j = await r.json(); if (j.detail) msg += `: ${j.detail}`; } catch {}
+        throw new Error(msg);
+      }
+      return r.json() as Promise<IclTask>;
     });
   },
-  projectImportText: (id: string, data: { content: string; filename?: string }) =>
-    _fetch<import('./types_gen').ProjectResp>(`/api/projects/${id}/import-text`, {
+  // 我的训练任务列表（含进行中/成功/失败）
+  iclListTasks: () =>
+    _fetch<{ tasks: IclTask[] }>('/api/icl/voices').then(r => r.tasks),
+  // 任务详情（进行中会刷新豆包侧状态）
+  iclGetTask: (taskId: string) => _fetch<IclTask>(`/api/icl/voices/${taskId}`),
+  // 删除训练任务（含参考音频）
+  iclDeleteTask: (taskId: string) =>
+    _fetch<{ ok: boolean; task_id: string }>(`/api/icl/voices/${taskId}`, { method: 'DELETE' }),
+
+  // ---------- Project 制（项目工作台：唯一入口） ----------
+
+  // 创建项目
+  projectCreate: (name: string) =>
+    _fetch<ProjectResp>('/api/projects', {
       method: 'POST',
-      body: JSON.stringify(data),
+      body: JSON.stringify({ name }),
     }),
+  // 项目列表
+  projectList: () => _fetch<ProjectListItem[]>('/api/projects'),
+  // 项目详情
+  projectGet: (id: string) => _fetch<ProjectDetailResp>(`/api/projects/${id}`),
+  // 修改项目元信息
+  projectUpdate: (id: string, patch: Record<string, any>) =>
+    _fetch<ProjectResp>(`/api/projects/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  // 删除项目
+  projectDelete: (id: string) =>
+    _fetch<{ ok: boolean }>(`/api/projects/${id}`, { method: 'DELETE' }),
+  // 上传 TXT 文件到项目（multipart/form-data，FormData 由浏览器设 Content-Type）
+  projectImport: (id: string, file: File) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    const token = getToken();
+    return fetch(`${BASE}/api/projects/${id}/import`, {
+      method: 'POST',
+      body: fd,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).then(async r => {
+      if (r.status === 401) {
+        clearToken();
+        if (_onAuthFail) _onAuthFail();
+        throw new Error('登录已失效，请重新登录');
+      }
+      if (!r.ok) {
+        let msg = `HTTP ${r.status}`;
+        try { const j = await r.json(); if (j.detail) msg += `: ${j.detail}`; } catch {}
+        throw new Error(msg);
+      }
+      return r.json() as Promise<ProjectResp>;
+    });
+  },
+  // 粘贴文本到项目（直接 POST JSON，浏览器粘贴场景）
+  projectImportText: (id: string, text: string, filenameHint = 'pasted_text.txt') =>
+    _fetch<ProjectResp>(`/api/projects/${id}/import-text`, {
+      method: 'POST',
+      body: JSON.stringify({ text, filename_hint: filenameHint }),
+    }),
+  // 触发后端识别（章节/角色/对白归属）：202 Accepted，后台异步执行
   projectPrepare: (id: string) =>
-    _fetch<import('./types_gen').ProjectPrepareTriggerResp>(`/api/projects/${id}/prepare`, {
-      method: 'POST',
-    }),
-  projectProgress: (id: string) =>
-    _fetch<import('./types_gen').ProjectProgressResp>(`/api/projects/${id}/prepare-progress`),
+    _fetch<ProjectPrepareTriggerResp>(`/api/projects/${id}/prepare`, { method: 'POST' }),
+  // 拉取章节列表
   projectChapters: (id: string) =>
-    _fetch<import('./types_gen').ChapterSummary[]>(`/api/projects/${id}/chapters`),
+    _fetch<ChapterSummary[]>(`/api/projects/${id}/chapters`),
+  // 拉取单章详情（正文 + 逐行对白归属）
+  projectChapterDetail: (id: string, idx: number) =>
+    _fetch<ChapterDetail>(`/api/projects/${id}/chapters/${idx}`),
+  // 发音规则 CRUD
+  pronunciationRules: (id: string) =>
+    _fetch<PronunciationRule[]>(`/api/projects/${id}/pronunciation-rules`),
+  createPronunciationRule: (id: string, body: PronunciationRuleInput) =>
+    _fetch<PronunciationRule>(`/api/projects/${id}/pronunciation-rules`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updatePronunciationRule: (id: string, ruleId: number, body: PronunciationRuleInput) =>
+    _fetch<PronunciationRule>(`/api/projects/${id}/pronunciation-rules/${ruleId}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deletePronunciationRule: (id: string, ruleId: number) =>
+    _fetch<{ ok: boolean }>(`/api/projects/${id}/pronunciation-rules/${ruleId}`, {
+      method: 'DELETE',
+    }),
+  // 拉取角色列表
   projectCharacters: (id: string) =>
-    _fetch<import('./types_gen').CharacterResp[]>(`/api/projects/${id}/characters`),
-  projectCharacterVoice: (
-    id: string,
-    character_name: string,
-    data: { voice_id: string },
-  ) =>
-    _fetch<import('./types_gen').CharacterResp>(
-      `/api/projects/${id}/characters/${encodeURIComponent(character_name)}/voice`,
-      { method: 'PATCH', body: JSON.stringify(data) },
-    ),
-  projectPreviewVoice: (id: string, data: { text: string; voice_id?: string }) =>
-    _fetch<{ url: string }>(`/api/projects/${id}/preview`, {
-      method: 'POST',
-      body: JSON.stringify(data),
+    _fetch<CharacterWithVoice[]>(`/api/projects/${id}/characters`),
+  // 修改角色音色
+  projectUpdateCharVoice: (projectId: string, charId: number, voiceId: string) =>
+    _fetch<CharacterResp>(`/api/projects/${projectId}/characters/${charId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ voice_id: voiceId }),
     }),
-  // ---------- Builds ----------
-  builds: (projectId: string) =>
-    _fetch<{ items: import('./types_gen').BuildSummary[] }>(`/api/projects/${projectId}/builds`),
-  buildStart: (
+  // 创建 build 任务
+  buildCreate: (
     projectId: string,
-    data: { narrator_voice_id?: string; speed?: number; source_build_id?: string },
+    args: {
+      voice_assignments: Record<string, string>;
+      narrator_voice_id: string;
+      speed?: number;
+      /** 构建模式：classic（逐句合成）/ multicast（Seed-Audio 多播剧一体化生成） */
+      mode?: 'classic' | 'multicast';
+      /** TTS 厂商：minimax / doubao（multicast 模式必须 doubao） */
+      tts_provider?: 'minimax' | 'doubao';
+    }
   ) =>
-    _fetch<import('./types_gen').BuildDetailResp>(`/api/projects/${projectId}/builds`, {
+    _fetch<BuildResp>(`/api/projects/${projectId}/builds`, {
       method: 'POST',
-      body: JSON.stringify(data),
+      body: JSON.stringify(args),
     }),
-  build: (projectId: string, buildId: string) =>
-    _fetch<import('./types_gen').BuildDetailResp>(`/api/projects/${projectId}/builds/${buildId}`),
-  buildCancel: (projectId: string, buildId: string) =>
-    _fetch<{ ok: boolean }>(`/api/projects/${projectId}/builds/${buildId}/cancel`, {
-      method: 'POST',
-    }),
-  buildRetryFailed: (projectId: string, buildId: string) =>
-    _fetch<{ ok: boolean }>(`/api/projects/${projectId}/builds/${buildId}/retry-failed`, {
-      method: 'POST',
-    }),
+  // build 列表
+  buildList: (projectId: string) =>
+    _fetch<BuildListItem[]>(`/api/projects/${projectId}/builds`),
+  // build 详情
+  buildGet: (projectId: string, buildId: string) =>
+    _fetch<BuildDetailResp>(`/api/projects/${projectId}/builds/${buildId}`),
+  // build 轮询状态
+  buildStatus: (projectId: string, buildId: string) =>
+    _fetch<BuildStatusResp>(`/api/projects/${projectId}/builds/${buildId}/status`),
+  // 删除 build
   buildDelete: (projectId: string, buildId: string) =>
     _fetch<{ ok: boolean }>(`/api/projects/${projectId}/builds/${buildId}`, {
       method: 'DELETE',
     }),
-  // 整包 ZIP 下载 URL（附带 ?token=，因 <a href> 无法带 Authorization header）
-  buildDownloadAll: (projectId: string, buildId: string) => {
-    const tok = getToken();
-    const base = `/api/projects/${projectId}/builds/${buildId}/download-all`;
-    return tok ? `${base}?token=${encodeURIComponent(tok)}` : base;
+  // 重试失败章节（生成新 build，复用成功章节 MP3，继承原 mode/tts_provider）
+  buildRetryFailed: (projectId: string, buildId: string) =>
+    _fetch<BuildResp>(`/api/projects/${projectId}/builds/${buildId}/retry-failed`, {
+      method: 'POST',
+      body: JSON.stringify({ force_restart_failed_only: true }),
+    }),
+  // 整包 ZIP 下载 URL（P1 #6：使用一次性签名 token，而非完整登录 JWT）
+  buildDownloadAll: async (projectId: string, buildId: string): Promise<string> => {
+    const info = await _fetch<{ url: string }>(
+      `/api/media/sign?build_id=${encodeURIComponent(buildId)}&kind=all_zip`
+    );
+    return info.url;
   },
-  // 单章 MP3 下载 URL（附带 ?token=）
-  buildChapterDownload: (projectId: string, buildId: string, idx: number) => {
-    const tok = getToken();
-    const base = `/api/projects/${projectId}/builds/${buildId}/chapters/${idx}/download`;
-    return tok ? `${base}?token=${encodeURIComponent(tok)}` : base;
+  // 单章 MP3 下载 URL（P1 #6：使用一次性签名 token）
+  buildChapterDownload: async (
+    projectId: string,
+    buildId: string,
+    idx: number
+  ): Promise<string> => {
+    const info = await _fetch<{ url: string }>(
+      `/api/media/sign?build_id=${encodeURIComponent(buildId)}&kind=chapter_mp3&idx=${idx}`
+    );
+    return info.url;
   },
+  // 单章 MP3 音频 URL（用于 <audio src> 试听，P1 #6：使用签名 token）
+  buildChapterAudioUrl: async (
+    projectId: string,
+    buildId: string,
+    idx: number
+  ): Promise<string> => {
+    const info = await _fetch<{ url: string }>(
+      `/api/media/sign?build_id=${encodeURIComponent(buildId)}&kind=chapter_mp3&idx=${idx}`
+    );
+    return info.url;
+  },
+
+  // ---------- 系统设置 ----------
+  settingsGet: () => _fetch<SettingItem[]>('/api/settings'),
+  settingsUpdate: (updates: Record<string, string | number | boolean | string[]>) =>
+    _fetch<{ ok: boolean; updated: string[]; skipped: string[]; note: string }>('/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ updates }),
+    }),
+
+  // ---------- 多厂商模型配置 ----------
+  providersGet: () => _fetch<ProvidersConfig>('/api/providers'),
+  providersUpdate: (cfg: ProvidersConfig) =>
+    _fetch<{ ok: boolean; providers: ProviderConfig[]; note?: string }>('/api/providers', {
+      method: 'PUT',
+      body: JSON.stringify(cfg),
+    }),
 };
 
 // ---------- Project 制类型定义 ----------
@@ -249,8 +419,294 @@ export const api = {
 export interface ProjectResp {
   project_id: string;
   name: string;
-  status: string;
   book_title: string | null;
+  status: string;
+  source_filename: string | null;
+  chapter_count: number;
+  cover_color: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// 项目列表项
+export interface ProjectListItem {
+  project_id: string;
+  name: string;
+  book_title: string | null;
+  status: string;
+  source_filename: string | null;
+  chapter_count: number;
+  cover_color: string;
+  created_at: string;
+  updated_at: string;
+  /** prepare 阶段当前 stage（列表页快速显示）。也会同步出现在 prepare_progress.stage。 */
+  prepare_stage?: string | null;
+  /** prepare 进度白名单：刷新/重开标签页后列表直接显示进度条 & 阶段，无需进详情。 */
+  prepare_progress?: PrepareProgress | null;
+  /** 构建进度（存在 queued/running 的 build 时填充，status 同时映射为 synthesizing） */
+  build_completed?: number | null;
+  build_total?: number | null;
+}
+
+// 项目详情
+export interface ProjectDetailResp {
+  project_id: string;
+  name: string;
+  book_title: string | null;
+  status: string;
+  source_filename: string | null;
+  source_file_size: number | null;
+  chapter_count: number;
+  cover_color: string;
+  description: string | null;
+  tags: string[] | null;
+  default_narrator_voice_id: string | null;
+  default_speed: number | null;
+  created_at: string;
+  updated_at: string;
+  chapters: ChapterSummary[];
+  characters: CharacterWithVoice[];
+  last_build: BuildBrief | null;
+  // prepare 阶段进度（stage / last_error / 各子阶段计数），失败时带具体错误
+  prepare_progress: PrepareProgress | null;
+}
+
+// prepare 阶段进度（从 DB progress_json 透传，字段名与后端 progress_json 白名单对齐）
+export interface PrepareProgress {
+  version?: number;
+  stage?: string; // start / split / characters / dedup / dialogues / voice_recs / done
+  started_at?: string;
+  updated_at?: string;
+  // 失败时：具体错误类型 + 消息 + 时间
+  last_error?: string;
+  last_error_at?: string;
+  last_error_type?: string;
+  prev_error?: { at?: string; msg?: string };
+  /** 服务重启/看门狗自动恢复次数（>0 时前端显示"♻ 自动恢复 × N"） */
+  restart_count?: number;
+  // 角色识别进度
+  char_slice_total?: number;
+  char_slice_completed_n?: number;
+  char_current_slice?: { idx: number; slice_len?: number } | null;
+  char_failed_slices?: Record<string, { slice_idx: number; slice_len?: number; retries?: number; last_err?: string }>;
+  char_failed_slices_n?: number;
+  char_full_text_len?: number;
+  dedup_done?: boolean;
+  // 对白归属进度
+  dialogue_total_batches?: number;
+  dialogue_completed_batches_count?: number;
+  dialogue_failed_batch_count?: number;
+  dialogue_total_chapters?: number;
+  dialogue_completed_chapters_count?: number;
+  dialogue_completed_chapters_n?: number;
+  dialogue_failed_batches?: Record<string, any>;
+  dialogue_failed_batches_n?: number;
+  dialogue_total_dialogues?: number;
+  // 音色推荐进度
+  voice_recs_done?: boolean;
+  voice_recs_count?: number;
+}
+
+// prepare 触发立即返回（HTTP 202 Accepted）
+export interface ProjectPrepareTriggerResp {
+  project_id: string;
+  status: string;
+  message: string;
+  prepare_progress?: PrepareProgress | null;
+}
+
+// 章节摘要
+export interface ChapterSummary {
+  idx: number;
+  title: string;
+  text_len: number;
+}
+
+export interface DialogueLine {
+  segment_index: number;
+  anchor_text: string;
+  speaker: string;
+  text: string;
+  confidence: number;
+}
+
+export interface ChapterDetail {
+  idx: number;
+  title: string;
+  text: string;
+  dialogues: DialogueLine[];
+}
+
+export interface PronunciationRule {
+  id: number;
+  project_id: string;
+  character_id: number | null;
+  rule_type: 'alias' | 'regex';
+  pattern: string;
+  replacement: string;
+  priority: number;
+  enabled: boolean;
+  note: string;
+}
+
+export interface PronunciationRuleInput {
+  character_id: number | null;
+  rule_type: 'alias' | 'regex';
+  pattern: string;
+  replacement: string;
+  priority: number;
+  enabled: boolean;
+  note: string;
+}
+
+// 角色（含已分配音色）
+export interface CharacterWithVoice {
+  id: number;
+  name: string;
+  gender: string;
+  age: string;
+  personality: string;
+  canonical_name: string | null;
+  assigned_voice_id: string | null;
+}
+
+// 最近一次 build 的摘要
+export interface BuildBrief {
+  build_id: string;
+  status: string;
+  completed_chapters: number;
   total_chapters: number;
   created_at: string;
+}
+
+// prepare 接口返回
+export interface ProjectPrepareResp {
+  project_id: string;
+  book_title: string | null;
+  total_chapters: number;
+  chapters: ChapterSummary[];
+  characters: any[];
+  voice_recommendations: any[];
+}
+
+// 修改角色音色后返回
+export interface CharacterResp {
+  id: number;
+  name: string;
+  gender: string;
+  age: string;
+  personality: string;
+  canonical_name: string | null;
+  assigned_voice_id: string | null;
+}
+
+// build 列表项
+export interface BuildListItem {
+  build_id: string;
+  status: string;
+  total_chapters: number;
+  completed_chapters: number;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  /** 构建模式：classic（逐句合成）/ multicast（Seed-Audio 多播剧） */
+  mode?: 'classic' | 'multicast' | null;
+  /** TTS 厂商：minimax / doubao */
+  tts_provider?: 'minimax' | 'doubao' | null;
+}
+
+// build 详情
+export interface BuildDetailResp {
+  build_id: string;
+  project_id: string;
+  status: string;
+  progress_msg: string | null;
+  total_chapters: number;
+  completed_chapters: number;
+  narrator_voice_id: string | null;
+  speed: number | null;
+  zip_url: string | null;
+  total_size_kb: number | null;
+  total_duration_sec: number | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  mode?: 'classic' | 'multicast' | null;
+  tts_provider?: 'minimax' | 'doubao' | null;
+  failed_chapters?: number[] | null;
+  is_retry?: boolean;
+  artifacts: BuildArtifactResp[];
+}
+
+// build 单章产物
+export interface BuildArtifactResp {
+  chapter_idx: number;
+  title: string;
+  status: string;
+  audio_url: string | null;
+  duration_ms: number | null;
+  error_msg: string | null;
+}
+
+// build 状态轮询响应
+export interface BuildStatusResp {
+  build_id: string;
+  status: string;
+  progress_msg: string | null;
+  completed_chapters: number;
+  total_chapters: number;
+  mode?: 'classic' | 'multicast' | null;
+  tts_provider?: 'minimax' | 'doubao' | null;
+  failed_chapters?: number[] | null;
+  artifacts: BuildArtifactResp[];
+}
+
+// 创建 build 后返回
+export interface BuildResp {
+  build_id: string;
+  project_id: string;
+  status: string;
+  total_chapters: number;
+  completed_chapters: number;
+  created_at: string;
+  mode?: 'classic' | 'multicast' | null;
+  tts_provider?: 'minimax' | 'doubao' | null;
+}
+
+// ---------- 系统设置 ----------
+export interface SettingItem {
+  key: string;
+  value: string | number | boolean | string[] | null;
+  type: 'str' | 'int' | 'bool' | 'list[str]' | 'json';
+  group: string;
+  label: string;
+  readonly: boolean;
+}
+
+// ---------- 多厂商模型配置 ----------
+export interface ProviderModel {
+  id: string;
+  label: string;
+  kind: 'tts' | 'llm';
+}
+export interface ProviderConfig {
+  id: string;
+  label: string;
+  enabled: boolean;
+  api_key: string;
+  base_url: string;
+  tts_endpoint?: string;
+  extra_headers?: Record<string, string>;
+  models: ProviderModel[];
+}
+export interface ActiveModel {
+  provider_id: string | null;
+  model_id: string | null;
+}
+export interface ProvidersConfig {
+  providers: ProviderConfig[];
+  active: {
+    tts: ActiveModel;
+    llm: ActiveModel;
+  };
 }

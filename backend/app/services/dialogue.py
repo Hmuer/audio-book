@@ -38,10 +38,7 @@ FEW_SHOT = r"""
 
 
 class Anchor(BaseModel):
-    # text 可省略：LLM 在长上下文里经常只填 start/end 不填 text，
-    # 让其可选可避免 ValidationError；下游消费时 anchor.text 缺失会回退到空串，
-    # 再由 chapter.text[start:end] 兜底。
-    text: str | None = None
+    text: str
     start: int
     end: int
 

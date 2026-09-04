@@ -121,10 +121,31 @@ def concat_mp3_files(*parts: bytes) -> bytes:
 
 class MiniMaxTTSProvider(BaseTTSProvider):
     name = "minimax"
+    provider = "minimax"
 
-    def __init__(self):
-        self.api_key = settings.TTS_API_KEY
-        self.base_url = settings.TTS_BASE_URL.rstrip("/")
+    def __init__(self, api_key: str | None = None, base_url: str | None = None,
+                 model: str | None = None, extra_headers: dict[str, str] | None = None):
+        # 优先取多厂商配置（来自 get_active_tts_provider() 的 override），兜底 .env 扁平字段
+        from ....core.config import get_active_tts_provider
+        prov = get_active_tts_provider()
+        if prov and prov.get("id") == "minimax" and prov.get("api_key"):
+            self.api_key = api_key or prov["api_key"]
+            self.base_url = (base_url or prov.get("base_url") or settings.TTS_BASE_URL).rstrip("/")
+            self.model = model or settings.ACTIVE_TTS_MODEL or "speech-2.8-turbo"
+            # 模型 ID 形如 "MiniMax-speech-01"，去掉厂商前缀得 "speech-01"
+            mid = self.model
+            if ":" in mid:
+                mid = mid.split(":", 1)[1]
+            if mid.startswith("MiniMax-"):
+                mid = mid[len("MiniMax-"):]
+            self._internal_model = mid
+            self.extra_headers = dict(prov.get("extra_headers") or {})
+        else:
+            self.api_key = api_key or settings.TTS_API_KEY
+            self.base_url = (base_url or settings.TTS_BASE_URL).rstrip("/")
+            self.model = model or "speech-2.8-turbo"
+            self._internal_model = "speech-2.8-turbo"
+            self.extra_headers = dict(extra_headers or {})
         self.timeout = httpx.Timeout(
             connect=settings.TTS_TIMEOUT,
             read=settings.TTS_TIMEOUT,
@@ -136,7 +157,17 @@ class MiniMaxTTSProvider(BaseTTSProvider):
     async def list_voices(self) -> list[dict[str, Any]]:
         if self._voices is None:
             with open(VOICES_FILE, "r", encoding="utf-8") as f:
-                self._voices = json.load(f)
+                raw = json.load(f)
+            # 注入 provider 前缀命名空间；老代码 id 无前缀，这里统一加 minimax:
+            normalized: list[dict[str, Any]] = []
+            for v in raw:
+                vv = dict(v)
+                vid = vv.get("id", "")
+                if vid and not vid.startswith("minimax:"):
+                    vv["id"] = f"minimax:{vid}"
+                vv.setdefault("provider", "minimax")
+                normalized.append(vv)
+            self._voices = normalized
         return self._voices
 
     async def synthesize_to_bytes(
@@ -146,11 +177,13 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         *,
         emotion: str = "calm",
         speed: float = 1.0,
+        instruction_text: str | None = None,
+        speaker_style: str | None = None,
     ) -> tuple[bytes, int]:
         """合成音频，返回 (MP3 bytes, duration_ms)。
 
-        duration_ms 优先使用 MiniMax 返回的 extra_info.audio_length（真实时长），
-        缺失时回退到字节估算。
+        MiniMax 官方接口不支持 instruction_text / speaker_style，
+        这里参数接收但忽略（保证签名一致性）；若要更强风格，可改用豆包 Provider。
         """
         t0 = _time.perf_counter()
         if not text.strip():
@@ -158,8 +191,12 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             return make_silent_mp3(50), 50
         text = apply_onomatopoeia(text, voice_id=voice_id)
         text_chars = len(text)
-        model = "speech-2.8-turbo"
+        # 多厂商激活模型：取自 PROVIDERS_CONFIG.active.tts；兜底硬编码值
+        model = getattr(self, "_internal_model", None) or "speech-2.8-turbo"
         speed = max(0.5, min(2.0, float(speed)))
+        # voice_id 若含 minimax: 前缀，合成前剥离（API 端要求纯 id）
+        if voice_id.startswith("minimax:"):
+            voice_id = voice_id[len("minimax:"):]
 
         max_attempts = 5
         last_exc: Optional[BaseException] = None
@@ -298,8 +335,13 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         *,
         emotion: str = "calm",
         speed: float = 1.0,
+        instruction_text: str | None = None,
+        speaker_style: str | None = None,
     ) -> tuple[str, int]:
-        data, dur = await self.synthesize_to_bytes(text, voice_id, emotion=emotion, speed=speed)
+        data, dur = await self.synthesize_to_bytes(
+            text, voice_id, emotion=emotion, speed=speed,
+            instruction_text=instruction_text, speaker_style=speaker_style,
+        )
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         # 原子写：先写 .tmp 再 os.replace，避免崩溃留半成品
         tmp_path = output_path + ".tmp"
