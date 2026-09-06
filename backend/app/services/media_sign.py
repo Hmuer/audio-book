@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # 媒体签名 token 默认寿命（5 分钟 —— 足够浏览器发起请求 + 拖动 <audio> 进度）
 DEFAULT_TTL_SECONDS = 300
 
-MediaKind = Literal["chapter_mp3", "all_zip"]
+MediaKind = Literal["chapter_mp3", "all_zip", "book_m4b"]
 
 
 def _now() -> datetime:
@@ -48,7 +48,12 @@ def _sign_token(
     user_id: int,
     ttl_seconds: int,
 ) -> tuple[str, datetime]:
-    """签发资源绑定的 JWT。"""
+    """签发资源绑定的 JWT。
+
+    ⚠️ exp 必须用 time.time()（真实 epoch）计算：expires_at 是 naive UTC，
+    直接调 .timestamp() 会被按"本地时区"解释——在 UTC+8 机器上 exp 会比
+    iat 早 8 小时，签名 URL 一签出来就已"过期"（试听/下载全部 401）。
+    """
     expires_at = _now() + timedelta(seconds=ttl_seconds)
     payload = {
         "jti": jti,
@@ -58,7 +63,7 @@ def _sign_token(
         "idx": chapter_idx,
         "uid": user_id,
         "iat": int(_time.time()),
-        "exp": int(expires_at.timestamp()),
+        "exp": int(_time.time()) + int(ttl_seconds),
     }
     token = jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
     return token, expires_at

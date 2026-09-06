@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 from ..ai.factory import get_llm
 from .character import Character
+from .usage import track_llm
 
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,7 @@ async def attribute_dialogues_with_llm(
         max_tokens=16000,
         use_fast_model=True,  # 对白归属任务结构化、prompt 内带角色名/少样本；M2.7-highspeed 足够快
     )
+    track_llm(calls=1, chars=len(prompt), detail="dialogue")
     return wrapped.data
 
 
@@ -166,6 +168,7 @@ async def attribute_dialogues_batch_with_llm(
         max_tokens=96000,
         use_fast_model=True,
     )
+    track_llm(calls=1, chars=len(prompt), detail="dialogue_batch")
     results = wrapped.data
 
     # 按 chapter_idx 做成 map，缺的补空

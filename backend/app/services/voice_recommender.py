@@ -73,4 +73,6 @@ async def recommend_voices_with_llm(
         max_tokens=8000,
         use_fast_model=True,  # 音色推荐是"特征匹配"任务；M2.7-highspeed 准确率足够且速度快
     )
+    from .usage import track_llm
+    track_llm(calls=1, chars=len(prompt), detail="voice_recommend")
     return wrapped.data

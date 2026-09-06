@@ -48,6 +48,7 @@ from ..ai.providers.minimax.tts import (
 )
 from .chapter import Chapter, _Segment, _build_segments_for_chapter
 from .book_split import strip_chapter_prefix
+from .m4b import m4b_filename
 from .project import (
     PronunciationRule as _PronunciationRule,
     apply_pronunciation_rules,
@@ -146,6 +147,9 @@ class BuildDetailResp(BaseModel):
     artifacts: list[BuildArtifactResp]
     failed_chapters: list[int] | None
     is_retry: bool
+    # TTS 用量（真实供应商调用，不含缓存命中）
+    tts_calls: int = 0
+    tts_chars: int = 0
 
 
 class BuildListItem(BaseModel):
@@ -161,6 +165,8 @@ class BuildListItem(BaseModel):
     created_at: str | None
     failed_chapters: list[int] | None
     is_retry: bool
+    tts_calls: int = 0
+    tts_chars: int = 0
 
 
 class BuildStatusResp(BaseModel):
@@ -242,6 +248,36 @@ def _audio_filename(build_id: str, ch_idx: int, failed: bool = False) -> str:
     """每章 MP3 文件名；failed 章单独命名以便排查。"""
     suffix = "_failed" if failed else ""
     return f"build_{build_id}_ch{ch_idx:04d}{suffix}.mp3"
+
+
+def _timings_filename(build_id: str, ch_idx: int) -> str:
+    """章节时间轴 sidecar（SRT/LRC 生成用）：每段 {kind, speaker, text, start_ms, dur_ms}。"""
+    return f"build_{build_id}_ch{ch_idx:04d}_timings.json"
+
+
+def _timings_filename_of_audio(audio_filename: str) -> str:
+    """由章节 MP3 文件名推导同名时间轴 sidecar 文件名。"""
+    if audio_filename.endswith(".mp3"):
+        return audio_filename[:-4] + "_timings.json"
+    return audio_filename + "_timings.json"
+
+
+async def _load_voice_styles(project_id: str) -> dict[str, dict[str, str]]:
+    """从 ProjectCharacter 读取 speaker → {emotion, instruction}（只保留配置过的角色）。"""
+    from sqlalchemy import select as _select
+    factory = get_session_factory()
+    async with factory() as s:
+        stmt = _select(ProjectCharacter).where(ProjectCharacter.project_id == project_id)
+        rows = list((await s.execute(stmt)).scalars().all())
+    styles: dict[str, dict[str, str]] = {}
+    for c in rows:
+        if not c.name:
+            continue
+        emo = (c.emotion or "").strip()
+        ins = (c.instruction or "").strip()
+        if emo or ins:
+            styles[c.name] = {"emotion": emo, "instruction": ins}
+    return styles
 
 
 # =====================================================================
@@ -338,7 +374,17 @@ def _run_seg_cache_gc_if_needed(force: bool = False) -> None:
         logger.warning(f"[seg_cache_gc] failed: {type(e).__name__}: {e}")
 
 
-def _seg_cache_key(voice_id: str, speed: float, text: str) -> str:
+def _seg_cache_key(
+    voice_id: str, speed: float, text: str,
+    *, emotion: str = "", instruction: str = "",
+) -> str:
+    """段级缓存键。emotion/instruction 参与哈希（不同情感同一音色音频不同）；
+    均为空时与旧版键完全一致，历史缓存仍可命中。"""
+    style_part = ""
+    if emotion or instruction:
+        style_part = f"|e:{emotion}|i:{instruction}"
+    raw = f"v1|{voice_id}|{speed:.2f}|{text}{style_part}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
     raw = f"v1|{voice_id}|{speed:.4f}|{text}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -351,9 +397,12 @@ def _seg_cache_meta_path(key: str) -> Path:
     return _seg_cache_dir() / f"{key}.json"
 
 
-async def tts_segment_cache_get(voice_id: str, speed: float, text: str) -> tuple[bytes, int] | None:
+async def tts_segment_cache_get(
+    voice_id: str, speed: float, text: str,
+    *, emotion: str = "", instruction: str = "",
+) -> tuple[bytes, int] | None:
     """返回 (mp3_bytes, duration_ms)，未命中返回 None。先查内存，再查磁盘。"""
-    key = _seg_cache_key(voice_id, speed, text)
+    key = _seg_cache_key(voice_id, speed, text, emotion=emotion, instruction=instruction)
     async with _tts_seg_mem_lock:
         hit = _tts_seg_mem_cache.get(key)
     if hit is not None:
@@ -380,10 +429,11 @@ async def tts_segment_cache_get(voice_id: str, speed: float, text: str) -> tuple
 
 
 async def tts_segment_cache_put(
-    voice_id: str, speed: float, text: str, mp3_bytes: bytes, dur_ms: int
+    voice_id: str, speed: float, text: str, mp3_bytes: bytes, dur_ms: int,
+    *, emotion: str = "", instruction: str = "",
 ) -> None:
     """写 TTS 段缓存：内存 + 磁盘双写。"""
-    key = _seg_cache_key(voice_id, speed, text)
+    key = _seg_cache_key(voice_id, speed, text, emotion=emotion, instruction=instruction)
     async with _tts_seg_mem_lock:
         _tts_seg_mem_cache[key] = (mp3_bytes, int(dur_ms))
         max_entries = max(1000, int(
@@ -422,8 +472,12 @@ def _calc_config_digest(
     *,
     mode: str = "classic",
     tts_provider: str = "minimax",
+    narrator_emotion: str = "",
+    narrator_instruction: str = "",
+    voice_styles: dict[str, dict[str, str]] | None = None,
 ) -> str:
     sorted_va = dict(sorted((voice_assignments or {}).items()))
+    sorted_styles = dict(sorted((voice_styles or {}).items()))
     raw = json.dumps(
         {
             "narrator": narrator_voice_id or "",
@@ -431,6 +485,10 @@ def _calc_config_digest(
             "va": sorted_va,
             "mode": (mode or "classic").lower(),
             "tts_provider": (tts_provider or "minimax").lower(),
+            # 情感/语气也参与摘要：改了情感但音色没变也应生成新 build
+            "narrator_emotion": narrator_emotion or "",
+            "narrator_instruction": narrator_instruction or "",
+            "styles": sorted_styles,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -491,6 +549,8 @@ def _build_to_detail(b: Build, artifacts: list[BuildArtifact]) -> BuildDetailRes
         ],
         failed_chapters=_parse_failed_chapters_json(b.failed_chapters_json),
         is_retry=bool(b.is_retry),
+        tts_calls=int(b.tts_calls or 0),
+        tts_chars=int(b.tts_chars or 0),
     )
 
 
@@ -507,6 +567,8 @@ def _build_to_list_item(b: Build) -> BuildListItem:
         created_at=b.created_at.isoformat() if b.created_at else None,
         failed_chapters=_parse_failed_chapters_json(b.failed_chapters_json),
         is_retry=bool(b.is_retry),
+        tts_calls=int(b.tts_calls or 0),
+        tts_chars=int(b.tts_chars or 0),
     )
 
 
@@ -640,6 +702,8 @@ async def start_build(
     *,
     mode: str = "classic",
     tts_provider: str | None = None,
+    narrator_emotion: str = "",
+    narrator_instruction: str = "",
 ) -> BuildResp:
     """
     创建 Build + 每章 BuildArtifact（pending），启动后台 worker，立即返回。
@@ -647,11 +711,12 @@ async def start_build(
     新增参数：
       - mode: 'classic'（默认，逐章节分段 TTS 拼接）/'multicast'（多播剧，Seed-Audio 一体化，失败直接抛错）
       - tts_provider: 'minimax' | 'doubao' | None（None 时从 Project.default_tts_provider 读取，再兜底 settings.TTS_PROVIDER）
+      - narrator_emotion / narrator_instruction: 旁白情感与风格指令（合成时透传 provider）
 
     合成幂等（三层去重，mode/tts_provider 已纳入 config_digest）：
       1) 内存锁 _ACTIVE_BUILDS（按 build_id 持有）：单进程内同一 project 不重复
       2) DB Build.status：若已有 running/queued 的 build，直接复用
-      3) **config_digest 命中**：同一 project + 相同 narrator/speed/voice_assignments/mode/tts_provider，
+      3) **config_digest 命中**：同一 project + 相同 narrator/speed/voice_assignments/mode/tts_provider/情感配置，
          且历史已有**成功** Build（ZIP 生成过）→ 直接返回旧 build_id，不重建。
     """
     from ..core.config import settings as _settings_mod
@@ -696,9 +761,21 @@ async def start_build(
         voice_assignments=voice_assignments,
     )
 
+    # 角色情感/语气快照：从 ProjectCharacter 读取（与 voice_assignments 同属配置快照）
+    narrator_emotion = (narrator_emotion or "").strip()[:32]
+    narrator_instruction = (narrator_instruction or "").strip()[:512]
+    try:
+        voice_styles = await _load_voice_styles(project_id)
+    except Exception as e:
+        logger.warning(f"[build_start] 读取角色情感配置失败（按无情感继续）: {type(e).__name__}: {e}")
+        voice_styles = {}
+
     digest = _calc_config_digest(
         narrator_voice_id, speed, voice_assignments,
         mode=resolved_mode, tts_provider=effective_provider,
+        narrator_emotion=narrator_emotion,
+        narrator_instruction=narrator_instruction,
+        voice_styles=voice_styles,
     )
 
     async with _RUNNING_LOCK:
@@ -786,6 +863,9 @@ async def start_build(
             tts_provider=effective_provider,
             voice_assignments_json=voice_json,
             config_digest=digest,
+            narrator_emotion=narrator_emotion,
+            narrator_instruction=narrator_instruction,
+            voice_styles_json=json.dumps(voice_styles, ensure_ascii=False),
         )
         session.add(b)
         for ch in chapters:
@@ -1018,6 +1098,10 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
             tts_provider=(source_build.tts_provider or "minimax"),
             config_digest=source_build.config_digest,
             is_retry=True,
+            # 情感/语气配置同样继承快照（保证 digest 一致 + 合成结果一致）
+            narrator_emotion=(source_build.narrator_emotion or ""),
+            narrator_instruction=(source_build.narrator_instruction or ""),
+            voice_styles_json=source_build.voice_styles_json,
         )
         session.add(new_b)
 
@@ -1217,6 +1301,64 @@ async def _multicast_synth_chapter(
                 pass
 
 
+def _write_chapter_timings(
+    build_id: str,
+    ch_idx: int,
+    segs: list[_Segment],
+    dur_list: list[int],
+    *,
+    total_dur_ms: int,
+    estimated: bool,
+    seg_text_override: dict[int, str] | None = None,
+) -> None:
+    """写章节时间轴 sidecar JSON（SRT/LRC 生成数据源）。
+
+    - estimated=False（classic）：dur_list 为每段真实合成时长，start_ms 顺序累加
+    - estimated=True（multicast 整章一体化）：无逐段时长，按"字符数(静音按 silence_ms)"
+      占比把 total_dur_ms 分摊到各段
+    sidecar 与章节 MP3 同目录同名（_timings.json 后缀），写失败仅告警不影响合成。
+    """
+    override = seg_text_override or {}
+    try:
+        weights: list[int] = []
+        for i, s in enumerate(segs):
+            if s.kind == "silence":
+                weights.append(max(int(s.silence_ms or 0), 1))
+            else:
+                weights.append(max(len(override.get(i) or s.text or ""), 1))
+        sum_w = sum(weights) or 1
+
+        entries: list[dict] = []
+        cursor_ms = 0
+        for i, s in enumerate(segs):
+            if estimated:
+                dur_ms = int(total_dur_ms * weights[i] / sum_w)
+            else:
+                dur_ms = int(dur_list[i] or 0) if i < len(dur_list) else 0
+            entries.append({
+                "kind": s.kind,
+                "speaker": s.speaker or "",
+                "text": override.get(i) or s.text or "",
+                "start_ms": cursor_ms,
+                "dur_ms": dur_ms,
+            })
+            cursor_ms += dur_ms
+
+        sidecar = Path(settings.AUDIO_DIR) / _timings_filename(build_id, ch_idx)
+        tmp = str(sidecar) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(
+                {"version": 1, "estimated": estimated, "segs": entries},
+                f, ensure_ascii=False,
+            )
+        os.replace(tmp, sidecar)
+    except Exception as e:
+        logger.warning(
+            f"[build_worker] 写章节时间轴失败 build_id={build_id[:8]}... ch={ch_idx}: "
+            f"{type(e).__name__}: {e}"
+        )
+
+
 async def _run_build_inner(
     build_id: str,
     project_id: str,
@@ -1295,21 +1437,49 @@ async def _run_build_inner(
         b = await s.get(Build, build_id)
         if not b:
             raise RuntimeError(f"Build 不存在: {build_id}")
-        b.status = "running"
-        b.started_at = datetime.now(UTC).replace(tzinfo=None)
-        b.progress_msg = f"开始合成 1/{total} 章…"
         build_mode = (b.mode or "classic").lower()
         strict_mode = _should_strict_fail(build_mode)
         tts_provider_label = b.tts_provider or "minimax"
+        # 情感/语气配置快照（build 启动时从 ProjectCharacter 拷贝，这里只读快照）
+        narrator_emotion = (b.narrator_emotion or "").strip()
+        narrator_instruction = (b.narrator_instruction or "").strip()
+        try:
+            voice_styles: dict[str, dict[str, str]] = json.loads(b.voice_styles_json or "{}")
+        except Exception:
+            voice_styles = {}
+        # 条件状态迁移 queued/running → running：
+        # worker 启动与用户 cancel 存在竞态（cancel 可能已写终态），
+        # 终态一律不复活，worker 直接退出（否则被取消的 build 会被
+        # 迟到的 running 覆盖，后续 start_build 又误判"已有活跃 build"）。
+        from sqlalchemy import update as _sa_update
+        res = await s.execute(
+            _sa_update(Build)
+            .where(
+                Build.build_id == build_id,
+                Build.status.in_(("queued", "running")),
+            )
+            .values(
+                status="running",
+                started_at=datetime.now(UTC).replace(tzinfo=None),
+                progress_msg=f"开始合成 1/{total} 章…",
+            )
+        )
+        await s.commit()
+        if (res.rowcount or 0) == 0:
+            logger.warning(
+                f"[build_worker] build_id={build_id[:8]}... 启动时已是终态 "
+                f"status={b.status}（已取消/失败），不复活，worker 直接退出"
+            )
+            return
         # 严格契约：multicast 只能配豆包（Seed-Audio）。
         # retry/历史数据行不会重新走 start_build 校验，这里兜底拦截，
         # 防止静默降级到 classic 逐句合成。
         _validate_multicast_provider(build_mode, tts_provider_label)
-        await s.commit()
 
     logger.info(
         f"[build_worker] build_id={build_id[:8]}... total_chapters={total} "
-        f"mode={build_mode} strict={strict_mode} tts_provider={tts_provider_label}"
+        f"mode={build_mode} strict={strict_mode} tts_provider={tts_provider_label} "
+        f"styles={len(voice_styles)} narrator_emo={narrator_emotion!r}"
     )
 
     from ..ai.factory import get_tts_sem
@@ -1323,6 +1493,9 @@ async def _run_build_inner(
     failed_count = 0
     chapter_ok_flag: dict[int, bool] = {}
     strict_abort_flag = False  # strict 模式下首次失败即标记后续章节 skip
+    # TTS 用量计数（真实供应商调用；缓存命中不计 calls，multicast 每章 1 次）
+    tts_calls_used = 0
+    tts_chars_used = 0
 
     for ch_idx, ch in enumerate(chapters):
         # strict 模式一旦出现失败，后续章节直接 skip 标记 failed（不写文件）
@@ -1498,6 +1671,9 @@ async def _run_build_inner(
                 voice_assignments=voice_assignments,
                 segment_overrides=None,
                 start_idx=0,
+                narrator_emotion=narrator_emotion,
+                narrator_instruction=narrator_instruction,
+                speaker_styles=voice_styles,
             )
 
             # ---------- 多播剧模式：Seed-Audio 整章一体化生成 ----------
@@ -1529,6 +1705,20 @@ async def _run_build_inner(
                     max_secs=MAX_CHAPTER_AUDIO_SECS,
                 )
                 chapter_outputs[ch_idx] = (ch_fpath, ch_dur_ms)
+                # 用量：Seed-Audio 整章一次调用；chars 计非静音段文本
+                tts_calls_used += 1
+                tts_chars_used += sum(
+                    len(sd.get("text") or "") for sd in seg_dicts
+                    if (sd.get("kind") or "") != "silence"
+                )
+                # 整章一体化无逐段时长 → 按字符占比估算时间轴（SRT 用）
+                _write_chapter_timings(
+                    build_id, ch_idx, segs,
+                    [0] * len(segs),
+                    total_dur_ms=ch_dur_ms,
+                    estimated=True,
+                    seg_text_override={i: sd["text"] for i, sd in enumerate(seg_dicts)},
+                )
 
                 async with factory() as s:
                     stmt_art = select(BuildArtifact).where(
@@ -1553,6 +1743,7 @@ async def _run_build_inner(
                 continue
 
             async def _synth_seg(s: _Segment) -> tuple[_Segment, bytes, int]:
+                nonlocal tts_calls_used, tts_chars_used
                 if s.kind == "silence":
                     return s, make_silent_mp3(max(s.silence_ms, 1)), s.silence_ms
                 vid = s.voice_id or narrator_voice_id
@@ -1560,13 +1751,26 @@ async def _run_build_inner(
                 if pronunciation_rules:
                     char_id = speaker_to_char_id.get(s.speaker or "")
                     s.text = apply_pronunciation_rules(s.text, pronunciation_rules, character_id=char_id)
-                cached = await tts_segment_cache_get(vid, speed, s.text)
+                seg_emo = (s.emotion or "").strip()
+                seg_ins = (s.instruction or "").strip()
+                cached = await tts_segment_cache_get(
+                    vid, speed, s.text, emotion=seg_emo, instruction=seg_ins,
+                )
                 if cached is not None:
                     mp3_b, dur_ms = cached
                     return s, mp3_b, dur_ms
                 async with sem:
-                    data, dur = await tts.synthesize_to_bytes(s.text, vid, speed=speed)
-                await tts_segment_cache_put(vid, speed, s.text, data, dur)
+                    data, dur = await tts.synthesize_to_bytes(
+                        s.text, vid, speed=speed,
+                        # 未配置时传 provider 默认（"calm"），与历史行为一致
+                        emotion=seg_emo or "calm",
+                        instruction_text=seg_ins or None,
+                    )
+                tts_calls_used += 1
+                tts_chars_used += len(s.text)
+                await tts_segment_cache_put(
+                    vid, speed, s.text, data, dur, emotion=seg_emo, instruction=seg_ins,
+                )
                 return s, data, dur
 
             tasks = [_synth_seg(seg) for seg in segs]
@@ -1582,6 +1786,14 @@ async def _run_build_inner(
             os.replace(tmp_fpath, ch_fpath)
             ch_dur_ms = _estimate_mp3_duration_ms(ch_bytes)
             chapter_outputs[ch_idx] = (ch_fpath, ch_dur_ms)
+
+            # 章内时间轴 sidecar（SRT/LRC 用）：gather 保序 → results[i] 对应 segs[i]
+            _write_chapter_timings(
+                build_id, ch_idx, segs,
+                [r[2] for r in results],
+                total_dur_ms=ch_dur_ms,
+                estimated=False,
+            )
 
             async with factory() as s:
                 stmt_art = select(BuildArtifact).where(
@@ -1764,7 +1976,18 @@ async def _run_build_inner(
             b.total_duration_ms = 0 if strict_final_failed else total_ms
             b.completed_at = datetime.now(UTC).replace(tzinfo=None)
             b.failed_chapters_json = json.dumps(sorted(this_retry_failed), ensure_ascii=False)
+            # TTS 用量：真实供应商调用（缓存命中不计次）
+            b.tts_calls = tts_calls_used
+            b.tts_chars = tts_chars_used
             await s.commit()
+
+    # 项目级用量汇总（UsageEvent 表，供 /usage 聚合展示）
+    from .usage import record_tts_usage
+    record_tts_usage(
+        project_id, build_id,
+        calls=tts_calls_used, chars=tts_chars_used,
+        detail=f"build_{build_mode}",
+    )
 
     # 构建结束同步项目状态：全量成功 → done（前端"已完成"）；
     # 部分成功 → partial_success；失败/取消保持 ready（用户可重新构建）。
@@ -1866,6 +2089,13 @@ async def delete_build(project_id: str, build_id: str) -> None:
                 fpath.unlink()
         except OSError as e:
             logger.warning(f"[build_delete] 删音频文件失败: {fname} -> {e}")
+        # 同名时间轴 sidecar 一并清理
+        sidecar = audio_dir / _timings_filename_of_audio(fname)
+        try:
+            if sidecar.is_file():
+                sidecar.unlink()
+        except OSError as e:
+            logger.warning(f"[build_delete] 删时间轴文件失败: {sidecar.name} -> {e}")
     if zip_fname:
         try:
             fpath = audio_dir / zip_fname
@@ -1873,6 +2103,14 @@ async def delete_build(project_id: str, build_id: str) -> None:
                 fpath.unlink()
         except OSError as e:
             logger.warning(f"[build_delete] 删 ZIP 失败: {zip_fname} -> {e}")
+    # M4B 产物一并清理
+    m4b_fname = m4b_filename(build_id)
+    try:
+        fpath = audio_dir / m4b_fname
+        if fpath.is_file():
+            fpath.unlink()
+    except OSError as e:
+        logger.warning(f"[build_delete] 删 M4B 失败: {m4b_fname} -> {e}")
 
     logger.info(
         f"[build_delete] build_id={build_id[:8]}... "
@@ -1881,3 +2119,132 @@ async def delete_build(project_id: str, build_id: str) -> None:
 
 
 _run_seg_cache_gc_if_needed(force=False)
+
+
+# =====================================================================
+# 合成前预估（不调用任何外部 API，零成本）
+# =====================================================================
+
+class BuildEstimateResp(BaseModel):
+    """GET /projects/{id}/estimate：开始合成前的成本/时长预估。"""
+    chapter_count: int
+    total_chars: int
+    est_tts_segments: int          # 非静音分段数 ≈ TTS 调用上限（未计缓存命中）
+    est_audio_minutes: float       # 预估成品音频时长（分钟）
+    est_zip_mb: float              # 预估音频体积（MB，128kbps 经验值）
+    est_llm_calls: int             # prepare 阶段 LLM 调用估算（已 prepare 过则为 0）
+    prepared: bool                 # 项目是否已 prepare（决定 est_llm_calls 是否有意义）
+    has_dialogues: bool            # 是否已有对白归属数据
+
+
+async def estimate_project_build(project_id: str, speed: float = 1.0) -> BuildEstimateResp:
+    """按当前章节/对白数据估算一次 build 的规模。
+
+    中文 TTS 语速经验值：约 4.2 字/秒（1.0x），MP3 128kbps ≈ 16KB/s。
+    缓存命中会显著减少真实调用量，这里给的是"冷缓存上限"。
+    """
+    from ..core.config import settings as _settings
+
+    factory = get_session_factory()
+    async with factory() as s:
+        p = await s.get(Project, project_id)
+        if not p:
+            raise ValueError(f"项目不存在: {project_id}")
+        chapters_dicts = json.loads(p.chapters_json or "[]") if p.chapters_json else []
+        chapters = [
+            Chapter(idx=c["idx"], title=c.get("title", ""), text=c.get("text", ""))
+            for c in chapters_dicts
+        ]
+        prepared = bool(p.chapters_json)
+        stmt_d = select(ProjectDialogue).where(ProjectDialogue.project_id == project_id)
+        all_dialogues = list((await s.execute(stmt_d)).scalars().all())
+
+    dialogues_by_chapter: dict[int, list] = {}
+    for d in all_dialogues:
+        dialogues_by_chapter.setdefault(d.chapter_idx, []).append(d)
+    for lst in dialogues_by_chapter.values():
+        lst.sort(key=lambda x: x.anchor_start)
+
+    total_chars = sum(len(ch.text) for ch in chapters)
+    seg_count = 0
+    for ch in chapters:
+        segs, _ = _build_segments_for_chapter(
+            ch, dialogues_by_chapter.get(ch.idx, []),
+            narrator_voice_id="est", voice_assignments={},
+            segment_overrides=None, start_idx=0,
+        )
+        seg_count += sum(1 for sg in segs if sg.kind != "silence")
+
+    sp = max(0.5, min(2.0, float(speed or 1.0)))
+    chars_per_sec = 4.2 * sp
+    est_audio_sec = total_chars / chars_per_sec if total_chars else 0
+    # MP3 128kbps ≈ 16KB/s
+    est_zip_mb = est_audio_sec * 16.0 / (1024.0 * 1024.0)
+
+    # LLM prepare 估算（角色切片 + 消歧批次 + 对白批次 + 音色推荐）
+    slice_size = max(1, int(_settings.LLM_CHAR_EXTRACT_SLICE_SIZE))
+    dlg_batch = max(1, int(_settings.DIALOGUE_BATCH_CHAPTERS))
+    est_llm_calls = 0
+    if not prepared:
+        import math
+        est_llm_calls = (
+            math.ceil(total_chars / slice_size)      # 角色提取切片
+            + 2                                       # 消歧（通常 1-2 批）
+            + math.ceil(max(len(chapters), 1) / dlg_batch)  # 对白归属批次
+            + 1                                       # 音色推荐
+        )
+
+    return BuildEstimateResp(
+        chapter_count=len(chapters),
+        total_chars=total_chars,
+        est_tts_segments=seg_count,
+        est_audio_minutes=round(est_audio_sec / 60.0, 1),
+        est_zip_mb=round(est_zip_mb, 1),
+        est_llm_calls=est_llm_calls,
+        prepared=prepared,
+        has_dialogues=len(all_dialogues) > 0,
+    )
+
+
+class ProjectUsageResp(BaseModel):
+    """GET /projects/{id}/usage：项目累计供应商用量。"""
+    llm_calls: int
+    llm_chars: int
+    tts_calls: int
+    tts_chars: int
+    # 最近若干条明细（时间倒序）
+    recent: list[dict]
+
+
+async def get_project_usage(project_id: str, limit: int = 20) -> ProjectUsageResp:
+    from ..db.models import UsageEvent
+    factory = get_session_factory()
+    async with factory() as s:
+        p = await s.get(Project, project_id)
+        if not p:
+            raise ValueError(f"项目不存在: {project_id}")
+        stmt = select(UsageEvent).where(UsageEvent.project_id == project_id).order_by(
+            UsageEvent.id.desc()
+        )
+        rows = list((await s.execute(stmt)).scalars().all())
+    llm_calls = sum(r.calls for r in rows if r.kind == "llm")
+    llm_chars = sum(r.chars for r in rows if r.kind == "llm")
+    tts_calls = sum(r.calls for r in rows if r.kind == "tts")
+    tts_chars = sum(r.chars for r in rows if r.kind == "tts")
+    recent = [
+        {
+            "id": r.id,
+            "kind": r.kind,
+            "detail": r.detail,
+            "calls": r.calls,
+            "chars": r.chars,
+            "build_id": r.build_id,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows[: max(1, min(int(limit), 100))]
+    ]
+    return ProjectUsageResp(
+        llm_calls=llm_calls, llm_chars=llm_chars,
+        tts_calls=tts_calls, tts_chars=tts_chars,
+        recent=recent,
+    )

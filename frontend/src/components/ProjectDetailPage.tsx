@@ -8,6 +8,8 @@ import {
   BuildListItem,
   BuildDetailResp,
   BuildStatusResp,
+  BuildEstimateResp,
+  ProjectUsageResp,
   Voice,
   CharacterWithVoice,
   ChapterSummary,
@@ -803,6 +805,19 @@ function LastBuildSummary({
 
 // =================== Chapters Tab ===================
 // =================== 角色颜色工具 ===================
+
+// 情感预设（MiniMax 官方 emotion 枚举为主；豆包 TTS 2.0 兼容同名值）
+const EMOTION_PRESETS = [
+  { value: '', label: '默认' },
+  { value: 'calm', label: '平静' },
+  { value: 'happy', label: '开心' },
+  { value: 'sad', label: '悲伤' },
+  { value: 'angry', label: '愤怒' },
+  { value: 'surprised', label: '惊讶' },
+  { value: 'fearful', label: '恐惧' },
+  { value: 'gentle', label: '温柔' },
+  { value: 'cold', label: '冷漠' },
+];
 // Build 级运行态判定：后端 Build.status ∈ {queued, running, success, partial_success, failed, cancelled}
 // （'synthesizing'/'preparing' 是项目级响应层映射，不用于 build 判断）
 const BUILD_RUNNING_STATES = ['queued', 'running', 'synthesizing', 'preparing'];
@@ -1188,6 +1203,25 @@ function VoicesTab({
     }
   };
 
+  // 保存角色情感/语气（合成时透传 TTS：emotion=英文枚举值，instruction=豆包风格指令）
+  const onSaveCharStyle = async (charId: number, patch: { emotion?: string; instruction?: string }) => {
+    setChars(prev => prev.map(c => (c.id === charId ? { ...c, ...patch } : c)));
+    try {
+      const cur = chars.find(c => c.id === charId);
+      await api.projectUpdateCharVoice(
+        project.project_id,
+        charId,
+        cur?.assigned_voice_id || '',
+        {
+          emotion: patch.emotion ?? null,
+          instruction: patch.instruction ?? null,
+        }
+      );
+    } catch (e: any) {
+      alert(`保存角色情感失败: ${e?.message || e}`);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="glass-panel space-y-5 p-5 sm:p-6 relative overflow-hidden">
@@ -1347,6 +1381,30 @@ function VoicesTab({
                     loadingVoiceId={loadingVoice}
                     compact
                   />
+                  {/* 情感/语气：合成时透传 TTS（emotion=英文枚举；instruction=豆包风格指令，MiniMax 忽略） */}
+                  <div className="flex items-center gap-2">
+                    <select
+                      className="input-base !py-1.5 !px-2 text-xs w-24 shrink-0"
+                      value={c.emotion || ''}
+                      onChange={e => onSaveCharStyle(c.id, { emotion: e.target.value })}
+                      title="情感（MiniMax 官方枚举；豆包同样支持）"
+                    >
+                      {EMOTION_PRESETS.map(p => (
+                        <option key={p.value} value={p.value}>{p.label}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      className="input-base !py-1.5 !px-2 text-xs flex-1 min-w-0"
+                      placeholder="语气指令（豆包），如：低沉沙哑、压抑着怒火"
+                      defaultValue={c.instruction || ''}
+                      onBlur={e => {
+                        const v = e.target.value.trim();
+                        if (v !== (c.instruction || '')) onSaveCharStyle(c.id, { instruction: v });
+                      }}
+                      maxLength={200}
+                    />
+                  </div>
                 </div>
               );
             })}
@@ -1372,8 +1430,16 @@ function BuildsTab({
 }) {
   const [showCreate, setShowCreate] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // 项目累计供应商用量（LLM prepare + TTS build）
+  const [usage, setUsage] = useState<ProjectUsageResp | null>(null);
 
   const hasRunning = builds.some(b => isBuildRunning(b.status));
+
+  useEffect(() => {
+    api.projectUsage(projectId)
+      .then(setUsage)
+      .catch(() => { /* 静默：用量仅展示用 */ });
+  }, [projectId]);
 
   useEffect(() => {
     if (!hasRunning) return;
@@ -1400,6 +1466,13 @@ function BuildsTab({
             <p className="text-sm text-ink-500 mt-0.5 max-w-xl">
               每次构建都会按当前角色音色 + 旁白 + 语速合成所有章节 MP3，可单独下载或打包 ZIP。
             </p>
+            {usage && (
+              <p className="text-[11px] text-ink-500 mt-1" title="来自 UsageEvent 汇总：prepare 阶段 LLM 调用 + build 阶段 TTS 真实调用（缓存命中不计）">
+                项目累计用量：
+                LLM {usage.llm_calls} 次 / {usage.llm_chars.toLocaleString()} 字
+                · TTS {usage.tts_calls} 次 / {usage.tts_chars.toLocaleString()} 字
+              </p>
+            )}
           </div>
         </div>
         <button
@@ -1571,6 +1644,11 @@ function BuildRow({
         <span className="text-sm text-ink-600 tabular-nums">
           {item.completed_chapters} / {item.total_chapters} 章 · {pct}%
         </span>
+        {!!item.tts_calls && (
+          <span className="text-[11px] text-ink-500 tabular-nums" title="本次构建实际调用 TTS 的次数（缓存命中不计）">
+            TTS {item.tts_calls} 次
+          </span>
+        )}
         {isRunning && item.started_at && (
           <span className="chip"
             style={{
@@ -1695,6 +1773,13 @@ function BuildDetailContent({
   // P1 #6：每个 BuildArtifact 的签名音频 URL（一次性 token，5 分钟过期）
   const [signedUrls, setSignedUrls] = useState<Record<number, string>>({});
   const [zipUrl, setZipUrl] = useState<string | null>(null);
+  // M4B 打包状态机：none → running → ready/failed（ffmpeg 转码后台任务）
+  const [m4bState, setM4bState] = useState<string>('none');
+  const [m4bUrl, setM4bUrl] = useState<string | null>(null);
+  const [m4bErr, setM4bErr] = useState<string | null>(null);
+  const [m4bBusy, setM4bBusy] = useState(false);
+  const isDoneBuild = detail.status === 'success' || detail.status === 'partial_success';
+
   useEffect(() => {
     let cancelled = false;
     const signAll = async () => {
@@ -1725,12 +1810,72 @@ function BuildDetailContent({
     signAll();
     return () => { cancelled = true; };
   }, [detail.build_id, projectId, (detail.artifacts ?? []).length]);
+
+  // M4B 状态查询 + running 时轮询
+  useEffect(() => {
+    if (!isDoneBuild) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const check = async () => {
+      try {
+        const st = await api.buildM4bStatus(projectId, detail.build_id);
+        if (cancelled) return;
+        setM4bState(st.state);
+        setM4bErr(st.error || null);
+        if (st.state === 'ready') {
+          setM4bUrl(await api.buildM4bDownload(projectId, detail.build_id));
+          if (timer) { clearInterval(timer); timer = null; }
+        }
+      } catch { /* 静默 */ }
+    };
+    check();
+    if (m4bState === 'running' || m4bBusy) {
+      timer = setInterval(check, 3000);
+    }
+    return () => { cancelled = true; if (timer) clearInterval(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, detail.build_id, isDoneBuild, m4bState, m4bBusy]);
+
+  const onStartM4b = async () => {
+    setM4bBusy(true);
+    setM4bErr(null);
+    try {
+      const st = await api.buildM4bStart(projectId, detail.build_id);
+      setM4bState(st.state);
+    } catch (e: any) {
+      setM4bErr(String(e?.message || e));
+      setM4bState('failed');
+    } finally {
+      setM4bBusy(false);
+    }
+  };
+
+  const downloadSubtitles = async (fmt: 'srt' | 'lrc') => {
+    try {
+      const { filename, content } = await api.buildSubtitles(projectId, detail.build_id, fmt);
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      alert(`字幕生成失败: ${e?.message || e}`);
+    }
+  };
+
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3 flex-wrap text-xs text-ink-500">
         <span className="chip-soft">语速 {detail.speed?.toFixed(1) ?? '1.0'}x</span>
         <span className="chip-soft">总时长 {formatDuration(detail.total_duration_sec)}</span>
         <span className="chip-soft">总大小 {formatSize(detail.total_size_kb ? detail.total_size_kb * 1024 : null)}</span>
+        {!!detail.tts_calls && (
+          <span className="chip-soft" title="本次构建实际调用 TTS 供应商的次数与字符数（缓存命中不计）">
+            TTS {detail.tts_calls} 次 / {detail.tts_chars?.toLocaleString()} 字
+          </span>
+        )}
         {detail.zip_url && (detail.status === 'success' || detail.status === 'partial_success' || detail.status === 'done') && zipUrl && (
           <a
             className="btn-primary !py-1.5 !px-3 text-xs ml-auto"
@@ -1742,6 +1887,40 @@ function BuildDetailContent({
           </a>
         )}
       </div>
+
+      {/* 有声书成品区：M4B（带章节元数据）+ 字幕，仅完成态展示 */}
+      {isDoneBuild && (
+        <div className="rounded-lg border border-ink-300/70 bg-ink-100 px-4 py-3 flex items-center gap-2 flex-wrap">
+          <span className="text-xs text-ink-600 mr-1">有声书成品：</span>
+          {m4bState === 'ready' && m4bUrl ? (
+            <a className="btn-primary !py-1.5 !px-3 text-xs" href={m4bUrl} download>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="mr-1"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+              下载 M4B（含章节）
+            </a>
+          ) : m4bState === 'running' ? (
+            <span className="chip-soft">
+              <span className="inline-block w-3 h-3 border-2 border-brand-500 border-t-transparent rounded-full animate-spin mr-1.5 align-middle" />
+              M4B 转码中…（整本书约需 1~5 分钟）
+            </span>
+          ) : (
+            <button className="btn-ghost !py-1.5 !px-3 text-xs" onClick={onStartM4b} disabled={m4bBusy} title="用 ffmpeg 把全部章节 MP3 合成单个 .m4b（AAC，含章节元数据，Apple Books / 播客客户端可直接显示章节）">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="mr-1"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+              打包 M4B
+            </button>
+          )}
+          <button className="btn-ghost !py-1.5 !px-3 text-xs" onClick={() => downloadSubtitles('srt')} title="整本书 SRT 字幕（对白带说话人前缀，与音频时间轴对齐）">
+            字幕 SRT
+          </button>
+          <button className="btn-ghost !py-1.5 !px-3 text-xs" onClick={() => downloadSubtitles('lrc')} title="整本书 LRC 歌词（支持滚动歌词的播放器）">
+            歌词 LRC
+          </button>
+          {m4bState === 'failed' && m4bErr && (
+            <span className="text-[11px] text-red-300/90 truncate max-w-full" title={m4bErr}>
+              M4B 失败：{m4bErr.split('\n')[0]}
+            </span>
+          )}
+        </div>
+      )}
 
       {detail.progress_msg && (
         <div className="text-xs text-ink-500 rounded-md bg-ink-200 px-3 py-2 border border-ink-300/70">
@@ -1868,8 +2047,23 @@ function CreateBuildModal({
   const [ttsProvider, setTtsProvider] = useState<'minimax' | 'doubao'>(() =>
     narrator.startsWith('doubao:') || narrator.startsWith('icl:') ? 'doubao' : 'minimax'
   );
+  // 旁白情感/风格指令（本次构建快照；角色级情感在「音色」页配置）
+  const [narrEmotion, setNarrEmotion] = useState('');
+  const [narrInstruction, setNarrInstruction] = useState('');
+  const [showNarrAdvanced, setShowNarrAdvanced] = useState(false);
+  // 合成前预估（零成本接口：章节/分段/时长/体积/LLM 调用量）
+  const [estimate, setEstimate] = useState<BuildEstimateResp | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.projectEstimate(projectId, project.default_speed ?? 1.0)
+      .then(est => { if (!cancelled) setEstimate(est); })
+      .catch(() => { /* 预估失败不影响创建，静默 */ });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
   const isMulticast = mode === 'multicast';
   const effectiveProvider: 'minimax' | 'doubao' = isMulticast ? 'doubao' : ttsProvider;
@@ -1929,6 +2123,8 @@ function CreateBuildModal({
         speed,
         mode,
         tts_provider: effectiveProvider,
+        narrator_emotion: narrEmotion,
+        narrator_instruction: narrInstruction.trim(),
       });
       onCreated();
     } catch (e: any) {
@@ -1969,6 +2165,26 @@ function CreateBuildModal({
         <p className="text-sm text-ink-500 mb-5 relative">
           可在生成前做最后调整；保存到项目的默认配置不会被改动。
         </p>
+
+        {/* 合成前预估（零成本接口）：规模 / 时长 / 调用量参考 */}
+        {estimate && (
+          <div className="rounded-lg border border-ink-300/70 bg-ink-100 px-4 py-3 mb-5 relative">
+            <div className="text-xs text-ink-500 mb-2 flex items-center gap-1.5">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              合成预估（冷缓存上限，缓存命中后实际调用量更低）
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              <span className="chip-soft">共 {estimate.chapter_count} 章</span>
+              <span className="chip-soft">{estimate.total_chars.toLocaleString()} 字</span>
+              <span className="chip-soft">≈{estimate.est_tts_segments} 段 TTS 调用</span>
+              <span className="chip-soft">≈{estimate.est_audio_minutes} 分钟音频</span>
+              <span className="chip-soft">≈{estimate.est_zip_mb} MB</span>
+              {estimate.prepared
+                ? <span className="chip-soft">已识别（无需再调 LLM）</span>
+                : <span className="chip-soft">需先识别 ≈{estimate.est_llm_calls} 次 LLM</span>}
+            </div>
+          </div>
+        )}
 
         <div className="space-y-5 relative">
           {/* 构建模式 + TTS 引擎 */}
@@ -2065,6 +2281,45 @@ function CreateBuildModal({
               onChange={setNarrator}
               onPreview={() => {}}
             />
+            {/* 旁白情感/语气（可选）：classic 模式生效；角色情感在「音色」页配置 */}
+            {!isMulticast && (
+              <div className="rounded-lg border border-ink-300/70 bg-ink-100 p-3 space-y-2">
+                <button
+                  type="button"
+                  className="text-xs text-ink-600 hover:text-brand-300 flex items-center gap-1"
+                  onClick={() => setShowNarrAdvanced(v => !v)}
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className={`transition-transform ${showNarrAdvanced ? 'rotate-90' : ''}`}><polyline points="9 18 15 12 9 6"/></svg>
+                  旁白情感与语气（高级，可选）
+                  {(narrEmotion || narrInstruction.trim()) && (
+                    <span className="chip-soft !py-0 !px-1.5 !text-[10px] text-brand-300">已配置</span>
+                  )}
+                </button>
+                {showNarrAdvanced && (
+                  <div className="flex flex-col gap-2">
+                    <select
+                      className="input-base !py-1.5 !px-2 text-xs w-32"
+                      value={narrEmotion}
+                      onChange={e => setNarrEmotion(e.target.value)}
+                      title="旁白情感（MiniMax 官方枚举；豆包同样支持）"
+                    >
+                      {EMOTION_PRESETS.map(p => (
+                        <option key={p.value} value={p.value}>{p.label}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      className="input-base !py-1.5 !px-2 text-xs"
+                      placeholder="旁白语气指令（豆包），如：沉稳、略带悬念的讲述感"
+                      value={narrInstruction}
+                      onChange={e => setNarrInstruction(e.target.value)}
+                      maxLength={200}
+                    />
+                    <span className="text-[11px] text-ink-500">多播剧模式下由 Seed-Audio 自行把控情绪，此处配置不生效。</span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="space-y-2">

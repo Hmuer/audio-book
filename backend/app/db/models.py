@@ -168,6 +168,17 @@ class Build(Base):
     # 细粒度的段级缓存走段级 sha256，不在这里比。
     config_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
+    # 情感/语气配置快照：narrator 的 emotion/instruction + 各角色 speaker → {emotion, instruction}。
+    # 与 voice_assignments_json 同属"本次配置快照"：启动 build 时从 ProjectCharacter 拷贝，
+    # 后续修改角色情感不影响历史 build。
+    narrator_emotion: Mapped[str] = mapped_column(String(32), default="")
+    narrator_instruction: Mapped[str] = mapped_column(String(512), default="")
+    voice_styles_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # 本次 build 的 TTS 用量（真实供应商调用，不含段级缓存命中）
+    tts_calls: Mapped[int] = mapped_column(Integer, default=0)
+    tts_chars: Mapped[int] = mapped_column(Integer, default=0)
+
     # 产出
     zip_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
     total_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -214,6 +225,11 @@ class ProjectCharacter(Base):
     personality: Mapped[str] = mapped_column(String(512), default="")
     canonical_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     assigned_voice_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 情感/语气（合成时透传给 TTS provider）：emotion 为英文枚举风格值
+    # （如 calm/happy/sad/angry，MiniMax 官方枚举；豆包同理），空串 = 用 provider 默认
+    emotion: Mapped[str] = mapped_column(String(32), default="")
+    # 自由文本风格指令（豆包 TTS 2.0 / Seed-Audio 的 instruction_text；MiniMax 忽略）
+    instruction: Mapped[str] = mapped_column(String(512), default="")
 
     project: Mapped[Project] = relationship(back_populates="project_characters")
 
@@ -396,4 +412,21 @@ class JobTask(Base):
     progress_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime)
     updated_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+# 用量记录：prepare（LLM）与 build（TTS）对供应商的真实调用汇总。
+# - kind='llm'：prepare 各阶段（角色识别/去重/对白归属/音色推荐）完成时写一条
+# - kind='tts'：build 完成时写一条（与 Build.tts_calls/tts_chars 同源冗余，便于项目级聚合）
+# chars = 发送给供应商的字符数（prompt/合成文本），是计费的主要量纲。
+class UsageEvent(Base):
+    __tablename__ = "usage_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(String(64), index=True)
+    build_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # llm | tts
+    detail: Mapped[str] = mapped_column(String(64), default="")  # 阶段说明，如 characters / build_classic
+    calls: Mapped[int] = mapped_column(Integer, default=0)
+    chars: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 

@@ -62,6 +62,17 @@ _BUILD_NEW_COLUMNS = {
     # 注意：必须保留 SQL 级默认值，旧行自动补齐 classic / minimax（符合 T-TR3 向后兼容）
     "mode": "VARCHAR(32) DEFAULT 'classic'",
     "tts_provider": "VARCHAR(32) DEFAULT 'minimax'",
+    # 情感/语气配置快照 + TTS 用量
+    "narrator_emotion": "VARCHAR(32) DEFAULT ''",
+    "narrator_instruction": "VARCHAR(512) DEFAULT ''",
+    "voice_styles_json": "TEXT",
+    "tts_calls": "INTEGER DEFAULT 0",
+    "tts_chars": "INTEGER DEFAULT 0",
+}
+# 角色：情感/语气字段（旧库补列）
+_PROJECT_CHARACTERS_NEW_COLUMNS = {
+    "emotion": "VARCHAR(32) DEFAULT ''",
+    "instruction": "VARCHAR(512) DEFAULT ''",
 }
 
 
@@ -87,6 +98,12 @@ def _migrate_existing_sync(conn) -> None:
         for col, ddl in _BUILD_NEW_COLUMNS.items():
             if col not in existing_cols:
                 conn.execute(text(f"ALTER TABLE builds ADD COLUMN {col} {ddl}"))
+
+    if "project_characters" in tables:
+        existing_cols = {c["name"] for c in insp.get_columns("project_characters")}
+        for col, ddl in _PROJECT_CHARACTERS_NEW_COLUMNS.items():
+            if col not in existing_cols:
+                conn.execute(text(f"ALTER TABLE project_characters ADD COLUMN {col} {ddl}"))
 
 
 async def init_db() -> None:

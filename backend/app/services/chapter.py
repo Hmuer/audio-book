@@ -69,6 +69,9 @@ class _Segment(BaseModel):
     text: str = ""
     confidence: float | None = None
     silence_ms: int = 0  # kind=silence 时用
+    # 情感/语气（合成时透传 TTS）：空串 = provider 默认
+    emotion: str = ""
+    instruction: str = ""
 
 
 def _build_segments_for_chapter(
@@ -78,11 +81,27 @@ def _build_segments_for_chapter(
     voice_assignments: dict[str, str],
     segment_overrides: dict[int, str] | None,
     start_idx: int,
+    *,
+    narrator_emotion: str = "",
+    narrator_instruction: str = "",
+    speaker_styles: dict[str, dict[str, str]] | None = None,
 ) -> tuple[list[_Segment], int]:
     """
     把一章切成：title(+1.5s静音) + 对白/旁白交替段 + 段间短静音
     返回 (segments, next_start_idx)
+
+    情感参数（可选）：
+    - narrator_emotion / narrator_instruction：标题与旁白段的 emotion / instruction_text
+    - speaker_styles：{角色名: {"emotion": str, "instruction": str}}，对白段按 speaker 取用
     """
+    narrator_style = {"emotion": narrator_emotion or "", "instruction": narrator_instruction or ""}
+    styles = speaker_styles or {}
+
+    def _style_for(speaker: str | None) -> dict[str, str]:
+        if speaker and speaker in styles:
+            return styles[speaker]
+        return narrator_style
+
     segs: list[_Segment] = []
     idx = start_idx
 
@@ -94,6 +113,7 @@ def _build_segments_for_chapter(
         segs.append(_Segment(
             kind="title", chapter_idx=ch.idx, idx=idx,
             voice_id=narrator_voice_id, text=title_tts,
+            emotion=narrator_style["emotion"], instruction=narrator_style["instruction"],
         ))
         idx += 1
         segs.append(_Segment(
@@ -122,6 +142,7 @@ def _build_segments_for_chapter(
                 segs.append(_Segment(
                     kind="narrator", chapter_idx=ch.idx, idx=idx,
                     voice_id=narrator_voice_id, text=narrator_text,
+                    emotion=narrator_style["emotion"], instruction=narrator_style["instruction"],
                 ))
                 idx += 1
                 segs.append(_Segment(
@@ -131,13 +152,17 @@ def _build_segments_for_chapter(
                 idx += 1
 
         # dialogue 段：对白文本（去掉引号的 text）
-        seg_voice_id = voice_assignments.get(getattr(dlg, "speaker", ""), narrator_voice_id)
+        speaker = getattr(dlg, "speaker", None)
+        seg_voice_id = voice_assignments.get(speaker or "", narrator_voice_id)
+        dlg_style = _style_for(speaker)
         dlg_seg = _Segment(
             kind="dialogue", chapter_idx=ch.idx, idx=idx,
-            speaker=getattr(dlg, "speaker", None),
+            speaker=speaker,
             voice_id=seg_voice_id,
             text=getattr(dlg, "text", ""),
             confidence=getattr(dlg, "confidence", None),
+            emotion=dlg_style.get("emotion", ""),
+            instruction=dlg_style.get("instruction", ""),
         )
         segs.append(dlg_seg)
         idx += 1
@@ -159,6 +184,7 @@ def _build_segments_for_chapter(
             segs.append(_Segment(
                 kind="narrator", chapter_idx=ch.idx, idx=idx,
                 voice_id=narrator_voice_id, text=tail,
+                emotion=narrator_style["emotion"], instruction=narrator_style["instruction"],
             ))
             idx += 1
 

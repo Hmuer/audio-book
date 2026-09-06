@@ -3,6 +3,7 @@ import itertools
 from pydantic import BaseModel
 
 from ..ai.factory import get_llm
+from .usage import track_llm
 
 
 EXTRACT_FEW_SHOT = r"""
@@ -138,6 +139,7 @@ async def extract_characters_with_llm(text: str) -> list[Character]:
             max_tokens=8000,
             use_fast_model=True,  # 快速模型 M2.7-highspeed 足以胜任角色提取，速度提升明显
         )
+        track_llm(calls=1, chars=len(prompt), detail="character_extract")
         return wrapped.data
     except Exception:
         # 兜底：再试一次纯数组 prompt，手动 parse
@@ -148,6 +150,7 @@ async def extract_characters_with_llm(text: str) -> list[Character]:
             max_tokens=8000,
             use_fast_model=True,
         )
+        track_llm(calls=2, chars=len(prompt) * 2, detail="character_extract")
         return fallback.data
 
 
@@ -190,6 +193,7 @@ async def deduplicate_characters_with_llm(
             max_tokens=16384,  # 配合 DEDUP_BATCH_SIZE=20：190 对×~60 token≈11.4k，安全在 16k 内
             use_fast_model=True,  # 消歧是结构化判断任务，M2.7-highspeed 足够且速度更快
         )
+        track_llm(calls=1, chars=len(prompt), detail="character_dedup")
         return wrapped.data
 
     # token 预算：每对 DedupResult JSON 约 80 字符 ≈ 60 token（中文 ~1.3 字符/token）

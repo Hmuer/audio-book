@@ -323,12 +323,77 @@ export const api = {
   // 拉取角色列表
   projectCharacters: (id: string) =>
     _fetch<CharacterWithVoice[]>(`/api/projects/${id}/characters`),
-  // 修改角色音色
-  projectUpdateCharVoice: (projectId: string, charId: number, voiceId: string) =>
+  // 修改角色音色 / 情感 / 语气（emotion/instruction 传 null 表示不修改）
+  projectUpdateCharVoice: (
+    projectId: string,
+    charId: number,
+    voiceId: string,
+    opts?: { emotion?: string | null; instruction?: string | null }
+  ) =>
     _fetch<CharacterResp>(`/api/projects/${projectId}/characters/${charId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ voice_id: voiceId }),
+      body: JSON.stringify({
+        voice_id: voiceId,
+        ...(opts?.emotion !== undefined ? { emotion: opts.emotion } : {}),
+        ...(opts?.instruction !== undefined ? { instruction: opts.instruction } : {}),
+      }),
     }),
+  // 合成前预估（章节/分段/时长/体积/LLM 调用量，零成本）
+  projectEstimate: (projectId: string, speed = 1.0) =>
+    _fetch<BuildEstimateResp>(
+      `/api/projects/${projectId}/estimate?speed=${speed}`
+    ),
+  // 项目累计供应商用量（LLM prepare + TTS build）
+  projectUsage: (projectId: string) =>
+    _fetch<ProjectUsageResp>(`/api/projects/${projectId}/usage`),
+  // M4B 打包：启动后台转码 / 查询状态
+  buildM4bStart: (projectId: string, buildId: string) =>
+    _fetch<{ state: string; filename?: string; url?: string }>(
+      `/api/projects/${projectId}/builds/${buildId}/m4b`,
+      { method: 'POST' }
+    ),
+  buildM4bStatus: (projectId: string, buildId: string) =>
+    _fetch<{ state: string; filename?: string; url?: string; error?: string }>(
+      `/api/projects/${projectId}/builds/${buildId}/m4b`
+    ),
+  // M4B 下载 URL（一次性签名 token）
+  buildM4bDownload: async (projectId: string, buildId: string): Promise<string> => {
+    const info = await _fetch<{ url: string }>(
+      `/api/media/sign?build_id=${encodeURIComponent(buildId)}&kind=book_m4b`
+    );
+    return info.url;
+  },
+  // 字幕下载（文本不大，直接带 JWT 拉取内容后前端触发保存）
+  buildSubtitles: async (
+    projectId: string,
+    buildId: string,
+    format: 'srt' | 'lrc'
+  ): Promise<{ filename: string; content: string }> => {
+    const token = getToken();
+    const r = await fetch(
+      `/api/projects/${projectId}/builds/${buildId}/subtitles?format=${format}`,
+      {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      }
+    );
+    if (r.status === 401) {
+      clearToken();
+      if (_onAuthFail) _onAuthFail();
+      throw new Error('登录已失效，请重新登录');
+    }
+    if (!r.ok) {
+      let msg = `HTTP ${r.status}`;
+      try {
+        const j = await r.json();
+        if (j?.detail) msg = j.detail;
+      } catch { /* ignore */ }
+      throw new Error(msg);
+    }
+    const dispo = r.headers.get('Content-Disposition') || '';
+    const m = /filename\*=UTF-8''([^;]+)/.exec(dispo);
+    const filename = m ? decodeURIComponent(m[1]) : `subtitles.${format}`;
+    return { filename, content: await r.text() };
+  },
   // 创建 build 任务
   buildCreate: (
     projectId: string,
@@ -340,6 +405,10 @@ export const api = {
       mode?: 'classic' | 'multicast';
       /** TTS 厂商：minimax / doubao（multicast 模式必须 doubao） */
       tts_provider?: 'minimax' | 'doubao';
+      /** 旁白情感（英文枚举风格值，空串 = provider 默认） */
+      narrator_emotion?: string;
+      /** 旁白风格指令（自由文本，豆包支持；MiniMax 忽略） */
+      narrator_instruction?: string;
     }
   ) =>
     _fetch<BuildResp>(`/api/projects/${projectId}/builds`, {
@@ -568,6 +637,10 @@ export interface CharacterWithVoice {
   personality: string;
   canonical_name: string | null;
   assigned_voice_id: string | null;
+  /** 情感（英文枚举风格值，空串 = provider 默认） */
+  emotion?: string;
+  /** 风格指令（自由文本，豆包支持） */
+  instruction?: string;
 }
 
 // 最近一次 build 的摘要
@@ -598,6 +671,8 @@ export interface CharacterResp {
   personality: string;
   canonical_name: string | null;
   assigned_voice_id: string | null;
+  emotion?: string;
+  instruction?: string;
 }
 
 // build 列表项
@@ -613,6 +688,9 @@ export interface BuildListItem {
   mode?: 'classic' | 'multicast' | null;
   /** TTS 厂商：minimax / doubao */
   tts_provider?: 'minimax' | 'doubao' | null;
+  /** TTS 用量（真实供应商调用，不含缓存命中） */
+  tts_calls?: number;
+  tts_chars?: number;
 }
 
 // build 详情
@@ -635,7 +713,38 @@ export interface BuildDetailResp {
   tts_provider?: 'minimax' | 'doubao' | null;
   failed_chapters?: number[] | null;
   is_retry?: boolean;
+  tts_calls?: number;
+  tts_chars?: number;
   artifacts: BuildArtifactResp[];
+}
+
+// 合成前预估（GET /projects/{id}/estimate）
+export interface BuildEstimateResp {
+  chapter_count: number;
+  total_chars: number;
+  est_tts_segments: number;
+  est_audio_minutes: number;
+  est_zip_mb: number;
+  est_llm_calls: number;
+  prepared: boolean;
+  has_dialogues: boolean;
+}
+
+// 项目累计供应商用量（GET /projects/{id}/usage）
+export interface ProjectUsageResp {
+  llm_calls: number;
+  llm_chars: number;
+  tts_calls: number;
+  tts_chars: number;
+  recent: {
+    id: number;
+    kind: 'llm' | 'tts';
+    detail: string;
+    calls: number;
+    chars: number;
+    build_id: string | null;
+    created_at: string | null;
+  }[];
 }
 
 // build 单章产物

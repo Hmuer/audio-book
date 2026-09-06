@@ -301,7 +301,7 @@ class _RangedAuthStaticFiles(StaticFiles):
         import re as _re
         import asyncio as _asyncio
         m = _re.match(
-            r"build_(?P<build_id>[A-Za-z0-9]+)_(?:ch\d+(?:_failed)?\.mp3|all\.zip)$",
+            r"build_(?P<build_id>[A-Za-z0-9]+)_(?:ch\d+(?:_failed)?\.mp3|all\.zip|book\.m4b)$",
             path,
         )
         if m:

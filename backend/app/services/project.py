@@ -110,6 +110,8 @@ class CharacterWithVoice(BaseModel):
     personality: str
     canonical_name: str | None
     assigned_voice_id: str | None
+    emotion: str = ""
+    instruction: str = ""
 
 
 class CharacterResp(BaseModel):
@@ -117,6 +119,8 @@ class CharacterResp(BaseModel):
     id: int
     name: str
     assigned_voice_id: str | None
+    emotion: str = ""
+    instruction: str = ""
 
 
 class BuildBrief(BaseModel):
@@ -582,7 +586,11 @@ async def _run_prepare_project_in_background(project_id: str, *, trigger: str = 
         # 心跳只对 JobTask 生效：未注册时整个 context 是 no-op
         async with HeartbeatContext(job_task_id) as hb:
             try:
-                await _do_prepare_project_async(project_id)
+                # LLM 用量统计作用域：prepare 各阶段的 chat_structured 调用
+                # 在 scope 内 track_llm() 累积，退出时自动写 UsageEvent
+                from .usage import llm_usage_scope
+                with llm_usage_scope(project_id):
+                    await _do_prepare_project_async(project_id)
                 final_job_status = "success"
             except (ValueError, RuntimeError, ChapterSplitError) as e:
                 logger.error(
@@ -1894,15 +1902,21 @@ async def get_project_characters(project_id: str) -> list[CharacterWithVoice]:
                 personality=c.personality,
                 canonical_name=c.canonical_name,
                 assigned_voice_id=c.assigned_voice_id,
+                emotion=c.emotion or "",
+                instruction=c.instruction or "",
             )
             for c in rows
         ]
 
 
 async def update_character_voice(
-    project_id: str, character_id: int, voice_id: str | None
+    project_id: str, character_id: int, voice_id: str | None,
+    *, emotion: str | None = None, instruction: str | None = None,
 ) -> CharacterResp:
-    """更新角色音色（voice_id 可为 None，表示清除）。"""
+    """更新角色音色（voice_id 可为 None，表示清除）。
+
+    emotion / instruction 为 None 表示不修改；传空串表示清除该配置。
+    """
     factory = get_session_factory()
     async with factory() as session:
         stmt = select(ProjectCharacter).where(
@@ -1913,12 +1927,18 @@ async def update_character_voice(
         if not c:
             raise ValueError(f"角色不存在: char_id={character_id} project_id={project_id}")
         c.assigned_voice_id = voice_id
+        if emotion is not None:
+            c.emotion = emotion.strip()[:32]
+        if instruction is not None:
+            c.instruction = instruction.strip()[:512]
         await session.commit()
         await session.refresh(c)
         return CharacterResp(
             id=c.id,
             name=c.name,
             assigned_voice_id=c.assigned_voice_id,
+            emotion=c.emotion or "",
+            instruction=c.instruction or "",
         )
 
 
