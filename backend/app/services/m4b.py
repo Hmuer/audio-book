@@ -73,13 +73,20 @@ async def _collect_build_info(build_id: str) -> dict:
 
 
 def _run_ffmpeg(concat_list_path: str, meta_path: str, out_path: str) -> None:
-    """重编码为 AAC 并写入章节元数据（-f ipod = m4b 容器）。"""
+    """重编码为 AAC 并写入章节元数据（-f ipod = m4b 容器）。
+
+    loudnorm：不同角色音色的响度天然不一致，直接拼接会音量忽大忽小。
+    转码这一步顺手做全书响度归一（有声书/播客标准 ≈ -18 LUFS，真峰值 -2dB），
+    一次性滤镜动态模式对语音足够；输出统一 44.1kHz 保证播放器兼容。
+    """
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-f", "concat", "-safe", "0", "-i", concat_list_path,
         "-i", meta_path,
         "-map_metadata", "1",
-        "-c:a", "aac", "-b:a", "64k", "-vn",
+        "-c:a", "aac", "-b:a", "64k",
+        "-af", "loudnorm=I=-18:TP=-2.0:LRA=7",
+        "-ar", "44100", "-vn",
         "-f", "ipod", out_path,
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
