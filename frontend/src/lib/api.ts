@@ -338,6 +338,12 @@ export const api = {
         ...(opts?.instruction !== undefined ? { instruction: opts.instruction } : {}),
       }),
     }),
+  // 修正一条对白的说话人（LLM 归属错误兜底；confidence 置 1.0）
+  projectUpdateDialogueSpeaker: (projectId: string, dialogueId: number, speaker: string) =>
+    _fetch<DialogueLine>(`/api/projects/${projectId}/dialogues/${dialogueId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ speaker }),
+    }),
   // 合成前预估（章节/分段/时长/体积/LLM 调用量，零成本）
   projectEstimate: (projectId: string, speed = 1.0) =>
     _fetch<BuildEstimateResp>(
@@ -592,6 +598,8 @@ export interface ChapterSummary {
 }
 
 export interface DialogueLine {
+  /** ProjectDialogue.id，逐行修正说话人时回传 */
+  id: number;
   segment_index: number;
   anchor_text: string;
   speaker: string;

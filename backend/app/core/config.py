@@ -177,6 +177,17 @@ class Settings(BaseSettings):
     # TTS 段缓存磁盘总大小上限（GB）；启动 GC 超上限时按 mtime 从旧到新删除
     TTS_SEGMENT_CACHE_MAX_SIZE_GB: int = 20
 
+    # 单段最大字符数：超长旁白/对白段自动按句读边界切分。
+    # 动机：无对白章节原本会生成一整段数千字的旁白请求，超出 TTS 厂商长文本
+    # 上限即整章失败（1 秒静音占位）。切分后单段失败只影响一小段。
+    TTS_MAX_SEGMENT_CHARS: int = 600
+
+    # prepare 阶段接入 LLM 润色纠错（polish）：按章调用，修正错别字/同音字。
+    # 默认关闭 —— 每章一次 LLM 调用，会显著增加 prepare 费用与时长；
+    # 在 设置页「合成质量」中开启。
+    POLISH_ENABLED: bool = False
+
+
     # Build running 超时（小时）：如果 start_build 命中的 running build
     # started_at 距离现在超过该值，认为是被 kill 的孤儿，直接改 status 回 queued
     # 并起新 worker。避免"重启后端后 Build 永远合成中"。

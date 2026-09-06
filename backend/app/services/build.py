@@ -1745,7 +1745,9 @@ async def _run_build_inner(
             async def _synth_seg(s: _Segment) -> tuple[_Segment, bytes, int]:
                 nonlocal tts_calls_used, tts_chars_used
                 if s.kind == "silence":
-                    return s, make_silent_mp3(max(s.silence_ms, 1)), s.silence_ms
+                    # 静音延迟生成：先返回空字节标记，gather 后按本章真实音频的
+                    # 采样率补齐（见下方 _matched_silence），消除拼接点采样率不一致
+                    return s, b"", s.silence_ms
                 vid = s.voice_id or narrator_voice_id
                 # 应用发音规则
                 if pronunciation_rules:
@@ -1776,7 +1778,21 @@ async def _run_build_inner(
             tasks = [_synth_seg(seg) for seg in segs]
             results = await asyncio.gather(*tasks)
 
-            ch_bytes = concat_mp3_files(*[r[1] for r in results])
+            # 按本章第一个真实音频段的采样率补齐静音帧（MiniMax=32k；豆包返回其默认值）
+            silence_ms_rate: int = 32000
+            for _s, _b, _d in results:
+                if _b:
+                    from ..core.mp3_util import mp3_sample_rate as _sr
+                    silence_ms_rate = _sr(_b) or 32000
+                    break
+            from ..core.mp3_util import make_silent_mp3 as _mk_silent
+            filled: list[tuple[_Segment, bytes, int]] = []
+            for _s, _b, _d in results:
+                if not _b and _s.kind == "silence":
+                    _b = _mk_silent(_d, sample_rate=silence_ms_rate, kbps=128)
+                filled.append((_s, _b, _d))
+
+            ch_bytes = concat_mp3_files(*[r[1] for r in filled])
             ch_fname = _audio_filename(build_id, ch_idx, failed=False)
             ch_fpath = str(audio_dir / ch_fname)
             # 原子写：先写 .tmp 再 os.replace，避免崩溃留半成品
@@ -1871,7 +1887,18 @@ async def _run_build_inner(
                 )
                 break  # 退出 for ch_idx, ch in enumerate(chapters)
             # --- 非 strict：降级逻辑（占位静音 MP3 + partial_success）---
-            placeholder_bytes = make_silent_mp3(1000)
+            # 占位静音按最近一章成功音频的采样率生成，避免章界拼接点采样率跳变
+            ph_sr = 32000
+            from ..core.mp3_util import mp3_sample_rate as _msr
+            for _prev_path, _ in reversed(chapter_outputs[:ch_idx]):
+                if _prev_path:
+                    try:
+                        ph_sr = _msr(Path(_prev_path).read_bytes()) or 32000
+                    except OSError:
+                        pass
+                    break
+            from ..core.mp3_util import make_silent_mp3 as _mk_ph
+            placeholder_bytes = _mk_ph(1000, sample_rate=ph_sr, kbps=128)
             ph_fname = _audio_filename(build_id, ch_idx, failed=True)
             ph_fpath = str(audio_dir / ph_fname)
             with open(ph_fpath, "wb") as f:

@@ -86,6 +86,7 @@ class ChapterSummary(BaseModel):
 
 class DialogueLine(BaseModel):
     """章节内的一条对白归属（前端渲染角色/旁白行用）。"""
+    id: int  # ProjectDialogue.id，前端逐行修正说话人时回传
     segment_index: int
     anchor_text: str
     speaker: str
@@ -742,6 +743,65 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             f"split_chapters={len(chapters)} ms={int((_time.perf_counter()-pt)*1000)}"
         )
 
+        # 3.5 LLM 润色纠错（可选，POLISH_ENABLED 控制；默认关闭）
+        # - 按章调用 polish_with_llm 修正错别字/同音字，结果替换内存中的章节文本，
+        #   后续角色识别/对白归属/合成均基于润色后的文本
+        # - 断点：data/polish_<pid>.json（idx → 润色后文本）；prepare 全部完成后删除。
+        #   中途失败重跑时，已完成章节直接复用，不再二次调 LLM
+        # - 单章润色失败一律保留原文，绝不阻塞 prepare
+        if settings.POLISH_ENABLED and chapters:
+            from .polish import polish_with_llm
+            from .usage import track_llm
+
+            polish_t0 = _time.perf_counter()
+            sidecar_path = Path(settings.DATA_DIR) / f"polish_{project_id}.json"
+            polished_map: dict[str, str] = {}
+            try:
+                if sidecar_path.is_file():
+                    polished_map = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            except Exception:
+                polished_map = {}
+
+            changed_n = 0
+            for ch in chapters:
+                if str(ch.idx) in polished_map:
+                    ch.text = polished_map[str(ch.idx)]
+                    continue
+                try:
+                    result = await polish_with_llm(ch.text)
+                    track_llm(calls=1, chars=len(ch.text), detail="polish")
+                    polished = (result.polished_text or "").strip()
+                    # 合理性校验：LLM 自评通过 + 长度不出现异常缩水/膨胀
+                    if (
+                        result.is_reasonable
+                        and polished
+                        and 0.5 <= len(polished) / max(len(ch.text), 1) <= 1.5
+                        and polished != ch.text
+                    ):
+                        ch.text = polished
+                        polished_map[str(ch.idx)] = polished
+                        changed_n += 1
+                except Exception as e:
+                    logger.warning(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"polish ch {ch.idx + 1} 失败，保留原文: {type(e).__name__}: {e}"
+                    )
+                    continue
+                # 每章落盘 sidecar（断点续跑）
+                try:
+                    settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
+                    sidecar_path.write_text(
+                        json.dumps(polished_map, ensure_ascii=False), encoding="utf-8"
+                    )
+                except OSError:
+                    pass
+
+            logger.info(
+                f"[project_prepare] project_id={project_id[:8]}... "
+                f"polish done: {changed_n}/{len(chapters)} 章有修改 "
+                f"ms={int((_time.perf_counter()-polish_t0)*1000)}"
+            )
+
         # 4. 全书角色识别（50k 切片串行 + checkpoint：逐片写入 progress_json，
         #    重跑 prepare_project 时跳过已完成切片）
         pt = _time.perf_counter()
@@ -1219,6 +1279,12 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             p.book_title = p.book_title or Path(original_filename).stem
             p.status = "ready"
             await session.commit()
+
+        # prepare 全部完成：润色 sidecar 的内容已固化进 chapters_json，可删除
+        try:
+            (Path(settings.DATA_DIR) / f"polish_{project_id}.json").unlink(missing_ok=True)
+        except OSError:
+            pass
 
         total_ms = int((_time.perf_counter() - t0) * 1000)
         logger.info(
@@ -1865,6 +1931,7 @@ async def get_project_chapter_detail(
 
         dialogues = [
             DialogueLine(
+                id=d.id,
                 segment_index=d.segment_index,
                 anchor_text=d.anchor_text or "",
                 speaker=d.speaker or "",
@@ -1879,6 +1946,37 @@ async def get_project_chapter_detail(
             title=ch.get("title", ""),
             text=ch.get("text", ""),
             dialogues=dialogues,
+        )
+
+
+async def update_dialogue_speaker(
+    project_id: str, dialogue_id: int, speaker: str
+) -> DialogueLine:
+    """人工修正一条对白的说话人（LLM 归属错误时的兜底）。
+
+    - speaker 置为人工确认值，confidence 同步置 1.0（标记"已复核"）
+    - 修正后无需重跑 prepare；下次 build 时 voice_assignments[speaker]
+      决定音色，段级缓存保证只有该角色的相关段重新合成
+    """
+    speaker = (speaker or "").strip()[:128]
+    if not speaker:
+        raise ValueError("speaker 不能为空")
+    factory = get_session_factory()
+    async with factory() as session:
+        d = await session.get(ProjectDialogue, dialogue_id)
+        if not d or d.project_id != project_id:
+            raise ValueError(f"对白不存在: id={dialogue_id} project_id={project_id}")
+        d.speaker = speaker
+        d.confidence = 1.0
+        await session.commit()
+        await session.refresh(d)
+        return DialogueLine(
+            id=d.id,
+            segment_index=d.segment_index,
+            anchor_text=d.anchor_text or "",
+            speaker=d.speaker or "",
+            text=d.text or "",
+            confidence=d.confidence,
         )
 
 

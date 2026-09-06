@@ -80,9 +80,12 @@ async def polish_with_llm(raw_text: str) -> PolishResult:
         + "\n---RAW TEXT END---\n\n请严格输出 JSON，不要任何解释文字。"
     )
     llm = get_llm()
-    return await llm.chat_structured(
+    result = await llm.chat_structured(
         prompt=prompt,
         output_schema=PolishResult,
         temperature=0.1,
         max_tokens=16000,
     )
+    from .usage import track_llm
+    track_llm(calls=1, chars=len(prompt), detail="polish")
+    return result

@@ -14,6 +14,87 @@ from pydantic import BaseModel
 SILENCE_AFTER_TITLE_MS = 1500
 SILENCE_BETWEEN_SEGMENTS_MS = 250
 
+# 单段最大字符数（超过自动按句读边界切分）。
+# 动机：没有对白的章节会生成一整段数千字的旁白段，一次性发给 TTS——
+# 超出厂商长文本上限即整章失败（降级为 1 秒静音占位）。切分后单段失败
+# 只损失一小段，且更符合 TTS 的自然句读节奏。
+DEFAULT_MAX_SEGMENT_CHARS = 600
+
+_SENTENCE_END = "。！？；!?;…\n"
+# 句末标点后可跟随的收尾引号/括号（切分点放在引号之后）
+_CLOSERS = "」』\"'））》"
+
+
+def _split_long_text(text: str, max_chars: int) -> list[str]:
+    """按句读边界把超长文本切成 ≤max_chars 的子段。
+
+    规则：
+    1. 先按段落（换行）分组；
+    2. 段内超长时按句末标点（含其后引号）累积切分；
+    3. 单句仍超长（无标点的极限情况）才硬切。
+    """
+    text = text.strip()
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+
+    parts: list[str] = []
+    buf = ""
+
+    def _flush():
+        nonlocal buf
+        if buf.strip():
+            parts.append(buf.strip())
+        buf = ""
+
+    # 1) 段落切分
+    paragraphs = [p for p in text.split("\n") if p.strip()]
+    for para in paragraphs:
+        if len(para) <= max_chars and len(buf) + len(para) + 1 <= max_chars:
+            buf = f"{buf}\n{para}" if buf else para
+            continue
+        _flush()
+        if len(para) <= max_chars:
+            buf = para
+            continue
+        # 2) 句子切分
+        sentences: list[str] = []
+        cur = ""
+        i = 0
+        while i < len(para):
+            ch = para[i]
+            cur += ch
+            i += 1
+            if ch in _SENTENCE_END:
+                # 吸收紧跟的收尾引号/括号（如 …。"／…！」），避免引号被切到下一段
+                while i < len(para) and para[i] in _CLOSERS:
+                    cur += para[i]
+                    i += 1
+                sentences.append(cur)
+                cur = ""
+        if cur.strip():
+            sentences.append(cur)
+        # 3) 句子累积成段
+        seg = ""
+        for sen in sentences:
+            if not seg:
+                seg = sen
+            elif len(seg) + len(sen) <= max_chars:
+                seg += sen
+            else:
+                parts.append(seg.strip())
+                seg = sen
+            if len(seg) > max_chars * 2:
+                # 单句超长兜底硬切
+                while len(seg) > max_chars:
+                    parts.append(seg[:max_chars].strip())
+                    seg = seg[max_chars:]
+        if seg.strip():
+            parts.append(seg.strip())
+    _flush()
+    return [p for p in parts if p]
+
 # 判定 ch.title 本身是否已经带了"第X章/序章/楔子"等章节标识前缀。
 # 如果已经带了，标题段就直接读 ch.title，不再重复拼 f"第{idx+1}章 {title}"，
 # 否则会出现"第2章 第一章 林轩"这种双重章节号朗读。
@@ -102,6 +183,40 @@ def _build_segments_for_chapter(
             return styles[speaker]
         return narrator_style
 
+    def _max_chars() -> int:
+        try:
+            from ..core.config import settings
+            return max(100, int(getattr(settings, "TTS_MAX_SEGMENT_CHARS", 0) or DEFAULT_MAX_SEGMENT_CHARS))
+        except Exception:
+            return DEFAULT_MAX_SEGMENT_CHARS
+
+    max_seg_chars = _max_chars()
+
+    def _append_text_segs(
+        segs_out: list[_Segment],
+        *,
+        kind: str,
+        idx_holder: list[int],
+        voice_id: str,
+        text: str,
+        speaker: str | None = None,
+        confidence: float | None = None,
+    ) -> None:
+        """追加文本段；超长自动按句读切分成同 voice/情感的多个子段。"""
+        for piece in _split_long_text(text, max_seg_chars):
+            segs_out.append(_Segment(
+                kind=kind,
+                chapter_idx=ch.idx,
+                idx=idx_holder[0],
+                speaker=speaker,
+                voice_id=voice_id,
+                text=piece,
+                confidence=confidence,
+                emotion=_style_for(speaker)["emotion"],
+                instruction=_style_for(speaker)["instruction"],
+            ))
+            idx_holder[0] += 1
+
     segs: list[_Segment] = []
     idx = start_idx
 
@@ -110,12 +225,8 @@ def _build_segments_for_chapter(
     # - 其他情况用 _title_tts_text() 智能拼，避免"第2章 第一章 林轩"双重章节号
     title_tts = _title_tts_text(ch)
     if title_tts:
-        segs.append(_Segment(
-            kind="title", chapter_idx=ch.idx, idx=idx,
-            voice_id=narrator_voice_id, text=title_tts,
-            emotion=narrator_style["emotion"], instruction=narrator_style["instruction"],
-        ))
-        idx += 1
+        _append_text_segs(segs, kind="title", idx_holder=[idx], voice_id=narrator_voice_id, text=title_tts)
+        idx = segs[-1].idx + 1
         segs.append(_Segment(
             kind="silence", chapter_idx=ch.idx, idx=idx, silence_ms=SILENCE_AFTER_TITLE_MS,
         ))
@@ -139,12 +250,11 @@ def _build_segments_for_chapter(
         if cursor < local_start:
             narrator_text = ch.text[cursor:local_start].strip()
             if narrator_text:
-                segs.append(_Segment(
-                    kind="narrator", chapter_idx=ch.idx, idx=idx,
+                _append_text_segs(
+                    segs, kind="narrator", idx_holder=[idx],
                     voice_id=narrator_voice_id, text=narrator_text,
-                    emotion=narrator_style["emotion"], instruction=narrator_style["instruction"],
-                ))
-                idx += 1
+                )
+                idx = segs[-1].idx + 1
                 segs.append(_Segment(
                     kind="silence", chapter_idx=ch.idx, idx=idx,
                     silence_ms=SILENCE_BETWEEN_SEGMENTS_MS,
@@ -154,24 +264,25 @@ def _build_segments_for_chapter(
         # dialogue 段：对白文本（去掉引号的 text）
         speaker = getattr(dlg, "speaker", None)
         seg_voice_id = voice_assignments.get(speaker or "", narrator_voice_id)
+        dlg_pieces = _split_long_text(getattr(dlg, "text", ""), max_seg_chars)
         dlg_style = _style_for(speaker)
-        dlg_seg = _Segment(
-            kind="dialogue", chapter_idx=ch.idx, idx=idx,
-            speaker=speaker,
-            voice_id=seg_voice_id,
-            text=getattr(dlg, "text", ""),
-            confidence=getattr(dlg, "confidence", None),
-            emotion=dlg_style.get("emotion", ""),
-            instruction=dlg_style.get("instruction", ""),
-        )
-        segs.append(dlg_seg)
-        idx += 1
-
-        segs.append(_Segment(
-            kind="silence", chapter_idx=ch.idx, idx=idx,
-            silence_ms=SILENCE_BETWEEN_SEGMENTS_MS,
-        ))
-        idx += 1
+        for piece in dlg_pieces:
+            segs.append(_Segment(
+                kind="dialogue", chapter_idx=ch.idx, idx=idx,
+                speaker=speaker,
+                voice_id=seg_voice_id,
+                text=piece,
+                confidence=getattr(dlg, "confidence", None),
+                emotion=dlg_style.get("emotion", ""),
+                instruction=dlg_style.get("instruction", ""),
+            ))
+            idx += 1
+        if dlg_pieces:
+            segs.append(_Segment(
+                kind="silence", chapter_idx=ch.idx, idx=idx,
+                silence_ms=SILENCE_BETWEEN_SEGMENTS_MS,
+            ))
+            idx += 1
 
         # 推进 cursor 到对白结束位置（防止 anchor 错位时 cursor 倒退导致重复切片）
         if local_end > cursor:
@@ -181,11 +292,10 @@ def _build_segments_for_chapter(
     if cursor < chapter_len:
         tail = ch.text[cursor:].strip()
         if tail:
-            segs.append(_Segment(
-                kind="narrator", chapter_idx=ch.idx, idx=idx,
+            _append_text_segs(
+                segs, kind="narrator", idx_holder=[idx],
                 voice_id=narrator_voice_id, text=tail,
-                emotion=narrator_style["emotion"], instruction=narrator_style["instruction"],
-            ))
-            idx += 1
+            )
+            idx = segs[-1].idx + 1
 
     return segs, idx

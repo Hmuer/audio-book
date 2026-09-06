@@ -10,6 +10,7 @@ import {
   BuildStatusResp,
   BuildEstimateResp,
   ProjectUsageResp,
+  DialogueLine,
   Voice,
   CharacterWithVoice,
   ChapterSummary,
@@ -882,19 +883,39 @@ function ChaptersTab({
   // P1 #6：每个章节的签名音频 URL（一次性 token，5 分钟过期）
   const [audioUrls, setAudioUrls] = useState<Record<number, string>>({});
 
-  // speaker 归属 map（dialogue 里 anchor_text → speaker）
+  // speaker 归属 map（dialogue 里 anchor_text/text → 原始归属行，含 id/confidence 供逐行修正）
   const speakerMap = useMemo(() => {
-    const m = new Map<string, string>();
+    const m = new Map<string, DialogueLine>();
     if (chapterDetail?.dialogues) {
       for (const d of chapterDetail.dialogues) {
         if (d.speaker && d.speaker !== '旁白' && d.speaker !== 'narrator') {
-          if (d.anchor_text) m.set(d.anchor_text, d.speaker);
-          if (d.text && !m.has(d.text)) m.set(d.text, d.speaker);
+          if (d.anchor_text && !m.has(d.anchor_text)) m.set(d.anchor_text, d);
+          if (d.text && !m.has(d.text)) m.set(d.text, d);
         }
       }
     }
     return m;
   }, [chapterDetail]);
+
+  // 低置信度对白数（待人工确认）
+  const lowConfidenceN = useMemo(
+    () => (chapterDetail?.dialogues || []).filter(d => d.confidence < 0.7).length,
+    [chapterDetail]
+  );
+
+  // 逐行修正说话人：保存后本地同步（confidence 置 1.0，高亮消失）
+  const onFixSpeaker = async (dlgId: number, speaker: string) => {
+    try {
+      const updated = await api.projectUpdateDialogueSpeaker(project.project_id, dlgId, speaker);
+      setChapterDetail(prev =>
+        prev
+          ? { ...prev, dialogues: prev.dialogues.map(d => (d.id === dlgId ? updated : d)) }
+          : prev
+      );
+    } catch (e: any) {
+      alert(`修正说话人失败: ${e?.message || e}`);
+    }
+  };
 
   // 展开章节 → 拉取详情
   useEffect(() => {
@@ -934,25 +955,31 @@ function ChaptersTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasAudio, lastBuild?.build_id, chapters.length]);
 
+  // 展开：逐行文本标注中正在修正说话人的行 key
+  const [editingLineKey, setEditingLineKey] = useState<number | null>(null);
+
   const onExpand = (idx: number) => {
     setExpandedIdx(prev => (prev === idx ? null : idx));
+    setEditingLineKey(null);
   };
 
-  // 把 chapter.text 按行分，每行关联 speaker
+  // 把 chapter.text 按行分，每行关联 speaker（+ 原始归属行，供低置信度提示与修正）
   const lines = useMemo(() => {
     if (!chapterDetail) return [];
     const raw = chapterDetail.text.split('\n').map(s => s.trimEnd());
     return raw.map((line, i) => {
-      if (!line.trim()) return { key: i, text: line, speaker: null as string | null };
+      if (!line.trim()) return { key: i, text: line, speaker: null as string | null, dlg: null as DialogueLine | null };
       // 优先精确匹配 anchor_text
       let speaker: string | null = null;
-      for (const [anchor, sp] of speakerMap) {
+      let dlg: DialogueLine | null = null;
+      for (const [anchor, d] of speakerMap) {
         if (line.includes(anchor) || anchor.includes(line.trim())) {
-          speaker = sp;
+          speaker = d.speaker;
+          dlg = d;
           break;
         }
       }
-      return { key: i, text: line, speaker };
+      return { key: i, text: line, speaker, dlg };
     });
   }, [chapterDetail, speakerMap]);
 
@@ -1076,6 +1103,12 @@ function ChaptersTab({
                         )}
 
                         {/* 逐行渲染 */}
+                        {lowConfidenceN > 0 && (
+                          <div className="rounded-lg px-3 py-2 mb-2 text-[11px] border border-amber-500/40 bg-amber-500/10 text-amber-200">
+                            本章有 <b>{lowConfidenceN}</b> 条对白归属置信度较低（黄色标记）——
+                            归属错了会导致台词用错人的音色朗读，点击角色徽章可立即修正，修正后重新构建即可。
+                          </div>
+                        )}
                         <div className="space-y-1 max-h-[360px] overflow-y-auto pr-1 text-[13px] leading-relaxed">
                           {lines.map(l => {
                             if (!l.text.trim()) {
@@ -1083,21 +1116,30 @@ function ChaptersTab({
                             }
                             const isSpeech = !!l.speaker;
                             const c = isSpeech ? charColor(l.speaker!) : null;
+                            const lowConf = !!(l.dlg && l.dlg.confidence < 0.7);
+                            const isEditing = editingLineKey === l.key;
                             return (
                               <div
                                 key={l.key}
                                 className="flex gap-2 items-start py-1.5 px-2 rounded-lg transition-colors hover:bg-ink-200"
-                                style={isSpeech && c ? { background: c.bg, borderLeft: `2px solid ${c.border}` } : {}}
+                                style={
+                                  lowConf
+                                    ? { background: 'rgba(245, 158, 11, 0.08)', borderLeft: '2px solid rgba(245, 158, 11, 0.6)' }
+                                    : isSpeech && c
+                                    ? { background: c.bg, borderLeft: `2px solid ${c.border}` }
+                                    : {}
+                                }
                               >
                                 {isSpeech ? (
                                   <div className="w-6 shrink-0 text-right pt-0.5">
-                                    <span
-                                      className="text-[11px] font-bold rounded px-1 py-0.5 border"
+                                    <button
+                                      className="text-[11px] font-bold rounded px-1 py-0.5 border cursor-pointer"
                                       style={{ background: c!.bg, color: c!.fg, borderColor: c!.border }}
-                                      title={l.speaker ?? undefined}
+                                      title={lowConf ? `${l.speaker}（置信度低，点击修正）` : `${l.speaker}（点击修正归属）`}
+                                      onClick={() => setEditingLineKey(prev => (prev === l.key ? null : l.key))}
                                     >
                                       {l.speaker!.trim()[0]}
-                                    </span>
+                                    </button>
                                   </div>
                                 ) : (
                                   <div className="w-6 shrink-0 text-right pt-0.5">
@@ -1108,10 +1150,41 @@ function ChaptersTab({
                                   {isSpeech ? (
                                     <>
                                       <span className="text-[11px] font-semibold mr-1" style={{ color: c!.fg }}>{l.speaker}</span>
+                                      {lowConf && (
+                                        <span className="text-[10px] mr-1 px-1.5 py-0.5 rounded-full border"
+                                          style={{ color: 'rgb(252, 211, 77)', borderColor: 'rgba(245, 158, 11, 0.5)' }}
+                                          title={`置信度 ${(l.dlg!.confidence * 100).toFixed(0)}%，建议人工确认`}
+                                        >
+                                          待确认
+                                        </span>
+                                      )}
                                       <span className="text-ink-800">{l.text}</span>
                                     </>
                                   ) : (
                                     <span className="text-ink-700">{l.text}</span>
+                                  )}
+                                  {isEditing && l.dlg && (
+                                    <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+                                      <span className="text-[11px] text-ink-500">说话人改为：</span>
+                                      <select
+                                        className="input-base !py-1 !px-2 text-xs w-auto"
+                                        defaultValue=""
+                                        autoFocus
+                                        onChange={e => {
+                                          const sp = e.target.value;
+                                          setEditingLineKey(null);
+                                          if (sp && sp !== l.dlg!.speaker) onFixSpeaker(l.dlg!.id, sp);
+                                        }}
+                                      >
+                                        <option value="">选择角色…</option>
+                                        {characters.map(ch2 => (
+                                          <option key={ch2.id} value={ch2.name}>{ch2.name}</option>
+                                        ))}
+                                      </select>
+                                      <button className="text-[11px] text-ink-500 hover:text-ink-700" onClick={() => setEditingLineKey(null)}>
+                                        取消
+                                      </button>
+                                    </div>
                                   )}
                                 </div>
                               </div>

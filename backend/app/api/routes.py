@@ -37,6 +37,8 @@ from ..services.project import (
     get_project_chapter_detail,
     get_project_characters,
     update_character_voice,
+    update_dialogue_speaker,
+    DialogueLine,
     list_pronunciation_rules,
     create_pronunciation_rule,
     update_pronunciation_rule,
@@ -1014,6 +1016,38 @@ async def api_update_character_voice(
         raise HTTPException(500, f"更新音色失败: {type(e).__name__}: {e}")
 
 
+class UpdateDialogueSpeakerRequest(BaseModel):
+    speaker: str = Field(min_length=1, max_length=128)
+
+
+@router.patch(
+    "/projects/{project_id}/dialogues/{dialogue_id}",
+    response_model=DialogueLine,
+)
+async def api_update_dialogue_speaker(
+    project_id: str,
+    dialogue_id: int,
+    req: UpdateDialogueSpeakerRequest,
+    request: Request,
+    current: User = Depends(get_current_user),
+):
+    """人工修正一条对白的说话人（LLM 归属错误兜底；confidence 置 1.0）。P1 #5：写权限校验。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
+    try:
+        return await update_dialogue_speaker(project_id, dialogue_id, req.speaker)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        logger.error(
+            f"[HTTP] 500 PATCH /api/projects/{project_id[:8]}.../dialogues/{dialogue_id} -> "
+            f"{type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(500, f"修正说话人失败: {type(e).__name__}: {e}")
+
+
 # =================== 发音规则 ===================
 @router.get(
     "/projects/{project_id}/pronunciation-rules",
@@ -1750,6 +1784,9 @@ _EDITABLE_SETTINGS = {
     "CHAPTER_SPLIT_MIN_MATCHES": ("int", "章节切分", "最少匹配章节数"),
     "CHAPTER_SPLIT_HARD_FALLBACK_ENABLED": ("bool", "章节切分", "硬切兜底开关"),
     "CHAPTER_SPLIT_HARD_FALLBACK_MAX_CHARS": ("int", "章节切分", "硬切每块字符上限"),
+    # 合成质量
+    "TTS_MAX_SEGMENT_CHARS": ("int", "合成质量", "单段最大字符数（超长自动按句读切分）"),
+    "POLISH_ENABLED": ("bool", "合成质量", "prepare 时用 LLM 润色纠错（每章一次调用，增加费用）"),
     # 日志
     "LOG_LEVEL": ("str", "日志配置", "日志级别"),
     "LOG_FILE": ("str", "日志配置", "日志文件路径"),

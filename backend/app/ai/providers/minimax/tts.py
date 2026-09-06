@@ -96,19 +96,19 @@ def _rpm_remaining_secs() -> float:
 
 
 def _estimate_mp3_duration_ms(mp3_bytes: bytes) -> int:
-    if len(mp3_bytes) < 128:
-        return 0
-    return int(len(mp3_bytes) * 8 / 96000 * 1000)
+    """精确时长：逐帧解析累加（详见 core/mp3_util.py）。
+
+    旧实现按 96kbps 估算，而 MiniMax 输出 128kbps，时长被系统性高估 +33%，
+    导致 M4B 章节标记 / SRT 章间偏移 / 进度显示全部漂移。
+    """
+    from ....core.mp3_util import mp3_duration_ms
+    return mp3_duration_ms(mp3_bytes)
 
 
 def make_silent_mp3(duration_ms: int) -> bytes:
-    SILENT_FRAME_417 = (
-        b"\xff\xfb\x90\x00"
-        + b"\x00" * 413
-    )
-    FRAME_MS = 26
-    frames_needed = max(1, int(duration_ms / FRAME_MS) + 1)
-    return SILENT_FRAME_417 * frames_needed
+    """生成与 MiniMax 输出同采样率（32kHz）的静音 MP3，消除拼接点采样率不一致。"""
+    from ....core.mp3_util import make_silent_mp3 as _make
+    return _make(duration_ms, sample_rate=32000, kbps=128)
 
 
 def concat_mp3_files(*parts: bytes) -> bytes:
