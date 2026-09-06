@@ -6,25 +6,26 @@ cd "$PROJ_DIR"
 
 # ============================================================================
 # 用法:
-#   ./start.sh             前台运行（默认，Ctrl+C 停止）
-#   ./start.sh --daemon    后台运行（nohup，PID 写入 data/uvicorn.pid）
-#   ./start.sh --stop      停止后台进程
-#   ./start.sh --restart   重启后台进程
-#   ./start.sh --status    查看运行状态
-# 也可用环境变量: DAEMON=1 ./start.sh 等价于 --daemon
+#   ./start.sh              后台运行（默认；PID 写入 data/uvicorn.pid）
+#   ./start.sh --foreground 前台运行（Ctrl+C 停止）
+#   ./start.sh --stop       停止后台进程
+#   ./start.sh --restart    重启后台进程
+#   ./start.sh --status     查看运行状态
+# 也可用环境变量: FOREGROUND=1 ./start.sh 等价于 --foreground
 # ============================================================================
 
 PID_FILE="data/uvicorn.pid"
 STDOUT_LOG="data/logs/uvicorn-stdout.log"   # 启动期/崩溃期 stdout；运行日志在 data/logs/app.log
 
-ACTION="foreground"
+ACTION="daemon"
 case "${1:-}" in
-  --daemon|-d)  ACTION="daemon" ;;
-  --stop)       ACTION="stop" ;;
-  --restart)    ACTION="restart" ;;
-  --status)     ACTION="status" ;;
-  "")           ACTION="${DAEMON:+daemon}"; ACTION="${ACTION:-foreground}" ;;
-  *) echo "未知参数: $1（支持 --daemon / --stop / --restart / --status）"; exit 1 ;;
+  --daemon|-d)          ACTION="daemon" ;;
+  --foreground|-f|--fg) ACTION="foreground" ;;
+  --stop)               ACTION="stop" ;;
+  --restart)            ACTION="restart" ;;
+  --status)             ACTION="status" ;;
+  "")                   ACTION="${FOREGROUND:+foreground}"; ACTION="${ACTION:-daemon}" ;;
+  *) echo "未知参数: $1（支持 --foreground / --daemon / --stop / --restart / --status）"; exit 1 ;;
 esac
 
 is_running() {
@@ -65,9 +66,9 @@ if [ "$ACTION" = "status" ]; then
   exit 0
 fi
 
-# ---------- 启动前检查：已有后台实例则拒绝重复启动 ----------
-if [ "$ACTION" = "daemon" ] && is_running; then
-  echo "[daemon] 已有后台进程在运行 (pid=$(cat "$PID_FILE"))。如需重启: ./start.sh --restart"
+# ---------- 启动前检查：已有后台实例则拒绝重复启动（避免端口冲突） ----------
+if { [ "$ACTION" = "daemon" ] || [ "$ACTION" = "foreground" ]; } && is_running; then
+  echo "已有后台进程在运行 (pid=$(cat "$PID_FILE"))。如需重启: ./start.sh --restart；或先 ./start.sh --stop"
   exit 1
 fi
 
@@ -207,6 +208,6 @@ echo "=========================================="
 echo "  AI 有声小说生成器"
 echo "  访问 http://${BIND_HOST}:${PORT}/"
 echo "  Docs  http://${BIND_HOST}:${PORT}/docs"
-echo "  Ctrl+C 停止   （后台运行: ./start.sh --daemon）"
+echo "  Ctrl+C 停止   （默认后台运行: ./start.sh）"
 echo "=========================================="
 exec "$VENV_PY" -m uvicorn "${UVICORN_ARGS[@]}"
