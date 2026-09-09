@@ -21,83 +21,57 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 # ---------------------------------------------------------------------
-# T-RF2：multicast + 非 doubao 拒绝降级
+# T-RF2（P0-5 改写）：_validate_multicast_provider 现在是 noop（不再拒绝降级）
 # ---------------------------------------------------------------------
-def test_validate_multicast_provider_rejects_non_doubao():
+def test_validate_multicast_provider_is_noop_after_deprecation():
     from backend.app.services.build import _validate_multicast_provider
 
-    # 合法组合不抛
-    _validate_multicast_provider("multicast", "doubao")
-    _validate_multicast_provider("classic", "minimax")
-    _validate_multicast_provider("classic", "doubao")
-
-    # 非法组合必须抛 ValueError（禁止静默降级为 classic）
-    with pytest.raises(ValueError, match="拒绝降级"):
-        _validate_multicast_provider("multicast", "minimax")
-    with pytest.raises(ValueError, match="拒绝降级"):
-        _validate_multicast_provider("MULTICAST", "")
+    # P0-5 之后：mode=multicast + tts_provider=任意 都不再抛错
+    _validate_multicast_provider("multicast", "doubao")   # 历史合法
+    _validate_multicast_provider("classic", "minimax")    # 历史合法
+    _validate_multicast_provider("classic", "doubao")     # 历史合法
+    _validate_multicast_provider("multicast", "minimax")  # 历史非法 → 现在不抛
+    _validate_multicast_provider("MULTICAST", "")         # 历史非法 → 现在不抛
+    # 函数返回 None
+    assert _validate_multicast_provider("multicast", "doubao") is None
 
 
 # ---------------------------------------------------------------------
-# T-RF3：超长章节分段生成
+# T-RF3（P0-5 改写）：_multicast_synth_chapter / _estimate_multicast_secs 已废弃
 # ---------------------------------------------------------------------
-class _RecordingMC:
-    """记录每次整章合成调用的 mock Seed-Audio provider。"""
-
-    provider = "doubao"
-
-    def __init__(self):
-        self.calls: list[list[dict]] = []
-
-    async def synthesize_chapter_to_file(self, segments, output_path, *, speed=1.0,
-                                         chapter_title="", instruction_text=None):
-        self.calls.append(list(segments))
-        Path(output_path).write_bytes(b"\xff\xfb\x90\x64\x00" + (b"\x00" * 1024))
-        return output_path, 1000
-
-
 @pytest.mark.asyncio
-async def test_multicast_long_chapter_split_into_chunks(tmp_path):
-    from backend.app.services.build import _multicast_synth_chapter, _estimate_multicast_secs
+async def test_multicast_synth_chapter_raises_after_deprecation(tmp_path):
+    """P0-5 之后：_multicast_synth_chapter 调用立刻抛 RuntimeError（提示用户改 classic）。"""
+    from backend.app.services.build import _multicast_synth_chapter
 
-    # 构造 5000 字旁白（≈125s @ speed 1.0，超过 120s 上限的 85% 阈值）
-    segs = [{"kind": "narration", "speaker": "", "text": "字" * 500,
-             "voice_id": "doubao:zh_female_qingxin", "silence_ms": 0} for _ in range(10)]
-    assert _estimate_multicast_secs(segs, 1.0) > 102  # 前置：确实超限
+    class _RecordingMC:
+        def __init__(self):
+            self.calls: list[list[dict]] = []
+
+        async def synthesize_chapter_to_file(self, segments, output_path, *, speed=1.0,
+                                             chapter_title="", instruction_text=None):
+            self.calls.append(list(segments))
+            Path(output_path).write_bytes(b"\xff\xfb\x90\x64\x00" + (b"\x00" * 1024))
+            return output_path, 1000
 
     mc = _RecordingMC()
     out = str(tmp_path / "ch0000.mp3")
-    _, dur_ms = await _multicast_synth_chapter(
-        mc, segs, out, speed=1.0, chapter_title="第一章", max_secs=120.0,
-    )
-
-    # 必须分多段调用
-    assert len(mc.calls) >= 2, f"超长章节应分段，实际调用 {len(mc.calls)} 次"
-    # 每段文本量都在安全范围内
-    for chunk in mc.calls:
-        chunk_chars = sum(len(s.get("text") or "") for s in chunk)
-        assert chunk_chars <= 100 * 4 + 500, f"单段 {chunk_chars} 字超出目标"
-    # 所有 segment 都被覆盖（不丢内容）
-    total_segs = sum(len(c) for c in mc.calls)
-    assert total_segs == len(segs)
-    # 输出文件存在且非空
-    assert Path(out).stat().st_size > 0
-    assert dur_ms > 0
-    # 分段临时文件已清理
-    leftovers = list(tmp_path.glob("*.part*"))
-    assert leftovers == [], f"分段临时文件未清理: {leftovers}"
-
-
-@pytest.mark.asyncio
-async def test_multicast_short_chapter_single_call(tmp_path):
-    from backend.app.services.build import _multicast_synth_chapter
-
-    segs = [{"kind": "narration", "speaker": "", "text": "短章节",
+    segs = [{"kind": "narration", "speaker": "", "text": "测试",
              "voice_id": "doubao:zh_female_qingxin", "silence_ms": 0}]
-    mc = _RecordingMC()
-    out = str(tmp_path / "ch0001.mp3")
-    await _multicast_synth_chapter(mc, segs, out, speed=1.0, chapter_title="短", max_secs=120.0)
-    assert len(mc.calls) == 1, "短章节不应分段"
+    with pytest.raises(RuntimeError, match="mode=multicast 已废弃"):
+        await _multicast_synth_chapter(mc, segs, out, speed=1.0, max_secs=120.0)
+    # mc 不应被调用
+    assert mc.calls == []
+
+
+def test_estimate_multicast_secs_returns_zero_after_deprecation():
+    """P0-5 之后：_estimate_multicast_secs 永远返回 0（不再用于任何调度逻辑）。"""
+    from backend.app.services.build import _estimate_multicast_secs
+
+    segs = [{"kind": "narration", "speaker": "", "text": "字" * 500,
+             "voice_id": "doubao:zh_female_qingxin", "silence_ms": 0} for _ in range(10)]
+    assert _estimate_multicast_secs(segs, 1.0) == 0.0
+    assert _estimate_multicast_secs(segs, 0.5) == 0.0
 
 
 # ---------------------------------------------------------------------
@@ -159,7 +133,9 @@ _BOOK_TXT = """第一章 初遇
 """
 
 @pytest.mark.asyncio
-async def test_retry_failed_inherits_mode_and_provider(_isolate_data_dir):
+async def test_retry_failed_inherits_provider_and_downgraded_mode(_isolate_data_dir):
+    """P0-5 改写：mode=multicast 在 start_build 入口自动降级为 classic，
+    retry Build 必须继承降级后的 mode（classic）而不是源 Build 的入参 mode。"""
     from backend.app.services.project import create_project, import_file, prepare_project
     from backend.app.services.build import (
         start_build, get_build_status, retry_failed_build,
@@ -173,46 +149,72 @@ async def test_retry_failed_inherits_mode_and_provider(_isolate_data_dir):
 
     cfgmod.settings.MULTICAST_STRICT_MODE = True
 
-    class _FailMC:
+    # mock TTS 标 provider='doubao'（让 factory.get_tts('doubao') 命中 mock），
+    # 第一次合成失败触发 retry；后续正常 → 最终 success。
+    class _FailFirstCallDoubaoTTS:
         provider = "doubao"
+        name = "mock_tts_doubao_fail_first"
 
-        async def synthesize_chapter_to_file(self, segments, output_path, *, speed=1.0,
-                                             chapter_title="", instruction_text=None):
-            raise RuntimeError("模拟 Seed-Audio 失败（触发 retry 场景）")
+        def __init__(self):
+            self._inner = MockTTSProvider()
+            self._n = 0
+
+        async def list_voices(self):
+            return await self._inner.list_voices()
+
+        async def synthesize_to_bytes(self, text, voice_id, *, emotion="calm", speed=1.0, **kw):
+            self._n += 1
+            if self._n == 1:
+                raise RuntimeError("模拟首次合成失败")
+            return await self._inner.synthesize_to_bytes(
+                text, voice_id, emotion=emotion, speed=speed, **kw
+            )
+
+        async def synthesize_to_file(self, text, voice_id, output_path, *, emotion="calm",
+                                     speed=1.0, instruction_text=None, speaker_style=None):
+            return await self._inner.synthesize_to_file(
+                text, voice_id, output_path, emotion=emotion, speed=speed,
+                instruction_text=instruction_text, speaker_style=speaker_style,
+            )
 
     prev_tts, prev_llm, prev_mc = aifact._tts_instance, aifact._llm_instance, aifact._multicast_instance
-    aifact._tts_instance = MockTTSProvider()
+    aifact._tts_instance = _FailFirstCallDoubaoTTS()
     aifact._llm_instance = MockLLMProvider()
-    aifact._multicast_instance = _FailMC()
     try:
         await init_db()
-        pid = (await create_project("重试继承配置测试")).project_id
+        pid = (await create_project("重试继承配置测试（P0-5 降级）")).project_id
         await import_file(pid, _BOOK_TXT.encode("utf-8"), "book.txt")
         await prepare_project(pid)
 
+        # 用户传 mode='multicast' + tts_provider='doubao'
         resp = await start_build(
             project_id=pid, voice_assignments={},
-            narrator_voice_id="doubao:zh_female_qingxin",
+            narrator_voice_id="doubao:BV001_streaming",
             tts_provider="doubao", mode="multicast",
+        )
+        # resp.mode 已经是降级后的 classic
+        assert resp.mode == "classic", (
+            f"mode=multicast 必须降级为 classic，实际 {resp.mode!r}"
         )
         bid = resp.build_id
         for _ in range(60):
             s = await get_build_status(bid)
-            if s.status in ("success", "failed", "cancelled"):
+            if s.status in ("success", "partial_success", "failed", "cancelled"):
                 break
             await asyncio.sleep(0.5)
 
-        # 源 Build 已 failed（strict + multicast）
-        assert (await get_build_status(bid)).status == "failed"
+        # 源 Build：mock 首次失败 → 至少有一个章节 failed
+        status0 = (await get_build_status(bid)).status
+        assert status0 in ("partial_success", "failed")
 
-        # 触发 retry-failed：新 Build 必须继承 multicast/doubao
+        # 触发 retry-failed：新 Build 必须继承降级后的 mode=classic + tts_provider=doubao
         retry_resp = await retry_failed_build(source_build_id=bid)
         factory = get_session_factory()
         async with factory() as sess:
             nb = await sess.get(Build, retry_resp.build_id)
             assert nb is not None
-            assert (nb.mode or "classic").lower() == "multicast", (
-                f"retry Build 必须继承 mode=multicast，实际 {nb.mode!r}"
+            assert (nb.mode or "classic").lower() == "classic", (
+                f"retry Build 必须继承降级后的 mode=classic，实际 {nb.mode!r}"
             )
             assert (nb.tts_provider or "minimax").lower() == "doubao", (
                 f"retry Build 必须继承 tts_provider=doubao，实际 {nb.tts_provider!r}"

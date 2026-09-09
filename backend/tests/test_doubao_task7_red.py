@@ -1,20 +1,25 @@
-"""Task 7 RED — Seed-Audio 1.0 多播剧 Provider + 构建管线接入。
+"""Task 7 RED — Seed-Audio 多播剧 Provider 自 P0-5 起已废弃。
 
-T-MC1  build_prompt：把 segment 列表转多角色 prompt（含角色名+台词），跳过静音段。
-T-MC2  synthesize_chapter_to_file：payload 携带 prompt/roles(剥离前缀的 voice)/speed/
-       instruction_text；调 Seed-Audio 端点（seed_audio RPM 桶）；原子写文件。
-T-MC3  factory.get_multicast_tts() 单例 + 测试注入。
-T-MC4  _validate_tts_namespace：mode=multicast 必须配 doubao provider。
-T-MC5  构建管线：mode=multicast + tts_provider=doubao 时章节走 multicast provider
-       （mock 注入），不走逐段 TTS；build 成功产出 MP3。
-T-MC6  多播剧失败（strict 默认开）→ Build failed，无占位 MP3（已由 Task 8 覆盖，
-       此处验证 multicast provider 抛错路径即抛异常不降级）。
+历史背景：Seed-Audio 多播剧整章一体化生成端点已停止迭代（官方不再推荐）。
+现在：mode=multicast 在 start_build 入口处自动降级为 classic（逐章节分段
+TTS 拼接），不再走任何「整章一体化」路径。
+
+本测试覆盖 P0-5 后的行为契约：
+  T-MC1  start_build(mode='multicast') 自动降级：resp.mode == 'classic'
+  T-MC2  start_build(mode='multicast') 走逐段 TTS（mock 注入 _tts_instance），
+         不再调用任何 multicast provider（mock 注入的 _multicast_instance
+         即使存在也不会被触发）
+  T-MC3  factory.get_multicast_tts() 永远返回 None（旧 conftest 注入的
+         _multicast_instance 也不再有效，保留仅为向后兼容）
+  T-MC4  _validate_tts_namespace 不再因 mode=multicast 抛错：
+         - tts_provider='minimax' + mode='multicast' 不抛（历史会抛）
+         - tts_provider=''  + mode='multicast' 不抛（历史会抛）
+  T-MC5  Build 完成后 mode 字段持久化为 'classic'（即降级后用户看到的值）
 """
 from __future__ import annotations
 
 import asyncio
 import sys
-import uuid
 from pathlib import Path
 
 import pytest
@@ -23,163 +28,145 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-FAKE_MP3 = b"\xff\xfb\x90\x64\x00" + (b"\x00" * 4096)
-
-
-def _mk_segments() -> list[dict]:
-    return [
-        {"kind": "title", "speaker": None, "text": "第一章 初见", "voice_id": "doubao:zh_female_qingxin"},
-        {"kind": "silence", "speaker": None, "text": "", "voice_id": None, "silence_ms": 1500},
-        {"kind": "narrator", "speaker": None, "text": "清晨的山间小路上，", "voice_id": "doubao:zh_female_qingxin"},
-        {"kind": "dialogue", "speaker": "林轩", "text": "你好，请问怎么走？", "voice_id": "doubao:zh_male_qingnianqingche"},
-        {"kind": "dialogue", "speaker": "苏瑶", "text": "跟我来吧。", "voice_id": "icl:clone_x"},
-    ]
-
 
 # ---------------------------------------------------------------------
-# T-MC1: build_prompt
+# Mock 适配：当 tts_provider='doubao' 时 factory.get_tts('doubao') 会按
+# provider 标识匹配 MockTTSProvider；MockTTSProvider 默认 provider='minimax'，
+# 这里提供一个 provider='doubao' 的子类让 mock 注入命中 factory 路由。
 # ---------------------------------------------------------------------
-def test_multicast_build_prompt():
-    from backend.app.ai.providers.doubao.multicast import DoubaoMulticastProvider
+class _DoubaoMockTTS:
+    """Mock TTS 子类：标记 provider='doubao'，避免调用真实 DoubaoTTSProvider。
+    实现最小接口，行为与 MockTTSProvider 一致（静音 MP3）。"""
 
-    p = DoubaoMulticastProvider()
-    prompt = p.build_prompt(_mk_segments(), chapter_title="第一章 初见")
-    assert "林轩" in prompt and "你好，请问怎么走？" in prompt
-    assert "苏瑶" in prompt and "跟我来吧。" in prompt
-    assert "旁白" in prompt or "narrator" in prompt.lower()
-    # 静音段不进 prompt
-    assert "silence" not in prompt
+    provider = "doubao"
+    name = "mock_tts_doubao"
 
+    def __init__(self):
+        from backend.tests.mock_providers import MockTTSProvider
+        self._inner = MockTTSProvider()
+        self.calls: list = []
 
-# ---------------------------------------------------------------------
-# T-MC2: synthesize_chapter_to_file
-# ---------------------------------------------------------------------
-@pytest.mark.asyncio
-async def test_multicast_synthesize_chapter_to_file(tmp_path, monkeypatch):
-    from backend.app.ai.providers.doubao.multicast import DoubaoMulticastProvider
-    from backend.app.core import config as cfgmod
+    async def list_voices(self):
+        return await self._inner.list_voices()
 
-    monkeypatch.setattr(cfgmod.settings, "DOUBAO_AK", "test-ak")
-    p = DoubaoMulticastProvider()
-    captured: dict = {}
-
-    async def _fake_http(url, headers, payload):
-        captured["url"] = url
-        captured["payload"] = payload
-        return FAKE_MP3
-
-    p._http_post_bytes = _fake_http  # type: ignore[method-assign]
-    out = str(tmp_path / "ch0000.mp3")
-    path, dur = await p.synthesize_chapter_to_file(
-        _mk_segments(), out, speed=1.2, chapter_title="第一章 初见",
-        instruction_text="语气生动，带一点清晨的空灵感",
-    )
-    assert path == out
-    assert Path(out).is_file() and Path(out).read_bytes() == FAKE_MP3
-    assert dur > 0
-
-    assert "seed_audio" in captured["url"].lower()
-    pl = captured["payload"]
-    assert pl["prompt"] and "林轩" in pl["prompt"]
-    # roles：剥离前缀
-    roles = {r["name"]: r["voice"] for r in pl["roles"]}
-    assert roles.get("林轩") == "zh_male_qingnianqingche"
-    assert roles.get("苏瑶") == "clone_x"  # icl: 剥离
-    assert pl["speed_ratio"] == 1.2
-    assert "清晨" in pl["instruction_text"]
-
-
-# ---------------------------------------------------------------------
-# T-MC3: factory.get_multicast_tts 单例 + 注入
-# ---------------------------------------------------------------------
-def test_factory_get_multicast_tts_singleton_and_injection(monkeypatch):
-    from backend.app.ai import factory as aifact
-    from backend.app.ai.providers.doubao.multicast import DoubaoMulticastProvider
-
-    inst1 = aifact.get_multicast_tts()
-    inst2 = aifact.get_multicast_tts()
-    assert isinstance(inst1, DoubaoMulticastProvider)
-    assert inst1 is inst2
-
-    class _FakeMC:
-        pass
-
-    fake = _FakeMC()
-    monkeypatch.setattr(aifact, "_multicast_instance", fake)
-    assert aifact.get_multicast_tts() is fake
-
-
-# ---------------------------------------------------------------------
-# T-MC4: multicast 必须 doubao
-# ---------------------------------------------------------------------
-def test_multicast_mode_requires_doubao_provider():
-    from backend.app.services.build import _validate_tts_namespace
-
-    with pytest.raises(RuntimeError) as ei:
-        _validate_tts_namespace(
-            tts_provider="minimax",
-            mode="multicast",
-            narrator_voice_id="minimax:male-qn-jingying",
-            voice_assignments={},
+    async def synthesize_to_bytes(self, text, voice_id, *, emotion="calm", speed=1.0,
+                                  instruction_text=None, speaker_style=None):
+        self.calls.append({"text": text, "voice_id": voice_id})
+        return await self._inner.synthesize_to_bytes(
+            text, voice_id, emotion=emotion, speed=speed,
+            instruction_text=instruction_text, speaker_style=speaker_style,
         )
-    assert "doubao" in str(ei.value).lower() or "多播剧" in str(ei.value)
 
-    # doubao + multicast → OK
-    _validate_tts_namespace(
-        tts_provider="doubao",
-        mode="multicast",
-        narrator_voice_id="doubao:zh_female_qingxin",
-        voice_assignments={"林轩": "doubao:zh_male_qingnianqingche"},
-    )
+    async def synthesize_to_file(self, text, voice_id, output_path, *, emotion="calm",
+                                 speed=1.0, instruction_text=None, speaker_style=None):
+        return await self._inner.synthesize_to_file(
+            text, voice_id, output_path, emotion=emotion, speed=speed,
+            instruction_text=instruction_text, speaker_style=speaker_style,
+        )
 
 
 # ---------------------------------------------------------------------
-# T-MC5: 构建管线走 multicast provider（mock 注入）
+# T-MC1 + T-MC2：start_build(mode='multicast') 自动降级 classic
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_build_pipeline_uses_multicast_provider(_isolate_data_dir):
-    from backend.app.db.session import init_db, get_session_factory
-    from backend.app.db.models import Build, BuildArtifact
+async def test_start_build_multicast_mode_is_downgraded_to_classic(_isolate_data_dir):
+    from backend.app.db.session import init_db
     from backend.app.services.project import create_project, import_file, prepare_project
     from backend.app.services.build import start_build, get_build_status, _ACTIVE_BUILDS, _RUNNING_LOCK
     from backend.app.ai import factory as aifact
-    from backend.tests.mock_providers import MockTTSProvider, MockLLMProvider
-    from backend.app.core import config as cfgmod
+    from backend.tests.mock_providers import MockLLMProvider
+
+    await init_db()
+    prev_tts = aifact._tts_instance
+    prev_llm = aifact._llm_instance
+    aifact._tts_instance = _DoubaoMockTTS()
+    aifact._llm_instance = MockLLMProvider()
+    try:
+        pid = (await create_project("multicast-降级测试")).project_id
+        book = "第一章 初见\n李明说：「你好，请问怎么走？」\n林若雪说：「跟我来吧。」\n第二章 启程\n他们出发了。"
+        await import_file(pid, book.encode("utf-8"), "book.txt")
+        await prepare_project(pid)
+
+        # 即使传 mode='multicast' + tts_provider='doubao'，也会降级
+        resp = await start_build(
+            project_id=pid,
+            voice_assignments={"李明": "doubao:BV002_streaming"},
+            narrator_voice_id="doubao:BV001_streaming",
+            tts_provider="doubao",
+            mode="multicast",
+        )
+        # 关键断言：resp.mode 是降级后的 classic（不是用户传的 multicast）
+        assert resp.mode == "classic", (
+            f"mode=multicast 必须自动降级为 classic，实际 {resp.mode!r}"
+        )
+        # tts_provider 仍按用户传的 doubao 走（不强制改）
+        assert resp.tts_provider == "doubao"
+        bid = resp.build_id
+
+        # 等 build 完成
+        for _ in range(120):
+            s = await get_build_status(bid)
+            if s.status in ("success", "partial_success", "failed", "cancelled"):
+                break
+            await asyncio.sleep(0.25)
+        else:
+            async with _RUNNING_LOCK:
+                stale = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]
+                for k in stale:
+                    _ACTIVE_BUILDS.pop(k, None)
+            pytest.fail("build worker 超时未结束")
+        # mock TTS 必成功；逐段拼接 → success
+        assert s.status == "success", f"期望 success，实际 {s.status} msg={s.progress_msg!r}"
+    finally:
+        aifact._tts_instance = prev_tts
+        aifact._llm_instance = prev_llm
+        async with _RUNNING_LOCK:
+            stale = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]
+            for k in stale:
+                _ACTIVE_BUILDS.pop(k, None)
+
+
+# ---------------------------------------------------------------------
+# T-MC3：注入的 _multicast_instance 即使存在也不会被触发
+# ---------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_injected_multicast_instance_is_ignored(_isolate_data_dir):
+    """P0-5 之后：即使旧 conftest 注入了 _multicast_instance，新代码路径不再
+    调用 synthesize_chapter_to_file（降级为 classic 走逐段 TTS）。"""
+    from backend.app.db.session import init_db
+    from backend.app.services.project import create_project, import_file, prepare_project
+    from backend.app.services.build import start_build, get_build_status, _ACTIVE_BUILDS, _RUNNING_LOCK
+    from backend.app.ai import factory as aifact
+    from backend.tests.mock_providers import MockLLMProvider
 
     await init_db()
 
-    class _RecordingMC:
-        provider = "doubao"
+    class _ShouldNeverBeCalled:
         def __init__(self):
-            self.calls: list[dict] = []
+            self.calls = []
 
-        async def synthesize_chapter_to_file(self, segments, output_path, *, speed=1.0,
-                                             chapter_title="", instruction_text=None):
-            self.calls.append({
-                "segments": list(segments), "output_path": output_path,
-                "speed": speed, "chapter_title": chapter_title,
-                "instruction_text": instruction_text,
-            })
-            Path(output_path).write_bytes(FAKE_MP3)
-            return output_path, len(FAKE_MP3) // 16
+        async def synthesize_chapter_to_file(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            raise RuntimeError("如果 multicast provider 被调用，说明 P0-5 降级失效")
 
-    mock_mc = _RecordingMC()
-    prev_mc = aifact._multicast_instance
+    sentinel = _ShouldNeverBeCalled()
     prev_tts = aifact._tts_instance
     prev_llm = aifact._llm_instance
-    aifact._multicast_instance = mock_mc
-    aifact._tts_instance = MockTTSProvider()
+    prev_mc = aifact._multicast_instance
+    aifact._tts_instance = _DoubaoMockTTS()
     aifact._llm_instance = MockLLMProvider()
+    aifact._multicast_instance = sentinel  # 即使注入 sentinel 也必须不被调用
     try:
-        pid = (await create_project("多播剧测试")).project_id
-        book = "第一章 初见\n李明说：「你好，请问怎么走？」\n林若雪说：「跟我来吧。」\n第二章 启程\n他们出发了。"
+        pid = (await create_project("sentinel-测试")).project_id
+        book = "第一章\n他说：「测试」\n第二章\n继续。"
         await import_file(pid, book.encode("utf-8"), "book.txt")
         await prepare_project(pid)
         resp = await start_build(
             project_id=pid,
-            voice_assignments={"李明": "doubao:zh_male_qingnianqingche"},
-            narrator_voice_id="doubao:zh_female_qingxin",
-            tts_provider="doubao", mode="multicast",
+            voice_assignments={},
+            narrator_voice_id="doubao:BV001_streaming",
+            tts_provider="doubao",
+            mode="multicast",
         )
         bid = resp.build_id
         for _ in range(120):
@@ -193,36 +180,86 @@ async def test_build_pipeline_uses_multicast_provider(_isolate_data_dir):
                 for k in stale:
                     _ACTIVE_BUILDS.pop(k, None)
             pytest.fail("build worker 超时未结束")
-
-        assert s.status == "success", f"期望 success，实际 {s.status} msg={s.progress_msg!r}"
-        # 每章走一次 multicast provider
-        assert len(mock_mc.calls) == 2, f"期望 2 章 × 1 次 multicast 调用，实际 {len(mock_mc.calls)}"
-        first = mock_mc.calls[0]
-        assert first["chapter_title"] == "第一章 初见"
-        # segments 传入的是 dict 列表且带 voice_id
-        segs = first["segments"]
-        assert any(seg.get("voice_id") == "doubao:zh_male_qingnianqingche" for seg in segs)
-
-        # 章节 MP3 落盘且为 multicast 产物（FAKE_MP3）
-        factory = get_session_factory()
-        async with factory() as sess:
-            arts = list((await sess.execute(
-                __import__("sqlalchemy").select(BuildArtifact).where(
-                    BuildArtifact.build_id == bid
-                )
-            )).scalars().all())
-            assert len(arts) == 2
-            for a in arts:
-                assert a.status == "done"
-                assert a.audio_filename
-                f = Path(cfgmod.settings.AUDIO_DIR) / a.audio_filename
-                assert f.is_file()
-                assert f.read_bytes() == FAKE_MP3
+        # multicast sentinel 必须从未被调用
+        assert sentinel.calls == [], (
+            f"_multicast_instance 注入了但仍被调用了 {len(sentinel.calls)} 次："
+            f"P0-5 降级失效"
+        )
     finally:
-        aifact._multicast_instance = prev_mc
         aifact._tts_instance = prev_tts
         aifact._llm_instance = prev_llm
+        aifact._multicast_instance = prev_mc
         async with _RUNNING_LOCK:
             stale = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]
             for k in stale:
                 _ACTIVE_BUILDS.pop(k, None)
+
+
+# ---------------------------------------------------------------------
+# T-MC4：factory.get_multicast_tts() 现在永远返回 None
+# ---------------------------------------------------------------------
+def test_factory_get_multicast_tts_returns_none_after_deprecation():
+    from backend.app.ai import factory as aifact
+
+    # 默认状态：永远返回 None（P0-5 起已废弃）
+    inst = aifact.get_multicast_tts()
+    assert inst is None, (
+        f"P0-5 后 get_multicast_tts() 必须返回 None（即使 _multicast_instance "
+        f"被 conftest 注入，新代码也不应该再走到 multicast 路径），实际 {inst!r}"
+    )
+
+
+# ---------------------------------------------------------------------
+# T-MC5：_validate_tts_namespace 不再因 mode=multicast 抛错
+# ---------------------------------------------------------------------
+def test_validate_tts_namespace_no_longer_rejects_multicast_with_minimax():
+    """历史：mode=multicast + tts_provider='minimax' 会抛 RuntimeError。
+    P0-5 之后：mode=multicast 在 start_build 入口降级为 classic，_validate_tts_namespace
+    不再对 mode=multicast 做特殊校验（minimax + multicast 不再报错）。"""
+    from backend.app.services.build import _validate_tts_namespace
+
+    # minimax + multicast：历史抛错，现在 OK（降级）
+    _validate_tts_namespace(
+        tts_provider="minimax",
+        mode="multicast",
+        narrator_voice_id="minimax:male-qn-jingying",
+        voice_assignments={},
+    )
+
+    # 空 provider + multicast：历史抛错，现在 OK
+    _validate_tts_namespace(
+        tts_provider="",
+        mode="multicast",
+        narrator_voice_id="",
+        voice_assignments={},
+    )
+
+    # 未知 mode 仍然报错
+    with pytest.raises(RuntimeError, match="未知 build.mode"):
+        _validate_tts_namespace(
+            tts_provider="doubao",
+            mode="hologram",
+            narrator_voice_id="doubao:BV001_streaming",
+            voice_assignments={},
+        )
+
+    # 未知 provider 仍然报错
+    with pytest.raises(RuntimeError, match="未知 tts_provider"):
+        _validate_tts_namespace(
+            tts_provider="elevenlabs",
+            mode="classic",
+            narrator_voice_id="elevenlabs:abc",
+            voice_assignments={},
+        )
+
+
+# ---------------------------------------------------------------------
+# T-MC6：旧 multicast provider 模块已物理删除
+# ---------------------------------------------------------------------
+def test_old_multicast_module_is_deleted():
+    """P0-5：backend.app.ai.providers.doubao.multicast 模块已物理删除；
+    新代码不应再 import 它。"""
+    import importlib
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("backend.app.ai.providers.doubao.multicast")
