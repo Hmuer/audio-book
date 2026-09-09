@@ -48,6 +48,12 @@ def _factory_minimax() -> BaseTTSProvider:
 def _factory_doubao() -> BaseTTSProvider:
     # 延迟导入：豆包 provider 可能不存在（Task 3 尚未实现）时兜底返回最小可用对象
     try:
+        from ..core.config import settings
+        # P1-1：settings.DOUBAO_TTS_USE_V3=True 时路由到 v3 单向流式 provider；
+        # 否则沿用 v1（端点 /api/v1/tts，业务码 JSON 协议）
+        if getattr(settings, "DOUBAO_TTS_USE_V3", False):
+            from .providers.doubao.tts import DoubaoTTSProviderV3
+            return DoubaoTTSProviderV3()
         from .providers.doubao.tts import DoubaoTTSProvider  # type: ignore
         return DoubaoTTSProvider()
     except Exception:

@@ -75,6 +75,14 @@ class Settings(BaseSettings):
     # 实际 client 在运行时若检测到 /v1/voice_clone 会强制重写到 v3 标准端点。
     DOUBAO_TTS_BASE_URL: str = "https://openspeech.bytedance.com/api/v1/tts"
     DOUBAO_ICL_BASE_URL: str = "https://openspeech.bytedance.com/api/v1/voice_clone"
+
+    # ===== P1-1: v3 单向流式 TTS =====
+    # DOUBAO_TTS_USE_V3 = False 时 factory 路由到 v1 (DoubaoTTSProvider)；
+    # = True 时路由到 v3 (DoubaoTTSProviderV3)。
+    # 默认 False：等真实 Key 联调后再切。P1-1 范围只到 v3 骨架 + 测试。
+    DOUBAO_TTS_USE_V3: bool = False
+    # v3 端点覆写（生产/测试可指代理/沙箱）
+    DOUBAO_TTS_V3_BASE_URL: str = ""
     DOUBAO_SEED_AUDIO_BASE_URL: str = "https://openspeech.bytedance.com/api/v1/seed_audio"
 
     # RPM 限流（多厂商独立桶）

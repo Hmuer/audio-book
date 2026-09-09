@@ -12,12 +12,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import math
 import os
 import tempfile
 import time as _time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -1548,3 +1550,455 @@ class DoubaoTTSProvider(BaseTTSProvider):
     # 旧的 _http_post_bytes 已删除：它的实现把响应原样当 MP3 写盘（HTTP 200 但
     # 业务码非 3000 时会写入 JSON 伪装 .mp3）。当前路径走 _post_json_for_v1 +
     # DoubaoTTSResponseError 做业务码判定与重试。
+
+
+# =====================================================================
+# 豆包 v3 单向流式 HTTP TTS Provider（P1-1）
+#
+# 协议：https://openspeech.bytedance.com/api/v3/tts/unidirectional
+#       （HTTP Chunked 单向流式）
+#
+# 鉴权（新版控制台推荐）：
+#   X-Api-Key: <API Key>
+#   X-Api-Resource-Id: seed-tts-2.0  # 或 seed-tts-1.0（按 model 选）
+#   X-Api-App-Key: aGjiRDfUWi        # 固定值（官方要求）
+#   X-Api-Request-Id: <uuid>
+#
+# 鉴权（旧版控制台兼容）：
+#   X-Api-App-Id: <APP ID>           # 纯数字
+#   X-Api-Access-Key: <Access Token>
+#   X-Api-Resource-Id: seed-tts-1.0
+#
+# 请求体（v3 嵌套结构）：
+#   {
+#     "user": {"uid": "..."},
+#     "req_params": {
+#       "text": "...",
+#       "speaker": "BVxxx_streaming",  # 或 ICL speaker_id
+#       "audio_params": {
+#         "format": "mp3",
+#         "sample_rate": 24000,
+#         "speech_rate": 0,            # -50 ~ 100，0=原速
+#         "loudness_rate": 0,          # -50 ~ 100
+#         "enable_subtitle": false,
+#         "disable_markdown_filter": true,
+#         # emotion / instruction_text / speaker_style 按需打开（GLM 警告：
+#         # 字段名需真实 Key 验证，这里留接口 + 默认不传，避免静默错）
+#       },
+#     },
+#   }
+#
+# 响应：HTTP Chunked 流式 JSON 序列，每个 chunk 为 {audio: <base64>, ...}
+#       或错误 {code, message}（通常第一个 chunk）。客户端拼接 audio 字段解码得到 MP3。
+#
+# 与 v1 共存策略：
+#   - v1 (DoubaoTTSProvider) 保留为兜底，endpoints /api/v1/tts
+#   - factory 按 settings.DOUBAO_TTS_USE_V3 (bool, 默认 False) 路由到 v3 或 v1
+#   - 真实 Key 联调后再把默认改 True（P1-1 完成后由用户决策）
+# =====================================================================
+
+_DEFAULT_V3_ENDPOINT = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+# 固定值（官方协议要求；新鉴权方式也必须带上）
+_V3_FIXED_X_API_APP_KEY = "aGjiRDfUWi"
+
+# v3 业务码：0=成功；非 0=失败。文档示例：
+# 20000000/20000001/20000002/20000003/40000001 等。具体可重试判定不在 v3 spec 中
+# 明确，这里保守：网络层 + 5xx 重试，业务码直接抛错（不静默错）。
+_V3_RETRYABLE_NETWORK = True  # 网络错 / 5xx / 429 重试
+
+
+class DoubaoTTSResponseV3Error(RuntimeError):
+    """v3 协议错误：HTTP 失败 + 业务码非 0 都会抛此。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: int = -1,
+        logid: str | None = None,
+    ):
+        super().__init__(message)
+        self.code = code
+        self.logid = logid
+
+
+def _strip_voice_id_for_api_v3(voice_id: str) -> str:
+    """与 v1 同语义：剥 `doubao:` / `icl:` 前缀得到真实 speaker_id。"""
+    if voice_id.startswith("icl:"):
+        return voice_id.split(":", 1)[1]
+    if voice_id.startswith("doubao:"):
+        return voice_id.split(":", 1)[1]
+    return voice_id
+
+
+def _resolve_resource_id_for_v3(model: str) -> str:
+    """按音色表 `model` 字段映射到 X-Api-Resource-Id。
+
+    已知：
+      - seed-tts-1.0 / seed-tts-1.0-concurr → 1.0 音色
+      - seed-tts-2.0 → 2.0 音色
+      - seed-icl-1.0 / seed-icl-2.0 → ICL 声音复刻
+    """
+    m = (model or "").strip().lower()
+    if m in ("seed-tts-2.0",):
+        return "seed-tts-2.0"
+    if m in ("seed-tts-1.0", "seed-tts-1.0-concurr"):
+        return "seed-tts-1.0"
+    if m in ("seed-icl-2.0",):
+        return "seed-icl-2.0"
+    if m in ("seed-icl-1.0", "seed-icl-1.0-concurr"):
+        return "seed-icl-1.0"
+    # 兜底 1.0（兼容旧音色）
+    return "seed-tts-1.0"
+
+
+class DoubaoTTSProviderV3(BaseTTSProvider):
+    """豆包 TTS v3 单向流式 HTTP Provider。
+
+    与 DoubaoTTSProvider (v1) 共享音色表 _BUILTIN_VOICES；
+    接口规范按官方 1598757 文档（V3 HTTP Chunked）。
+    """
+
+    name = "doubao_tts_v3"
+    provider = "doubao"
+
+    MIN_SPEED = 0.5
+    MAX_SPEED = 2.0
+    MAX_RETRIES = 5
+    BASE_BACKOFF_SECS = 0.6
+    JITTER_SECS = 0.3
+    DEFAULT_SAMPLE_RATE = 24000
+
+    @property
+    def _endpoint(self) -> str:
+        try:
+            return settings.DOUBAO_TTS_V3_BASE_URL or _DEFAULT_V3_ENDPOINT
+        except Exception:
+            return _DEFAULT_V3_ENDPOINT
+
+    # -----------------------------------------------------------------
+    # 鉴权
+    # -----------------------------------------------------------------
+    def _resolve_api_key(self) -> str:
+        """解析 v3 API Key（优先级与 v1 _get_authorization 一致）。"""
+        try:
+            from ....core.config import get_provider
+            prov = get_provider("doubao")
+            ak = (prov or {}).get("api_key") or ""
+        except Exception:
+            ak = ""
+        if not ak:
+            ak = settings.DOUBAO_AK or ""
+        if not ak:
+            ak = os.environ.get("MEGACORE_ACCESS_KEY_FROM_ENV") or ""
+        if not ak:
+            raise RuntimeError(
+                "未配置豆包凭据：请在「设置 → 模型厂商 → 火山引擎豆包语音」"
+                "启用并填入 API Key 后保存，或设置 DOUBAO_AK 环境变量。"
+            )
+        return ak.strip().split()[-1] if " " in ak else ak.strip()
+
+    def _auth_headers(self, *, speaker_id: str) -> dict[str, str]:
+        """构造 v3 鉴权头。新版 X-Api-Key；旧版（key 为纯数字）走 X-Api-App-Key +
+        X-Api-Access-Key。同时必须带 X-Api-Resource-Id + 固定的 X-Api-App-Key。"""
+        ak = self._resolve_api_key()
+        ak_value = ak.strip()
+        resource_id = _resolve_resource_id_for_v3(
+            self._resolve_model_for_speaker(speaker_id)
+        )
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "X-Api-App-Key": _V3_FIXED_X_API_APP_KEY,
+            "X-Api-Resource-Id": resource_id,
+            "X-Api-Request-Id": f"novel-{uuid.uuid4().hex}",
+        }
+        if ak_value.lstrip("-").isdigit():
+            headers["X-Api-App-Id"] = ak_value
+            # 旧版 Access Token：与 api_key 同 值（兼容历史"只填一个"的部署）
+            headers["X-Api-Access-Key"] = ak_value
+        else:
+            headers["X-Api-Key"] = ak_value
+        return headers
+
+    def _resolve_model_for_speaker(self, speaker_id: str) -> str:
+        """根据 speaker_id 查 _BUILTIN_VOICES 返回 model；找不到则兜底 seed-tts-1.0。"""
+        # icl: 开头按 ICL 2.0 走
+        if speaker_id.startswith("S_") or speaker_id.startswith("icl_"):
+            return "seed-icl-2.0"
+        for v in _BUILTIN_VOICES:
+            if v["id"] == speaker_id:
+                return v.get("model") or "seed-tts-1.0"
+        return "seed-tts-1.0"
+
+    # -----------------------------------------------------------------
+    # 音色列表：复用 v1 内置音色（保证前后端列表稳定）
+    # -----------------------------------------------------------------
+    async def list_voices(self) -> list[dict[str, Any]]:
+        voices_by_id: dict[str, dict[str, Any]] = {}
+        for v in _BUILTIN_VOICES:
+            voices_by_id[f"doubao:{v['id']}"] = {
+                "id": f"doubao:{v['id']}",
+                "name": v["name"],
+                "provider": "doubao",
+                "gender": v["gender"],
+                "age": v["age"],
+                "scene": list(v["scene"]),
+                "dialect": v["dialect"],
+                "languages": list(v.get("languages") or ["zh"]),
+                "zh_tags": list(v["zh_tags"]),
+                "supports_emotion": bool(v.get("supports_emotion", False)),
+                "supports_subtitle": bool(v.get("supports_subtitle", True)),
+                "supports_language": bool(v.get("supports_language", False)),
+                "free": bool(v.get("free", False)),
+                "model": v.get("model", "seed-tts-1.0"),
+                "protocol": "v3",  # 标记当前 provider 走 v3
+            }
+        # 用户自定义 voices_doubao.json（与 v1 同样路径）
+        try:
+            custom_path = Path(settings.DATA_DIR) / "voices_doubao.json"
+            if custom_path.exists():
+                raw = json.loads(custom_path.read_text(encoding="utf-8"))
+                for v in raw:
+                    vid = str(v.get("id", ""))
+                    if not vid.startswith("doubao:") and not vid.startswith("icl:"):
+                        vid = f"doubao:{vid}"
+                    merged: dict[str, Any] = {
+                        "id": vid,
+                        "name": v.get("name") or vid.split(":", 1)[-1],
+                        "provider": "doubao",
+                        "gender": v.get("gender", "neutral"),
+                        "age": v.get("age", "youth"),
+                        "scene": v.get("scene", ["自定义"]),
+                        "dialect": v.get("dialect", ""),
+                        "zh_tags": list(v.get("zh_tags") or ["自定义"]),
+                        "protocol": "v3",
+                    }
+                    for k, val in v.items():
+                        if k not in merged and k != "id":
+                            merged[k] = val
+                    voices_by_id[vid] = merged
+        except Exception:
+            logger.exception("v3 list_voices: 读取 voices_doubao.json 失败")
+        return list(voices_by_id.values())
+
+    # -----------------------------------------------------------------
+    # Payload 构造
+    # -----------------------------------------------------------------
+    def _build_v3_payload(
+        self,
+        text: str,
+        voice_id: str,
+        *,
+        emotion: str = "calm",
+        speed: float = 1.0,
+        instruction_text: str | None = None,
+        speaker_style: str | None = None,
+    ) -> dict[str, Any]:
+        speaker_for_api = _strip_voice_id_for_api_v3(voice_id)
+        # speech_rate: -50~100，0=原速；speed 1.0 → 0；2.0 → +100；0.5 → -50
+        speech_rate = self._map_speed_to_speech_rate(speed)
+        audio_params: dict[str, Any] = {
+            "format": "mp3",
+            "sample_rate": self.DEFAULT_SAMPLE_RATE,
+            "speech_rate": speech_rate,
+            "loudness_rate": 0,
+            "disable_markdown_filter": True,
+            "enable_subtitle": False,
+        }
+        # GLM 警告：emotion / instruction_text 字段名需真实 Key 验证；这里按
+        # 官方 v3 文档暂放 audio_params.emotion；可后续按联调结果调整
+        # （P1-1 范围：保守骨架，验证完毕后再真实落地情绪链路）
+        if emotion and emotion not in ("calm", "neutral", ""):
+            audio_params["emotion"] = emotion
+        if instruction_text:
+            audio_params["instruction_text"] = instruction_text
+        if speaker_style:
+            audio_params["speaker_style"] = speaker_style
+        return {
+            "user": {"uid": f"local-{os.getpid() % 10000:04d}"},
+            "req_params": {
+                "text": text,
+                "speaker": speaker_for_api,
+                "audio_params": audio_params,
+            },
+        }
+
+    def _map_speed_to_speech_rate(self, speed: float) -> int:
+        """speed [0.5, 2.0] → speech_rate [-50, 100] 线性映射；clamp 兜底。"""
+        v = float(speed or 1.0)
+        if math.isnan(v) or v <= 0:
+            v = 1.0
+        v = max(self.MIN_SPEED, min(self.MAX_SPEED, v))
+        # 0.5 → -50；1.0 → 0；2.0 → 100
+        # 公式：rate = (v - 1.0) * 100 / 1.0 → 但要 clamp 到 [-50, 100]
+        rate = int(round((v - 1.0) * 100.0))
+        return max(-50, min(100, rate))
+
+    # -----------------------------------------------------------------
+    # HTTP 流式响应解析
+    # -----------------------------------------------------------------
+    async def _post_stream_v3(
+        self,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        *,
+        timeout_read_s: float = 60.0,
+    ) -> bytes:
+        """POST 到 v3 HTTP Chunked 端点；按行解析流式 JSON，拼接 audio 字段。
+
+        Returns:
+            拼接后的 MP3 字节。
+
+        Raises:
+            DoubaoTTSResponseV3Error: 任意 chunk 含业务码非 0 或 HTTP 失败。
+            httpx.HTTPError: 网络层错误（让上层走重试）。
+        """
+        import httpx
+
+        timeout = httpx.Timeout(connect=10.0, read=timeout_read_s, write=10.0, pool=10.0)
+        # 用 httpx 流式读取，逐行解析
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", url, headers=headers, json=payload) as resp:
+                logid = resp.headers.get("X-Tt-Logid") or resp.headers.get("x-tt-logid")
+                if resp.status_code == 429 or 500 <= resp.status_code < 600:
+                    # 让上层走重试：抛 httpx.HTTPStatusError
+                    await resp.aread()
+                    resp.raise_for_status()
+                resp.raise_for_status()
+                chunks: list[bytes] = []
+                saw_error = False
+                err_msg = ""
+                err_code = -1
+                async for line in resp.aiter_lines():
+                    line = (line or "").strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        # 非 JSON 行（chunked 编码空行）忽略
+                        continue
+                    if not isinstance(obj, dict):
+                        continue
+                    # 错误 chunk
+                    code_val = obj.get("code")
+                    if code_val is not None and int(code_val) != 0:
+                        saw_error = True
+                        err_code = int(code_val)
+                        err_msg = str(obj.get("message") or "")
+                        continue
+                    audio_b64 = obj.get("audio") or ""
+                    if audio_b64:
+                        try:
+                            chunks.append(base64.b64decode(audio_b64, validate=False))
+                        except Exception:
+                            # 单段解码失败不致命，继续收后续 chunk
+                            continue
+                if saw_error and not chunks:
+                    raise DoubaoTTSResponseV3Error(
+                        f"v3 TTS 业务错：code={err_code} msg={err_msg}",
+                        code=err_code,
+                        logid=logid,
+                    )
+                if not chunks:
+                    raise DoubaoTTSResponseV3Error(
+                        "v3 TTS 响应无 audio chunk",
+                        code=-1,
+                        logid=logid,
+                    )
+                return b"".join(chunks)
+
+    # -----------------------------------------------------------------
+    # 合成入口
+    # -----------------------------------------------------------------
+    async def synthesize_to_bytes(
+        self,
+        text: str,
+        voice_id: str,
+        *,
+        emotion: str = "calm",
+        speed: float = 1.0,
+        instruction_text: str | None = None,
+        speaker_style: str | None = None,
+    ) -> tuple[bytes, int]:
+        if not text or not text.strip():
+            empty = b"\xff\xfb\x90\x64\x00" + (b"\x00" * 48)
+            return empty, 0
+        payload = self._build_v3_payload(
+            text, voice_id, emotion=emotion, speed=speed,
+            instruction_text=instruction_text, speaker_style=speaker_style,
+        )
+        speaker_for_api = _strip_voice_id_for_api_v3(voice_id)
+        headers = self._auth_headers(speaker_id=speaker_for_api)
+
+        last_exc: Exception | None = None
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            try:
+                await _doubao_rpm_wait_acquire("tts")
+                mp3_bytes = await self._post_stream_v3(
+                    self._endpoint, headers, payload,
+                )
+                dur_ms = _estimate_mp3_duration_ms(mp3_bytes)
+                logger.debug(
+                    f"[DoubaoTTS-v3] 成功 text_len={len(text)} dur_ms={dur_ms}"
+                )
+                return mp3_bytes, dur_ms
+            except DoubaoTTSResponseV3Error as e:
+                # 业务错：不重试
+                logger.warning(
+                    f"[DoubaoTTS-v3] 业务错（放弃重试）：code={e.code} logid={e.logid} {e}"
+                )
+                raise
+            except Exception as e:
+                last_exc = e
+                # 网络层：可重试
+                is_retryable = (
+                    _V3_RETRYABLE_NETWORK
+                    and not isinstance(e, DoubaoTTSResponseV3Error)
+                )
+                if attempt >= self.MAX_RETRIES or not is_retryable:
+                    logger.warning(
+                        f"[DoubaoTTS-v3] 放弃重试（attempt={attempt}/{self.MAX_RETRIES}）："
+                        f"{type(e).__name__}: {e}"
+                    )
+                    break
+                wait_s = self.BASE_BACKOFF_SECS * (2 ** (attempt - 1)) + self.JITTER_SECS
+                logger.warning(
+                    f"[DoubaoTTS-v3] 重试（attempt={attempt}/{self.MAX_RETRIES}）："
+                    f"指数退避 {wait_s:.1f}s {type(e).__name__}: {e}"
+                )
+                await asyncio.sleep(wait_s)
+        assert last_exc is not None
+        raise RuntimeError(
+            f"豆包 TTS v3 合成失败：{type(last_exc).__name__}: {last_exc}"
+        ) from last_exc
+
+    async def synthesize_to_file(
+        self,
+        text: str,
+        voice_id: str,
+        output_path: str,
+        *,
+        emotion: str = "calm",
+        speed: float = 1.0,
+        instruction_text: str | None = None,
+        speaker_style: str | None = None,
+    ) -> tuple[str, int]:
+        data, dur_ms = await self.synthesize_to_bytes(
+            text, voice_id,
+            emotion=emotion, speed=speed,
+            instruction_text=instruction_text, speaker_style=speaker_style,
+        )
+        tmp_path = output_path + ".tmp"
+        try:
+            with open(tmp_path, "wb") as f:
+                f.write(data)
+            os.replace(tmp_path, output_path)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        return output_path, dur_ms
