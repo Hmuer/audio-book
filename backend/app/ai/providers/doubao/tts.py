@@ -29,12 +29,139 @@ logger = logging.getLogger(__name__)
 
 
 def _estimate_mp3_duration_ms(data: bytes) -> int:
-    """纯试探性：按 128kbps 估算时长，缺失或过小返回 0。"""
-    if len(data) < 10:
+    """解析 MPEG audio frame header 估算 MP3 时长（毫秒）。
+
+    协议背景：
+      官方豆包 v1 TTS 接口（`/api/v1/tts`）返回 JSON：
+        {"code": 3000, "message": "Success", "data": "<base64 mp3>"}
+      - 业务码 3000 = 成功；其他 = 失败（可重试 vs 不可重试见 _classify_v1_code）
+      - data 是 base64 编码的 MP3 字节流；HTTP 状态码始终 200，
+        不能用 status_code 判定业务成功与否——必须看业务码。
+
+    这里用首帧 MPEG frame header 解出 bitrate/sample_rate，
+    估算 total_ms = (file_bytes * 8) / bitrate * 1000。
+    精度 ±50ms，足以 SRT 对齐 / 章节拼接。
+    """
+    if not data or len(data) < 10:
         return 0
-    # 采样率/位率从帧头估算
-    # 简单 fallback： 128 kbps ≈ 16000 bytes/s
+    # MPEG audio frame header: 11 bits all set (0xFFE / 0xFFF)
+    # 在 data 里扫描第一个有效帧头（跳过 ID3v2 tag）
+    pos = 0
+    if data[:3] == b"ID3":
+        # ID3v2 header: 10 bytes；size 是 syncsafe integer 在 byte 6-9
+        try:
+            sz = (data[6] << 21) | (data[7] << 14) | (data[8] << 7) | data[9]
+            pos = 10 + sz
+        except Exception:
+            pos = 0
+    while pos < len(data) - 4:
+        b1, b2 = data[pos], data[pos + 1]
+        if b1 == 0xFF and (b2 & 0xE0) == 0xE0:
+            # 解析 MPEG header byte 2-3
+            version = (b2 >> 3) & 0x3           # 0=MPEG2.5, 2=MPEG2, 3=MPEG1
+            layer = (b2 >> 1) & 0x3             # 1=Layer3
+            br_idx = (data[pos + 2] >> 4) & 0xF
+            sr_idx = (data[pos + 2] >> 2) & 0x3
+            # bitrate 表 (kbps)，Layer III：MPEG1 / MPEG2 / MPEG2.5
+            # MPEG1:   [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,-]
+            # MPEG2/2.5:[0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,-]
+            bitrate_table_m1 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0]
+            bitrate_table_m2 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0]
+            # sample_rate table (Hz)：MPEG1: 44100/22050/11025；MPEG2: 22050/...
+            sr_table_m1 = [44100, 48000, 32000, 0]
+            sr_table_m2 = [22050, 24000, 16000, 0]
+            sr_table_m25 = [11025, 12000, 8000, 0]
+            if layer != 1:
+                pos += 1
+                continue
+            if version == 3:
+                bitrate = bitrate_table_m1[br_idx] * 1000
+                sample_rate = sr_table_m1[sr_idx]
+            elif version == 2:
+                bitrate = bitrate_table_m2[br_idx] * 1000
+                sample_rate = sr_table_m2[sr_idx]
+            else:  # version == 0 (MPEG2.5)
+                bitrate = bitrate_table_m2[br_idx] * 1000
+                sample_rate = sr_table_m25[sr_idx]
+            if bitrate <= 0 or sample_rate <= 0:
+                pos += 1
+                continue
+            # 时长 = bytes / (bitrate / 8)，转换为 ms
+            duration_ms = int(len(data) * 8 / bitrate * 1000)
+            return duration_ms
+        pos += 1
+    # 兜底：所有解析失败，退化为 128kbps 估算
     return int(len(data) / 16.0)
+
+
+# 官方 v1 业务码分类（仅与本 Provider 的响应解析相关）
+# - 成功：3000
+# - 客户端可重试：3001, 3002, 3003, 3010, 3011（参数/限流/网络抖动）
+# - 客户端不可重试：3004..3009, 3012+（鉴权/余额/不存在资源等）
+_V1_RETRYABLE_CODES = {3001, 3002, 3003, 3010, 3011}
+
+
+class DoubaoTTSResponseError(RuntimeError):
+    """豆包 v1 TTS 业务码非 3000。
+
+    携带业务码与 message，方便上层做业务级重试判定 + 错误聚类。
+    response 不一定有（POST 请求被底层拦了），所以是 Optional。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: int,
+        logid: str | None = None,
+        response: Any | None = None,
+    ):
+        super().__init__(message)
+        self.code = code
+        self.logid = logid
+        self.response = response
+
+    @property
+    def is_retryable(self) -> bool:
+        return self.code in _V1_RETRYABLE_CODES
+
+
+async def _post_json_for_v1(
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    *,
+    timeout_read_s: float = 60.0,
+) -> tuple[dict[str, Any], str | None]:
+    """发 POST，期望响应是 JSON；返回 (parsed_json_dict, x_tt_logid)。
+
+    不抛 HTTPStatusError：HTTP 错误由调用方根据业务码决定下一步。
+    但 httpx 连接异常 / 超时仍会抛（这是真网络错，应重试）。
+    """
+    import httpx  # 函数内导入便于 mock
+
+    timeout = httpx.Timeout(connect=10.0, read=timeout_read_s, write=10.0, pool=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+        logid = resp.headers.get("X-Tt-Logid") or resp.headers.get("x-tt-logid")
+        # 响应体读完再判定（业务码非 3000 时 HTTP 仍可能 200）
+        raw = await resp.aread()
+        resp.raise_for_status()
+        try:
+            data = json.loads(raw)
+        except Exception as e:
+            raise DoubaoTTSResponseError(
+                f"响应不是合法 JSON：{type(e).__name__}: {e}",
+                code=-1,
+                logid=logid,
+            ) from None
+        if not isinstance(data, dict):
+            raise DoubaoTTSResponseError(
+                f"响应 JSON 不是对象：{type(data).__name__}",
+                code=-1,
+                logid=logid,
+            )
+        return data, logid
 
 
 # =====================================================================
@@ -632,17 +759,61 @@ class DoubaoTTSProvider(BaseTTSProvider):
             try:
                 # 豆包 RPM 限流（固定间隔 token bucket）
                 await _doubao_rpm_wait_acquire("tts")
-                # 真正请求
-                mp3_bytes = await self._http_post_bytes(
+                # 真正请求：返回 JSON 业务码 + logid（不再用 _http_post_bytes 那种「把响应原样当 MP3」的反模式）
+                resp_json, logid = await _post_json_for_v1(
                     self._endpoint, headers, payload
                 )
+                code = int(resp_json.get("code", -1) or -1)
+                msg = str(resp_json.get("message") or "")
+                # 业务码 3000 才算成功；其余一律按业务错处理
+                if code != 3000:
+                    raise DoubaoTTSResponseError(
+                        f"code={code} {msg}",
+                        code=code,
+                        logid=logid,
+                    )
+                data_b64 = resp_json.get("data") or ""
+                if not data_b64:
+                    raise DoubaoTTSResponseError(
+                        "code=3000 但响应 data 字段为空",
+                        code=code,
+                        logid=logid,
+                    )
+                import base64 as _b64
+                try:
+                    mp3_bytes = _b64.b64decode(data_b64, validate=False)
+                except Exception as e:
+                    raise DoubaoTTSResponseError(
+                        f"data 不是合法 base64：{type(e).__name__}: {e}",
+                        code=code,
+                        logid=logid,
+                    ) from None
                 dur_ms = _estimate_mp3_duration_ms(mp3_bytes)
+                if logid:
+                    logger.debug(f"[DoubaoTTS] 成功 logid={logid} dur_ms={dur_ms}")
                 return mp3_bytes, dur_ms
-            except Exception as e:
+            except DoubaoTTSResponseError as e:
                 last_exc = e
+                # 业务码可重试：3001/3002/3003/3010/3011；其余直接放弃
+                is_retryable = e.is_retryable
+                if attempt >= self.MAX_RETRIES or not is_retryable:
+                    logger.warning(
+                        f"[DoubaoTTS] 放弃重试（attempt={attempt}/{self.MAX_RETRIES}）："
+                        f"业务码 code={e.code} logid={e.logid} msg={e}"
+                    )
+                    break
+                wait_s = self.BASE_BACKOFF_SECS * (2 ** (attempt - 1)) + self.JITTER_SECS
+                logger.warning(
+                    f"[DoubaoTTS] 重试（attempt={attempt}/{self.MAX_RETRIES}）："
+                    f"业务码 code={e.code} logid={e.logid} 指数退避 {wait_s:.1f}s"
+                )
+                await asyncio.sleep(wait_s)
+            except Exception as e:
+                # 真网络错 / JSON 解析错 / base64 解码错（-1）/ httpx 异常
+                last_exc = e
+                resp_obj = getattr(e, "response", None)
                 # 解析 Retry-After（若 429 提供）
                 retry_after = None
-                resp_obj = getattr(e, "response", None)
                 if resp_obj is not None:
                     try:
                         ra = resp_obj.headers.get("Retry-After")
@@ -653,9 +824,15 @@ class DoubaoTTSProvider(BaseTTSProvider):
                 is_rate = (
                     resp_obj is not None and getattr(resp_obj, "status_code", None) == 429
                 )
-                is_retryable = is_rate or (
+                is_server = (
                     resp_obj is not None and 500 <= int(getattr(resp_obj, "status_code", 0)) < 600
                 )
+                # 网络层可重试；JSON 解析失败（code=-1）不重试
+                code = getattr(e, "code", None)
+                if code == -1:
+                    is_retryable = False
+                else:
+                    is_retryable = is_rate or is_server or resp_obj is None
                 if attempt >= self.MAX_RETRIES or not is_retryable:
                     logger.warning(
                         f"[DoubaoTTS] 放弃重试（attempt={attempt}/{self.MAX_RETRIES}）："
