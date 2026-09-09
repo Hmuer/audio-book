@@ -128,9 +128,9 @@ async def test_icl_create_reqid_unique(monkeypatch):
 
     captured: list[dict] = []
 
-    async def _fake_post(url, payload):
+    async def _fake_post(url, payload, **_kwargs):
         captured.append(payload)
-        return {"code": 0, "data": {"task_id": f"dtid-{len(captured)}"}}
+        return {"code": 0, "data": {"speaker_id": f"icl_88_{len(captured)}"}}
 
     monkeypatch.setattr(
         "backend.app.core.config.settings.DOUBAO_AK", "test-ak", raising=False
@@ -142,9 +142,9 @@ async def test_icl_create_reqid_unique(monkeypatch):
     await client.create_training("声线A", fake_mp3)
     await client.create_training("声线B", fake_mp3)
 
-    reqids = [p["reqid"] for p in captured]
+    reqids = [p["speaker_id"] for p in captured]
     assert len(reqids) == 2 and reqids[0] != reqids[1], (
-        f"ICL create reqid 必须每次唯一，实际 {reqids}"
+        f"ICL create speaker_id 必须每次唯一，实际 {reqids}"
     )
 
 

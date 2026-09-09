@@ -35,19 +35,25 @@ async def test_icl_client_create_training_payload_and_taskid():
     client = DoubaoICLClient()
     captured: dict = {}
 
-    async def _fake_post(url, payload):
+    async def _fake_post(url, payload, **_kwargs):
         captured["url"] = url
         captured["payload"] = payload
-        return {"code": 0, "data": {"task_id": "doubao-icl-task-88"}}
+        return {"code": 0, "data": {"speaker_id": "icl_88"}}
 
     client._http_post_json = _fake_post  # type: ignore[method-assign]
     task_id = await client.create_training("我的声线", FAKE_MP3, audio_format="mp3")
-    assert task_id == "doubao-icl-task-88"
+    assert task_id == "icl_88"
     assert "voice_clone" in captured["url"] or "icl" in captured["url"].lower()
     p = captured["payload"]
-    assert p["voice_name"] == "我的声线"
-    # 音频必须以某种形式上传（base64 或 multipart 字段）
-    assert "audio_b64" in p or "audio" in p
+    # v3 接口规范：speaker_id 由我们生成、audio.data 是 base64 音频、audio.format 必传
+    assert p["speaker_id"].startswith("icl_") and len(p["speaker_id"]) > 10
+    assert p["audio"]["format"] == "mp3"
+    # audio.data 是合法 base64 字符串，解码后长度 = 原音频长度
+    import base64 as _b64
+    decoded = _b64.b64decode(p["audio"]["data"], validate=False)
+    assert len(decoded) == len(FAKE_MP3)
+    # model_type 必传（ICL2.0 推荐）
+    assert p.get("model_type") in ("ICL1.0", "ICL2.0", "DiT")
 
 
 @pytest.mark.asyncio
@@ -56,17 +62,22 @@ async def test_icl_client_query_training_parses_status():
 
     client = DoubaoICLClient()
 
-    async def _fake_post(url, payload):
+    async def _fake_post(url, payload, **_kwargs):
+        # 真实接口响应里 status / speaker_id / speaker_status[0].model_type 直接展开
         return {
             "code": 0,
-            "data": {"status": 4, "progress": 100, "voice_id": "clone_xyz"},
+            "speaker_id": "icl_88",
+            "status": 4,
+            "speaker_status": [{"model_type": 5, "demo_audio": "https://x/icl_88.mp3"}],
         }
 
     client._http_post_json = _fake_post  # type: ignore[method-assign]
-    r = await client.query_training("doubao-icl-task-88")
+    r = await client.query_training("icl_88")
     assert r["status"] == 4
     assert r["progress"] == 100
-    assert r["cloned_voice_id"] == "clone_xyz"
+    assert r["cloned_voice_id"] == "icl_88"
+    assert r["model_type"] == 5
+    assert r["demo_audio"] == "https://x/icl_88.mp3"
 
 
 # ---------------------------------------------------------------------
