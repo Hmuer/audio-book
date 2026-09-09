@@ -36,16 +36,20 @@
 ---
 
 ### P0-2 全量重建豆包音色表 + 情感/时间戳/语言元数据
-- [ ] 完成
-- 位置：[tts.py:55-443](file:///workspace/backend/app/ai/providers/doubao/tts.py#L55-L443)（`_BUILTIN_VOICES` 整段重写）
+- [x] 完成
+- 位置：[tts.py:182-1172](file:///workspace/backend/app/ai/providers/doubao/tts.py#L182-L1172)（`_BUILTIN_VOICES` 重写）
 - 关键改动：
-  - 以官方 [97465](https://docs.volcengine.com/docs/6561/97465?lang=zh)（小模型）+ [1257544](https://docs.volcengine.com/docs/6561/1257544?lang=zh)（2.0 大模型）为准
-  - 每条带元数据：`provider / supports_emotion / supports_subtitle / supports_language / supports_dialect / tag / free`
-  - 删除 BV030~BV613 自创 id（grep 确认官方表里不存在）
+  - 严格以官方 [97465](https://docs.volcengine.com/docs/6561/97465?lang=zh)（小模型）+ [1257544](https://docs.volcengine.com/docs/6561/1257544?lang=zh)（2.0 大模型）为准
+  - 共收录 **187 条**官方真实音色：小模型 92 条（BVxxx_streaming）+ 大模型 95 条（zh_xxx_uranus_bigtts）
+  - 每条新增元数据字段：`languages / supports_emotion / supports_subtitle / supports_language / free / model`
+  - `model` 字段区分 `seed-tts-1.0`（小模型）/ `seed-tts-2.0`（大模型），供后续 P1-1 v3 协议路由用
+  - `free=True` 严格按火山 FAQ「21 款免费音色」白名单标，杜绝误标
+  - **删除所有自创 id**：`BV030_stream` ~ `BV613_stream` 全段、`zh_female_xxx` / `zh_male_xxx` 整组历史 zh_* 命名空间全部清空（grep 确认官方表里不存在）
+  - 拼写修正：原 `BVxxx_stream` → 官方 `BVxxx_streaming`（带 ing 后缀）
   - 保留 `voices_doubao.json` 自定义覆盖机制
-- 测试：`backend/tests/test_doubao_voices_red.py`（新）
-- 完成日期：
-- Commit：
+- 测试：`backend/tests/test_doubao_voices_red.py`（新，11 个场景）+ `backend/tests/test_doubao_task3_red.py`（sample_ids 更新）
+- 完成日期：2026-09-09
+- Commit：a1b576a（音色表重建）+ 35bb9ea（测试更新）
 
 ---
 
@@ -235,10 +239,10 @@
 
 | 类别 | 总数 | 已完成 | 进度 |
 |---|---|---|---|
-| 🔴 P0 | 5 | 2 | ▰▰▱▱▱ 40% |
+| 🔴 P0 | 5 | 3 | ▰▰▰▱▱ 60% |
 | 🟡 P1 | 7 | 0 | ▱▱▱▱▱▱▱ 0% |
 | 🟢 P2 | 5 | 0 | ▱▱▱▱▱ 0% |
-| **合计** | **17** | **2** | **12%** |
+| **合计** | **17** | **3** | **18%** |
 
 > 更新方式：完成时把 `0` 改成实际数字、进度条同步。也可以用 `grep -c '\[x\]' checklist-tts-v3-migration.md` 一键统计。
 
@@ -262,3 +266,4 @@ Week 6: P1-3 + P1-4 + P1-7
 
 - 2026-09-04：初版，基于 GLM-5.3 审计 + 笔记 `.trae/notes/doubao-voice-apis.md` 整理
 - 2026-09-09：P0-1 + P0-3 完成（含回归测试）。GLM 提交 983f0e0 一次性合并：删除 `tts.py` 中旧的 `_http_post_bytes` 方法 + 新增 `test_doubao_response_parsing_red.py`（7 场景）+ 修复 `test_doubao_task3_red.py` 与 `test_doubao_task5_red.py` 的 mock 协议不匹配。19/19 相关测试通过。
+- 2026-09-09：P0-2 完成。按官方文档 97465 + 1257544 全量重建 `_BUILTIN_VOICES`：187 条官方真实 voice_type（92 条小模型 + 95 条大模型 2.0），新增 6 个元数据字段（languages/supports_emotion/supports_subtitle/supports_language/free/model），删除全部自创 id（BV030~BV613、zh_*_xxx 历史命名空间），修正 BV 拼写 `_stream` → `_streaming`。两个提交：a1b576a（代码）+ 35bb9ea（测试）。147/147 全套测试通过。
