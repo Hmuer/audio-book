@@ -197,7 +197,7 @@
   - routes.py 5xx 响应附 `logid` 字段：`_extract_logid_from_exc` 沿 `__cause__` 链递归取 logid；`_http_exc_with_logid` 构造 `HTTPException(detail={message, logid})`；ICL 创建/查询/详情/删除 + TTS preview 路由全部改用此 helper
 - 测试：`backend/tests/test_logid_propagation_red.py`（新，9 个场景：3 helper 单测 + 3 provider/ICL 异常携带 logid + 1 端到端 HTTP 5xx 含 logid）
 - 完成日期：2026-09-09
-- Commit：29fe4e2
+- Commit：d41441d
 
 ---
 
