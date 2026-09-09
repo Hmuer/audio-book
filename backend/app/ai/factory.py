@@ -12,7 +12,10 @@ _tts_instances: dict[str, BaseTTSProvider] = {}
 # 遗留单例引用：conftest._isolate_data_dir 通过它注入 mock；保持对外属性一致。
 _tts_instance: BaseTTSProvider | None = None
 _tts_default_instance: BaseTTSProvider | None = None
-# 多播剧（Seed-Audio）provider 单例；测试可注入 mock（同 _tts_instance 模式）。
+# 多播剧（Seed-Audio）provider 自 v3 迁移起已废弃（P0-5）。
+# 保留这个属性仅为兼容既有 conftest/test 通过 `aifact._multicast_instance = ...`
+# 注入的写法；新代码不应再访问。新行为：mode=multicast 在 build 入口处被重定向到
+# classic（全部旁白音色 + 角色音色），不再走任何"整章一体化"路径。
 _multicast_instance: Any | None = None
 
 # 全局 TTS 并发限流 semaphore（单例）。
@@ -141,12 +144,14 @@ def get_tts_by_voice_id(voice_id: str) -> BaseTTSProvider:
 
 
 def get_multicast_tts():
-    """多播剧（Seed-Audio 1.0）provider 单例；测试可注入 _multicast_instance mock。"""
+    """多播剧（Seed-Audio 1.0）provider 已废弃（P0-5）。
+
+    历史：返回 _multicast_instance 单例（测试可注入 mock）。
+    现在：mode=multicast 在 build 入口处直接重定向到 classic，不再调用此函数。
+    函数保留仅为向后兼容（如有旧 conftest 注入残留），返回 None 让调用方立刻失败。
+    """
     global _multicast_instance
-    if _multicast_instance is None:
-        from .providers.doubao.multicast import DoubaoMulticastProvider
-        _multicast_instance = DoubaoMulticastProvider()
-    return _multicast_instance
+    return _multicast_instance  # 永远 None（除非测试在 conftest 注入）
 
 
 def get_tts_sem() -> asyncio.Semaphore:
@@ -207,6 +212,7 @@ def _doubao_tts_rpm() -> int:
 
 
 def _doubao_seed_audio_rpm() -> int:
+    """Seed-Audio 多播剧 RPM 桶（P0-5 已废弃，保留桶避免单测注入残留时 KeyError）。"""
     from ..core.config import settings
     return max(1, int(settings.DOUBAO_SEED_AUDIO_RPM_LIMIT))
 
@@ -227,6 +233,7 @@ async def _doubao_rpm_wait_acquire(bucket: str = "tts") -> None:
     """豆包 RPM 限流统一入口。
 
     bucket ∈ {'tts', 'seed_audio', 'icl'}
+    注：'seed_audio' 已废弃（P0-5）；保留仅防止旧调用 KeyError。
     """
     if bucket == "seed_audio":
         await _doubao_seed_audio_bucket.acquire()
