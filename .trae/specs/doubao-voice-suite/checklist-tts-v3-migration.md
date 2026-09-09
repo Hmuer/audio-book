@@ -112,17 +112,23 @@
 ## 🟡 P1 — 体验提升（P0 跑通后自然衔接）
 
 ### P1-1 切到 v3 单向流式 HTTP（解锁 req_params / context_texts / enable_subtitle / loudness_rate）
-- [ ] 完成
-- 位置：[tts.py:550-630](file:///workspace/backend/app/ai/providers/doubao/tts.py#L550-L630)（`_build_request_body` 重写）+ [tts.py:454](file:///workspace/backend/app/ai/providers/doubao/tts.py#L454)（`DEFAULT_ENDPOINT` 改 `/api/v3/tts/unidirectional`）
+- [x] 完成（保守骨架，真实 Key 联调前不切默认）
+- 位置：新增 `DoubaoTTSProviderV3` 类（tts.py 末尾，约 1550 行起）+ factory 路由 + config 开关
 - 关键改动：
-  - 新增 `DoubaoTTSProviderV3` 类（保留 v1 兜底）
-  - 请求体改为 v3 嵌套结构 `{req_params:{text,speaker,audio_params:{...}}}`
-  - 鉴权切到 `X-Api-Key` + `X-Api-Resource-Id: seed-tts-2.0`
-  - 启用 `disable_markdown_filter=true`、`enable_subtitle=true`
-  - ⚠️ 用真实 Key 各打一发确认 emotion/emotion_scale 字段名后再正式落地（GLM 警告）
-- 测试：`backend/tests/test_doubao_v3_protocol_red.py`（新）
-- 完成日期：
-- Commit：
+  - 新增 `DoubaoTTSProviderV3` 类（v1 保留为兜底）
+  - 端点：`https://openspeech.bytedance.com/api/v3/tts/unidirectional`（HTTP Chunked 流式）
+  - 鉴权头：新版 `X-Api-Key` + `X-Api-Resource-Id`（按 model 选 seed-tts-1.0/2.0/seed-icl-2.0）+ 固定 `X-Api-App-Key=aGjiRDfUWi` + `X-Api-Request-Id=<uuid>`；纯数字 key 走旧版 `X-Api-App-Id` + `X-Api-Access-Key`
+  - 请求体 v3 嵌套结构：`{user:{uid}, req_params:{text, speaker, audio_params:{format, sample_rate, speech_rate, loudness_rate, disable_markdown_filter, enable_subtitle, ...}}}`
+  - speech_rate 由 speed [0.5, 2.0] 线性映射到 [-50, 100]
+  - 流式响应：按行解析 chunked JSON，拼接 audio 字段（base64 → MP3 bytes）
+  - 业务错（code != 0）→ `DoubaoTTSResponseV3Error` 不重试
+  - 网络错（429/5xx）→ 重试 5 次
+  - list_voices 复用 `_BUILTIN_VOICES`，标记 `protocol="v3"`
+  - factory 路由按 `settings.DOUBAO_TTS_USE_V3`（默认 False）切到 v3 / v1
+  - ⚠️ GLM 警告：emotion 字段名暂按官方文档放 `audio_params.emotion`；待真实 Key 联调复核
+- 测试：`backend/tests/test_doubao_v3_protocol_red.py`（10 个 RED 全过）
+- 完成日期：2026-09-09
+- Commit：285a154（feat 代码）+ f5c498b（test）
 
 ---
 
@@ -256,9 +262,9 @@
 | 类别 | 总数 | 已完成 | 进度 |
 |---|---|---|---|
 | 🔴 P0 | 5 | 5 | ▰▰▰▰▰ 100% |
-| 🟡 P1 | 7 | 0 | ▱▱▱▱▱▱▱ 0% |
+| 🟡 P1 | 7 | 1 | ▰▱▱▱▱▱▱ 14% |
 | 🟢 P2 | 5 | 0 | ▱▱▱▱▱ 0% |
-| **合计** | **17** | **5** | **29%** |
+| **合计** | **17** | **6** | **35%** |
 
 > 更新方式：完成时把 `0` 改成实际数字、进度条同步。也可以用 `grep -c '\[x\]' checklist-tts-v3-migration.md` 一键统计。
 
