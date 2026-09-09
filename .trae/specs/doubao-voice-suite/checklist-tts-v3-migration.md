@@ -91,15 +91,21 @@
 ---
 
 ### P0-5 删除/废弃 multicast.py 自造端点
-- [ ] 完成
-- 位置：[multicast.py:38-40](file:///workspace/backend/app/ai/providers/doubao/multicast.py#L38-L40) + [multicast.py:99-135](file:///workspace/backend/app/ai/providers/doubao/multicast.py#L99-L135)
+- [x] 完成
+- 位置：物理删除 `backend/app/ai/providers/doubao/multicast.py`（旧 `DoubaoMulticastProvider` + `MAX_CHAPTER_AUDIO_SECS = 120`）
 - 关键改动：
-  - 方案 1（推荐）：删除 `DoubaoMulticastProvider`，`mode=multicast` 退化为"全部旁白音色 + 关对白归属"
-  - 方案 2（保守）：保留但 `build_payload` 抛 `NotImplementedError("multicast 已废弃")`
-  - `routes.py` 的 `StartBuildRequest.mode` 文档说明 `multicast` 已废弃
-- 测试：扩 `backend/tests/test_doubao_task8_red.py`
-- 完成日期：
-- Commit：
+  - **采用方案 1**：删除 `multicast.py`；`mode=multicast` 在 `start_build` 入口处自动降级为 `classic`（逐段 TTS + 占位静音 MP3 兜底）
+  - `factory.get_multicast_tts()` 改为永远返回 `None`（仅保留向后兼容）
+  - `factory._multicast_instance` 属性 + `_doubao_seed_audio_bucket` 保留避免单测 `KeyError`
+  - `_validate_tts_namespace` 移除 multicast 校验分支
+  - `_validate_multicast_provider` 改为 noop
+  - `_should_strict_fail(mode)` 改为恒 `return False`（strict 模式失效）
+  - `_estimate_multicast_secs` 改为 `return 0.0`
+  - `_multicast_synth_chapter` 改为 `raise RuntimeError("mode=multicast 已废弃（P0-5）")`
+  - 删除 build worker 里的 multicast 整章一体化分支
+- 测试：扩 `backend/tests/test_doubao_task7_red.py`（T-MC1~T-MC6）+ `test_doubao_task8_red.py`（T-ST1/T-ST3 改写为降级 + partial_success，T-ST5 改写为恒 False）+ `test_review_fixes_red.py`（T-RF1~T-RF3 适配）
+- 完成日期：2026-09-09
+- Commit：b8a3a3e（feat 代码）+ 8d702f4（test）
 
 ---
 
@@ -249,10 +255,10 @@
 
 | 类别 | 总数 | 已完成 | 进度 |
 |---|---|---|---|
-| 🔴 P0 | 5 | 4 | ▰▰▰▰▱ 80% |
+| 🔴 P0 | 5 | 5 | ▰▰▰▰▰ 100% |
 | 🟡 P1 | 7 | 0 | ▱▱▱▱▱▱▱ 0% |
 | 🟢 P2 | 5 | 0 | ▱▱▱▱▱ 0% |
-| **合计** | **17** | **4** | **24%** |
+| **合计** | **17** | **5** | **29%** |
 
 > 更新方式：完成时把 `0` 改成实际数字、进度条同步。也可以用 `grep -c '\[x\]' checklist-tts-v3-migration.md` 一键统计。
 
