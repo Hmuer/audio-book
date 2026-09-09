@@ -49,30 +49,39 @@ def test_doubao_list_voices_has_builtin_14_profiles():
         # dialect 可以为空字符串但必须存在
         assert "dialect" in v
 
-    # 核心声线必须覆盖：14 条经典 zh_* ID + 部分 BV 系列核心声线
+    # 核心声线必须覆盖：基于官方音色表（97465 + 1257544）的真实 voice_type。
+    # 注意：原 v1 风格的 zh_*_xxx 自创 id 全部已移除，BVxxx_stream 全部已修正为
+    # 官方 BVxxx_streaming 拼写。
     sample_ids = [
-        # 历史 zh_* ID（豆包 v1 兼容，必备）
-        "doubao:zh_female_qingxin",        # 通用女声
-        "doubao:zh_female_wanwanxiaohe",   # 甜美女声
-        "doubao:zh_male_qingnianqingche",  # 青年男声
-        "doubao:zh_female_tianmei",        # 萝莉女声
-        "doubao:zh_male_chuangshijia",     # 商务男声
-        "doubao:zh_female_yunxi",          # 知性女声
-        "doubao:zh_male_chengshushenchen", # 广告男声
-        "doubao:zh_female_guangbozhuchi",  # 播报女声
-        "doubao:zh_male_nanyou_44100",     # 少年男声
-        "doubao:zh_female_sunshine",       # 阳光女声
-        "doubao:zh_male_dianshizhuchi",    # 主持男声
-        "doubao:zh_female_aidaier",        # 英文混合女声
-        "doubao:zh_male_xiaohai",          # 男童
-        "doubao:zh_female_lisachangjiang", # 四川方言
-        # BV 系列核心声线（新音色库抽样）
-        "doubao:BV001_stream",             # 通用女声·磁性
-        "doubao:BV011_stream",             # 通用男声·磁性
-        "doubao:BV100_stream",             # 粤语女声
-        "doubao:BV102_stream",             # 四川话男声
-        "doubao:BV200_stream",             # 英文女声·美式
-        "doubao:BV500_stream",             # 新闻主播·男·央视
+        # 小模型通用（官方 BV 拼写：_streaming 后缀）
+        "doubao:BV001_streaming",          # 通用女声
+        "doubao:BV002_streaming",          # 通用男声
+        "doubao:BV700_streaming",          # 灿灿（多情感 + 多语种）
+        "doubao:BV701_streaming",          # 擎苍（旁白 + 多情感）
+        # 小模型有声阅读
+        "doubao:BV102_streaming",          # 儒雅青年
+        "doubao:BV107_streaming",          # 霸气青叔
+        "doubao:BV119_streaming",          # 通用赘婿
+        # 小模型方言
+        "doubao:BV019_streaming",          # 重庆小伙（四川）
+        "doubao:BV021_streaming",          # 东北老铁（东北）
+        "doubao:BV026_streaming",          # 港剧男神（粤语）
+        # 小模型多语种
+        "doubao:BV503_streaming",          # 活力女声-Ariana（美式英语）
+        "doubao:BV040_streaming",          # 亲切女声-Anna（英式英语）
+        "doubao:BV421_streaming",          # 天才少女（8 国）
+        # 小模型特色 / 教育 / 智能助手
+        "doubao:BV034_streaming",          # 知性姐姐-双语（教育）
+        "doubao:BV007_streaming",          # 亲切女声（智能助手）
+        "doubao:BV051_streaming",          # 奶气萌娃（特色）
+        # 大模型 2.0 通用
+        "doubao:zh_female_vv_uranus_bigtts",     # Vivi 2.0（S2S 多语种多方言）
+        "doubao:zh_female_cancan_uranus_bigtts", # 知性灿灿 2.0
+        "doubao:zh_male_qingcang_uranus_bigtts", # 擎苍 2.0
+        # 大模型 2.0 角色 / 教育 / 客服
+        "doubao:zh_female_peiqi_uranus_bigtts",   # 佩奇猪 2.0
+        "doubao:zh_female_mizai_uranus_bigtts",   # 黑猫侦探社咪仔 2.0
+        "doubao:zh_female_kefunvsheng_uranus_bigtts", # 暖阳女声 2.0
     ]
     ids = [v["id"] for v in voices]
     for sid in sample_ids:
