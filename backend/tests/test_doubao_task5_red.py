@@ -314,11 +314,18 @@ async def test_synth_routes_icl_prefix_to_doubao(monkeypatch):
 
     captured: dict = {}
 
-    async def _fake_http(url, headers, payload):
+    async def _fake_post_json(url, headers, payload):
         captured["payload"] = payload
-        return FAKE_MP3
+        # 走 v1 协议：返回业务码 3000 + base64 MP3
+        import base64 as _b64
+        return (
+            {"code": 3000, "message": "Success", "data": _b64.b64encode(FAKE_MP3).decode("ascii")},
+            "logid-test",
+        )
 
-    inst._http_post_bytes = _fake_http  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "backend.app.ai.providers.doubao.tts._post_json_for_v1", _fake_post_json
+    )
     data, dur = await inst.synthesize_to_bytes("你好世界", "icl:clone_x")
     assert len(data) > 0
     p = captured["payload"]

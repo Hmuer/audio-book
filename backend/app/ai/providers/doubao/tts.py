@@ -923,18 +923,6 @@ class DoubaoTTSProvider(BaseTTSProvider):
             "启用并填入 API Key 后保存，或设置 DOUBAO_AK 环境变量。"
         )
 
-    async def _http_post_bytes(
-        self,
-        url: str,
-        headers: dict[str, str],
-        payload: dict[str, Any],
-    ) -> bytes:
-        """发送 POST 请求并返回响应体（bytes）；对 HTTP 错误统一用 httpx 异常抛出。"""
-        import httpx  # 在函数内导入以便 mock
-
-        # 构造异步请求，超时 60s（长文本合成需要更长时间）
-        timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
-            return await resp.aread()
+    # 旧的 _http_post_bytes 已删除：它的实现把响应原样当 MP3 写盘（HTTP 200 但
+    # 业务码非 3000 时会写入 JSON 伪装 .mp3）。当前路径走 _post_json_for_v1 +
+    # DoubaoTTSResponseError 做业务码判定与重试。

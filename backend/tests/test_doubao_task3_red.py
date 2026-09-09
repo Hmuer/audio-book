@@ -223,6 +223,9 @@ def test_synthesize_strips_prefix_and_injects_params(monkeypatch):
 
     captured = _CapturedRequest()
     dummy_mp3 = b"\xff\xfb\x90\x64\x00" + (b"\x00" * 48)
+    # 真实 v1 协议：服务端返 JSON，业务码 3000 + base64 MP3
+    import base64 as _b64
+    success_json = {"code": 3000, "message": "Success", "data": _b64.b64encode(dummy_mp3).decode("ascii")}
     dp = DoubaoTTSProvider()
 
     # Monkey patch 掉 httpx.AsyncClient 的构造
@@ -232,7 +235,7 @@ def test_synthesize_strips_prefix_and_injects_params(monkeypatch):
     try:
         class _PatchedAsyncClient:
             def __init__(self, *a, **kw):
-                self._inner = _fake_async_client(captured, dummy_mp3)()
+                self._inner = _fake_async_client(captured, dummy_mp3, status=200, response_json=success_json)()
 
             async def __aenter__(self):
                 return await self._inner.__aenter__()
@@ -335,16 +338,27 @@ class _RetryCountClient:
         if self._final_ok:
             class _OkResp:
                 status_code = 200
-                headers = {"Content-Type": "audio/mpeg"}
+                headers = {"Content-Type": "application/json"}
 
                 def raise_for_status(self_):
                     return None
 
                 async def aiter_bytes(self_, *a, **kw):
-                    yield b"\xff\xfb\x90\x64\x00" + (b"\x00" * 48)
+                    # v1 协议：返回 JSON 业务码 + base64 MP3
+                    import base64 as _b64
+                    dummy_mp3 = b"\xff\xfb\x90\x64\x00" + (b"\x00" * 48)
+                    resp = {"code": 3000, "message": "Success",
+                            "data": _b64.b64encode(dummy_mp3).decode("ascii")}
+                    import json as _json
+                    yield _json.dumps(resp).encode("utf-8")
 
                 async def aread(self_):
-                    return b"\xff\xfb\x90\x64\x00" + (b"\x00" * 48)
+                    import base64 as _b64
+                    dummy_mp3 = b"\xff\xfb\x90\x64\x00" + (b"\x00" * 48)
+                    resp = {"code": 3000, "message": "Success",
+                            "data": _b64.b64encode(dummy_mp3).decode("ascii")}
+                    import json as _json
+                    return _json.dumps(resp).encode("utf-8")
 
                 def json(self_):
                     return {}
