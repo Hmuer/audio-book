@@ -65,7 +65,14 @@ class Settings(BaseSettings):
     DOUBAO_SK: str = ""
     DOUBAO_APP_ID: str = ""
 
+    # ICL 声音复刻专属凭据（新版控制台：API Key；旧版：Access Key）
+    # 留空时回退到 DOUBAO_AK / DOUBAO_APP_ID + DOUBAO_SK
+    DOUBAO_ICL_API_KEY: str = ""
+    DOUBAO_ICL_ACCESS_KEY: str = ""
+
     # 三个服务端点（使用豆包直连域名时，可按需覆写）
+    # 注意：DOUBAO_ICL_BASE_URL 默认仍是 v1 自造端点路径（向后兼容旧部署）；
+    # 实际 client 在运行时若检测到 /v1/voice_clone 会强制重写到 v3 标准端点。
     DOUBAO_TTS_BASE_URL: str = "https://openspeech.bytedance.com/api/v1/tts"
     DOUBAO_ICL_BASE_URL: str = "https://openspeech.bytedance.com/api/v1/voice_clone"
     DOUBAO_SEED_AUDIO_BASE_URL: str = "https://openspeech.bytedance.com/api/v1/seed_audio"
