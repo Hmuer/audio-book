@@ -23,15 +23,15 @@
 ## 🔴 P0 — 正确性（先修，否则用户跑不通）
 
 ### P0-1 修复 `_http_post_bytes`：解析 v1 响应 JSON 业务码 + base64 解码
-- [ ] 完成
+- [x] 完成
 - 位置：[tts.py:749-763](file:///workspace/backend/app/ai/providers/doubao/tts.py#L749-L763)
 - 关键改动：
   - 返回 `(bytes, raw_response)` 或抛带 `code`/`message` 的异常
   - 调用点 [tts.py:636-638](file:///workspace/backend/app/ai/providers/doubao/tts.py#L636-L638) 改成"解析 JSON → 检查 `code==3000` → `base64.b64decode(data)`"
   - 重试判定从 HTTP status 改成业务码
 - 测试：`backend/tests/test_doubao_response_parsing_red.py`（新）
-- 完成日期：
-- Commit：
+- 完成日期：2026-09-09
+- Commit：983f0e0
 
 ---
 
@@ -50,14 +50,14 @@
 ---
 
 ### P0-3 时长估算改用 MP3 帧头解析
-- [ ] 完成
+- [x] 完成
 - 位置：[tts.py:31-37](file:///workspace/backend/app/ai/providers/doubao/tts.py#L31-L37)（`_estimate_mp3_duration_ms`）
 - 关键改动：
   - 用 mutagen 或自写 MPEG frame header 解析（查 bitrate/sample_rate 表算帧时长）
   - 接受精度 ±50ms
 - 测试：加进 `test_doubao_response_parsing_red.py`
-- 完成日期：
-- Commit：
+- 完成日期：2026-09-09
+- Commit：983f0e0
 
 ---
 
@@ -235,10 +235,10 @@
 
 | 类别 | 总数 | 已完成 | 进度 |
 |---|---|---|---|
-| 🔴 P0 | 5 | 0 | ▱▱▱▱▱ 0% |
+| 🔴 P0 | 5 | 2 | ▰▰▱▱▱ 40% |
 | 🟡 P1 | 7 | 0 | ▱▱▱▱▱▱▱ 0% |
 | 🟢 P2 | 5 | 0 | ▱▱▱▱▱ 0% |
-| **合计** | **17** | **0** | **0%** |
+| **合计** | **17** | **2** | **12%** |
 
 > 更新方式：完成时把 `0` 改成实际数字、进度条同步。也可以用 `grep -c '\[x\]' checklist-tts-v3-migration.md` 一键统计。
 
@@ -261,3 +261,4 @@ Week 6: P1-3 + P1-4 + P1-7
 ## 📝 修订记录
 
 - 2026-09-04：初版，基于 GLM-5.3 审计 + 笔记 `.trae/notes/doubao-voice-apis.md` 整理
+- 2026-09-09：P0-1 + P0-3 完成（含回归测试）。GLM 提交 983f0e0 一次性合并：删除 `tts.py` 中旧的 `_http_post_bytes` 方法 + 新增 `test_doubao_response_parsing_red.py`（7 场景）+ 修复 `test_doubao_task3_red.py` 与 `test_doubao_task5_red.py` 的 mock 协议不匹配。19/19 相关测试通过。
