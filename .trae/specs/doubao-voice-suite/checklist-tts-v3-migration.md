@@ -66,17 +66,27 @@
 ---
 
 ### P0-4 重写 icl.py 对接官方 `/api/v3/tts/voice_clone` + `/api/v3/tts/get_voice`
-- [ ] 完成
-- 位置：[icl.py:29-30](file:///workspace/backend/app/ai/providers/doubao/icl.py#L29-L30) + [icl.py:74-85](file:///workspace/backend/app/ai/providers/doubao/icl.py#L74-L85)
+- [x] 完成
+- 位置：[icl.py](file:///workspace/backend/app/ai/providers/doubao/icl.py) 整段重写
 - 关键改动：
-  - 删除自造端点 `/api/v1/voice_clone/create` + `/query`
-  - `create_training` body 改为 `{speaker_id, audio:{data,format}, text, language, extra_params:{demo_text, ...}}`
-  - `query_training` 改调 `/api/v3/tts/get_voice`，按 `status` 字段（0/1/2/3/4）翻译
-  - 删除 `data.task_id` 假设
-  - 同步更新轮询 worker（`backend/app/services/icl.py`）
-- 测试：扩 `backend/tests/test_doubao_task5_red.py`
-- 完成日期：
-- Commit：
+  - 删除自造端点 `/api/v1/voice_clone/create` + `/query`；统一改用 v3 协议
+  - `create_training` body 改为官方 schema：`{speaker_id, audio:{data,format}, language, model_type, demo_text?}`
+    - `speaker_id` 由我们生成（`icl_<uuid hex>`），避免与官方命名空间（S_/ICL_/BV/uranus 等）冲突
+    - `audio.data` 是 base64 编码（与 tts.py v1 响应解码路径一致）
+    - `model_type` 默认 `ICL2.0`（推荐；可选 ICL1.0 / DiT）
+    - 删除旧 `voice_name` / `audio_b64` / `reqid` 字段
+  - `query_training` body `{speaker_id}` → 响应 `status` 字段按官方语义翻译：0 NotFound / 1 Training / 2 Success / 3 Failed / 4 Active
+  - 鉴权兼容新旧两版控制台：
+    - 新版：`X-Api-Key` + `X-Api-Request-Id`（推荐）
+    - 旧版：`X-Api-App-Key` + `X-Api-Access-Key`（纯数字 APP_ID 自动判断）
+  - 新增 settings：`DOUBAO_ICL_API_KEY`（新版 key）/ `DOUBAO_ICL_ACCESS_KEY`（旧版 access_key）
+  - 业务码非 0 → RuntimeError；音频 < 512 字节 → ValueError
+  - `speaker_status[0].model_type` 和 `demo_audio` 透出到上层（前端可展示试听音频 + 模型类型）
+  - `DOUBAO_ICL_BASE_URL` 默认值保留旧 `/v1/voice_clone`，但 client 运行时检测到会自动重写到 v3 标准端点，老部署平滑升级
+  - 轮询 worker（`backend/app/services/icl.py`）无需改动：仍读 `status` / `cloned_voice_id` / `error` 字段
+- 测试：`backend/tests/test_doubao_icl_v3_red.py`（新，11 个场景）+ `backend/tests/test_doubao_task5_red.py`（适配 fake）+ `backend/tests/test_review_fixes_red.py`（T-RF5 fake 适配）
+- 完成日期：2026-09-09
+- Commit：2679f64（icl.py + config.py）+ c90af45（测试）
 
 ---
 
@@ -239,10 +249,10 @@
 
 | 类别 | 总数 | 已完成 | 进度 |
 |---|---|---|---|
-| 🔴 P0 | 5 | 3 | ▰▰▰▱▱ 60% |
+| 🔴 P0 | 5 | 4 | ▰▰▰▰▱ 80% |
 | 🟡 P1 | 7 | 0 | ▱▱▱▱▱▱▱ 0% |
 | 🟢 P2 | 5 | 0 | ▱▱▱▱▱ 0% |
-| **合计** | **17** | **3** | **18%** |
+| **合计** | **17** | **4** | **24%** |
 
 > 更新方式：完成时把 `0` 改成实际数字、进度条同步。也可以用 `grep -c '\[x\]' checklist-tts-v3-migration.md` 一键统计。
 
@@ -267,3 +277,4 @@ Week 6: P1-3 + P1-4 + P1-7
 - 2026-09-04：初版，基于 GLM-5.3 审计 + 笔记 `.trae/notes/doubao-voice-apis.md` 整理
 - 2026-09-09：P0-1 + P0-3 完成（含回归测试）。GLM 提交 983f0e0 一次性合并：删除 `tts.py` 中旧的 `_http_post_bytes` 方法 + 新增 `test_doubao_response_parsing_red.py`（7 场景）+ 修复 `test_doubao_task3_red.py` 与 `test_doubao_task5_red.py` 的 mock 协议不匹配。19/19 相关测试通过。
 - 2026-09-09：P0-2 完成。按官方文档 97465 + 1257544 全量重建 `_BUILTIN_VOICES`：187 条官方真实 voice_type（92 条小模型 + 95 条大模型 2.0），新增 6 个元数据字段（languages/supports_emotion/supports_subtitle/supports_language/free/model），删除全部自创 id（BV030~BV613、zh_*_xxx 历史命名空间），修正 BV 拼写 `_stream` → `_streaming`。两个提交：a1b576a（代码）+ 35bb9ea（测试）。147/147 全套测试通过。
+- 2026-09-09：P0-4 完成。`icl.py` 重写对接官方 v3 接口（`/api/v3/tts/voice_clone` + `/get_voice`）：speaker_id 改由我们生成 `icl_<uuid>`，audio 改 v3 schema（base64 + format），language 用官方枚举，model_type 默认 ICL2.0；鉴权自动兼容新旧控制台（X-Api-Key / X-Api-App-Key）；settings 新增 DOUBAO_ICL_API_KEY + DOUBAO_ICL_ACCESS_KEY；DOOUBAO_ICL_BASE_URL 默认仍是 v1 路径但 client 运行时自动重写到 v3。两个提交：2679f64（icl.py + config.py）+ c90af45（测试，新增 11 个 v3 协议测试 + 适配 fake）。158/158 全套测试通过。
