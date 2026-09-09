@@ -186,15 +186,18 @@
 ---
 
 ### P1-6 `X-Tt-Logid` 全链路透传
-- [ ] 完成
-- 位置：tts.py / icl.py / multicast.py 错误处理路径 + routes.py
+- [x] 完成
+- 位置：[tts.py](file:///workspace/backend/app/ai/providers/doubao/tts.py)（v1 `_post_json_for_v1`/`synthesize_to_bytes` + v3 `_post_stream_v3`/`synthesize_to_bytes`）+ [icl.py](file:///workspace/backend/app/ai/providers/doubao/icl.py)（`_http_post_json`/`create_training`/`query_training`）+ [routes.py](file:///workspace/backend/app/api/routes.py)（`_extract_logid_from_exc`/`_http_exc_with_logid` + ICL/TTS 5xx 路由）
 - 关键改动：
-  - 响应 header `X-Tt-Logid` 永远记到日志
-  - 异常对象带 `logid` 属性
-  - routes.py 5xx 响应附 `logid` 字段
-- 测试：`backend/tests/test_logid_propagation_red.py`（新）
-- 完成日期：
-- Commit：
+  - 响应 header `X-Tt-Logid` 永远记到日志（v1/v3/ICL 三处 `logid = resp.headers.get("X-Tt-Logid")`）
+  - 异常对象带 `logid` 属性：
+    - v1 `DoubaoTTSResponseError(logid=...)` + final `RuntimeError.logid`（网络错包装路径）
+    - v3 `DoubaoTTSResponseV3Error(logid=...)`（业务错直接 re-raise）+ final `RuntimeError.logid`（网络错包装路径）
+    - ICL `_http_post_json` 把 logid 塞进返回 dict `_logid` 字段，`create_training`/`query_training` 业务错 RuntimeError 带 `.logid`
+  - routes.py 5xx 响应附 `logid` 字段：`_extract_logid_from_exc` 沿 `__cause__` 链递归取 logid；`_http_exc_with_logid` 构造 `HTTPException(detail={message, logid})`；ICL 创建/查询/详情/删除 + TTS preview 路由全部改用此 helper
+- 测试：`backend/tests/test_logid_propagation_red.py`（新，9 个场景：3 helper 单测 + 3 provider/ICL 异常携带 logid + 1 端到端 HTTP 5xx 含 logid）
+- 完成日期：2026-09-09
+- Commit：29fe4e2
 
 ---
 

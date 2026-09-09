@@ -216,9 +216,17 @@ class DoubaoICLClient:
         code = int(resp.get("code", -1))
         if code != 0:
             msg = resp.get("message") or "未知错误"
-            raise RuntimeError(
-                f"豆包 ICL 创建训练任务失败：code={code} msg={msg} resp={resp}"
-            )
+            # P1-6：附 logid（如 _http_post_json 在返回 dict 里塞了 _logid）
+            logid = resp.get("_logid")
+            err_msg = f"豆包 ICL 创建训练任务失败：code={code} msg={msg} resp={resp}"
+            if logid:
+                err_msg = f"{err_msg} logid={logid}"
+            err = RuntimeError(err_msg)
+            try:
+                err.logid = logid  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            raise err
 
         data = resp.get("data") or {}
         sid = data.get("speaker_id") or resp.get("speaker_id") or speaker_id
@@ -255,9 +263,17 @@ class DoubaoICLClient:
         # NotFound 不算错——返回 status=0 让上层决定如何处理
         if code not in (0,):
             msg = resp.get("message") or "未知错误"
-            raise RuntimeError(
-                f"豆包 ICL 查询训练状态失败：code={code} msg={msg} resp={resp}"
-            )
+            # P1-6：附 logid
+            logid = resp.get("_logid")
+            err_msg = f"豆包 ICL 查询训练状态失败：code={code} msg={msg} resp={resp}"
+            if logid:
+                err_msg = f"{err_msg} logid={logid}"
+            err = RuntimeError(err_msg)
+            try:
+                err.logid = logid  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            raise err
 
         status = int(resp.get("status", STATUS_NOT_FOUND))
         # progress：官方没返回具体进度。终态（2/4）置 100，其他置 0
@@ -308,9 +324,14 @@ class DoubaoICLClient:
         timeout = httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, headers=headers, json=payload)
-            # 透出 logid 便于排查
+            # P1-6：透出 logid 便于排查 + 在异常对象里附 logid 供 routes.py 透传
             logid = resp.headers.get("X-Tt-Logid") or resp.headers.get("x-tt-logid")
             if logid:
                 logger.debug(f"[icl_client] logid={logid}")
             resp.raise_for_status()
-            return _json.loads(resp.content.decode("utf-8"))
+            data = _json.loads(resp.content.decode("utf-8"))
+            # P1-6：把 logid 塞进返回 dict 的 _logid 字段（约定下划线前缀非业务字段）
+            # 让 create_training / query_training 在 RuntimeError 时附 logid
+            if isinstance(data, dict) and logid and "_logid" not in data:
+                data["_logid"] = logid
+            return data

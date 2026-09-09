@@ -86,6 +86,35 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================================
+# P1-6: X-Tt-Logid 全链路透传
+# 豆包 TTS / ICL 异常对象可能带 `logid` 属性（DoubaoTTSResponseError /
+# DoubaoTTSResponseV3Error / RuntimeError 子类）。routes.py 在 5xx 响应里
+# 附上 logid 字段，方便前端/日志按 logid 反查。
+# =====================================================================
+def _extract_logid_from_exc(e: BaseException) -> str | None:
+    """从异常对象里尝试提取 logid（按 P1-6 约定的属性名）。"""
+    logid = getattr(e, "logid", None)
+    if logid:
+        return str(logid)
+    # 沿 __cause__ 链向上找
+    cause = getattr(e, "__cause__", None)
+    if cause is not None and cause is not e:
+        return _extract_logid_from_exc(cause)
+    return None
+
+
+def _http_exc_with_logid(status: int, msg: str, e: BaseException) -> HTTPException:
+    """构造 HTTPException；若 e 带 logid 则附到 detail dict 的 logid 字段。"""
+    logid = _extract_logid_from_exc(e)
+    if logid:
+        return HTTPException(
+            status_code=status,
+            detail={"message": msg, "logid": logid},
+        )
+    return HTTPException(status_code=status, detail=msg)
+
+
+# =====================================================================
 # 上传辅助：流式读取 + 立即超限拒绝（避免整文件先读入内存）
 # P1 #8：分块累加 read_count，超出 max_bytes 立即 413；客户端断开时让连接
 # 自然结束；不支持重新协商（Tomcat-style 413）。
@@ -451,7 +480,7 @@ async def api_icl_create_voice(
         raise HTTPException(400, str(e))
     except Exception as e:
         logger.error(f"[HTTP] 500 /api/icl/voices -> {type(e).__name__}: {e}", exc_info=True)
-        raise HTTPException(500, f"创建训练任务失败: {type(e).__name__}: {e}")
+        raise _http_exc_with_logid(500, f"创建训练任务失败: {type(e).__name__}: {e}", e)
 
 
 @router.get("/icl/voices")
@@ -464,7 +493,7 @@ async def api_icl_list_voices(
         return {"tasks": await list_icl_tasks(current.id)}
     except Exception as e:
         logger.error(f"[HTTP] 500 /api/icl/voices -> {type(e).__name__}: {e}", exc_info=True)
-        raise HTTPException(500, f"查询失败: {type(e).__name__}: {e}")
+        raise _http_exc_with_logid(500, f"查询失败: {type(e).__name__}: {e}", e)
 
 
 @router.get("/icl/voices/{task_id}")
@@ -486,7 +515,7 @@ async def api_icl_get_voice(
             f"[HTTP] 500 /api/icl/voices/{task_id} -> {type(e).__name__}: {e}",
             exc_info=True,
         )
-        raise HTTPException(500, f"查询失败: {type(e).__name__}: {e}")
+        raise _http_exc_with_logid(500, f"查询失败: {type(e).__name__}: {e}", e)
 
 
 @router.delete("/icl/voices/{task_id}")
@@ -563,7 +592,7 @@ async def api_tts_preview(
             f"{type(e).__name__}: {e}",
             exc_info=True,
         )
-        raise HTTPException(500, f"TTS 失败: {type(e).__name__}: {e}")
+        raise _http_exc_with_logid(500, f"TTS 失败: {type(e).__name__}: {e}", e)
 
 
 # =====================================================================

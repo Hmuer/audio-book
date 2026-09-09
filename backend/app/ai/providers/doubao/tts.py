@@ -1436,6 +1436,18 @@ class DoubaoTTSProvider(BaseTTSProvider):
                 # 真网络错 / JSON 解析错 / base64 解码错（-1）/ httpx 异常
                 last_exc = e
                 resp_obj = getattr(e, "response", None)
+                # 透传 logid（P1-6）：从异常对象的 response.headers 取 X-Tt-Logid，
+                # 让 routes.py 能在 5xx 响应里附给前端，方便定位问题
+                try:
+                    if resp_obj is not None and getattr(last_exc, "logid", None) is None:
+                        logid_hdr = (
+                            resp_obj.headers.get("X-Tt-Logid")
+                            or resp_obj.headers.get("x-tt-logid")
+                        )
+                        if logid_hdr:
+                            setattr(last_exc, "logid", logid_hdr)
+                except Exception:
+                    pass
                 # 解析 Retry-After（若 429 提供）
                 retry_after = None
                 if resp_obj is not None:
@@ -1473,7 +1485,17 @@ class DoubaoTTSProvider(BaseTTSProvider):
                 )
                 await asyncio.sleep(wait_s)
         assert last_exc is not None
-        raise RuntimeError(f"豆包 TTS 合成失败：{type(last_exc).__name__}: {last_exc}") from last_exc
+        # P1-6：final 错也带 logid（如能从 last_exc 继承），便于 routes.py 透传
+        logid_final = getattr(last_exc, "logid", None)
+        msg = f"豆包 TTS 合成失败：{type(last_exc).__name__}: {last_exc}"
+        if logid_final:
+            msg = f"{msg} logid={logid_final}"
+        err = RuntimeError(msg)
+        try:
+            err.logid = logid_final  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        raise err from last_exc
 
     async def synthesize_to_file(
         self,
@@ -1952,6 +1974,18 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                 raise
             except Exception as e:
                 last_exc = e
+                # P1-6：透传 logid（httpx.HTTPStatusError 带有 response.headers）
+                resp_obj = getattr(e, "response", None)
+                try:
+                    if resp_obj is not None and getattr(last_exc, "logid", None) is None:
+                        logid_hdr = (
+                            resp_obj.headers.get("X-Tt-Logid")
+                            or resp_obj.headers.get("x-tt-logid")
+                        )
+                        if logid_hdr:
+                            setattr(last_exc, "logid", logid_hdr)
+                except Exception:
+                    pass
                 # 网络层：可重试
                 is_retryable = (
                     _V3_RETRYABLE_NETWORK
@@ -1970,9 +2004,17 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                 )
                 await asyncio.sleep(wait_s)
         assert last_exc is not None
-        raise RuntimeError(
-            f"豆包 TTS v3 合成失败：{type(last_exc).__name__}: {last_exc}"
-        ) from last_exc
+        # P1-6：final 错也带 logid（如能从 last_exc 继承）
+        logid_final = getattr(last_exc, "logid", None)
+        msg = f"豆包 TTS v3 合成失败：{type(last_exc).__name__}: {last_exc}"
+        if logid_final:
+            msg = f"{msg} logid={logid_final}"
+        err = RuntimeError(msg)
+        try:
+            err.logid = logid_final  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        raise err from last_exc
 
     async def synthesize_to_file(
         self,
