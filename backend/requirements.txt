@@ -18,3 +18,6 @@ bcrypt==4.2.0
 EbookLib>=0.18
 beautifulsoup4>=4.12
 lxml>=5.0
+
+# MP3 元数据（章节预告片按比特率截取）
+mutagen>=1.47

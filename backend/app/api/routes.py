@@ -1534,6 +1534,60 @@ async def api_build_chapter_subtitle(
     )
 
 
+@router.get("/projects/{project_id}/builds/{build_id}/chapters/{idx}/preview")
+async def api_build_chapter_preview(
+    project_id: str,
+    build_id: str,
+    idx: int,
+    request: Request,
+    current: User = Depends(get_current_user),
+):
+    """P2-3：章节预告片（前 N 秒预览）。
+
+    独立于 Build 流水线 —— 不重新跑 TTS，只截取章节 MP3 的前 15s 拼成预览。
+    首次访问生成并缓存到 audio_dir/build_<id>_ch<NN>_preview.mp3，后续直接返回缓存。
+    P1 #5：归属校验。
+    """
+    factory = get_session_factory()
+    async with factory() as s:
+        await get_project_for_user(s, project_id, current)
+        b = await s.get(Build, build_id)
+        if not b or b.project_id != project_id:
+            raise HTTPException(404, "build 不存在")
+        art = (
+            await s.execute(
+                select(BuildArtifact).where(
+                    BuildArtifact.build_id == build_id,
+                    BuildArtifact.chapter_idx == idx,
+                )
+            )
+        ).scalar_one_or_none()
+        if not art or art.status != "done":
+            raise HTTPException(404, f"章节 {idx} 尚未完成合成")
+        art_title = art.title or ""
+
+    audio_dir = Path(settings.AUDIO_DIR)
+    from ..services.preview import DEFAULT_PREVIEW_SECONDS, get_or_generate_preview
+    pv = get_or_generate_preview(build_id, idx, audio_dir=audio_dir)
+    if pv is None:
+        raise HTTPException(404, f"章节 {idx} 音频文件不存在（无法生成预告片）")
+
+    clean_title = strip_chapter_prefix(art_title)
+    fname = f"第{idx+1:03d}章 {clean_title or '章节'}_preview.mp3"
+    for ch in '\\/:*?"<>|\r\n\t':
+        fname = fname.replace(ch, "_")
+    ascii_name = urllib.parse.quote(fname.encode("utf-8"), safe="")
+    return FileResponse(
+        path=str(pv),
+        media_type="audio/mpeg",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{ascii_name}",
+            "Cache-Control": "public, max-age=3600",
+        },
+        filename=fname,
+    )
+
+
 @router.get("/projects/{project_id}/builds/{build_id}/download-all")
 async def api_build_download_all(
     project_id: str,
