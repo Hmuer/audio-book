@@ -1482,6 +1482,58 @@ async def api_build_chapter_download(
     )
 
 
+@router.get(
+    "/projects/{project_id}/builds/{build_id}/chapters/{idx}/subtitle"
+)
+async def api_build_chapter_subtitle(
+    project_id: str,
+    build_id: str,
+    idx: int,
+    current: User = Depends(get_current_user),
+):
+    """P1-3：单章字幕下载（SRT）。
+
+    数据源 = build_worker 写出的 sidecar JSON（build_<id>_ch<NN>_timings.json），
+    转 SRT 输出。侧车缺失时 404（前端可显示"字幕生成中"）。P1 #5：归属校验。
+    """
+    factory = get_session_factory()
+    async with factory() as s:
+        await get_project_for_user(s, project_id, current)
+        b = await s.get(Build, build_id)
+        if not b or b.project_id != project_id:
+            raise HTTPException(404, "build 不存在")
+        art = (
+            await s.execute(
+                select(BuildArtifact).where(
+                    BuildArtifact.build_id == build_id,
+                    BuildArtifact.chapter_idx == idx,
+                )
+            )
+        ).scalar_one_or_none()
+        if not art or art.status != "done":
+            raise HTTPException(404, f"章节 {idx} 尚未完成合成")
+        art_title = art.title or ""
+
+    audio_dir = Path(settings.AUDIO_DIR)
+    from ..services.srt import load_chapter_srt
+    srt = load_chapter_srt(audio_dir, build_id, idx)
+    if srt is None:
+        raise HTTPException(404, f"章节 {idx} 字幕未生成（无 sidecar）")
+
+    clean_title = strip_chapter_prefix(art_title)
+    fname = f"第{idx+1:03d}章 {clean_title or '章节'}.srt"
+    for ch in '\\/:*?"<>|\r\n\t':
+        fname = fname.replace(ch, "_")
+    ascii_name = urllib.parse.quote(fname.encode("utf-8"), safe="")
+    return Response(
+        content=srt,
+        media_type="application/x-subrip; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{ascii_name}",
+        },
+    )
+
+
 @router.get("/projects/{project_id}/builds/{build_id}/download-all")
 async def api_build_download_all(
     project_id: str,
