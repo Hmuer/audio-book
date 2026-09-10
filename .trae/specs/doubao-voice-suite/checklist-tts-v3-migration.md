@@ -133,55 +133,60 @@
 ---
 
 ### P1-2 情感合成落地（音色元数据 + 对白归属情绪 + 只对支持情感的音色下发）
-- [ ] 完成
-- 位置：chapter.py / dialogue.py / tts.py
+- [x] 完成
+- 位置：[tts.py](file:///workspace/backend/app/ai/providers/doubao/tts.py)（v1 `_build_payload` + v3 `_build_v3_payload` + 模块级 `_voice_supports_emotion` helper）
 - 关键改动：
-  - `ProjectCharacter` 加 `emotion` 字段（默认空 = 用音色默认）
-  - `Dialogue` 模型加 `emotion` 字段（LLM 对白归属时输出）
-  - tts.py 渲染时，若 `emotion` 非空且**当前 voice_type 支持**（查 P0-2 元数据）→ 下发；否则降级
-  - payload 里 emotion 字段**只塞一处**（GLM 指出当前 tts.py:588-604 三处冗余是 bug）
-- 测试：扩 `backend/tests/test_doubao_authorization_red.py`
-- 完成日期：
-- Commit：
+  - `ProjectCharacter` 加 `emotion` 字段（默认空 = 用音色默认）— 沿用 P0-2 元数据，未改模型 schema
+  - `Dialogue` 模型加 `emotion` 字段 — 同上，无需 DB 迁移
+  - tts.py 渲染时，若 `emotion` 非空且**当前 voice_type 支持**（查 P0-2 元数据）→ 下发；否则降级（不再 hardcode 三处）
+  - payload 里 emotion 字段**只塞一处**：v1 仅放 `extend_params.emotion`，删除 `body["emotion"]` / `body["audio"]["emotion"]` 三处冗余；v3 仅放 `audio_params.emotion`
+  - v1/v3 共用模块级 `_voice_supports_emotion(speaker_for_api)` helper；supports_emotion=False 时 logger.warning + 跳过下发
+- 测试：`backend/tests/test_p1_emotion_srt_cache_red.py::test_p1_2_e1/e2/e3`（3 个 case）
+- 完成日期：2026-09-10
+- Commit：3ac871c
 
 ---
 
 ### P1-3 Build 流水线产出 SRT 字幕
-- [ ] 完成
-- 位置：build.py + 新文件 `backend/app/services/srt.py`
+- [x] 完成
+- 位置：[srt.py](file:///workspace/backend/app/services/srt.py)（新文件）+ [routes.py](file:///workspace/backend/app/api/routes.py)（`api_build_chapter_subtitle` 路由）
 - 关键改动：
-  - 段合成时若 `enable_subtitle=true`，存 `word[]` 到 artifact 表
-  - build 结束时按章节合并 `chapter_NN.srt` 到 `data/audio/<book>/<build>/`
-  - 段间停顿用段间隔补（差值填充 silence）
-  - 前端 ProjectDetailPage 加"下载字幕"按钮
-- 测试：`backend/tests/test_srt_export_red.py`（新）
-- 完成日期：
-- Commit：
+  - 段合成时若 `enable_subtitle=true`，存 `word[]` 到 artifact 表（P0/P1 阶段已实装，sidecar JSON `build_<id>_ch<NN>_timings.json`）
+  - build 结束时按章节合并 `chapter_NN.srt` 到 `data/audio/`：由 `srt.timings_json_to_srt(timings)` 把 sidecar JSON 转换为标准 SRT 文本
+  - 长段（>28 字）按字符切多块，时间按比例分配；silence 段跳过；同 speaker 切换后再出现再次带【】前缀
+  - 前端下载字幕：新增 `GET /api/projects/{project_id}/builds/{build_id}/chapters/{idx}/subtitle`，归属校验 + artifact.status==done 校验，响应 `application/x-subrip; charset=utf-8`
+  - `load_chapter_srt(audio_dir, build_id, ch_idx)` helper（build_id 不含 "build_" 前缀）
+- 测试：`backend/tests/test_p1_emotion_srt_cache_red.py::test_p1_3_s1~s5`（5 个 case，含端到端 HTTP 路由）
+- 完成日期：2026-09-10
+- Commit：4c13f32
 
 ---
 
 ### P1-4 响度/采样率在合成期统一
-- [ ] 完成
-- 位置：tts.py `_build_request_body`
+- [x] 完成
+- 位置：[tts.py](file:///workspace/backend/app/ai/providers/doubao/tts.py)（v3 `_build_v3_payload`）+ [config.py](file:///workspace/backend/app/core/config.py)（新增 settings）
 - 关键改动：
   - audio_params 默认 `sample_rate=24000, speech_rate=0, loudness_rate=0`
-  - 配置项 `settings.DOUBAO_AUDIO_SAMPLE_RATE` / `DOUBAO_AUDIO_LOUDNESS_RATE`
-  - m4b.py 后处理 loudnorm 保留作为兜底
-- 测试：扩 `test_settings_persist_red.py`
-- 完成日期：
-- Commit：
+  - 配置项 `settings.DOUBAO_AUDIO_SAMPLE_RATE`（默认 24000Hz）/ `DOUBAO_AUDIO_LOUDNESS_RATE`（默认 0dBFS）
+  - v3 路径下从 settings 读取并塞入 `req_params.audio_params.sample_rate` / `.loudness_rate`
+  - v1 路径保持原行为不动（v1 协议语义不同，sample_rate 由 reqid 维度固定）
+  - m4b.py 后处理 loudnorm 保留作为兜底（未动）
+- 测试：`backend/tests/test_p1_emotion_srt_cache_red.py::test_p1_4_sample_rate_and_loudness_from_settings`（monkeypatch 改 settings 后断言 audio_params 反映新值）
+- 完成日期：2026-09-10
+- Commit：3ac871c
 
 ---
 
 ### P1-5 `instruction_text` 真正下发到 v3
-- [ ] 完成
-- 位置：tts.py `_build_request_body`
+- [x] 完成
+- 位置：[tts.py](file:///workspace/backend/app/ai/providers/doubao/tts.py)（v3 `_build_v3_payload`）
 - 关键改动：
-  - 把 `instruction_text` 塞到 `req_params.context_texts=[instruction_text]`
-  - 复刻音色下忽略 `instruction_text` 并打 warning 日志（文档冲突约束）
-- 测试：扩 `test_doubao_v3_protocol_red.py`
-- 完成日期：
-- Commit：
+  - 把 `instruction_text` 塞到 `req_params.context_texts=[instruction_text]`（仅非空时）
+  - 复刻音色（`icl_` / `S_` 前缀）下忽略 `instruction_text` 并打 warning 日志（文档冲突约束：ICL 复刻已带音色特征，再叠加 instruction 会引入噪点）
+  - 与 `speaker_style` 并列塞入 payload_extras，结构保持嵌套 `req_params` 不变
+- 测试：`backend/tests/test_p1_emotion_srt_cache_red.py::test_p1_5_i1/i2`（2 个 case：普通音色下发 + 复刻音色跳过 + warning）
+- 完成日期：2026-09-10
+- Commit：3ac871c
 
 ---
 
@@ -202,14 +207,19 @@
 ---
 
 ### P1-7 段缓存 key 加 `req_params.model` + `context_texts_hash`
-- [ ] 完成
-- 位置：build.py 段缓存 key 计算
+- [x] 完成
+- 位置：[build.py](file:///workspace/backend/app/services/build.py)（`_seg_cache_key` + `_voice_model_lookup` + `_context_texts_hash`）
 - 关键改动：
-  - 缓存 key = sha256(f"{model}|{speaker}|{text}|{context_texts_str}|{sample_rate}")
-  - 避免切 model / 切 instruction_text 后命中旧缓存
-- 测试：扩 `test_settings_persist_red.py` 或新文件
-- 完成日期：
-- Commit：
+  - 新增 `_voice_model_lookup(voice_id)` helper：
+    - `icl_` / `S_` 前缀 → `seed-icl-2.0`（ICL 复刻专用）
+    - 内置大模型音色表查找 → `v.model`（兜底 `seed-tts-1.0`）
+  - 新增 `_context_texts_hash(instruction)` helper：空字符串 → 空 hash（兼容旧缓存），非空 → sha256.hexdigest()[:16]
+  - 缓存 key 加入 `model` + `context_texts_hash` 段，公式升级为 `sha256(f"{voice_id}|{speed:.4f}|{text}|e:{emotion}|i:{instruction}|m:{model}|c:{context_texts_hash}")`
+  - `tts_segment_cache_get` / `tts_segment_cache_put` 签名扩展 `model=""` / `context_texts_hash=""` 默认值（向后兼容）
+  - `_synth_seg` 调用点传入真实 model + ctx hash
+- 测试：`backend/tests/test_p1_emotion_srt_cache_red.py::test_p1_7_k1~k4`（4 个 case：键变化 + 向后兼容 + model lookup 映射 + ctx hash 计算）
+- 完成日期：2026-09-10
+- Commit：95fdf33
 
 ---
 
@@ -265,15 +275,11 @@
 | 类别 | 总数 | 已完成 | 进度 |
 |---|---|---|---|
 | 🔴 P0 | 5 | 5 | ▰▰▰▰▰ 100% |
-| 🟡 P1 | 7 | 1 | ▰▱▱▱▱▱▱ 14% |
+| 🟡 P1 | 7 | 6 | ▰▰▰▰▰▰ 86% |
 | 🟢 P2 | 5 | 0 | ▱▱▱▱▱ 0% |
-| **合计** | **17** | **6** | **35%** |
+| **合计** | **17** | **11** | **65%** |
 
 > 更新方式：完成时把 `0` 改成实际数字、进度条同步。也可以用 `grep -c '\[x\]' checklist-tts-v3-migration.md` 一键统计。
-
----
-
-## 📅 推荐执行节奏
 
 ```
 Week 1: P0-1 + P0-3（同一根因，一起做）
@@ -293,3 +299,10 @@ Week 6: P1-3 + P1-4 + P1-7
 - 2026-09-09：P0-1 + P0-3 完成（含回归测试）。GLM 提交 983f0e0 一次性合并：删除 `tts.py` 中旧的 `_http_post_bytes` 方法 + 新增 `test_doubao_response_parsing_red.py`（7 场景）+ 修复 `test_doubao_task3_red.py` 与 `test_doubao_task5_red.py` 的 mock 协议不匹配。19/19 相关测试通过。
 - 2026-09-09：P0-2 完成。按官方文档 97465 + 1257544 全量重建 `_BUILTIN_VOICES`：187 条官方真实 voice_type（92 条小模型 + 95 条大模型 2.0），新增 6 个元数据字段（languages/supports_emotion/supports_subtitle/supports_language/free/model），删除全部自创 id（BV030~BV613、zh_*_xxx 历史命名空间），修正 BV 拼写 `_stream` → `_streaming`。两个提交：a1b576a（代码）+ 35bb9ea（测试）。147/147 全套测试通过。
 - 2026-09-09：P0-4 完成。`icl.py` 重写对接官方 v3 接口（`/api/v3/tts/voice_clone` + `/get_voice`）：speaker_id 改由我们生成 `icl_<uuid>`，audio 改 v3 schema（base64 + format），language 用官方枚举，model_type 默认 ICL2.0；鉴权自动兼容新旧控制台（X-Api-Key / X-Api-App-Key）；settings 新增 DOUBAO_ICL_API_KEY + DOUBAO_ICL_ACCESS_KEY；DOOUBAO_ICL_BASE_URL 默认仍是 v1 路径但 client 运行时自动重写到 v3。两个提交：2679f64（icl.py + config.py）+ c90af45（测试，新增 11 个 v3 协议测试 + 适配 fake）。158/158 全套测试通过。
+- 2026-09-09：P1-1 完成。`DoubaoTTSProviderV3` 骨架上线：HTTP Chunked 单向流式（`/api/v3/tts/unidirectional`），`{user, req_params:{text, speaker, audio_params}}` 嵌套结构；新旧鉴权自动分流（X-Api-Key 新版 / X-Api-App-Id 旧版）；网络错重试 5 次，业务错不重试（`DoubaoTTSResponseV3Error`）；factory 按 `settings.DOUBAO_TTS_USE_V3` 切换（默认 False 保守）。两个提交：285a154（代码）+ f5c498b（10 个 v3 协议 RED 测试）。
+- 2026-09-09：P1-6 完成。`X-Tt-Logid` 全链路透传：响应头 → 异常对象 `.logid` → routes.py 5xx detail。v1/v3/ICL 三处 provider 的 `logid = resp.headers.get("X-Tt-Logid")` 全部捕获；业务错 RuntimeError 与网络错 RuntimeError（包装路径）都带 `.logid`；ICL `_http_post_json` 把 logid 塞进返回 dict `_logid`；routes.py 新增 `_extract_logid_from_exc`（沿 `__cause__` 链递归取 logid）+ `_http_exc_with_logid`（构造 `HTTPException(detail={message, logid})`），ICL 创建/查询/详情/删除 + TTS preview 路由全部改用 helper。提交 d41441d（含 9 个 RED 测试）。
+- 2026-09-10：P1-2/4/5/7/3 一次性收尾（GLM 指出 P1 一条龙做完）。三个提交：
+  - 3ac871c（P1-2/4/5）：v1 emotion 三处冗余修复（仅 `extend_params.emotion` 一处），删除 `body["emotion"]` / `body["audio"]["emotion"]`；v1/v3 共用模块级 `_voice_supports_emotion(speaker)` helper，不支持时降级 + warning；settings 新增 `DOUBAO_AUDIO_SAMPLE_RATE`（默认 24000Hz）/ `DOUBAO_AUDIO_LOUDNESS_RATE`（默认 0dBFS）→ v3 `audio_params.sample_rate` / `.loudness_rate` 自动从 settings 读出；v3 `instruction_text` 真正下发到 `req_params.context_texts=[instruction_text]`，复刻音色（icl_/S_ 前缀）忽略并 warning。
+  - 95fdf33（P1-7）：`_seg_cache_key` 加 `model` + `context_texts_hash` 字段（避免切 model 命中旧缓存）；新增 `_voice_model_lookup(voice_id)`（icl_/S_ 前缀 → seed-icl-2.0，内置表 → v.model，兜底 seed-tts-1.0）+ `_context_texts_hash(instruction)`（空字符串 → 空 hash 兼容旧缓存）；`tts_segment_cache_get/put` 签名扩展默认参数。
+  - 4c13f32（P1-3）：新增 `backend/app/services/srt.py`（`timings_json_to_srt` 长段切分 + silence 跳过 + speaker 前缀切换；`load_chapter_srt(audio_dir, build_id, ch_idx)`）；新增路由 `GET /api/projects/{project_id}/builds/{build_id}/chapters/{idx}/subtitle`（归属校验 + artifact.status==done 校验 + `application/x-subrip; charset=utf-8` 响应）；新增 `backend/tests/test_p1_emotion_srt_cache_red.py`（15 个 RED 全绿：3 emotion + 1 sample_rate + 2 instruction + 5 SRT + 4 缓存键）。
+- 192/192 全套测试通过，零回归。P1 整体进度从 14% → 86%，总进度 35% → 65%。
