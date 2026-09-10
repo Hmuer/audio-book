@@ -20,7 +20,8 @@ import {
 /**
  * 音色库页面（#/audiobooks/voices）
  *  Tab 1 音色库：MiniMax + 豆包 + 我的 ICL 复刻音色，多维筛选 + 试听
- *  Tab 2 声音复刻：上传参考音频创建 ICL 训练任务，轮询训练状态，管理我的音色
+ *  Tab 2 小模型免费：豆包 seed-tts-1.0 官方免费音色 21+，后端 free_only 过滤
+ *  Tab 3 声音复刻：上传参考音频创建 ICL 训练任务，轮询训练状态，管理我的音色
  */
 
 const PREVIEW_TEXT = '夜色渐深，风穿过巷口，远处传来零星的犬吠声。';
@@ -70,7 +71,21 @@ function VoiceAvatar({ voice, size = 40 }: { voice: Voice; size?: number }) {
 // 主组件
 // =====================================================================
 export default function VoiceLibraryPage({ voices }: { voices: Voice[] }) {
-  const [tab, setTab] = useState<'library' | 'icl'>('library');
+  const [tab, setTab] = useState<'library' | 'small_free' | 'icl'>('library');
+  const [freeVoices, setFreeVoices] = useState<Voice[] | null>(null);
+  const [freeLoadErr, setFreeLoadErr] = useState<string | null>(null);
+  const [freeLoading, setFreeLoading] = useState(false);
+
+  // 进入「小模型免费」Tab 时拉一次：后端 free_only=true 过滤后的全量
+  useEffect(() => {
+    if (tab !== 'small_free') return;
+    if (freeVoices !== null) return;
+    setFreeLoading(true);
+    api.voices({ free_only: true })
+      .then(v => { setFreeVoices(v); setFreeLoadErr(null); })
+      .catch(e => setFreeLoadErr(String((e as Error)?.message || e)))
+      .finally(() => setFreeLoading(false));
+  }, [tab, freeVoices]);
 
   return (
     <section className="animate-fade-in space-y-5">
@@ -101,6 +116,15 @@ export default function VoiceLibraryPage({ voices }: { voices: Voice[] }) {
               音色库
             </button>
             <button
+              onClick={() => setTab('small_free')}
+              className={`px-3.5 py-1.5 rounded-md text-[13px] font-medium border transition-all
+                ${tab === 'small_free'
+                  ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                  : 'bg-ink-100 border-ink-300/70 text-ink-600 hover:bg-ink-200 hover:text-ink-700'}`}
+            >
+              小模型免费
+            </button>
+            <button
               onClick={() => setTab('icl')}
               className={`px-3.5 py-1.5 rounded-md text-[13px] font-medium border transition-all
                 ${tab === 'icl'
@@ -113,7 +137,19 @@ export default function VoiceLibraryPage({ voices }: { voices: Voice[] }) {
         </div>
       </div>
 
-      {tab === 'library' ? <LibraryTab voices={voices} /> : <IclTab />}
+      {tab === 'library' && <LibraryTab voices={voices} />}
+      {tab === 'small_free' && (
+        <SmallFreeTab
+          voices={freeVoices}
+          loading={freeLoading}
+          err={freeLoadErr}
+          onRetry={() => {
+            setFreeVoices(null);
+            setFreeLoadErr(null);
+          }}
+        />
+      )}
+      {tab === 'icl' && <IclTab />}
     </section>
   );
 }
@@ -394,7 +430,72 @@ function LibraryTab({ voices }: { voices: Voice[] }) {
 }
 
 // =====================================================================
-// Tab 2：ICL 声音复刻
+// Tab 2：小模型免费音色（豆包 seed-tts-1.0 + free=True）
+// 后端 /api/voices?free_only=true 已过滤；此处复用 LibraryTab 的预览逻辑
+// =====================================================================
+function SmallFreeTab({
+  voices,
+  loading,
+  err,
+  onRetry,
+}: {
+  voices: Voice[] | null;
+  loading: boolean;
+  err: string | null;
+  onRetry: () => void;
+}) {
+  if (loading) {
+    return (
+      <div className="glass-panel p-8 text-center text-sm text-ink-500 space-y-2">
+        <span className="inline-block w-4 h-4 border-2 border-emerald-400/50 border-t-emerald-300 rounded-full animate-spin" />
+        <div>正在拉取豆包官方免费小模型音色…</div>
+      </div>
+    );
+  }
+  if (err) {
+    return (
+      <div className="space-y-3">
+        <div className="rounded-lg px-4 py-3 text-sm text-red-200 border border-red-500/40 bg-red-500/10">
+          加载失败：{err}
+        </div>
+        <button className="btn-ghost !py-1.5 !px-3 text-xs" onClick={onRetry}>
+          重试
+        </button>
+      </div>
+    );
+  }
+  if (!voices) return null;
+  if (voices.length === 0) {
+    return (
+      <div className="glass-panel text-center py-14 text-sm text-ink-500">
+        暂无豆包免费小模型音色（请确认已配置豆包官方凭据并完成 P2-1 远程同步）
+      </div>
+    );
+  }
+  return (
+    <>
+      {/* 顶部说明 + 计数 */}
+      <div className="glass-panel p-4 sm:p-5 space-y-2">
+        <div className="flex items-center gap-2 text-[13px] text-ink-700">
+          <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+            免费
+          </span>
+          <span className="font-semibold">豆包小模型（seed-tts-1.0）</span>
+          <span className="text-ink-500 text-[12px]">
+            按火山 FAQ「21 款免费音色」锁定，不包含大模型 2.0 与 ICL 复刻
+          </span>
+          <span className="ml-auto text-[11px] text-ink-500 tabular-nums">
+            <b className="text-ink-800">{voices.length}</b> 个
+          </span>
+        </div>
+      </div>
+      <LibraryTab voices={voices} />
+    </>
+  );
+}
+
+// =====================================================================
+// Tab 3：ICL 声音复刻
 // =====================================================================
 function IclTab() {
   const [tasks, setTasks] = useState<IclTask[]>([]);

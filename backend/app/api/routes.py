@@ -375,22 +375,29 @@ async def health():
 @router.get("/voices")
 async def api_list_voices(
     tts_provider: str | None = None,
+    free_only: bool = False,
     current: User = Depends(get_current_user),
 ):
-    """列出可用音色（当前用户视角：含其可用 ICL 克隆音色）。"""
+    """列出可用音色（当前用户视角：含其可用 ICL 克隆音色）。
+
+    - tts_provider: 限定厂商（minimax / doubao / icl）
+    - free_only=True: 只返回豆包小模型 (seed-tts-1.0) 且 free=True 的音色（P2-5）
+    """
     user_id = getattr(current, "id", None)
-    return await list_voices(tts_provider, icl_user_id=user_id)
+    return await list_voices(tts_provider, icl_user_id=user_id, free_only=free_only)
 
 
 async def list_voices(
     tts_provider: str | None = None,
     *,
     icl_user_id: int | None = None,
+    free_only: bool = False,
 ):
     """列出可用音色（服务层，可直接调用）。
     - tts_provider 未给：返回 minimax + doubao（两套并集，按 id 去重）。
     - tts_provider ∈ {minimax, doubao, icl}：仅返回对应厂商音色。
     - icl_user_id 给出时：附带该用户已训练可用的 ICL 克隆音色（icl:<clone_id>）。
+    - free_only=True：只保留豆包小模型 (model=seed-tts-1.0) 且 free=True 的音色（P2-5）。
     每条音色都带有 provider 字段，前端可据此分组。
     """
     import asyncio as _as_nc
@@ -441,6 +448,17 @@ async def list_voices(
             logger.exception("ICL 音色聚合失败（忽略）")
 
     final = list(merged.values())
+
+    # P2-5：free_only 过滤。只保留豆包小模型 (model=seed-tts-1.0) 且 free=True 的音色。
+    # ICL 复刻音色不在此范畴（不属于官方免费列表）。
+    if free_only:
+        final = [
+            v for v in final
+            if v.get("provider") == "doubao"
+            and v.get("free") is True
+            and v.get("model") == "seed-tts-1.0"
+        ]
+
     return {"voices": final, "count": len(final)}
 
 

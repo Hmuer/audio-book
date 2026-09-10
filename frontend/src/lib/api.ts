@@ -187,8 +187,13 @@ export interface VoiceRec {
 
 export const api = {
   health: () => _fetch<{ status: string }>('/api/health'),
-  voices: () =>
-    _fetch<{ voices: Voice[]; count: number }>('/api/voices').then(r => r.voices),
+  voices: (opts?: { tts_provider?: string; free_only?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (opts?.tts_provider) qs.set('tts_provider', opts.tts_provider);
+    if (opts?.free_only) qs.set('free_only', 'true');
+    const url = qs.toString() ? `/api/voices?${qs}` : '/api/voices';
+    return _fetch<{ voices: Voice[]; count: number }>(url).then(r => r.voices);
+  },
   // ---------- Auth ----------
   authLogin: (username: string, password: string) =>
     _fetch<LoginResp>('/api/auth/login', {
