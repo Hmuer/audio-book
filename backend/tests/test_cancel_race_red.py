@@ -83,7 +83,7 @@ async def test_cancel_then_restart_old_worker_finally_does_not_release_new(_isol
         resp_a = await start_build(
             project_id=pid, voice_assignments={},
             narrator_voice_id="doubao:zh_female_qingxin",
-            tts_provider="doubao", mode="multicast",
+            tts_provider="doubao", mode="classic",
         )
         bid_a = resp_a.build_id
         assert bid_a in _ACTIVE_BUILDS, "Build A 必须注册到 _ACTIVE_BUILDS"
@@ -101,7 +101,7 @@ async def test_cancel_then_restart_old_worker_finally_does_not_release_new(_isol
         resp_b = await start_build(
             project_id=pid, voice_assignments={},
             narrator_voice_id="doubao:zh_female_qingxin",
-            tts_provider="doubao", mode="multicast",
+            tts_provider="doubao", mode="classic",
         )
         bid_b = resp_b.build_id
         assert bid_b != bid_a, "restart 必须生成新的 build_id"
@@ -196,7 +196,7 @@ async def test_ensure_project_not_running_releases_after_cancel(_isolate_data_di
         resp = await start_build(
             project_id=pid, voice_assignments={},
             narrator_voice_id="doubao:zh_female_qingxin",
-            tts_provider="doubao", mode="multicast",
+            tts_provider="doubao", mode="classic",
         )
         bid = resp.build_id
 

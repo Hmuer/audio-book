@@ -40,14 +40,9 @@ _BOOK_TXT = """第一章 初遇
 # 改用 mock TTS 失败 → 走 partial_success + 占位静音 MP3（classic 默认行为）
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_multicast_mode_is_downgraded_then_partial_success(_isolate_data_dir):
-    """P0-5 改写：用户传 mode=multicast + MULTICAST_STRICT_MODE=True →
-
-    - resp.mode 自动降级为 classic
-    - Build 走逐段 TTS（mock TTS 抛错）
-    - 由于 strict 判定恒 False（mode=multicast 已降级），Build 不被严格失败，
-      而是走 partial_success（占位静音 MP3 兜底）
-    """
+async def test_multicast_mode_raises_at_start_build(_isolate_data_dir):
+    """#4 不降级契约：mode=multicast 在 start_build 入口直接抛 RuntimeError，
+    不再静默降级为 classic。消息须明确提示已不再支持、改用 classic。"""
     from backend.app.services.project import create_project, import_file, prepare_project
     from backend.app.services.build import start_build, get_build_status, _ACTIVE_BUILDS, _RUNNING_LOCK
     from backend.app.db.session import init_db, get_session_factory
@@ -118,19 +113,16 @@ async def test_multicast_mode_is_downgraded_then_partial_success(_isolate_data_d
         await import_file(pid, _BOOK_TXT.encode("utf-8"), "book.txt")
         await prepare_project(pid)
 
-        resp = await start_build(
-            project_id=pid,
-            voice_assignments={},
-            narrator_voice_id="doubao:BV001_streaming",
-            tts_provider="doubao",
-            mode="multicast",  # 用户传 multicast，实际降级为 classic
-        )
-        # resp.mode 必须已降级
-        assert resp.mode == "classic", (
-            f"resp.mode 必须降级为 classic，实际 {resp.mode!r}"
-        )
-        assert resp.tts_provider == "doubao"
-        bid = resp.build_id
+        # #4 不降级契约：mode=multicast 直接抛错，不降级、不生成 Build
+        with pytest.raises(RuntimeError, match="已不再支持"):
+            await start_build(
+                project_id=pid,
+                voice_assignments={},
+                narrator_voice_id="doubao:BV001_streaming",
+                tts_provider="doubao",
+                mode="multicast",
+            )
+        return  # multicast 已抛错，本用例结束；下方 build/产物校验不再适用
 
         for _ in range(60):
             s = await get_build_status(bid)

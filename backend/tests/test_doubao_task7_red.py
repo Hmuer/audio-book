@@ -69,10 +69,12 @@ class _DoubaoMockTTS:
 # T-MC1 + T-MC2：start_build(mode='multicast') 自动降级 classic
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_start_build_multicast_mode_is_downgraded_to_classic(_isolate_data_dir):
+async def test_start_build_multicast_mode_raises_not_downgraded(_isolate_data_dir):
+    """#4 不降级契约：mode=multicast 在 start_build 入口直接抛 RuntimeError，
+    不再静默降级为 classic、不再启动 Build。"""
     from backend.app.db.session import init_db
     from backend.app.services.project import create_project, import_file, prepare_project
-    from backend.app.services.build import start_build, get_build_status, _ACTIVE_BUILDS, _RUNNING_LOCK
+    from backend.app.services.build import start_build, _ACTIVE_BUILDS, _RUNNING_LOCK
     from backend.app.ai import factory as aifact
     from backend.tests.mock_providers import MockLLMProvider
 
@@ -82,41 +84,24 @@ async def test_start_build_multicast_mode_is_downgraded_to_classic(_isolate_data
     aifact._tts_instance = _DoubaoMockTTS()
     aifact._llm_instance = MockLLMProvider()
     try:
-        pid = (await create_project("multicast-降级测试")).project_id
-        book = "第一章 初见\n李明说：「你好，请问怎么走？」\n林若雪说：「跟我来吧。」\n第二章 启程\n他们出发了。"
+        pid = (await create_project("multicast-不降级测试")).project_id
+        book = "第一章 初遇\n李明说：「你好，请问怎么走？」\n林若雪说：「跟我来吧。」\n第二章 启程\n他们出发了。"
         await import_file(pid, book.encode("utf-8"), "book.txt")
         await prepare_project(pid)
 
-        # 即使传 mode='multicast' + tts_provider='doubao'，也会降级
-        resp = await start_build(
-            project_id=pid,
-            voice_assignments={"李明": "doubao:BV002_streaming"},
-            narrator_voice_id="doubao:BV001_streaming",
-            tts_provider="doubao",
-            mode="multicast",
-        )
-        # 关键断言：resp.mode 是降级后的 classic（不是用户传的 multicast）
-        assert resp.mode == "classic", (
-            f"mode=multicast 必须自动降级为 classic，实际 {resp.mode!r}"
-        )
-        # tts_provider 仍按用户传的 doubao 走（不强制改）
-        assert resp.tts_provider == "doubao"
-        bid = resp.build_id
-
-        # 等 build 完成
-        for _ in range(120):
-            s = await get_build_status(bid)
-            if s.status in ("success", "partial_success", "failed", "cancelled"):
-                break
-            await asyncio.sleep(0.25)
-        else:
-            async with _RUNNING_LOCK:
-                stale = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]
-                for k in stale:
-                    _ACTIVE_BUILDS.pop(k, None)
-            pytest.fail("build worker 超时未结束")
-        # mock TTS 必成功；逐段拼接 → success
-        assert s.status == "success", f"期望 success，实际 {s.status} msg={s.progress_msg!r}"
+        # #4 不降级：mode=multicast 直接抛错，不降级、不生成 Build
+        with pytest.raises(RuntimeError, match="已不再支持"):
+            await start_build(
+                project_id=pid,
+                voice_assignments={"李明": "doubao:BV002_streaming"},
+                narrator_voice_id="doubao:BV001_streaming",
+                tts_provider="doubao",
+                mode="multicast",
+            )
+        # 不应有任何活跃 Build 残留（start_build 在落库前就抛了）
+        async with _RUNNING_LOCK:
+            stale = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]
+            assert stale == [], f"multicast 抛错后不应残留 Build，实际 {stale}"
     finally:
         aifact._tts_instance = prev_tts
         aifact._llm_instance = prev_llm
@@ -131,11 +116,11 @@ async def test_start_build_multicast_mode_is_downgraded_to_classic(_isolate_data
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_injected_multicast_instance_is_ignored(_isolate_data_dir):
-    """P0-5 之后：即使旧 conftest 注入了 _multicast_instance，新代码路径不再
-    调用 synthesize_chapter_to_file（降级为 classic 走逐段 TTS）。"""
+    """#4 不降级契约：mode=multicast 在 start_build 入口直接抛错，
+    即便旧 conftest 注入了 _multicast_instance，也不会被调用（build 根本没启动）。"""
     from backend.app.db.session import init_db
     from backend.app.services.project import create_project, import_file, prepare_project
-    from backend.app.services.build import start_build, get_build_status, _ACTIVE_BUILDS, _RUNNING_LOCK
+    from backend.app.services.build import start_build, _ACTIVE_BUILDS, _RUNNING_LOCK
     from backend.app.ai import factory as aifact
     from backend.tests.mock_providers import MockLLMProvider
 
@@ -147,7 +132,7 @@ async def test_injected_multicast_instance_is_ignored(_isolate_data_dir):
 
         async def synthesize_chapter_to_file(self, *args, **kwargs):
             self.calls.append((args, kwargs))
-            raise RuntimeError("如果 multicast provider 被调用，说明 P0-5 降级失效")
+            raise RuntimeError("如果 multicast provider 被调用，说明走了不该走的路径")
 
     sentinel = _ShouldNeverBeCalled()
     prev_tts = aifact._tts_instance
@@ -161,29 +146,18 @@ async def test_injected_multicast_instance_is_ignored(_isolate_data_dir):
         book = "第一章\n他说：「测试」\n第二章\n继续。"
         await import_file(pid, book.encode("utf-8"), "book.txt")
         await prepare_project(pid)
-        resp = await start_build(
-            project_id=pid,
-            voice_assignments={},
-            narrator_voice_id="doubao:BV001_streaming",
-            tts_provider="doubao",
-            mode="multicast",
-        )
-        bid = resp.build_id
-        for _ in range(120):
-            s = await get_build_status(bid)
-            if s.status in ("success", "partial_success", "failed", "cancelled"):
-                break
-            await asyncio.sleep(0.25)
-        else:
-            async with _RUNNING_LOCK:
-                stale = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]
-                for k in stale:
-                    _ACTIVE_BUILDS.pop(k, None)
-            pytest.fail("build worker 超时未结束")
-        # multicast sentinel 必须从未被调用
+        # #4 不降级：mode=multicast 直接抛错（不降级、不启动 Build）
+        with pytest.raises(RuntimeError, match="已不再支持"):
+            await start_build(
+                project_id=pid,
+                voice_assignments={},
+                narrator_voice_id="doubao:BV001_streaming",
+                tts_provider="doubao",
+                mode="multicast",
+            )
+        # multicast sentinel 必须从未被调用（build 在落库前就抛了）
         assert sentinel.calls == [], (
-            f"_multicast_instance 注入了但仍被调用了 {len(sentinel.calls)} 次："
-            f"P0-5 降级失效"
+            f"_multicast_instance 被调用了 {len(sentinel.calls)} 次"
         )
     finally:
         aifact._tts_instance = prev_tts

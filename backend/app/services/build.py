@@ -630,7 +630,7 @@ def _validate_tts_namespace(
     norm_mode = (mode or "classic").lower()
     norm_provider = (tts_provider or "").lower()
 
-    # mode 合法性：multicast 已废弃（P0-5），但仍接受并在 start_build 入口降级；
+    # mode 合法性：multicast 已废弃（P0-5），start_build 入口会直接抛错（#4 不降级）；
     # 这里只校验未知 mode。
     if norm_mode not in _VALID_MODES:
         raise RuntimeError(f"未知 build.mode: {mode}，可选 {sorted(_VALID_MODES)}")
@@ -663,7 +663,7 @@ def _validate_tts_namespace(
 
 
 def _validate_multicast_provider(build_mode: str, tts_provider_label: str) -> None:
-    """已废弃（P0-5）：mode=multicast 现在在 start_build 入口自动降级为 classic。
+    """已废弃（P0-5 + #4 不降级）：mode=multicast 现在在 start_build 入口直接抛错。
 
     函数保留仅为兼容历史调用栈（无副作用）；新代码不应再依赖。
     """
@@ -674,8 +674,8 @@ def _should_strict_fail(mode: str) -> bool:
     """严格失败判定。
 
     历史：mode=multicast + MULTICAST_STRICT_MODE=True → 任何章节失败直接 Build 失败。
-    P0-5 后：mode=multicast 已在 start_build 入口降级为 classic，多播剧 strict 模式不再
-    触发；保留函数仅为兼容历史调用栈，恒返回 False。
+    P0-5 + #4 后：mode=multicast 在 start_build 入口直接抛错，根本进不到合成；
+    保留函数仅为兼容历史调用栈，恒返回 False。
     """
     return False
 
@@ -744,16 +744,16 @@ async def start_build(
     else:
         resolved_mode = mode.lower()
 
-    # mode=multicast 已废弃（P0-5）：自动降级为 classic（逐章节分段 TTS 拼接）。
-    # 历史路径走 Seed-Audio 整章一体化生成；官方不再推荐，已停止迭代。
-    # 降级后行为：narrator_voice_id + voice_assignments 决定的角色音色照常逐段合成，
-    # BuildArtifact.duration_ms 仍是逐段累加。
+    # mode=multicast 已废弃（P0-5）：Seed-Audio 多播剧端点已停止迭代。
+    # 按用户要求（#4 不降级契约）：选了 multicast 就直接抛错，让用户明确知道
+    # 该模式已不支持、需改用 classic，而不是静默切到 classic 后还按 classic
+    # 跑（那会让用户以为多播剧仍在生效）。classic 模式同样支持多角色
+    # （voice_assignments 角色分配 + narrator），功能上等价。
     if resolved_mode == "multicast":
-        logger.info(
-            f"[build_start] project_id={project_id[:8]}... mode=multicast 已废弃（P0-5），"
-            f"自动降级为 classic（Seed-Audio 多播剧端点已停止迭代）"
+        raise RuntimeError(
+            "mode=multicast 已不再支持（Seed-Audio 多播剧端点已停止迭代），"
+            "请改用 mode=classic；classic 模式同样支持多角色（voice_assignments）"
         )
-        resolved_mode = "classic"
 
     # 命名空间校验（不兼容直接抛 RuntimeError）
     _validate_tts_namespace(
@@ -1231,8 +1231,8 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
 
 
 # Seed-Audio 整章一体化合成已废弃（P0-5）。mode=multicast 在 start_build 入口
-# 自动降级为 classic（逐章节分段 TTS 拼接），不再调用以下函数。下面三个函数
-# 保留仅为兼容历史调用栈，无副作用。
+# 直接抛错（#4 不降级），根本不会调用以下函数。下面三个函数保留仅为兼容
+# 历史调用栈，无副作用。
 _MC_CHARS_PER_SEC = 4.0
 _MC_CHUNK_TARGET_SECS = 100.0
 
@@ -1432,7 +1432,7 @@ async def _run_build_inner(
             )
             return
         # 注：原 _validate_multicast_provider() 已废弃（P0-5）；mode=multicast 在
-        # start_build 入口自动降级为 classic，此处不再拦截。
+        # start_build 入口直接抛错（#4 不降级），此处不再拦截。
 
     logger.info(
         f"[build_worker] build_id={build_id[:8]}... total_chapters={total} "
@@ -1635,8 +1635,8 @@ async def _run_build_inner(
             )
 
             # 注：mode=multicast 分支已在 P0-5 删除（Seed-Audio 整章一体化生成端点
-            # 已停止迭代，start_build 入口自动降级为 classic）。下面所有路径都按
-            # classic 逐段 TTS 合成处理。
+            # 已停止迭代）；#4 后 start_build 入口对 mode=multicast 直接抛错。
+            # 下面所有路径都按 classic 逐段 TTS 合成处理。
 
             async def _synth_seg(s: _Segment) -> tuple[_Segment, bytes, int]:
                 nonlocal tts_calls_used, tts_chars_used

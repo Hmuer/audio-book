@@ -133,9 +133,10 @@ _BOOK_TXT = """第一章 初遇
 """
 
 @pytest.mark.asyncio
-async def test_retry_failed_inherits_provider_and_downgraded_mode(_isolate_data_dir):
-    """P0-5 改写：mode=multicast 在 start_build 入口自动降级为 classic，
-    retry Build 必须继承降级后的 mode（classic）而不是源 Build 的入参 mode。"""
+async def test_retry_failed_inherits_provider_and_mode(_isolate_data_dir):
+    """#4 不降级契约：mode=multicast 在 start_build 入口直接抛错（不再降级）。
+    本用例改用 mode='classic'（合法模式）验证 retry Build 继承源 Build 的
+    mode + tts_provider 配置。"""
     from backend.app.services.project import create_project, import_file, prepare_project
     from backend.app.services.build import (
         start_build, get_build_status, retry_failed_build,
@@ -182,19 +183,19 @@ async def test_retry_failed_inherits_provider_and_downgraded_mode(_isolate_data_
     aifact._llm_instance = MockLLMProvider()
     try:
         await init_db()
-        pid = (await create_project("重试继承配置测试（P0-5 降级）")).project_id
+        pid = (await create_project("重试继承配置测试（#4 不降级）")).project_id
         await import_file(pid, _BOOK_TXT.encode("utf-8"), "book.txt")
         await prepare_project(pid)
 
-        # 用户传 mode='multicast' + tts_provider='doubao'
+        # 用户传 mode='classic' + tts_provider='doubao'（multicast 已改为直接抛错）
         resp = await start_build(
             project_id=pid, voice_assignments={},
             narrator_voice_id="doubao:BV001_streaming",
-            tts_provider="doubao", mode="multicast",
+            tts_provider="doubao", mode="classic",
         )
-        # resp.mode 已经是降级后的 classic
+        # resp.mode 保持用户传入值（不降级）
         assert resp.mode == "classic", (
-            f"mode=multicast 必须降级为 classic，实际 {resp.mode!r}"
+            f"mode=classic 应原样保留，实际 {resp.mode!r}"
         )
         bid = resp.build_id
         for _ in range(60):
@@ -207,14 +208,14 @@ async def test_retry_failed_inherits_provider_and_downgraded_mode(_isolate_data_
         status0 = (await get_build_status(bid)).status
         assert status0 in ("partial_success", "failed")
 
-        # 触发 retry-failed：新 Build 必须继承降级后的 mode=classic + tts_provider=doubao
+        # 触发 retry-failed：新 Build 必须继承源 Build 的 mode=classic + tts_provider=doubao
         retry_resp = await retry_failed_build(source_build_id=bid)
         factory = get_session_factory()
         async with factory() as sess:
             nb = await sess.get(Build, retry_resp.build_id)
             assert nb is not None
             assert (nb.mode or "classic").lower() == "classic", (
-                f"retry Build 必须继承降级后的 mode=classic，实际 {nb.mode!r}"
+                f"retry Build 必须继承 mode=classic，实际 {nb.mode!r}"
             )
             assert (nb.tts_provider or "minimax").lower() == "doubao", (
                 f"retry Build 必须继承 tts_provider=doubao，实际 {nb.tts_provider!r}"
