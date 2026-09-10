@@ -1171,6 +1171,23 @@ _BUILTIN_VOICES: list[dict[str, Any]] = [
 ]
 
 
+def _voice_supports_emotion(speaker_for_api: str) -> bool:
+    """P1-2：模块级 helper — 查 _BUILTIN_VOICES 元数据返回当前音色是否支持 emotion。
+
+    v1 / v3 两条 provider 路径都要用，所以提到模块级避免重复定义。
+    ICL 复刻音色（speaker 以 `icl_`/`S_` 开头）走 ICL 2.0 协议，按文档不接收 emotion；
+    元数据里找不到也兜底 False（默认"未支持"更安全，避免下发失败）。
+    """
+    if not speaker_for_api:
+        return False
+    if speaker_for_api.startswith("icl_") or speaker_for_api.startswith("S_"):
+        return False
+    for v in _BUILTIN_VOICES:
+        if v["id"] == speaker_for_api:
+            return bool(v.get("supports_emotion", False))
+    return False
+
+
 # 接口文档参考：豆包火山文档 v1/tts（中文合成）
 class DoubaoTTSProvider(BaseTTSProvider):
     name = "doubao_tts"
@@ -1338,17 +1355,21 @@ class DoubaoTTSProvider(BaseTTSProvider):
         }
         # 额外可扩展参数：豆包 TTS 2.0 的 emotion / instruction_text / speaker_style
         # 若官方后续接入扩展字段，我们已先在请求体中携带，避免再改 provider
+        # P1-2：emotion 只在 extend_params.emotion 一处塞（之前在三处冗余，是 bug）。
+        # 同时按音色元数据 supports_emotion 诊断：当前音色不支持 emotion 时降级并打 warning。
         ext = body.setdefault("extend_params", {})
         if emotion:
-            ext["emotion"] = emotion
-            body["audio"]["emotion"] = emotion
-            body["emotion"] = emotion
+            if not _voice_supports_emotion(speaker_for_api):
+                logger.warning(
+                    f"[DoubaoTTS-v1] 音色 {speaker_for_api} 不支持 emotion，"
+                    f"忽略 emotion={emotion!r}（降级为音色默认情绪）"
+                )
+            else:
+                ext["emotion"] = emotion
         if speaker_style:
             ext["speaker_style"] = speaker_style
-            body["speaker_style"] = speaker_style
         if instruction_text:
             ext["instruction_text"] = instruction_text
-            body["instruction_text"] = instruction_text
         # 顶层平铺 speed / speed_ratio / rate
         body["speed_ratio"] = speed_ratio
         body["speed"] = speed_ratio
@@ -1821,27 +1842,47 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
         speech_rate = self._map_speed_to_speech_rate(speed)
         audio_params: dict[str, Any] = {
             "format": "mp3",
-            "sample_rate": self.DEFAULT_SAMPLE_RATE,
+            # P1-4：sample_rate/loudness_rate 从 settings 注入，便于运维统一调音
+            "sample_rate": int(getattr(settings, "DOUBAO_AUDIO_SAMPLE_RATE", 24000) or 24000),
             "speech_rate": speech_rate,
-            "loudness_rate": 0,
+            "loudness_rate": int(getattr(settings, "DOUBAO_AUDIO_LOUDNESS_RATE", 0) or 0),
             "disable_markdown_filter": True,
             "enable_subtitle": False,
         }
         # GLM 警告：emotion / instruction_text 字段名需真实 Key 验证；这里按
         # 官方 v3 文档暂放 audio_params.emotion；可后续按联调结果调整
         # （P1-1 范围：保守骨架，验证完毕后再真实落地情绪链路）
+        # P1-2：emotion 链路落地 — 音色元数据 supports_emotion=False 时降级打 warning，不下发。
         if emotion and emotion not in ("calm", "neutral", ""):
-            audio_params["emotion"] = emotion
-        if instruction_text:
-            audio_params["instruction_text"] = instruction_text
+            if not _voice_supports_emotion(speaker_for_api):
+                logger.warning(
+                    f"[DoubaoTTS-v3] 音色 {speaker_for_api} 不支持 emotion，"
+                    f"忽略 emotion={emotion!r}（降级为音色默认情绪）"
+                )
+            else:
+                audio_params["emotion"] = emotion
+        # P1-5：instruction_text 按官方 v3 文档放入 req_params.context_texts；
+        # 复刻音色（speaker 以 icl_/S_ 开头）忽略并 warning。
+        is_clone_speaker = (
+            speaker_for_api.startswith("icl_")
+            or speaker_for_api.startswith("S_")
+        )
+        payload_extras: dict[str, Any] = {}
         if speaker_style:
-            audio_params["speaker_style"] = speaker_style
+            payload_extras["speaker_style"] = speaker_style
+        if instruction_text and not is_clone_speaker:
+            payload_extras["context_texts"] = [str(instruction_text)]
+        elif instruction_text:
+            logger.warning(
+                f"[DoubaoTTS-v3] 复刻音色 {speaker_for_api} 不支持 instruction_text，已忽略"
+            )
         return {
             "user": {"uid": f"local-{os.getpid() % 10000:04d}"},
             "req_params": {
                 "text": text,
                 "speaker": speaker_for_api,
                 "audio_params": audio_params,
+                **payload_extras,
             },
         }
 
