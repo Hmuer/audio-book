@@ -89,6 +89,13 @@ async def lifespan(app: FastAPI):
     logger.info("DB initialized")
     # 启动时确保默认 admin 账号存在
     await seed_admin_user()
+    # P2-1：拉取豆包官方 ListSpeakers（启动时一次；后续可手动调 refresh_remote_voices）
+    # 失败仅警告（降级用内置 _BUILTIN_VOICES，不阻塞启动）
+    try:
+        from .services.doubao_list_speakers import ensure_remote_voices_synced_once
+        await ensure_remote_voices_synced_once()
+    except Exception as e:
+        logger.warning(f"[startup] ListSpeakers 启动同步失败（已降级）: {type(e).__name__}: {e}")
     # P1 #5：把 owner_user_id IS NULL 的孤儿项目一次性归属到 admin，
     # 让资源归属过滤立刻生效（不再泄露给"任意登录用户"）。
     try:

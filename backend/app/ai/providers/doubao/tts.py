@@ -1256,11 +1256,49 @@ class DoubaoTTSProvider(BaseTTSProvider):
         return out
 
     async def list_voices(self) -> list[dict[str, Any]]:
-        """合并内置豆包音色 + DATA_DIR/voices_doubao.json（存在时覆盖）。"""
+        """合并三层音色（优先级 自定义 > 远程 > 内置）：
+        1. 内置 `_BUILTIN_VOICES`（底）
+        2. `DATA_DIR/voices_doubao_remote.json`（P2-1 启动时同步，写盘后只在重启再同步）
+        3. `DATA_DIR/voices_doubao.json`（运营/用户自定义，顶）
+        """
         voices_by_id: dict[str, dict[str, Any]] = {}
         for v in self._builtin_voices_sync():
             voices_by_id[v["id"]] = v
 
+        # P2-1：远程音色（启动时由 doubao_list_speakers 同步写入磁盘）
+        try:
+            from backend.app.services.doubao_list_speakers import load_remote_voices
+            for v in load_remote_voices():
+                vid = str(v.get("id") or "").strip()
+                if not vid:
+                    continue
+                if not vid.startswith("doubao:") and not vid.startswith("icl:"):
+                    vid = f"doubao:{vid}"
+                merged = {
+                    "id": vid,
+                    "name": v.get("name") or vid.split(":", 1)[-1],
+                    "provider": "doubao",
+                    "gender": v.get("gender", "neutral"),
+                    "age": v.get("age", "youth"),
+                    "scene": v.get("scene", ["远程"]),
+                    "dialect": v.get("dialect", ""),
+                    "languages": v.get("languages", ["zh"]),
+                    "supports_emotion": bool(v.get("supports_emotion", False)),
+                    "supports_subtitle": bool(v.get("supports_subtitle", True)),
+                    "supports_language": bool(v.get("supports_language", False)),
+                    "free": bool(v.get("free", False)),
+                    "model": v.get("model", "seed-tts-1.0"),
+                    "zh_tags": v.get("zh_tags", ["远程"]),
+                }
+                # 额外字段（如 description / avatar / categories）原样保留
+                for k, val in v.items():
+                    if k not in merged and k != "id":
+                        merged[k] = val
+                voices_by_id[vid] = merged
+        except Exception:
+            logger.exception("读取 voices_doubao_remote.json 失败，仅使用内置音色")
+
+        # 自定义覆盖（用户/运营手工编辑的 json，最高优先级）
         try:
             custom_path = Path(settings.DATA_DIR) / "voices_doubao.json"
             if custom_path.exists():
@@ -1777,6 +1815,7 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
     # 音色列表：复用 v1 内置音色（保证前后端列表稳定）
     # -----------------------------------------------------------------
     async def list_voices(self) -> list[dict[str, Any]]:
+        """三层合并：内置 < 远程 < 自定义。P2-1。"""
         voices_by_id: dict[str, dict[str, Any]] = {}
         for v in _BUILTIN_VOICES:
             voices_by_id[f"doubao:{v['id']}"] = {
@@ -1796,6 +1835,38 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                 "model": v.get("model", "seed-tts-1.0"),
                 "protocol": "v3",  # 标记当前 provider 走 v3
             }
+        # P2-1：远程音色（启动时由 doubao_list_speakers 同步写入磁盘）
+        try:
+            from backend.app.services.doubao_list_speakers import load_remote_voices
+            for v in load_remote_voices():
+                vid = str(v.get("id") or "").strip()
+                if not vid:
+                    continue
+                if not vid.startswith("doubao:") and not vid.startswith("icl:"):
+                    vid = f"doubao:{vid}"
+                merged: dict[str, Any] = {
+                    "id": vid,
+                    "name": v.get("name") or vid.split(":", 1)[-1],
+                    "provider": "doubao",
+                    "gender": v.get("gender", "neutral"),
+                    "age": v.get("age", "youth"),
+                    "scene": v.get("scene", ["远程"]),
+                    "dialect": v.get("dialect", ""),
+                    "languages": list(v.get("languages") or ["zh"]),
+                    "zh_tags": list(v.get("zh_tags") or ["远程"]),
+                    "supports_emotion": bool(v.get("supports_emotion", False)),
+                    "supports_subtitle": bool(v.get("supports_subtitle", True)),
+                    "supports_language": bool(v.get("supports_language", False)),
+                    "free": bool(v.get("free", False)),
+                    "model": v.get("model", "seed-tts-1.0"),
+                    "protocol": "v3",
+                }
+                for k, val in v.items():
+                    if k not in merged and k != "id":
+                        merged[k] = val
+                voices_by_id[vid] = merged
+        except Exception:
+            logger.exception("v3 list_voices: 读取 voices_doubao_remote.json 失败")
         # 用户自定义 voices_doubao.json（与 v1 同样路径）
         try:
             custom_path = Path(settings.DATA_DIR) / "voices_doubao.json"
