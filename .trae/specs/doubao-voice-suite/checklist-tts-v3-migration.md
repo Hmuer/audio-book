@@ -164,16 +164,17 @@
 
 ### P1-4 响度/采样率在合成期统一
 - [x] 完成
-- 位置：[tts.py](file:///workspace/backend/app/ai/providers/doubao/tts.py)（v3 `_build_v3_payload`）+ [config.py](file:///workspace/backend/app/core/config.py)（新增 settings）
+- 位置：[tts.py](file:///workspace/backend/app/ai/providers/doubao/tts.py)（v3 `_build_v3_payload`）+ [config.py](file:///workspace/backend/app/core/config.py)（新增 settings）+ [build.py](file:///workspace/backend/app/services/build.py)（缓存键 sample_rate 扩展）
 - 关键改动：
   - audio_params 默认 `sample_rate=24000, speech_rate=0, loudness_rate=0`
   - 配置项 `settings.DOUBAO_AUDIO_SAMPLE_RATE`（默认 24000Hz）/ `DOUBAO_AUDIO_LOUDNESS_RATE`（默认 0dBFS）
   - v3 路径下从 settings 读取并塞入 `req_params.audio_params.sample_rate` / `.loudness_rate`
   - v1 路径保持原行为不动（v1 协议语义不同，sample_rate 由 reqid 维度固定）
+  - **P1-4 联动 P1-7**：`sample_rate` 同步参与段缓存键（settings 改了采样率 → 旧缓存自动失效，避免采样率不一致时返回错乱的 bytes）
   - m4b.py 后处理 loudnorm 保留作为兜底（未动）
-- 测试：`backend/tests/test_p1_emotion_srt_cache_red.py::test_p1_4_sample_rate_and_loudness_from_settings`（monkeypatch 改 settings 后断言 audio_params 反映新值）
+- 测试：`backend/tests/test_p1_emotion_srt_cache_red.py::test_p1_4_sample_rate_and_loudness_from_settings`（monkeypatch 改 settings 后断言 audio_params 反映新值）+ `test_p1_7_k5_cache_key_changes_with_sample_rate`（缓存键区分 + 向后兼容）
 - 完成日期：2026-09-10
-- Commit：3ac871c
+- Commit：3ac871c（首次） + eb89d7c（缓存键联动修复）
 
 ---
 
@@ -214,12 +215,12 @@
     - `icl_` / `S_` 前缀 → `seed-icl-2.0`（ICL 复刻专用）
     - 内置大模型音色表查找 → `v.model`（兜底 `seed-tts-1.0`）
   - 新增 `_context_texts_hash(instruction)` helper：空字符串 → 空 hash（兼容旧缓存），非空 → sha256.hexdigest()[:16]
-  - 缓存 key 加入 `model` + `context_texts_hash` 段，公式升级为 `sha256(f"{voice_id}|{speed:.4f}|{text}|e:{emotion}|i:{instruction}|m:{model}|c:{context_texts_hash}")`
-  - `tts_segment_cache_get` / `tts_segment_cache_put` 签名扩展 `model=""` / `context_texts_hash=""` 默认值（向后兼容）
-  - `_synth_seg` 调用点传入真实 model + ctx hash
-- 测试：`backend/tests/test_p1_emotion_srt_cache_red.py::test_p1_7_k1~k4`（4 个 case：键变化 + 向后兼容 + model lookup 映射 + ctx hash 计算）
+  - 缓存 key 加入 `model` + `context_texts_hash` + `sample_rate` 段，公式升级为 `sha256(f"v1|{voice_id}|{speed:.2f}|{text}|e:{emotion}|i:{instruction}|m:{model}|c:{context_texts_hash}|sr:{sample_rate}")`
+  - `tts_segment_cache_get` / `tts_segment_cache_put` 签名扩展 `model=""` / `context_texts_hash=""` / `sample_rate=""` 默认值（向后兼容）
+  - `_synth_seg` 调用点传入真实 model + ctx hash + sample_rate
+- 测试：`backend/tests/test_p1_emotion_srt_cache_red.py::test_p1_7_k1~k5`（5 个 case：键变化 + 向后兼容 + model lookup 映射 + ctx hash 计算 + sample_rate 影响键）
 - 完成日期：2026-09-10
-- Commit：95fdf33
+- Commit：95fdf33（首次） + eb89d7c（sample_rate 联动修复）
 
 ---
 

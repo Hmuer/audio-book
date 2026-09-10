@@ -346,3 +346,26 @@ def test_p1_7_k4_context_texts_hash_empty_for_blank():
     # 非空：长度 16 hex
     h = _context_texts_hash("语气欢快")
     assert len(h) == 16
+
+
+def test_p1_7_k5_cache_key_changes_with_sample_rate():
+    """P1-4：sample_rate 改变 → 键必须不同（settings 改采样率后不能命中旧缓存）。"""
+    from backend.app.services.build import _seg_cache_key
+
+    base = _seg_cache_key("doubao:BV001_streaming", 1.0, "你好")
+    diff_sr = _seg_cache_key(
+        "doubao:BV001_streaming", 1.0, "你好",
+        sample_rate=16000,
+    )
+    diff_sr2 = _seg_cache_key(
+        "doubao:BV001_streaming", 1.0, "你好",
+        sample_rate=32000,
+    )
+    assert base != diff_sr
+    assert diff_sr != diff_sr2
+    # sample_rate=空（默认）→ 与历史键一致
+    explicit_empty = _seg_cache_key(
+        "doubao:BV001_streaming", 1.0, "你好",
+        sample_rate="",
+    )
+    assert explicit_empty == base

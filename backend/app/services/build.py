@@ -378,15 +378,18 @@ def _seg_cache_key(
     voice_id: str, speed: float, text: str,
     *, emotion: str = "", instruction: str = "",
     model: str = "", context_texts_hash: str = "",
+    sample_rate: int | str = "",
 ) -> str:
-    """段级缓存键。emotion/instruction/model/context_texts 参与哈希：
-    不同情感 / 不同 model / 不同上下文音频一般不同，必须参与键。
-    全部为空时与旧版键完全一致，历史缓存仍可命中。"""
+    """段级缓存键。emotion/instruction/model/context_texts/sample_rate 参与哈希：
+    不同情感 / 不同 model / 不同上下文音频 / 不同采样率一般不同，必须参与键。
+    全部为空时与旧版键完全一致，历史缓存仍可命中。
+    sample_rate 仅在非空时参与键（P1-4 settings 改了采样率后必须失效）。"""
     style_part = ""
-    if emotion or instruction or model or context_texts_hash:
+    if emotion or instruction or model or context_texts_hash or sample_rate:
         # P1-7：model + context_texts_hash 参与哈希（v3 切 model / 切 instruction_text 后必须失效）
+        # P1-4：sample_rate 参与哈希（settings 改采样率后必须失效）
         style_part = (
-            f"|e:{emotion}|i:{instruction}|m:{model}|c:{context_texts_hash}"
+            f"|e:{emotion}|i:{instruction}|m:{model}|c:{context_texts_hash}|sr:{sample_rate}"
         )
     raw = f"v1|{voice_id}|{speed:.2f}|{text}{style_part}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -441,9 +444,10 @@ async def tts_segment_cache_get(
     voice_id: str, speed: float, text: str,
     *, emotion: str = "", instruction: str = "",
     model: str = "", context_texts_hash: str = "",
+    sample_rate: int | str = "",
 ) -> tuple[bytes, int] | None:
     """返回 (mp3_bytes, duration_ms)，未命中返回 None。先查内存，再查磁盘。
-    P1-7：model + context_texts_hash 参与键计算。
+    P1-7：model + context_texts_hash 参与键计算；P1-4：sample_rate 参与键计算。
     """
     key = _seg_cache_key(
         voice_id, speed, text, emotion=emotion, instruction=instruction,
@@ -478,11 +482,14 @@ async def tts_segment_cache_put(
     voice_id: str, speed: float, text: str, mp3_bytes: bytes, dur_ms: int,
     *, emotion: str = "", instruction: str = "",
     model: str = "", context_texts_hash: str = "",
+    sample_rate: int | str = "",
 ) -> None:
-    """写 TTS 段缓存：内存 + 磁盘双写。P1-7：model + context_texts_hash 参与键。"""
+    """写 TTS 段缓存：内存 + 磁盘双写。
+    P1-7：model + context_texts_hash 参与键；P1-4：sample_rate 参与键。"""
     key = _seg_cache_key(
         voice_id, speed, text, emotion=emotion, instruction=instruction,
         model=model, context_texts_hash=context_texts_hash,
+        sample_rate=sample_rate,
     )
     async with _tts_seg_mem_lock:
         _tts_seg_mem_cache[key] = (mp3_bytes, int(dur_ms))
@@ -1702,11 +1709,16 @@ async def _run_build_inner(
                 seg_emo = (s.emotion or "").strip()
                 seg_ins = (s.instruction or "").strip()
                 # P1-7：model + context_texts_hash 参与缓存键（切 model / 切 instruction 必须失效）
+                # P1-4：sample_rate 参与缓存键（settings 改采样率后必须失效）
                 seg_model = _voice_model_lookup(vid)
                 seg_ctx_hash = _context_texts_hash(seg_ins)
+                seg_sample_rate = int(
+                    getattr(settings, "DOUBAO_AUDIO_SAMPLE_RATE", 24000) or 24000
+                )
                 cached = await tts_segment_cache_get(
                     vid, speed, s.text, emotion=seg_emo, instruction=seg_ins,
                     model=seg_model, context_texts_hash=seg_ctx_hash,
+                    sample_rate=seg_sample_rate,
                 )
                 if cached is not None:
                     mp3_b, dur_ms = cached
@@ -1724,6 +1736,7 @@ async def _run_build_inner(
                     vid, speed, s.text, data, dur,
                     emotion=seg_emo, instruction=seg_ins,
                     model=seg_model, context_texts_hash=seg_ctx_hash,
+                    sample_rate=seg_sample_rate,
                 )
                 return s, data, dur
 
