@@ -377,16 +377,56 @@ def _run_seg_cache_gc_if_needed(force: bool = False) -> None:
 def _seg_cache_key(
     voice_id: str, speed: float, text: str,
     *, emotion: str = "", instruction: str = "",
+    model: str = "", context_texts_hash: str = "",
 ) -> str:
-    """段级缓存键。emotion/instruction 参与哈希（不同情感同一音色音频不同）；
-    均为空时与旧版键完全一致，历史缓存仍可命中。"""
+    """段级缓存键。emotion/instruction/model/context_texts 参与哈希：
+    不同情感 / 不同 model / 不同上下文音频一般不同，必须参与键。
+    全部为空时与旧版键完全一致，历史缓存仍可命中。"""
     style_part = ""
-    if emotion or instruction:
-        style_part = f"|e:{emotion}|i:{instruction}"
+    if emotion or instruction or model or context_texts_hash:
+        # P1-7：model + context_texts_hash 参与哈希（v3 切 model / 切 instruction_text 后必须失效）
+        style_part = (
+            f"|e:{emotion}|i:{instruction}|m:{model}|c:{context_texts_hash}"
+        )
     raw = f"v1|{voice_id}|{speed:.2f}|{text}{style_part}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-    raw = f"v1|{voice_id}|{speed:.4f}|{text}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _voice_model_lookup(voice_id: str) -> str:
+    """P1-7：根据 voice_id 反查豆包模型名（seed-tts-1.0 / seed-tts-2.0 / seed-icl-2.0）。
+
+    优先复用 tts.py 内置的 `_voice_supports_emotion` 体系：找不到则用启发式
+    （icl_/S_ 前缀 → seed-icl-2.0；其他 → seed-tts-1.0）。供缓存 key 区分用。
+    """
+    if not voice_id:
+        return ""
+    # 1. ICL 复刻
+    bare = voice_id
+    if bare.startswith("icl:"):
+        bare = bare[4:]
+    if bare.startswith("doubao:"):
+        bare = bare[7:]
+    if bare.startswith("icl_") or bare.startswith("S_"):
+        return "seed-icl-2.0"
+    # 2. 内置音色表
+    try:
+        from backend.app.ai.providers.doubao.tts import _BUILTIN_VOICES
+        for v in _BUILTIN_VOICES:
+            if v["id"] == bare:
+                return str(v.get("model") or "seed-tts-1.0")
+    except Exception:
+        pass
+    # 3. 兜底：默认小模型
+    return "seed-tts-1.0"
+
+
+def _context_texts_hash(instruction: str) -> str:
+    """P1-7：context_texts 字符串哈希（前 16 hex），参与缓存键区分。
+    空 instruction → 返回空字符串（与旧缓存兼容）。"""
+    s = (instruction or "").strip()
+    if not s:
+        return ""
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
 
 
 def _seg_cache_mp3_path(key: str) -> Path:
@@ -400,9 +440,15 @@ def _seg_cache_meta_path(key: str) -> Path:
 async def tts_segment_cache_get(
     voice_id: str, speed: float, text: str,
     *, emotion: str = "", instruction: str = "",
+    model: str = "", context_texts_hash: str = "",
 ) -> tuple[bytes, int] | None:
-    """返回 (mp3_bytes, duration_ms)，未命中返回 None。先查内存，再查磁盘。"""
-    key = _seg_cache_key(voice_id, speed, text, emotion=emotion, instruction=instruction)
+    """返回 (mp3_bytes, duration_ms)，未命中返回 None。先查内存，再查磁盘。
+    P1-7：model + context_texts_hash 参与键计算。
+    """
+    key = _seg_cache_key(
+        voice_id, speed, text, emotion=emotion, instruction=instruction,
+        model=model, context_texts_hash=context_texts_hash,
+    )
     async with _tts_seg_mem_lock:
         hit = _tts_seg_mem_cache.get(key)
     if hit is not None:
@@ -431,9 +477,13 @@ async def tts_segment_cache_get(
 async def tts_segment_cache_put(
     voice_id: str, speed: float, text: str, mp3_bytes: bytes, dur_ms: int,
     *, emotion: str = "", instruction: str = "",
+    model: str = "", context_texts_hash: str = "",
 ) -> None:
-    """写 TTS 段缓存：内存 + 磁盘双写。"""
-    key = _seg_cache_key(voice_id, speed, text, emotion=emotion, instruction=instruction)
+    """写 TTS 段缓存：内存 + 磁盘双写。P1-7：model + context_texts_hash 参与键。"""
+    key = _seg_cache_key(
+        voice_id, speed, text, emotion=emotion, instruction=instruction,
+        model=model, context_texts_hash=context_texts_hash,
+    )
     async with _tts_seg_mem_lock:
         _tts_seg_mem_cache[key] = (mp3_bytes, int(dur_ms))
         max_entries = max(1000, int(
@@ -1651,8 +1701,12 @@ async def _run_build_inner(
                     s.text = apply_pronunciation_rules(s.text, pronunciation_rules, character_id=char_id)
                 seg_emo = (s.emotion or "").strip()
                 seg_ins = (s.instruction or "").strip()
+                # P1-7：model + context_texts_hash 参与缓存键（切 model / 切 instruction 必须失效）
+                seg_model = _voice_model_lookup(vid)
+                seg_ctx_hash = _context_texts_hash(seg_ins)
                 cached = await tts_segment_cache_get(
                     vid, speed, s.text, emotion=seg_emo, instruction=seg_ins,
+                    model=seg_model, context_texts_hash=seg_ctx_hash,
                 )
                 if cached is not None:
                     mp3_b, dur_ms = cached
@@ -1667,7 +1721,9 @@ async def _run_build_inner(
                 tts_calls_used += 1
                 tts_chars_used += len(s.text)
                 await tts_segment_cache_put(
-                    vid, speed, s.text, data, dur, emotion=seg_emo, instruction=seg_ins,
+                    vid, speed, s.text, data, dur,
+                    emotion=seg_emo, instruction=seg_ins,
+                    model=seg_model, context_texts_hash=seg_ctx_hash,
                 )
                 return s, data, dur
 
