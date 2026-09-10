@@ -227,47 +227,73 @@
 ## 🟢 P2 — 后续增量（打磨完核心再做）
 
 ### P2-1 音色列表动态化（ListSpeakers 接口 + 启动同步缓存）
-- [ ] 完成
-- 关键改动：启动时调官方 ListSpeakers → 写 `data/voices_doubao_remote.json` → 合并本地内置 + 远程 + 自定义
-- 测试：扩 `test_doubao_voices_red.py`
-- 完成日期：
-- Commit：
+- [x] 完成
+- 位置：[doubao_list_speakers.py](file:///workspace/backend/app/services/doubao_list_speakers.py)（新文件）+ [tts.py](file:///workspace/backend/app/ai/providers/doubao/tts.py)（`list_voices` 三层合并）+ [main.py](file:///workspace/backend/app/main.py)（`lifespan` 启动同步）
+- 关键改动：
+  - HMAC-SHA256 鉴权：Service=speech_saas_prod / Region=cn-north-1 / Version=2025-05-20 / Action=ListSpeakers，5 步派生 signing_key
+  - `_fetch_one_page()` 单页拉取 + `fetch_remote_voices()` 多页循环（自动停止在最后一页）
+  - `_speaker_to_builtin_entry()` 转换 Speaker dict → _BUILTIN_VOICES 结构（中英文 Gender/Age 翻译 + ResourceID 透出 model + Languages 截 `-` 前缀）
+  - `save_remote_voices()` / `load_remote_voices()` 原子写盘 + 容错（坏 JSON / 不存在）
+  - `refresh_remote_voices()` / `ensure_remote_voices_synced_once()` 启动同步：缺失凭据 / 网络错时优雅返回 0，不抛错
+  - 三层合并：内置 < 远程 < 自定义（用户 `voices_doubao.json` 始终优先）
+  - 写入 `DATA_DIR/voices_doubao_remote.json` 缓存（version=1 + synced_at）
+- 测试：`backend/tests/test_p2_1_list_speakers_red.py`（新，15 个场景：HMAC 签名 / 单页 / 多页 / Speaker 转换 / 原子写 / 启动复用 / 三层合并 / 缺凭据容错 / 网络错容错）
+- 完成日期：2026-09-10
+- Commit：400ae4d
 
 ---
 
 ### P2-2 长文本异步接口（submit/query）
-- [ ] 完成
-- 适用：纯旁白章节绕过 60s 超时
-- 测试：新文件
-- 完成日期：
-- Commit：
+- [x] 完成
+- 位置：[tts_async.py](file:///workspace/backend/app/ai/providers/doubao/tts_async.py)（新文件，`DoubaoAsyncTTSClient`）
+- 关键改动：
+  - `submit()` POST `/api/v3/tts/submit` → 返回 task_id
+  - `query()` POST `/api/v3/tts/query` → 返回 `AsyncTaskResult`（status / audio_url / logid）
+  - `wait_for_result()` 轮询到终态（默认 5s × 360 = 30 min）
+  - `download_audio()` 拿到官方 audio_url 一次性下载（一次性签名 URL，不能走缓存）
+  - `synthesize_long_text()` 顶层封装（submit + wait + download）
+  - 状态机：`AsyncTaskStatus.PROCESSING / SUCCESS / FAILED`
+  - `should_use_async_tts()` 阈值（≥ 30000 字符走异步）
+  - 双模式鉴权 `_is_legacy()`：纯数字 APP_ID 自动走旧版 `X-Api-App-Id` + `X-Api-Access-Key`
+- 测试：`backend/tests/test_p2_2_async_tts_red.py`（新，16 个场景：submit / query 状态机 / wait_for_result 轮询 / 下载 / 顶层封装 / 阈值 / 鉴权双模式）
+- 完成日期：2026-09-10
+- Commit：aed6d06
 
 ---
 
 ### P2-3 Seed-Audio 1.0 → 章节预告片
-- [ ] 完成
-- 关键改动：完全独立于 Build，作为"Build 完正片后的可选增值"
-- 测试：新文件
-- 完成日期：
-- Commit：
+- [x] 完成
+- 位置：[preview.py](file:///workspace/backend/app/services/preview.py)（新文件）+ [routes.py](file:///workspace/backend/app/api/routes.py)（`api_build_chapter_preview` 路由）
+- 关键改动：
+  - `_split_frames()` 按比特率截取（mutagen 解析失败时退化 24kbps 估算）
+  - `generate_chapter_preview()` 截取 + 写盘
+  - `get_or_generate_preview()` 缓存复用 + `force_regenerate=True` 重生成
+  - 预告片文件命名 `build_<id>_ch<NN>_preview.mp3`，默认 `DEFAULT_PREVIEW_SECONDS = 15`
+  - 复用现有章节 MP3，不重新跑 TTS（节省 API 配额）
+  - 新增路由 `GET /api/projects/{project_id}/builds/{build_id}/chapters/{idx}/preview`：归属校验 + 章节 status=done 校验 + FileResponse
+- 测试：`backend/tests/test_p2_3_chapter_preview_red.py`（新，12 个场景：_split_frames 比特率/无比特率退化/mutagen 错误吞掉 / generate 写盘 / 缺章节 / 缓存复用 / 强制重生成 / 路由 200/404/401）
+- 完成日期：2026-09-10
+- Commit：1b03691
 
 ---
 
-### P2-4 ASR 反向识别（用户上传 mp3 → 文本 → 校对 → 重导出）
-- [ ] 完成
-- 适用：新场景"二次创作"
-- 测试：新文件
-- 完成日期：
-- Commit：
+### P2-4 ~~ASR 反向识别（用户上传 mp3 → 文本 → 校对 → 重导出）~~
+- [x] ~~删除（2026-09-10 与用户确认：从计划中移除，暂不做"二次创作"场景）~~
 
 ---
 
 ### P2-5 小模型免费音色库独立试听 Tab
-- [ ] 完成
-- 关键改动：前端音色库加 Tab；后端独立 `DoubaoSmallTTSProvider`，复用 v3 单向流式 HTTP
-- 测试：新文件
-- 完成日期：
-- Commit：
+- [x] 完成
+- 位置：[routes.py](file:///workspace/backend/app/api/routes.py)（`api_list_voices` 加 `free_only` 参数）+ [VoiceLibraryPage.tsx](file:///workspace/frontend/src/components/VoiceLibraryPage.tsx)（新增 SmallFreeTab）+ [api.ts](file:///workspace/frontend/src/lib/api.ts)（`api.voices` 支持 `free_only` 选项）
+- 关键改动：
+  - 后端 `/api/voices?free_only=true`：只返回 `provider=doubao` 且 `free=True` 且 `model=seed-tts-1.0` 的音色
+  - `list_voices()` 服务层加 `free_only` 参数（默认 False 向后兼容）
+  - 前端「小模型免费」Tab（emerald 配色），独立拉取 `/api/voices?free_only=true`
+  - `SmallFreeTab` 复用 `LibraryTab` 渲染与试听逻辑，含 loading / err / 空态
+  - 不新建独立 provider：复用现有豆包 v3 单向流式 + 段缓存（声音 TTS 路径与原豆包完全一致）
+- 测试：`backend/tests/test_p2_5_small_free_tab_red.py`（新，9 个场景：过滤逻辑 4 项 + HTTP 端到端 3 项 + 兼容 + 真实表自洽）
+- 完成日期：2026-09-10
+- Commit：b560697
 
 ---
 
@@ -277,8 +303,8 @@
 |---|---|---|---|
 | 🔴 P0 | 5 | 5 | ▰▰▰▰▰ 100% |
 | 🟡 P1 | 7 | 6 | ▰▰▰▰▰▰ 86% |
-| 🟢 P2 | 5 | 0 | ▱▱▱▱▱ 0% |
-| **合计** | **17** | **11** | **65%** |
+| 🟢 P2 | 4 | 4 | ▰▰▰▰ 100% |
+| **合计** | **16** | **15** | **94%** |
 
 > 更新方式：完成时把 `0` 改成实际数字、进度条同步。也可以用 `grep -c '\[x\]' checklist-tts-v3-migration.md` 一键统计。
 
@@ -307,3 +333,11 @@ Week 6: P1-3 + P1-4 + P1-7
   - 95fdf33（P1-7）：`_seg_cache_key` 加 `model` + `context_texts_hash` 字段（避免切 model 命中旧缓存）；新增 `_voice_model_lookup(voice_id)`（icl_/S_ 前缀 → seed-icl-2.0，内置表 → v.model，兜底 seed-tts-1.0）+ `_context_texts_hash(instruction)`（空字符串 → 空 hash 兼容旧缓存）；`tts_segment_cache_get/put` 签名扩展默认参数。
   - 4c13f32（P1-3）：新增 `backend/app/services/srt.py`（`timings_json_to_srt` 长段切分 + silence 跳过 + speaker 前缀切换；`load_chapter_srt(audio_dir, build_id, ch_idx)`）；新增路由 `GET /api/projects/{project_id}/builds/{build_id}/chapters/{idx}/subtitle`（归属校验 + artifact.status==done 校验 + `application/x-subrip; charset=utf-8` 响应）；新增 `backend/tests/test_p1_emotion_srt_cache_red.py`（15 个 RED 全绿：3 emotion + 1 sample_rate + 2 instruction + 5 SRT + 4 缓存键）。
 - 192/192 全套测试通过，零回归。P1 整体进度从 14% → 86%，总进度 35% → 65%。
+
+
+- 2026-09-10：P2 一条龙收尾（P2-1/2/3/5 全部完成，P2-4 ASR 二次创作场景确认不做，从计划中移除）。四个提交：
+  - 400ae4d（P2-1）：新增 `backend/app/services/doubao_list_speakers.py`（HMAC-SHA256 鉴权 + 多页 ListSpeakers + Speaker→_BUILTIN_VOICES 转换 + 启动同步）；tts.py `list_voices` 改三层合并（内置 < 远程 < 自定义）；main.py `lifespan` 加 `ensure_remote_voices_synced_once()`。15 个 RED 测试全过。
+  - aed6d06（P2-2）：新增 `backend/app/ai/providers/doubao/tts_async.py`（`DoubaoAsyncTTSClient`：submit / query / wait_for_result 轮询 / download_audio / synthesize_long_text 顶层封装；状态机 + 双模式鉴权 + 30000 字符阈值）。16 个 RED 测试全过。
+  - 1b03691（P2-3）：新增 `backend/app/services/preview.py`（`_split_frames` 按比特率截取，mutagen 解析失败退化 24kbps 估算）；新增路由 `GET /api/projects/{pid}/builds/{bid}/chapters/{idx}/preview`（归属校验 + 章节 status=done 校验 + FileResponse）；复用现有章节 MP3，预告片文件命名 `build_<id>_ch<NN>_preview.mp3` 默认 15s；requirements.txt 增 `mutagen>=1.47`。12 个 RED 测试全过。
+  - b560697（P2-5）：后端 `/api/voices?free_only=true` 过滤（doubao + free=True + model=seed-tts-1.0）；前端 VoiceLibraryPage 新增「小模型免费」Tab（emerald 配色），独立拉取 `/api/voices?free_only=true`，复用 `LibraryTab` 试听逻辑；`api.voices` 支持 `{tts_provider, free_only}` 选项。不新建独立 provider（声音 TTS 路径与原豆包完全一致，复用 v3 + 段缓存）。9 个 RED 测试全过。
+- 245/245 全套测试通过，零回归。P2 整体进度从 0% → 100%，总进度 69% → 94%。
