@@ -700,6 +700,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         source_path = p.source_file_path
         charset = p.source_charset or "utf-8"
         original_filename = p.source_filename or ""
+        # 读取项目归属（音色推荐时把该用户的 ICL 复刻音色纳入候选池）
+        owner_user_id_for_recommend: int | None = p.owner_user_id
 
     # 2. 读文件
     try:
@@ -1193,7 +1195,12 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         else:
             voice_recs = []
             try:
-                voice_recs = await recommend_voices_with_llm(characters)
+                # 透传 user_id → 把该用户的 ICL 复刻音色纳入候选池
+                voice_recs = await recommend_voices_with_llm(
+                    characters,
+                    user_id=owner_user_id_for_recommend,
+                    project_id=project_id,
+                )
             except Exception as e:
                 logger.warning(f"[project_prepare] project_id={project_id[:8]}... voice_rec failed: {e}")
             prog["stage"] = "voice_recs"
