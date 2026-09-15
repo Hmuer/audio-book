@@ -91,14 +91,29 @@ async def start_icl_training(
     voice_name: str,
     audio_bytes: bytes,
     filename: str | None = None,
+    *,
+    model_type: str | None = None,
 ) -> dict[str, Any]:
-    """创建训练任务并启动后台 worker。返回任务 dict（status=0）。"""
+    """创建训练任务并启动后台 worker。返回任务 dict（status=0）。
+
+    Args:
+        model_type: 训练算法（None = ICL2.0）；合法值由 ICL client 内置白名单校验。
+    """
     name = (voice_name or "").strip()[:64] or "我的声线"
     if not audio_bytes or len(audio_bytes) < 512:
         raise ValueError("参考音频过小：请上传 3 秒以上（建议 6~10 秒）的清晰人声录音")
     max_bytes = getattr(settings, "ICL_MAX_AUDIO_BYTES", 10 * 1024 * 1024)
     if len(audio_bytes) > max_bytes:
         raise ValueError(f"参考音频过大：{len(audio_bytes)} > {max_bytes} 字节")
+
+    # 早期校验：避免数据库写入后 worker 才报错（避免脏数据）
+    from ..ai.providers.doubao.models import is_valid_train_model_type, find_train_default
+    effective_model_type = find_train_default() if model_type is None else model_type
+    if not is_valid_train_model_type(effective_model_type):
+        raise ValueError(
+            f"不支持的 model_type={model_type!r}；"
+            f"合法值见 /api/doubao/models/options.train_model_types"
+        )
 
     task_id = f"icl_{uuid.uuid4().hex}"
     ext = _ext_from_filename(filename)
@@ -123,13 +138,20 @@ async def start_icl_training(
         row = await s.get(IclTrainingTask, task_id)
         resp = _task_to_dict(row)
 
-    task = asyncio.create_task(_icl_training_worker(task_id))
+    # 透传 model_type 给 worker（client 内置白名单校验）
+    task = asyncio.create_task(
+        _icl_training_worker(task_id, model_type=effective_model_type)
+    )
     _icl_bg_tasks.add(task)
     task.add_done_callback(_icl_bg_tasks.discard)
     return resp
 
 
-async def _icl_training_worker(task_id: str) -> None:
+async def _icl_training_worker(
+    task_id: str,
+    *,
+    model_type: str | None = None,
+) -> None:
     """后台训练 worker：create → 轮询 → 终态写库。异常不抛出（写 error_msg）。"""
     factory = get_session_factory()
     client = get_icl_client()
@@ -144,7 +166,7 @@ async def _icl_training_worker(task_id: str) -> None:
             audio_format = Path(t.reference_audio_path).suffix.lstrip(".").lower() or "mp3"
 
         doubao_task_id = await client.create_training(
-            voice_name, audio_bytes, audio_format=audio_format,
+            voice_name, audio_bytes, audio_format=audio_format, model_type=model_type,
         )
 
         async with factory() as s:

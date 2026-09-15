@@ -507,6 +507,9 @@ function IclTab() {
   const [creating, setCreating] = useState(false);
   const [createErr, setCreateErr] = useState<string | null>(null);
   const [okTip, setOkTip] = useState<string | null>(null);
+  // 训练模型算法下拉（ICL2.0 / ICL1.0 / DiT）
+  const [trainModelType, setTrainModelType] = useState<string>('ICL2.0');
+  const [trainOptions, setTrainOptions] = useState<{ id: string; label: string; description: string }[] | null>(null);
 
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -525,6 +528,13 @@ function IclTab() {
   };
 
   useEffect(() => { refresh(); }, []);
+
+  // 进入页面时拉一次训练 model_type 选项（3 项；失败也不影响主流程）
+  useEffect(() => {
+    api.doubaoModelOptions()
+      .then(o => setTrainOptions(o.train_model_types))
+      .catch(e => console.warn('训练模型选项加载失败:', e));
+  }, []);
 
   // 有排队/训练中任务时 5s 轮询：逐个打详情接口（会触发后端刷新豆包侧状态，
   // 服务重启后 worker 丢失也能恢复），再拉全量列表
@@ -580,7 +590,7 @@ function IclTab() {
     }
     setCreating(true);
     try {
-      await api.iclCreateVoice(voiceName.trim(), file);
+      await api.iclCreateVoice(voiceName.trim(), file, trainModelType);
       setVoiceName('');
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -629,7 +639,7 @@ function IclTab() {
           </div>
         </div>
 
-        <div className="grid sm:grid-cols-[1fr_1fr_auto] gap-2.5 items-end">
+        <div className="grid sm:grid-cols-[1fr_1.2fr_1fr_auto] gap-2.5 items-end">
           <div className="space-y-1">
             <label className="text-xs text-ink-600">音色名称</label>
             <input
@@ -649,6 +659,23 @@ function IclTab() {
               className="input !py-1.5 !text-[12px] file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:bg-ink-200 file:text-ink-700"
               onChange={e => setFile(e.target.files?.[0] || null)}
             />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-ink-600" title="训练用模型算法（合成走对应通道）">
+              训练模型算法
+            </label>
+            <select
+              className="input !py-2 !text-[13px]"
+              value={trainModelType}
+              onChange={e => setTrainModelType(e.target.value)}
+              title={trainOptions?.find(o => o.id === trainModelType)?.description ?? trainModelType}
+            >
+              {(trainOptions ?? [{ id: 'ICL2.0', label: 'ICL 2.0（推荐）', description: '' }]).map(o => (
+                <option key={o.id} value={o.id} title={o.description}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
           </div>
           <button className="btn-primary h-[38px]" onClick={submit} disabled={creating}>
             {creating ? (

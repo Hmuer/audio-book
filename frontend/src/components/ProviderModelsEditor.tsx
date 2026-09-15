@@ -171,6 +171,12 @@ export default function ProviderModelsEditor() {
   const [showKey, setShowKey] = useState<Record<string, boolean>>({});
   // [本地编辑草稿，与远端分离；保存时整体替换
   const [draft, setDraft] = useState<ProvidersConfig | null>(null);
+  // 豆包模型选项（设置页 TTS id 下拉 + ICL 上传 model_type 下拉 共用）
+  const [doubaoOptions, setDoubaoOptions] = useState<{
+    train_model_types: { id: string; label: string; description: string }[];
+    tts_resource_ids: { id: string; label: string; description: string }[];
+    icl_expressive_models: { id: string; label: string; description: string }[];
+  } | null>(null);
 
   const load = async () => {
     try {
@@ -182,6 +188,16 @@ export default function ProviderModelsEditor() {
       setErr(String(e?.message || e));
     }
   };
+
+  // 启动时拉豆包模型选项（失败也不影响主流程）
+  useEffect(() => {
+    api.doubaoModelOptions()
+      .then(setDoubaoOptions)
+      .catch(e => {
+        // 静默失败：仍允许自由文本输入（select 不会渲染）
+        console.warn('豆包模型选项加载失败:', e);
+      });
+  }, []);
 
   useEffect(() => { load(); }, []);
 
@@ -424,6 +440,7 @@ export default function ProviderModelsEditor() {
               onUpdateModel={updateModel}
               onAddModel={addModel}
               onRemoveModel={removeModel}
+              doubaoTtsOptions={doubaoOptions?.tts_resource_ids}
             />
           ))
         )}
@@ -443,6 +460,7 @@ export default function ProviderModelsEditor() {
 function ProviderCard({
   p, pIdx, keyShown, onToggleKey, onUpdateProvider, onRemove,
   onUpdateModel, onAddModel, onRemoveModel,
+  doubaoTtsOptions,
 }: {
   p: ProviderConfig;
   pIdx: number;
@@ -453,7 +471,11 @@ function ProviderCard({
   onUpdateModel: (pIdx: number, globalMIdx: number, patch: Partial<ProviderModel>) => void;
   onAddModel: (pIdx: number, kind: 'tts' | 'llm') => void;
   onRemoveModel: (pIdx: number, globalMIdx: number) => void;
+  /** 豆包 TTS 模型下拉选项（已存在的官方 resource_id）。未提供时回退到自由文本。 */
+  doubaoTtsOptions?: { id: string; label: string; description: string }[];
 }) {
+  // 是否启用 TTS id 下拉：厂商 id 含 doubao 且选项已就绪
+  const useDoubaoTtsSelect = !!doubaoTtsOptions && p.id.toLowerCase().includes('doubao');
   const ttsModels = getModelsOfKind(p, 'tts');
   const llmModels = getModelsOfKind(p, 'llm');
 
@@ -597,6 +619,8 @@ function ProviderCard({
             onRemoveModel(pIdx, gIdx);
           }}
           allModels={p.models}
+          idAsSelect={useDoubaoTtsSelect}
+          selectOptions={useDoubaoTtsSelect ? doubaoTtsOptions : undefined}
         />
         <ModelSection
           title="语言模型（LLM）"
@@ -687,6 +711,7 @@ function ActiveSelector({
 // =====================================================================
 function ModelSection({
   title, icon, accent, models, onAdd, onUpdate, onRemove, allModels,
+  idAsSelect, selectOptions,
 }: {
   title: string;
   icon: React.ReactNode;
@@ -696,6 +721,9 @@ function ModelSection({
   onUpdate: (globalIdx: number, patch: Partial<ProviderModel>) => void;
   onRemove: (idxInThisList: number) => void;
   allModels: ProviderModel[];
+  /** 模型 id 用 <select> 而非 <input>。仅在已知枚举（如豆包 TTS）时启用。 */
+  idAsSelect?: boolean;
+  selectOptions?: { id: string; label: string; description: string }[];
 }) {
   return (
     <div className="rounded-md border border-ink-300/70 overflow-hidden">
@@ -722,13 +750,28 @@ function ModelSection({
                 placeholder="模型显示名"
                 className="input-base !py-1 !text-xs"
               />
-              <input
-                value={m.id}
-                onChange={e => onUpdate(globalIdx, { id: e.target.value })}
-                placeholder="model-id（如 speech-01、M3）"
-                className="input-base !py-1 !text-xs font-mono"
-                spellCheck={false}
-              />
+              {idAsSelect && selectOptions ? (
+                <select
+                  value={m.id}
+                  onChange={e => onUpdate(globalIdx, { id: e.target.value })}
+                  className="input-base !py-1 !text-xs font-mono"
+                  title={selectOptions.find(o => o.id === m.id)?.description ?? m.id}
+                >
+                  {selectOptions.map(o => (
+                    <option key={o.id} value={o.id} title={o.description}>
+                      {o.id}（{o.label}）
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={m.id}
+                  onChange={e => onUpdate(globalIdx, { id: e.target.value })}
+                  placeholder="model-id（如 speech-01、M3）"
+                  className="input-base !py-1 !text-xs font-mono"
+                  spellCheck={false}
+                />
+              )}
               <button
                 onClick={() => onRemove(idx)}
                 className="w-6 h-6 grid place-items-center text-ink-500 hover:text-rose-300"

@@ -470,16 +470,22 @@ async def api_icl_create_voice(
     request: Request,
     voice_name: str = Form(...),
     file: UploadFile = File(...),
+    model_type: str | None = Form(None),
     current: User = Depends(get_current_user),
 ):
-    """上传 3~10 秒参考音频，创建 ICL 声音复刻训练任务。P1 #8：流式读取。"""
+    """上传 3~10 秒参考音频，创建 ICL 声音复刻训练任务。P1 #8：流式读取。
+
+    Args:
+        model_type: 训练算法，可选。None / 缺省 = ICL2.0；合法值见
+                    /api/doubao/models/options.train_model_types。
+    """
     t0 = _time.perf_counter()
     remote = request.client.host if request.client else "?"
     # P1 #8：不再一次性 await file.read()，改为分块累加；超出立即 413。
     content = await _read_upload_with_limit(file, settings.ICL_MAX_AUDIO_BYTES)
     logger.info(
         f"[HTTP] POST /api/icl/voices client={remote} user={current.username} "
-        f"name={voice_name!r} filename={file.filename} size={len(content)}"
+        f"name={voice_name!r} filename={file.filename} size={len(content)} model_type={model_type!r}"
     )
     if not content:
         raise HTTPException(400, "参考音频为空")
@@ -490,6 +496,7 @@ async def api_icl_create_voice(
             voice_name=voice_name,
             audio_bytes=content,
             filename=file.filename,
+            model_type=model_type,
         )
         elapsed_ms = int((_time.perf_counter() - t0) * 1000)
         logger.info(f"[HTTP] 200 /api/icl/voices task={resp['task_id'][:12]}... total_ms={elapsed_ms}")
@@ -499,6 +506,24 @@ async def api_icl_create_voice(
     except Exception as e:
         logger.error(f"[HTTP] 500 /api/icl/voices -> {type(e).__name__}: {e}", exc_info=True)
         raise _http_exc_with_logid(500, f"创建训练任务失败: {type(e).__name__}: {e}", e)
+
+
+@router.get("/doubao/models/options")
+async def api_doubao_model_options(
+    current: User = Depends(get_current_user),
+):
+    """返回豆包模型的静态清单（供前端设置页 + ICL 上传页下拉用）。
+
+    三组：
+    - train_model_types: 训练 model_type（3 项：ICL2.0/ICL1.0/DiT）
+    - tts_resource_ids: 合成 X-Api-Resource-Id（6 项）
+    - icl_expressive_models: ICL 2.0 增强 model（2 项，可选）
+
+    来源：官方文档（训练接口 / v3 HTTP 单向流式接口）
+    注意：火山引擎未提供"模型列表"接口，只能静态枚举。
+    """
+    from ..ai.providers.doubao.models import get_all_options
+    return get_all_options()
 
 
 @router.get("/icl/voices")

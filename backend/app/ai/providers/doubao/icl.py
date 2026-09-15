@@ -158,7 +158,7 @@ class DoubaoICLClient:
         audio_format: str = "mp3",
         demo_text: str | None = None,
         language: int = 0,
-        model_type: str = "ICL2.0",
+        model_type: str | None = None,
     ) -> str:
         """创建声音复刻训练任务。
 
@@ -168,17 +168,29 @@ class DoubaoICLClient:
             audio_format: wav/mp3/ogg/m4a/aac（pcm 仅 24k）
             demo_text: 可选，按此文本校验 WER
             language: 0=cn / 1=en / 2=ja ...
-            model_type: ICL2.0（推荐）/ ICL1.0 / DiT
+            model_type: ICL2.0（默认/推荐）/ ICL1.0 / DiT。
+                        None 时回退默认值（ICL2.0）。
+                        取值必须来自官方白名单（见 models.TRAIN_MODEL_TYPES）。
 
         Returns:
             豆包侧 speaker_id（格式 "S_xxx"，合成时透传给 TTS 接口）
 
         Raises:
-            ValueError: 音频过小
+            ValueError: 音频过小 / model_type 不在白名单
             RuntimeError: API 错误 / 业务码非 0 / 缺 speaker_id
         """
         if not audio_bytes or len(audio_bytes) < 512:
             raise ValueError("参考音频过小：请上传 3 秒以上（建议 6~10 秒）的清晰人声录音")
+
+        # model_type 白名单校验（None 走默认）
+        from .models import is_valid_train_model_type, find_train_default
+        if model_type is None:
+            model_type = find_train_default()  # "ICL2.0"
+        elif not is_valid_train_model_type(model_type):
+            raise ValueError(
+                f"不支持的 model_type={model_type!r}；"
+                f"合法值见 /api/doubao/models/options.train_model_types"
+            )
 
         # speaker_id 由我们生成（前端 / DB 唯一标识）—— 官方允许 8~256 字符、首字符英文、
         # 仅含数字字母-_，且不能匹配官方正则（不能是 S_/ICL_/MIX_/DiT_/BV 开头或

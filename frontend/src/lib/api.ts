@@ -217,10 +217,13 @@ export const api = {
 
   // ---------- ICL 声音复刻（豆包 ICL 2.0） ----------
   // 上传 3~10 秒参考音频，创建训练任务（multipart/form-data）
-  iclCreateVoice: (voiceName: string, file: File) => {
+  iclCreateVoice: (voiceName: string, file: File, modelType?: string) => {
     const fd = new FormData();
     fd.append('voice_name', voiceName);
     fd.append('file', file);
+    if (modelType) {
+      fd.append('model_type', modelType);
+    }
     const token = getToken();
     return fetch(`${BASE}/api/icl/voices`, {
       method: 'POST',
@@ -240,6 +243,10 @@ export const api = {
       return r.json() as Promise<IclTask>;
     });
   },
+
+  // ---------- 豆包模型选项（设置页 + ICL 上传页下拉） ----------
+  doubaoModelOptions: () =>
+    _fetch<DoubaoModelOptions>('/api/doubao/models/options'),
   // 我的训练任务列表（含进行中/成功/失败）
   iclListTasks: () =>
     _fetch<{ tasks: IclTask[] }>('/api/icl/voices').then(r => r.tasks),
@@ -831,4 +838,18 @@ export interface ProvidersConfig {
     tts: ActiveModel;
     llm: ActiveModel;
   };
+}
+
+// ---------- 豆包模型选项（静态枚举，前端启动时拉一次） ----------
+export interface ModelOption {
+  id: string;
+  label: string;
+  description: string;
+  deprecated: boolean;
+  doc_url: string;
+}
+export interface DoubaoModelOptions {
+  train_model_types: ModelOption[];
+  tts_resource_ids: ModelOption[];
+  icl_expressive_models: ModelOption[];
 }

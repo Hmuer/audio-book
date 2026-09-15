@@ -89,7 +89,7 @@ class _MockICLClient:
         self.created: list[tuple[str, bytes]] = []
         self.query_count = 0
 
-    async def create_training(self, voice_name: str, audio_bytes: bytes, *, audio_format: str = "mp3") -> str:
+    async def create_training(self, voice_name: str, audio_bytes: bytes, *, audio_format: str = "mp3", model_type: str | None = None, **_kwargs) -> str:
         self.created.append((voice_name, audio_bytes))
         return "dtid-mock-1"
 
