@@ -74,11 +74,12 @@ _DEFAULT_GET_VOICE_URL = "https://openspeech.bytedance.com/api/v3/tts/get_voice"
 class DoubaoICLClient:
     """豆包 ICL 2.0 声音复刻客户端（基于 v3 接口）。
 
-    鉴权优先级：
-      1. settings.DOUBAO_ICL_API_KEY（新版控制台 API Key，推荐）
-      2. settings.DOUBAO_AK（与 TTS 共用 AK）
-      3. PROVIDERS_CONFIG[id=doubao].api_key
-      4. 环境变量 MEGACORE_ACCESS_KEY_FROM_ENV
+    鉴权优先级（由 config.doubao_icl_api_key / doubao_icl_access_key 统一处理）：
+      1. PROVIDERS_CONFIG[id=doubao].icl_api_key（页面 ICL key）
+      2. PROVIDERS_CONFIG[id=doubao].api_key（页面通用 AK）
+      3. settings.DOUBAO_ICL_API_KEY（.env 兜底）
+      4. settings.DOUBAO_AK（.env 兜底）
+      5. 环境变量 MEGACORE_ACCESS_KEY_FROM_ENV
     """
 
     name = "doubao_icl"
@@ -86,7 +87,8 @@ class DoubaoICLClient:
     @property
     def voice_clone_url(self) -> str:
         """创建训练任务端点。"""
-        base = (settings.DOUBAO_ICL_BASE_URL or _DEFAULT_VOICE_CLONE_URL).rstrip("/")
+        from backend.app.core.config import doubao_field
+        base = (doubao_field("icl_endpoint") or _DEFAULT_VOICE_CLONE_URL).rstrip("/")
         # 兼容历史配置：如果用户配置的是 /api/v1/voice_clone（旧的 create/query 自造端点），
         # 强制重写为 v3 标准端点
         if "voice_clone" in base and "/v3/" not in base and base.endswith("/voice_clone"):
@@ -107,21 +109,9 @@ class DoubaoICLClient:
     # 鉴权
     # ---------------------------------------------------------------
     def _resolve_api_key(self) -> str:
-        """按优先级解析 API Key。"""
-        # 1) 显式 ICL key
-        ak = getattr(settings, "DOUBAO_ICL_API_KEY", None) or ""
-        # 2) 与 TTS 共用
-        if not ak:
-            ak = getattr(settings, "DOUBAO_AK", None) or ""
-        # 3) PROVIDERS_CONFIG 里的 doubao.api_key
-        if not ak:
-            try:
-                from ....core.config import get_provider
-                prov = get_provider("doubao")
-                ak = (prov or {}).get("api_key") or ""
-            except Exception:
-                ak = ""
-        # 4) 兜底 ENV
+        """按优先级解析 API Key（页面 ICL key → 通用 api_key → .env → ENV）。"""
+        from backend.app.core.config import doubao_icl_api_key
+        ak = doubao_icl_api_key() or ""
         if not ak:
             ak = os.environ.get("MEGACORE_ACCESS_KEY_FROM_ENV") or ""
         if not ak:
@@ -140,6 +130,7 @@ class DoubaoICLClient:
         Args:
             prefix: X-Api-Request-Id 前缀，方便日志按调用类型区分（create/get）。
         """
+        from backend.app.core.config import doubao_icl_access_key
         ak = self._resolve_api_key()
         headers: dict[str, str] = {
             "Content-Type": "application/json",
@@ -149,7 +140,7 @@ class DoubaoICLClient:
         ak_value = ak.split()[-1] if " " in ak else ak
         if ak_value.lstrip("-").isdigit():
             # 看起来是纯数字 APP_ID → 走旧版鉴权
-            access_key = getattr(settings, "DOUBAO_ICL_ACCESS_KEY", None) or ak_value
+            access_key = doubao_icl_access_key() or ak_value
             headers["X-Api-App-Key"] = ak_value
             headers["X-Api-Access-Key"] = str(access_key)
         else:

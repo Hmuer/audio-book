@@ -1943,8 +1943,24 @@ _EDITABLE_SETTINGS = {
     # 日志
     "LOG_LEVEL": ("str", "日志配置", "日志级别"),
     "LOG_FILE": ("str", "日志配置", "日志文件路径"),
+    "LOG_MAX_BYTES": ("int", "日志配置", "单个日志文件最大字节数"),
+    "LOG_BACKUP_COUNT": ("int", "日志配置", "日志备份保留份数"),
     # 认证
     "JWT_EXP_DAYS": ("int", "认证配置", "JWT 过期天数"),
+    # ---- 豆包运行参数（页面化 P-env）----
+    "DOUBAO_TTS_USE_V3": ("bool", "豆包配置", "豆包 TTS 切 v3 协议（默认 False）"),
+    "DOUBAO_TTS_RPM_LIMIT": ("int", "豆包配置", "豆包 TTS RPM 限流"),
+    "DOUBAO_SEED_AUDIO_RPM_LIMIT": ("int", "豆包配置", "豆包 Seed-Audio RPM 限流"),
+    "DOUBAO_ICL_RPM_LIMIT": ("int", "豆包配置", "豆包 ICL RPM 限流"),
+    "DOUBAO_ICL_POLL_INTERVAL_SECS": ("float", "豆包配置", "豆包 ICL 训练轮询间隔（秒）"),
+    "DOUBAO_ICL_TIMEOUT_SECS": ("int", "豆包配置", "豆包 ICL 训练超时（秒）"),
+    "ICL_MAX_AUDIO_BYTES": ("int", "豆包配置", "ICL 参考音频大小上限（字节）"),
+    "DOUBAO_AUDIO_SAMPLE_RATE": ("int", "豆包配置", "豆包合成采样率（Hz，默认 24000）"),
+    "DOUBAO_AUDIO_LOUDNESS_RATE": ("int", "豆包配置", "豆包合成响度（-50~100，默认 0）"),
+    "DOUBAO_TTS_V3_BASE_URL": ("str", "豆包配置", "豆包 v3 TTS 端点（留空走 provider）"),
+    "DOUBAO_SEED_AUDIO_BASE_URL": ("str", "豆包配置", "豆包 Seed-Audio 端点（留空走 provider）"),
+    # ---- 合成质量 ----
+    "MULTICAST_STRICT_MODE": ("bool", "合成质量", "多播剧严格失败模式（任何章失败 → 整 Build 失败）"),
 }
 
 # 只读字段（展示用，不可通过 API 修改）
@@ -1981,21 +1997,34 @@ class SettingsUpdateReq(BaseModel):
 
 
 def _redact_provider(p: dict) -> dict:
-    """脱敏单个厂商：api_key 只回显末4位 + configured 标志，绝不回显明文。
+    """脱敏单个厂商：所有 secret/key 字段只回显末4位 + configured 标志，绝不回显明文。
 
-    保存 / 写入用原始字段名（api_key/base_url），前端编辑面板仍可填入；
-    但 GET 响应的 api_key 永远是 "***LAST4" 或空 + configured bool。
+    支持脱敏的字段（豆包 5 凭据 + MiniMax 1 个）：
+      - api_key          (通用 / MiniMax)
+      - secret           (豆包 SK)
+      - app_id           (豆包 APP_ID，纯数字，但也脱敏避免泄露账号)
+      - icl_api_key      (豆包新版 ICL key)
+      - icl_access_key   (豆包旧版 ICL access key)
+
+    保存 / 写入用原始字段名，前端编辑面板仍可填入；
+    但 GET 响应的所有敏感字段永远是 "***LAST4" 或空 + configured bool。
     """
     if not isinstance(p, dict):
         return p
     out = dict(p)
-    raw = (p.get("api_key") or "").strip()
-    if raw:
-        out["api_key"] = "***" + raw[-4:]
-        out["api_key_configured"] = True
-    else:
-        out["api_key"] = ""
-        out["api_key_configured"] = False
+    sensitive_fields = (
+        "api_key", "secret", "app_id", "icl_api_key", "icl_access_key",
+    )
+    for f in sensitive_fields:
+        if f not in out:
+            continue
+        raw = (out.get(f) or "").strip()
+        if raw:
+            out[f] = "***" + raw[-4:]
+            out[f"{f}_configured"] = True
+        else:
+            out[f] = ""
+            out[f"{f}_configured"] = False
     return out
 
 
@@ -2041,14 +2070,16 @@ async def update_providers(
             raise HTTPException(400, f"providers[{i}] 不是对象")
         if "id" not in p or not p["id"]:
             raise HTTPException(400, f"providers[{i}].id 必填")
-        # api_key 占位符处理：***xxxx → 保留原值；空字符串 → 清空；其他 → 新值
-        raw_key = p.get("api_key")
-        if isinstance(raw_key, str) and raw_key.startswith("***"):
-            old_prov = next(
-                (x for x in _parse_providers_config().get("providers", []) if x.get("id") == p["id"]),
-                None,
-            )
-            p["api_key"] = (old_prov or {}).get("api_key", "")
+        # 敏感字段占位符处理：***xxxx → 保留原值；空字符串 → 清空；其他 → 新值
+        # 覆盖全部 secret/key 字段（与 _redact_provider 对齐）。
+        old_prov = next(
+            (x for x in _parse_providers_config().get("providers", []) if x.get("id") == p["id"]),
+            None,
+        )
+        for f in ("api_key", "secret", "app_id", "icl_api_key", "icl_access_key"):
+            raw = p.get(f)
+            if isinstance(raw, str) and raw.startswith("***"):
+                p[f] = (old_prov or {}).get(f, "")
 
     # 写回（先持久化，再校验 active；这样 active 可以指向本次请求里新增的 model）
     save_providers_config(cfg)
@@ -2138,6 +2169,8 @@ async def update_settings(
         try:
             if typ == "int":
                 val = int(val)
+            elif typ == "float":
+                val = float(val)
             elif typ == "bool":
                 if isinstance(val, str):
                     val = val.lower() in ("1", "true", "yes", "on")

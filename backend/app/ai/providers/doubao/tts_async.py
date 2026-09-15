@@ -74,14 +74,15 @@ class DoubaoAsyncTTSClient:
     ) -> None:
         """
         Args:
-            api_key: 新版 X-Api-Key（与 settings.DOUBAO_AK 共用）
+            api_key: 新版 X-Api-Key（与 doubao_field("api_key") 共用）
             access_key: 旧版 X-Api-Access-Key
             app_id: 旧版 X-Api-App-Id
             timeout_s: 单次 HTTP 超时（submit/query 都是短请求）
         """
-        self.api_key = api_key or settings.DOUBAO_AK
-        self.access_key = access_key or settings.DOUBAO_ICL_ACCESS_KEY or settings.DOUBAO_AK
-        self.app_id = app_id or settings.DOUBAO_APP_ID
+        from backend.app.core.config import doubao_field
+        self.api_key = api_key or doubao_field("api_key")
+        self.access_key = access_key or doubao_field("icl_access_key") or doubao_field("api_key")
+        self.app_id = app_id or doubao_field("app_id")
         self.timeout_s = timeout_s
 
     # ------------------------------------------------------------------

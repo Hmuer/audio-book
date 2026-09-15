@@ -28,9 +28,25 @@ DEFAULT_PROVIDERS_TEMPLATE: list[dict[str, Any]] = [
         "id": "doubao",
         "label": "火山引擎豆包语音",
         "enabled": False,
+        # ---- 鉴权凭据（5 字段）----
+        # api_key     : 通用 AK / 新版控制台 ICL key 共用入口
+        # secret      : 通用 SK（与 api_key 配套）
+        # app_id      : 纯数字 APP_ID（旧版控制台必填；新版用 X-Api-Key 模式可空）
+        # icl_api_key : 新版 ICL 专属 key（留空回退 api_key）
+        # icl_access_key : 旧版 ICL access key（留空回退）
         "api_key": "",
-        "base_url": "https://openspeech.bytedance.com/api/v1",
-        "tts_endpoint": "/tts",
+        "secret": "",
+        "app_id": "",
+        "icl_api_key": "",
+        "icl_access_key": "",
+        # ---- 端点（4 个；运行时仍可走 settings.* 兜底）----
+        # base_url + tts_endpoint 拼出完整 tts URL
+        # icl_endpoint / tts_v3_endpoint / seed_audio_endpoint 独立
+        "base_url": "https://openspeech.bytedance.com",
+        "tts_endpoint": "/api/v1/tts",
+        "icl_endpoint": "/api/v1/voice_clone",
+        "tts_v3_endpoint": "/api/v3/tts/unidirectional",
+        "seed_audio_endpoint": "/api/v1/seed_audio",
         "extra_headers": {},
         "models": [
             {"id": "volcano_tts", "label": "豆包语音合成 2.0", "kind": "tts"},
@@ -297,12 +313,23 @@ def _migrate_legacy_providers() -> None:
             for m in prov["models"]:
                 if m["kind"] == "llm":
                     m["id"] = settings.LLM_MODEL_PRO or "MiniMax-M3"
-    # 注入 doubao 老凭据（如有）
+    # 注入 doubao 老凭据（如有）— 把扁平 DOUBAO_AK/SK/APP_ID/ICL_API_KEY/ICL_ACCESS_KEY + DOUBAO_*_BASE_URL
+    # 一次性迁到结构化字段（_migrate_legacy_doubao_fields）。
     for prov in providers:
         if prov["id"] == "doubao":
             prov["enabled"] = bool(settings.DOUBAO_AK)
-            if settings.DOUBAO_AK:
-                prov["api_key"] = settings.DOUBAO_AK
+            prov["api_key"] = settings.DOUBAO_AK or prov.get("api_key", "")
+            prov["secret"] = settings.DOUBAO_SK or prov.get("secret", "")
+            prov["app_id"] = settings.DOUBAO_APP_ID or prov.get("app_id", "")
+            prov["icl_api_key"] = settings.DOUBAO_ICL_API_KEY or prov.get("icl_api_key", "")
+            prov["icl_access_key"] = settings.DOUBAO_ICL_ACCESS_KEY or prov.get("icl_access_key", "")
+            # 端点：留空时保持模板默认；非空才覆盖
+            if settings.DOUBAO_TTS_BASE_URL:
+                # 把完整 URL 拆成 base_url + tts_endpoint（若能识别已知域名）
+                prov["tts_endpoint"] = settings.DOUBAO_TTS_BASE_URL
+            if settings.DOUBAO_ICL_BASE_URL:
+                prov["icl_endpoint"] = settings.DOUBAO_ICL_BASE_URL
+            # tts_v3_endpoint / seed_audio_endpoint 旧 env 无对应项，保留模板默认
     payload = {
         "providers": providers,
         "active": {
@@ -558,3 +585,61 @@ def load_runtime_settings_from_disk() -> int:
 def is_provider_enabled(provider_id: str) -> bool:
     p = get_provider(provider_id)
     return bool(p and p.get("enabled") and p.get("api_key"))
+
+
+# ============================================================
+# 豆包凭据 / 端点统一读取 helper
+# 设计：tts.py / icl.py / tts_async.py / doubao_list_speakers.py
+# 统一从这里读豆包字段，优先从 provider 字典（页面配置）取，
+# 没设时回退到 settings.*（老 .env 兜底）。
+# 这样页面配了就走页面，没配仍能跑（向后兼容）。
+# ============================================================
+def doubao_field(name: str) -> str:
+    """统一读取豆包 provider 字段（页面配置优先，回退 settings）。
+
+    name ∈ {
+      "api_key" / "secret" / "app_id" / "icl_api_key" / "icl_access_key",
+      "tts_endpoint" / "icl_endpoint" / "tts_v3_endpoint" / "seed_audio_endpoint",
+    }
+    """
+    p = get_provider("doubao") or {}
+    raw = (p.get(name) or "").strip()
+    if raw:
+        # 端点类字段：若只是 path（以 / 开头），自动拼上 base_url
+        if name in ("tts_endpoint", "icl_endpoint", "tts_v3_endpoint", "seed_audio_endpoint") and raw.startswith("/"):
+            base = (p.get("base_url") or "https://openspeech.bytedance.com").rstrip("/")
+            return f"{base}{raw}"
+        return raw
+    # 回退 settings（老 .env 字段）
+    fallback_map = {
+        "api_key": settings.DOUBAO_AK,
+        "secret": settings.DOUBAO_SK,
+        "app_id": settings.DOUBAO_APP_ID,
+        "icl_api_key": settings.DOUBAO_ICL_API_KEY,
+        "icl_access_key": settings.DOUBAO_ICL_ACCESS_KEY,
+        "tts_endpoint": settings.DOUBAO_TTS_BASE_URL or "https://openspeech.bytedance.com/api/v1/tts",
+        "icl_endpoint": settings.DOUBAO_ICL_BASE_URL or "https://openspeech.bytedance.com/api/v1/voice_clone",
+        "tts_v3_endpoint": settings.DOUBAO_TTS_V3_BASE_URL or "https://openspeech.bytedance.com/api/v3/tts/unidirectional",
+        "seed_audio_endpoint": settings.DOUBAO_SEED_AUDIO_BASE_URL or "https://openspeech.bytedance.com/api/v1/seed_audio",
+    }
+    return (fallback_map.get(name) or "").strip()
+
+
+def doubao_icl_api_key() -> str:
+    """ICL 新版 API key：优先 icl_api_key，回退 api_key，再回退 settings.DOUBAO_ICL_API_KEY / DOUBAO_AK。"""
+    v = doubao_field("icl_api_key")
+    if v:
+        return v
+    return doubao_field("api_key")
+
+
+def doubao_icl_access_key() -> str:
+    """ICL 旧版 access key：优先 icl_access_key，回退 settings.DOUBAO_ICL_ACCESS_KEY。"""
+    return doubao_field("icl_access_key")
+
+
+def doubao_is_legacy_auth() -> bool:
+    """判断豆包控制台版本：APP_ID 是纯数字 → 旧版走 X-Api-App-Id / X-Api-Access-Key；
+    否则按新版走 X-Api-Key。"""
+    app_id = doubao_field("app_id")
+    return bool(app_id) and app_id.isdigit()

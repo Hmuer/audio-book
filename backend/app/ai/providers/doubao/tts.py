@@ -1200,10 +1200,10 @@ class DoubaoTTSProvider(BaseTTSProvider):
 
     @property
     def _endpoint(self) -> str:
-        """合成端点：优先读 settings.DOUBAO_TTS_BASE_URL（支持 .env 覆写）。"""
+        """合成端点：优先读 doubao_field("tts_endpoint")（页面配置优先，回退 settings/env）。"""
         try:
-            # settings 已在模块顶部导入；不重复导入，避免对启动 cwd 的隐式依赖
-            return settings.DOUBAO_TTS_BASE_URL or self.DEFAULT_ENDPOINT
+            from backend.app.core.config import doubao_field
+            return doubao_field("tts_endpoint") or self.DEFAULT_ENDPOINT
         except Exception:
             return self.DEFAULT_ENDPOINT
 
@@ -1600,24 +1600,17 @@ class DoubaoTTSProvider(BaseTTSProvider):
           3) 进程环境变量 MEGACORE_ACCESS_KEY_FROM_ENV（容器/部署平台注入）
         任一来源非空都视为有效凭据；返回时按 "是否含空格" 判断走 Bearer 分号风格。
         """
-        # 1) 多厂商配置
+        # 1) 多厂商配置（页面配置）
         try:
-            from ....core.config import get_provider
-            prov = get_provider("doubao")
-            ak = (prov or {}).get("api_key") or ""
+            from ....core.config import doubao_field
+            ak = doubao_field("api_key") or ""
         except Exception:
             ak = ""
         if ak:
             if " " in ak:
                 return ak.strip()
             return f"Bearer;{ak}"
-        # 2) .env 扁平字段
-        ak = settings.DOUBAO_AK
-        if ak:
-            if " " in ak:
-                return ak.strip()
-            return f"Bearer;{ak}"
-        # 3) 进程 ENV 兜底（与原行为兼容）
+        # 2) doubao_field 已 fallback settings.DOUBAO_AK；如果还为空，走进程 ENV 兜底
         fallback = os.environ.get("MEGACORE_ACCESS_KEY_FROM_ENV") or ""
         if fallback:
             if " " in fallback:
@@ -1753,7 +1746,8 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
     @property
     def _endpoint(self) -> str:
         try:
-            return settings.DOUBAO_TTS_V3_BASE_URL or _DEFAULT_V3_ENDPOINT
+            from ....core.config import doubao_field
+            return doubao_field("tts_v3_endpoint") or _DEFAULT_V3_ENDPOINT
         except Exception:
             return _DEFAULT_V3_ENDPOINT
 
@@ -1763,13 +1757,10 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
     def _resolve_api_key(self) -> str:
         """解析 v3 API Key（优先级与 v1 _get_authorization 一致）。"""
         try:
-            from ....core.config import get_provider
-            prov = get_provider("doubao")
-            ak = (prov or {}).get("api_key") or ""
+            from ....core.config import doubao_field
+            ak = doubao_field("api_key") or ""
         except Exception:
             ak = ""
-        if not ak:
-            ak = settings.DOUBAO_AK or ""
         if not ak:
             ak = os.environ.get("MEGACORE_ACCESS_KEY_FROM_ENV") or ""
         if not ak:

@@ -84,13 +84,23 @@ def test_doubao_tts_endpoint_reads_settings(monkeypatch):
     p = DoubaoTTSProvider()
     assert p._endpoint == DoubaoTTSProvider.DEFAULT_ENDPOINT  # 默认值
 
-    # 直接覆写 settings 单例（不要走 monkeypatch 字符串路径，避免模块解析失败）
-    saved = cfgmod.settings.DOUBAO_TTS_BASE_URL
+    # 改 settings 里的 DOUBAO_TTS_BASE_URL：通过 doubao_field() 兜底链路，provider 没设 tts_endpoint 时生效
+    # 先把 doubao provider 的 tts_endpoint 字段清空（模拟"页面没设"），再改 settings
+    from backend.app.core.config import save_providers_config, get_provider
+    saved_settings = cfgmod.settings.DOUBAO_TTS_BASE_URL
+    prov_orig = get_provider("doubao") or {}
+    prov = dict(prov_orig)
+    saved_tts_endpoint = prov.get("tts_endpoint")
+    prov["tts_endpoint"] = ""  # 清空，强制走 settings 回退
+    save_providers_config({"providers": [prov], "active": cfgmod._parse_providers_config().get("active", {"tts": {}, "llm": {}})})
     cfgmod.settings.DOUBAO_TTS_BASE_URL = "http://mock:9999/api/v1/tts"
     try:
         assert p._endpoint == "http://mock:9999/api/v1/tts"
     finally:
-        cfgmod.settings.DOUBAO_TTS_BASE_URL = saved
+        cfgmod.settings.DOUBAO_TTS_BASE_URL = saved_settings
+        # 恢复 provider 原值
+        prov["tts_endpoint"] = saved_tts_endpoint
+        save_providers_config({"providers": [prov], "active": cfgmod._parse_providers_config().get("active", {"tts": {}, "llm": {}})})
 
 
 # ---------------------------------------------------------------------

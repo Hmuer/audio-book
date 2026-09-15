@@ -7,7 +7,7 @@
 鉴权：
   ListSpeakers 是控制台级 API（host=open.volcengineapi.com），鉴权用 HMAC-SHA256
   （Service=speech_saas_prod / Region=cn-north-1 / Version=2025-05-20 / Action=ListSpeakers）。
-  凭据来自 `settings.DOUBAO_AK` / `DOUBAO_SK`（与 TTS 鉴权用的 X-Api-Key 是不同维度）。
+  凭据来自 `doubao_field("api_key")` / `doubao_field("secret")`（页面配置优先，回退 settings.DOUBAO_AK / DOUBAO_SK）。
 
 降级策略：
   - 任一参数缺失 / 签名失败 / 网络错 → 仅 logger.warning，绝不抛错阻塞启动
@@ -201,7 +201,7 @@ async def fetch_remote_voices(
     """拉取全量官方音色（按给定 ResourceID 集合分页拉取）。
 
     Args:
-        ak/sk: 可选覆盖 settings.DOUBAO_AK/DOUBAO_SK（便于单测注入 mock）
+        ak/sk: 可选覆盖 doubao_field("api_key") / "secret"（便于单测注入 mock）
         resource_ids: 要拉取的模型列表（默认全部三个）
 
     Returns:
@@ -210,8 +210,9 @@ async def fetch_remote_voices(
     Raises:
         RuntimeError: 凭据缺失或网络错 / 鉴权错（调用方决定是否降级）
     """
-    _ak = (ak or settings.DOUBAO_AK or "").strip()
-    _sk = (sk or settings.DOUBAO_SK or "").strip()
+    from backend.app.core.config import doubao_field as _df
+    _ak = (ak or _df("api_key") or "").strip()
+    _sk = (sk or _df("secret") or "").strip()
     if not _ak or not _sk:
         raise RuntimeError("DOUBAO_AK / DOUBAO_SK 未配置，无法调用 ListSpeakers")
 
@@ -291,8 +292,9 @@ def load_remote_voices() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------
 async def refresh_remote_voices() -> int:
     """重新拉取并写盘。返回写入的条数；失败仅 warning 返回 0。"""
-    if not (settings.DOUBAO_AK and settings.DOUBAO_SK):
-        logger.info("[doubao_list_speakers] DOUBAO_AK/SK 未配置，跳过远程音色同步（仅用内置表）")
+    from backend.app.core.config import doubao_field as _df
+    if not (_df("api_key") and _df("secret")):
+        logger.info("[doubao_list_speakers] 豆包 api_key/secret 未配置，跳过远程音色同步（仅用内置表）")
         return 0
     try:
         voices = await fetch_remote_voices()
