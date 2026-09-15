@@ -1360,9 +1360,20 @@ class DoubaoTTSProvider(BaseTTSProvider):
         instruction_text: str | None = None,
         speaker_style: str | None = None,
     ) -> dict[str, Any]:
-        """构造豆包 TTS v1 请求体（与 T-DV3 测试对齐）。"""
+        """构造豆包 TTS v1 请求体（与 T-DV3 测试对齐）。
+
+        关键：cluster 按 speaker 路由
+          - 普通 TTS 音色（BVxxx_streaming / zh_xxx_uranus_bigtts）→ cluster=volcano_tts
+          - 复刻音色（S_/icl_ 前缀）→ cluster=volcano_icl
+        官方文档：https://www.volcengine.com/docs/6561/1305191
+        """
         speaker_for_api = self._strip_voice_id_for_api(voice_id)
         speed_ratio = self._clamp_speed(speed)
+        # 复刻音色必须用 volcano_icl cluster，否则官方按标准 TTS 路由找不到 speaker
+        if speaker_for_api.startswith("S_") or speaker_for_api.startswith("icl_"):
+            cluster = "volcano_icl"
+        else:
+            cluster = "volcano_tts"
         body: dict[str, Any] = {
             "text": text,                    # 平铺
             "voice_id": speaker_for_api,     # 平铺：便于 3rd-party 代理或测试校验
@@ -1372,7 +1383,7 @@ class DoubaoTTSProvider(BaseTTSProvider):
                 # 豆包 app.userid 用于审计；取进程 ID 做一个固定但不敏感标识
                 "appid": "",
                 "token": "",
-                "cluster": "volcano_tts",
+                "cluster": cluster,
             },
             "user": {"uid": f"local-{os.getpid() % 10000:04d}"},
             "audio": {
