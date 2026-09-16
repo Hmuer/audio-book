@@ -29,15 +29,29 @@ cd "$PROJ_DIR"
 DEFAULT_HOME="$HOME/.novel-tts"
 NOVEL_TTS_HOME="${NOVEL_TTS_HOME:-$DEFAULT_HOME}"
 
-# 关键路径
-DATA_DIR="$NOVEL_TTS_HOME/data"
-AUDIO_DIR="$DATA_DIR/audio"
-LOG_DIR="$DATA_DIR/logs"
-LOGS_APP_FILE="$LOG_DIR/app.log"
-PID_FILE="$DATA_DIR/uvicorn.pid"
-STDOUT_LOG="$LOG_DIR/uvicorn-stdout.log"
-VENV_DIR="$NOVEL_TTS_HOME/.venv"
-ENV_FILE="$NOVEL_TTS_HOME/.env"
+# 关键路径 —— 用 _NTH_ 前缀（NOVEL_TTS_HOME derived）避免与 .env 里的同名变量冲突。
+# 后面 source .env 之后，这些 *_NTH_* 是唯一可信的"项目外数据目录"派生值；
+# 普通 DATA_DIR / AUDIO_DIR / DATABASE_URL / LOG_FILE 在 .env 里有同名旧值时会被覆盖，
+# 所以这里绝对不能用同名变量存派生值。
+DATA_DIR_NTH="$NOVEL_TTS_HOME/data"
+AUDIO_DIR_NTH="$DATA_DIR_NTH/audio"
+LOG_DIR_NTH="$DATA_DIR_NTH/logs"
+LOGS_APP_FILE_NTH="$LOG_DIR_NTH/app.log"
+PID_FILE_NTH="$DATA_DIR_NTH/uvicorn.pid"
+STDOUT_LOG_NTH="$LOG_DIR_NTH/uvicorn-stdout.log"
+DATABASE_URL_NTH="sqlite+aiosqlite:///$DATA_DIR_NTH/app.db"
+VENV_DIR_NTH="$NOVEL_TTS_HOME/.venv"
+ENV_FILE_NTH="$NOVEL_TTS_HOME/.env"
+
+# 下面到处用的"人类可读名"指向 _NTH_ 派生值（只是引用别名），避免重复代码。
+DATA_DIR="$DATA_DIR_NTH"
+AUDIO_DIR="$AUDIO_DIR_NTH"
+LOG_DIR="$LOG_DIR_NTH"
+LOGS_APP_FILE="$LOGS_APP_FILE_NTH"
+PID_FILE="$PID_FILE_NTH"
+STDOUT_LOG="$STDOUT_LOG_NTH"
+VENV_DIR="$VENV_DIR_NTH"
+ENV_FILE="$ENV_FILE_NTH"
 
 ACTION="daemon"
 case "${1:-}" in
@@ -172,14 +186,16 @@ fi
 set -a; source "$ENV_FILE"; set +a
 
 # ---------- 环境变量配置：把运行时产物路径 export 到进程 env ----------
-# 注意：必须在 source "$ENV_FILE" 之后 export，否则 .env 里的 DATA_DIR=./data 等
-# 字段会覆盖掉我们的 NOVEL_TTS_HOME 派生路径。
+# 关键修复（曾经踩过的坑）：source "$ENV_FILE" 之后，旧 .env 里的
+# DATA_DIR=./data / DATABASE_URL=sqlite+aiosqlite:///./data/app.db 等
+# 会**覆盖**我们上面派生的 DATA_DIR。必须用 _NTH_ 临时变量里"冻结"的派生值
+# 重新 export，不能再读同名的 $DATA_DIR。
 # Pydantic BaseSettings 优先级：init kwargs > 环境变量 > dotenv > 默认值，
 # 所以这里 export 的值后端会自动读到（无需改后端代码）。
-export DATA_DIR="$DATA_DIR"
-export AUDIO_DIR="$AUDIO_DIR"
-export DATABASE_URL="sqlite+aiosqlite:///$DATA_DIR/app.db"
-export LOG_FILE="$LOGS_APP_FILE"
+export DATA_DIR="$DATA_DIR_NTH"
+export AUDIO_DIR="$AUDIO_DIR_NTH"
+export DATABASE_URL="$DATABASE_URL_NTH"
+export LOG_FILE="$LOGS_APP_FILE_NTH"
 
 BIND_HOST="${BIND_HOST:-127.0.0.1}"
 PORT="${PORT:-28000}"
