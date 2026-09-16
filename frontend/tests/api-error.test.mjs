@@ -25,12 +25,21 @@ function _fetch_simplified_statusOnly(status, jsonBody = null) {
   }
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
+    let logid;
     // note: in the real code this is async
     return (async () => {
       try {
         const j = await res.json();
-        if (j.detail) msg += `: ${j.detail}`;
+        const d = j?.detail;
+        if (typeof d === 'string') {
+          msg += `: ${d}`;
+        } else if (d && typeof d === 'object') {
+          if (typeof d.message === 'string') msg += `: ${d.message}`;
+          else msg += `: ${JSON.stringify(d)}`;
+          if (typeof d.logid === 'string') logid = d.logid;
+        }
       } catch {}
+      if (logid) msg += ` (logid=${logid})`;
       throw new Error(msg);
     })();
   }
@@ -77,6 +86,32 @@ test('[TDD] 403 with {detail} formats Error message correctly', async () => {
   ok(threw instanceof Error);
   ok(threw.message.includes('403'), `should include status. got: "${threw.message}"`);
   ok(threw.message.includes('权限不足'), `should include detail. got: "${threw.message}"`);
+});
+
+// [P3-fallback] 当后端 _http_exc_with_logid 把 detail 序列化为 {message, logid} dict
+// （不只是 string），前端也必须正确展示 message，不能展示成 "[object Object]"。
+test('[TDD-fallback] 500 with detail={message, logid} extracts message not "[object Object]"', async () => {
+  let threw = null;
+  try {
+    await _fetch_simplified_statusOnly(500, {
+      detail: { message: 'TTS 失败: ValueError: bad voice', logid: 'abc123' },
+    });
+  } catch (e) {
+    threw = e;
+  }
+  ok(threw instanceof Error);
+  ok(
+    !threw.message.includes('[object Object]'),
+    `must NOT stringify the dict. got: "${threw.message}"`,
+  );
+  ok(
+    threw.message.includes('TTS 失败: ValueError: bad voice'),
+    `must include the inner message. got: "${threw.message}"`,
+  );
+  ok(
+    threw.message.includes('logid=abc123'),
+    `must include logid for support. got: "${threw.message}"`,
+  );
 });
 
 console.log('✅ All TDD assertions passed.');

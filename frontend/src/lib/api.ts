@@ -95,10 +95,20 @@ async function _fetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
+    let logid: string | undefined;
     try {
       const j = await res.json();
-      if (j.detail) msg += `: ${j.detail}`;
+      const d = (j as any)?.detail;
+      // FastAPI 的 HTTPException.detail 可能是 string，也可能是 {message, logid} 字典
+      if (typeof d === 'string') {
+        msg += `: ${d}`;
+      } else if (d && typeof d === 'object') {
+        if (typeof d.message === 'string') msg += `: ${d.message}`;
+        else msg += `: ${JSON.stringify(d)}`;
+        if (typeof d.logid === 'string') logid = d.logid;
+      }
     } catch {}
+    if (logid) msg += ` (logid=${logid})`;
     throw new Error(msg);
   }
   return (await res.json()) as T;
