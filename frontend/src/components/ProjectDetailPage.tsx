@@ -2114,12 +2114,10 @@ function CreateBuildModal({
     });
     return m;
   });
-  // 构建模式 & TTS 厂商（Task 10）：multicast 强制 doubao；
-  // 默认厂商从旁白音色前缀推导（doubao:/icl: → 豆包，否则 MiniMax），避免默认组合非法
+  // 构建模式：multicast 已废弃（P0-5），UI 上仍保留入口但 Build 入口直接抛错提示改 classic。
+  // TTS 厂商**不再由用户选择**：每个角色的音色自带命名空间前缀（doubao: / minimax: / icl:），
+  // 合成时后端按 voice_id 前缀自动路由到对应厂商。
   const [mode, setMode] = useState<'classic' | 'multicast'>('classic');
-  const [ttsProvider, setTtsProvider] = useState<'minimax' | 'doubao'>(() =>
-    narrator.startsWith('doubao:') || narrator.startsWith('icl:') ? 'doubao' : 'minimax'
-  );
   // 旁白情感/风格指令（本次构建快照；角色级情感在「音色」页配置）
   const [narrEmotion, setNarrEmotion] = useState('');
   const [narrInstruction, setNarrInstruction] = useState('');
@@ -2139,7 +2137,6 @@ function CreateBuildModal({
   }, [projectId]);
 
   const isMulticast = mode === 'multicast';
-  const effectiveProvider: 'minimax' | 'doubao' = isMulticast ? 'doubao' : ttsProvider;
 
   const submit = async () => {
     setErr(null);
@@ -2147,47 +2144,8 @@ function CreateBuildModal({
       setErr('请选择旁白音色');
       return;
     }
-    if (isMulticast && !narrator.startsWith('doubao:') && !narrator.startsWith('icl:')) {
-      setErr('多播剧模式必须使用豆包音色（doubao: / icl:）作为旁白');
-      return;
-    }
-    if (isMulticast) {
-      const bad = Object.entries(charVoices).filter(
-        ([, vid]) => vid && !vid.startsWith('doubao:') && !vid.startsWith('icl:')
-      );
-      if (bad.length > 0) {
-        setErr(`多播剧模式下角色「${bad[0][0]}」使用了非豆包音色，请改用豆包或复刻音色`);
-        return;
-      }
-    }
-    if (!isMulticast && effectiveProvider === 'doubao') {
-      const badNarrator = narrator && !narrator.startsWith('doubao:') && !narrator.startsWith('icl:');
-      if (badNarrator) {
-        setErr('当前 TTS 引擎为豆包，请选择 doubao: / icl: 前缀的旁白音色，或切换引擎为 MiniMax');
-        return;
-      }
-      const bad = Object.entries(charVoices).filter(
-        ([, vid]) => vid && !vid.startsWith('doubao:') && !vid.startsWith('icl:')
-      );
-      if (bad.length > 0) {
-        setErr(`角色「${bad[0][0]}」使用了非豆包音色，请调整音色或切换引擎为 MiniMax`);
-        return;
-      }
-    }
-    if (!isMulticast && effectiveProvider === 'minimax') {
-      const badNarrator = narrator && !narrator.startsWith('minimax:');
-      if (badNarrator) {
-        setErr('当前 TTS 厂商为 MiniMax，请选择 minimax: 前缀的旁白音色，或切换厂商为豆包');
-        return;
-      }
-      const bad = Object.entries(charVoices).filter(
-        ([, vid]) => vid && !vid.startsWith('minimax:')
-      );
-      if (bad.length > 0) {
-        setErr(`角色「${bad[0][0]}」使用了非 MiniMax 音色，请调整音色或切换厂商为豆包`);
-        return;
-      }
-    }
+    // [P-2.5] 不再做「跨厂商音色 → 拒绝」检查。
+    // 后端按 voice_id 前缀自动路由 TTS 厂商，旁白/角色可以混用任何命名空间（doubao: / minimax: / icl:）。
     setBusy(true);
     try {
       await api.buildCreate(projectId, {
@@ -2195,7 +2153,7 @@ function CreateBuildModal({
         narrator_voice_id: narrator,
         speed,
         mode,
-        tts_provider: effectiveProvider,
+        // [P-2.5] 不再传 tts_provider；后端按 voice_id 前缀自动路由。
         narrator_emotion: narrEmotion,
         narrator_instruction: narrInstruction.trim(),
       });
@@ -2209,12 +2167,12 @@ function CreateBuildModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
+      className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-4 sm:pt-6 animate-fade-in overflow-y-auto"
       style={{ background: 'rgba(0,0,0,0.72)' }}
       onClick={onClose}
     >
       <div
-        className="glass-panel max-w-2xl w-full max-h-[90vh] overflow-y-auto p-5 sm:p-6 animate-scale-in relative"
+        className="glass-panel max-w-2xl w-full max-h-[calc(100vh-2rem)] overflow-y-auto p-5 sm:p-6 animate-scale-in relative mb-4"
         onClick={e => e.stopPropagation()}
       >
 
@@ -2305,28 +2263,8 @@ function CreateBuildModal({
               </button>
             </div>
 
-            {/* TTS 厂商（多播剧锁定豆包） */}
-            {!isMulticast && (
-              <div className="flex items-center gap-1.5 pt-0.5">
-                <span className="text-xs text-ink-600">TTS 引擎：</span>
-                {(['doubao', 'minimax'] as const).map(p => (
-                  <button
-                    key={p}
-                    onClick={() => setTtsProvider(p)}
-                    className={`px-2.5 py-1 rounded-md text-[12px] font-medium border transition-all
-                      ${ttsProvider === p
-                        ? 'bg-brand-500/15 border-brand-500/40 text-brand-300'
-                        : 'bg-ink-100 border-ink-300/60 text-ink-600 hover:bg-ink-200'}`}
-                  >
-                    {p === 'doubao' ? '豆包' : 'MiniMax'}
-                  </button>
-                ))}
-                <span className="text-[11px] text-ink-500 ml-1">
-                  音色需与引擎命名空间匹配（doubao: / minimax: / icl:）
-                </span>
-              </div>
-            )}
-
+            {/* [P-2.5] TTS 厂商不再由用户选择；后端按角色音色前缀自动路由。
+                仅在多播剧已废弃时保留入口。 */}
             {/* 多播剧严格模式提示 */}
             {isMulticast && (
               <div className="rounded-lg px-3.5 py-2.5 text-xs leading-relaxed border border-amber-500/40 bg-amber-500/10 text-amber-200 flex items-start gap-2">

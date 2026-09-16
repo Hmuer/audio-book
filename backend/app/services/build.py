@@ -683,40 +683,21 @@ def _validate_tts_namespace(
     narrator_voice_id: str,
     voice_assignments: dict[str, str],
 ) -> None:
-    """校验 tts_provider / mode / voice_assignments 是否兼容。不兼容则抛 RuntimeError。"""
-    norm_mode = (mode or "classic").lower()
-    norm_provider = (tts_provider or "").lower()
+    """[P-2.5] 校验 mode 合法性；不再校验 tts_provider 与音色命名空间一致性。
 
-    # mode 合法性：multicast 已废弃（P0-5），start_build 入口会直接抛错（#4 不降级）；
-    # 这里只校验未知 mode。
+    历史：旧版硬约束「旁白/角色音色必须属于同一 tts_provider」，导致用户每
+    次配置都要先选厂商、然后只能用该厂商的音色。新行为：合成时**按 voice_id
+    前缀自动路由 TTS 厂商**（doubao:/icl: → 豆包；minimax: → MiniMax；无前缀
+    → tts_provider 兜底），用户可以混用任意厂商的音色。
+
+    保留 mode 合法性校验（未知 mode 直接抛错），其他全部删除。
+    """
+    norm_mode = (mode or "classic").lower()
     if norm_mode not in _VALID_MODES:
         raise RuntimeError(f"未知 build.mode: {mode}，可选 {sorted(_VALID_MODES)}")
-    # provider 合法性
+    norm_provider = (tts_provider or "").lower()
     if norm_provider and norm_provider not in _VALID_PROVIDERS:
         raise RuntimeError(f"未知 tts_provider: {tts_provider}，可选 {sorted(_VALID_PROVIDERS)}")
-
-    provider_for_check = norm_provider  # 空字符串时，仍可能 narrator 无前缀 → 走 Legacy
-    # narrator 校验
-    n_provider = _voice_id_provider_of(narrator_voice_id)
-    if n_provider and provider_for_check and n_provider != provider_for_check:
-        raise RuntimeError(
-            f"narrator_voice_id '{narrator_voice_id}' 属于 {n_provider}，"
-            f"但当前 tts_provider='{provider_for_check}'，两者不兼容；请更换 narrator 或调整 tts_provider。"
-        )
-    # voice_assignments 校验
-    for ch, vid in (voice_assignments or {}).items():
-        v_provider = _voice_id_provider_of(vid)
-        if v_provider and provider_for_check and v_provider != provider_for_check:
-            raise RuntimeError(
-                f"角色 '{ch}' 的音色 '{vid}' 属于 {v_provider}，"
-                f"但当前 tts_provider='{provider_for_check}'，两者不兼容；请更换角色音色或调整 tts_provider。"
-            )
-    # 若 tts_provider 未给出，但 narrator 或某角色音色有前缀 → 要求显式 provider 防止歧义
-    if not norm_provider and (n_provider or any(_voice_id_provider_of(v) for v in (voice_assignments or {}).values())):
-        raise RuntimeError(
-            "检测到音色使用了带前缀的命名空间 ID（doubao:/minimax:/icl:），"
-            "请显式传 tts_provider，避免合成路由歧义。"
-        )
 
 
 def _validate_multicast_provider(build_mode: str, tts_provider_label: str) -> None:
@@ -1497,11 +1478,16 @@ async def _run_build_inner(
         f"styles={len(voice_styles)} narrator_emo={narrator_emotion!r}"
     )
 
-    from ..ai.factory import get_tts_sem
-    tts = get_tts(None if tts_provider_label in ("", None) else tts_provider_label)
+    from ..ai.factory import get_tts_sem, get_tts_by_voice_id
+    # [P-2.5] 不再预先拿一个全局 tts 实例。改为每段按 voice_id 路由：
+    #   - doubao:/icl: 前缀 → 豆包
+    #   - minimax: 前缀 → MiniMax
+    #   - 无前缀 → 用 tts_provider_label 兜底（默认 settings.TTS_PROVIDER）
+    # 这样旁白/角色可以混用任意厂商的音色，不再被「跨厂商音色」约束。
+    fallback_provider = (tts_provider_label or "").lower() or None
+    sem = get_tts_sem()
     audio_dir = Path(settings.AUDIO_DIR)
     audio_dir.mkdir(parents=True, exist_ok=True)
-    sem = get_tts_sem()
 
     chapter_outputs: list[tuple[str | None, int | None]] = [(None, None)] * total
     completed = 0
@@ -1723,8 +1709,10 @@ async def _run_build_inner(
                 if cached is not None:
                     mp3_b, dur_ms = cached
                     return s, mp3_b, dur_ms
+                # [P-2.5] 按 voice_id 前缀自动路由 TTS 厂商；无前缀走 fallback_provider
+                seg_tts = get_tts_by_voice_id(vid) if ":" in (vid or "") else get_tts(fallback_provider)
                 async with sem:
-                    data, dur = await tts.synthesize_to_bytes(
+                    data, dur = await seg_tts.synthesize_to_bytes(
                         s.text, vid, speed=speed,
                         # 未配置时传 provider 默认（"calm"），与历史行为一致
                         emotion=seg_emo or "calm",

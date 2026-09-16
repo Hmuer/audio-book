@@ -1,9 +1,9 @@
-"""Task 4 RED — /api/voices 聚合 + start_build 命名空间校验。
+"""Task 4 RED — /api/voices 聚合 + start_build 命名空间校验（升级版 P-2.5）。
 
 T-VA1 /api/voices 必须聚合 minimax: + doubao: 两套音色；返回结构里每条 voice['provider'] ∈ {'minimax','doubao'}。
-T-VA2 voice_assignments 中音色前缀与 tts_provider 不兼容时（tts_provider=doubao 但用 minimax:xxx）→ RuntimeError。
-T-VA3 narrator_voice_id 前缀与 tts_provider 不一致也需报错。
-T-VA4 前缀兼容时（voice_id 无任何前缀，或前缀与 provider 语义匹配）→ 通过。
+T-VA2 [P-2.5 反转] 跨厂商音色（doubao:/minimax:/icl: 混用）→ **不再抛错**，允许按 voice_id 自动路由。
+T-VA3 [P-2.5 反转] narrator 与角色音色厂商不一致 → 不再报错。
+T-VA4 前缀合法（mode/provider 在白名单）→ 通过。
 """
 from __future__ import annotations
 
@@ -35,48 +35,67 @@ def test_list_voices_aggregates_providers():
 
 
 # ---------------------------------------------------------------------
-# T-VA2 / T-VA3：命名空间校验（tts_provider 与 narrator/voice_assignments 一致）
+# T-VA2 / T-VA3：[P-2.5] 命名空间校验（升级版：跨厂商允许，不再抛错）
 # 直接测 build.py 中的 _validate_tts_namespace 函数。
 # ---------------------------------------------------------------------
-def test_namespace_reject_minimax_voice_in_doubao_provider():
+def test_namespace_allows_cross_provider_voices():
+    """[P-2.5] 跨厂商音色混用不再抛错：合成时按 voice_id 前缀自动路由厂商。"""
     from backend.app.services.build import _validate_tts_namespace
 
-    with pytest.raises(RuntimeError) as ei:
+    # doubao provider + minimax 音色：旧版抛错，新版允许
+    _validate_tts_namespace(
+        tts_provider="doubao",
+        mode="classic",
+        narrator_voice_id="minimax:male-qn-jingying",
+        voice_assignments={"角色A": "minimax:female-qn-lanyin"},
+    )
+    # minimax provider + doubao 音色：旧版抛错，新版允许
+    _validate_tts_namespace(
+        tts_provider="minimax",
+        mode="classic",
+        narrator_voice_id="doubao:zh_female_qingxin",
+        voice_assignments={"角色A": "minimax:female-qn-lanyin"},
+    )
+    # narrator doubao + 角色 minimax：旧版抛错，新版允许
+    _validate_tts_namespace(
+        tts_provider="doubao",
+        mode="classic",
+        narrator_voice_id="doubao:zh_female_qingxin",
+        voice_assignments={"角色A": "minimax:male-qn-jingying"},
+    )
+    # 全部混用
+    _validate_tts_namespace(
+        tts_provider="minimax",
+        mode="classic",
+        narrator_voice_id="icl:custom_clone_001",
+        voice_assignments={"甲": "doubao:zh_female_qingxin", "乙": "minimax:female-qn-lanyin"},
+    )
+
+
+def test_namespace_rejects_unknown_mode():
+    """未知 mode 仍必须抛错（防止拼写错误静默通过）。"""
+    from backend.app.services.build import _validate_tts_namespace
+
+    with pytest.raises(RuntimeError, match="未知 build.mode"):
         _validate_tts_namespace(
             tts_provider="doubao",
-            mode="classic",
-            narrator_voice_id="minimax:male-qn-jingying",
-            voice_assignments={"角色A": "minimax:female-qn-lanyin"},
+            mode="not_a_real_mode",
+            narrator_voice_id="doubao:zh_female_qingxin",
+            voice_assignments={},
         )
-    assert "narrator" in str(ei.value).lower() or "minimax" in str(ei.value)
 
 
-def test_namespace_reject_doubao_voice_in_minimax_provider():
+def test_namespace_rejects_unknown_provider():
+    """未知 tts_provider 仍必须抛错（防止拼写错误静默通过）。"""
     from backend.app.services.build import _validate_tts_namespace
 
-    with pytest.raises(RuntimeError) as ei:
+    with pytest.raises(RuntimeError, match="未知 tts_provider"):
         _validate_tts_namespace(
-            tts_provider="minimax",
+            tts_provider="some_typo_provider",
             mode="classic",
             narrator_voice_id="doubao:zh_female_qingxin",
-            voice_assignments={"角色A": "minimax:female-qn-lanyin"},
+            voice_assignments={},
         )
-    msg = str(ei.value).lower()
-    assert "narrator" in msg or "doubao" in msg
-
-
-def test_namespace_reject_incompatible_voice_assignment():
-    from backend.app.services.build import _validate_tts_namespace
-
-    with pytest.raises(RuntimeError) as ei:
-        _validate_tts_namespace(
-            tts_provider="doubao",
-            mode="classic",
-            narrator_voice_id="doubao:zh_female_qingxin",
-            voice_assignments={"角色A": "minimax:male-qn-jingying"},
-        )
-    msg = str(ei.value).lower()
-    assert "角色a" in msg or "voice" in msg or "minimax" in msg
 
 
 def test_namespace_allows_matching_prefixes():
@@ -99,7 +118,7 @@ def test_namespace_allows_matching_prefixes():
 
 
 def test_namespace_allows_icl_prefix_for_doubao():
-    """icl:* → 属于豆包 ICL；tts_provider=doubao 时通过。"""
+    """icl:* → 属于豆包 ICL；tts_provider=doubao 时通过（混用也允许）。"""
     from backend.app.services.build import _validate_tts_namespace
     _validate_tts_namespace(
         tts_provider="doubao",
@@ -107,18 +126,6 @@ def test_namespace_allows_icl_prefix_for_doubao():
         narrator_voice_id="doubao:zh_female_qingxin",
         voice_assignments={"角色A": "icl:custom_clone_id_123"},
     )
-
-
-def test_namespace_multicast_mode_requires_tts_provider_not_empty():
-    """多播剧模式（multicast）tts_provider 必须显式给出（不能为空）。"""
-    from backend.app.services.build import _validate_tts_namespace
-    with pytest.raises(RuntimeError):
-        _validate_tts_namespace(
-            tts_provider="",
-            mode="multicast",
-            narrator_voice_id="doubao:zh_female_qingxin",
-            voice_assignments={},
-        )
 
 
 # ---------------------------------------------------------------------
