@@ -255,20 +255,26 @@ async def test_v3_business_error_raises_and_does_not_retry(monkeypatch):
 
 
 # ---------------------------------------------------------------------
-# T-V3-6: 网络错（5xx）走重试 + 达 MAX_RETRIES 后抛错
+# T-V3-6: 网络错（5xx）走 fastfail 重试 + 达 MAX_5XX_RETRIES 后抛错
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_v3_network_error_5xx_retries_then_fails(monkeypatch):
+    """[P-fastfail] v3 5xx 最多尝试 MAX_5XX_RETRIES 次（默认 2，即首次 + 1 次重试）。
+
+    旧版本：5xx 走 MAX_RETRIES=5，浪费 10s+。新版本：5xx 走 MAX_5XX_RETRIES=2，
+    用户感知 < 3s。
+    """
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProviderV3
 
     p = DoubaoTTSProviderV3()
     p._resolve_api_key = lambda: "fake"
     from backend.app.core import config as cfgmod
     cfgmod.settings.DOUBAO_TTS_V3_BASE_URL = "https://example.test/v3/tts/unidirectional"
-    # 把 MAX_RETRIES 压到 2 加速测试
-    p.MAX_RETRIES = 2
-    p.BASE_BACKOFF_SECS = 0.0
-    p.JITTER_SECS = 0.0
+    # 5xx fastfail：MAX_5XX_RETRIES 决定最大尝试次数
+    p.MAX_5XX_RETRIES = 2
+    p.HTTP_5XX_BACKOFF_SECS = 0.0
+    # 让 MAX_RETRIES 大于 MAX_5XX_RETRIES，确认限制来自 MAX_5XX_RETRIES
+    p.MAX_RETRIES = 5
 
     call_count = {"n": 0}
 
@@ -295,7 +301,7 @@ async def test_v3_network_error_5xx_retries_then_fails(monkeypatch):
 
     class _FakeStreamCtx:
         def __init__(self):
-            self.resp = _FakeResp(503 if call_count["n"] < p.MAX_RETRIES else 200)
+            self.resp = _FakeResp(503)
 
         async def __aenter__(self):
             call_count["n"] += 1
@@ -319,8 +325,10 @@ async def test_v3_network_error_5xx_retries_then_fails(monkeypatch):
 
     with pytest.raises(RuntimeError, match="豆包 TTS v3 合成失败"):
         await p.synthesize_to_bytes("hi", "doubao:BV001_streaming")
-    # 2 次尝试都被调到（达到 MAX_RETRIES）
-    assert call_count["n"] == 2
+    # 5xx fastfail：MAX_5XX_RETRIES=2 → 调 2 次（首次 + 1 次重试），不是 MAX_RETRIES=5。
+    assert call_count["n"] == 2, (
+        f"5xx fastfail 应调 MAX_5XX_RETRIES(2) 次，实际 {call_count['n']} 次"
+    )
 
 
 # ---------------------------------------------------------------------

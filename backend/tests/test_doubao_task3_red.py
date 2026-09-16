@@ -432,12 +432,16 @@ def test_synthesize_retries_429_then_succeeds(monkeypatch):
 
 
 def test_synthesize_5xx_exhaustive_retries_raises(monkeypatch):
+    """[P-fastfail] 5xx 走 fastfail（MAX_5XX_RETRIES=2），不再走 MAX_RETRIES=5。
+
+    旧版会重试 5 次浪费 10s+；新版最多 2 次（首次 + 1 次重试），用户感知 < 3s。
+    """
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider
     from backend.app.core import config as cfgmod
     monkeypatch.setattr(cfgmod.settings, "DOUBAO_AK", "ak")
 
     captured = _CapturedRequest()
-    # 默认重试 5 次 → 前 5 次都 5xx，最后还是 5xx（fail_count=10 保证 5 次 retry 全击中）
+    # 5xx 一直 fail → fastfail 立即放弃
     retry_client = _RetryCountClient(fail_count=20, fail_status=500, final_ok=False, captured=captured)
 
     import httpx
@@ -459,8 +463,13 @@ def test_synthesize_5xx_exhaustive_retries_raises(monkeypatch):
     finally:
         httpx.AsyncClient = saved
 
-    # 总共重试 = 初始调用 + 5 次 retry = 6 次
-    assert retry_client._call_count >= 5
-    assert retry_client._call_count <= 10
+    # fastfail：5xx 最多调 MAX_5XX_RETRIES=2 次（首次 + 1 次重试）
+    # 旧版是 5~6 次；新版明确应为 2 次（最多 3 次留点 buffer）
+    assert retry_client._call_count <= 3, (
+        f"5xx fastfail 应 ≤ MAX_5XX_RETRIES+1 次，实际 {retry_client._call_count} 次"
+    )
+    assert retry_client._call_count >= 2, (
+        f"5xx fastfail 至少应首次 + 1 次重试，实际 {retry_client._call_count} 次"
+    )
     msg = str(excinfo.value).lower()
     assert "tts" in msg or "豆包" in msg or "doubao" in msg or "http" in msg

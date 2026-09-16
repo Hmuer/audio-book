@@ -1212,6 +1212,13 @@ class DoubaoTTSProvider(BaseTTSProvider):
     BASE_BACKOFF_SECS = 0.6
     JITTER_SECS = 0.3
 
+    # [P-fastfail] 5xx 是上游服务问题，重试 5 次浪费 10s+ 用户等待。
+    # 上游 500 多半是短暂瞬时（豆包常见），但指数退避 5 次意义不大；
+    # MAX_5XX_RETRIES=2 意味着最多尝试 2 次（1 次重试），把用户感知从 13s 降到 < 3s。
+    # 业务码可重试（3001/3002/3003/3010/3011）仍走 MAX_RETRIES，那是客户端配额相关。
+    MAX_5XX_RETRIES = 2
+    HTTP_5XX_BACKOFF_SECS = 0.3
+
     # -----------------------------------------------------------------
     # 音色列表
     # -----------------------------------------------------------------
@@ -1537,6 +1544,10 @@ class DoubaoTTSProvider(BaseTTSProvider):
                 code = getattr(e, "code", None)
                 if code == -1:
                     is_retryable = False
+                elif is_server:
+                    # 5xx 走 fastfail：最多 MAX_5XX_RETRIES 次（默认 1）。
+                    # 上游服务问题，5 次重试毫无意义，反而拖到 13s+ 让用户以为卡死。
+                    is_retryable = attempt < self.MAX_5XX_RETRIES
                 else:
                     is_retryable = is_rate or is_server or resp_obj is None
                 if attempt >= self.MAX_RETRIES or not is_retryable:
@@ -1547,11 +1558,14 @@ class DoubaoTTSProvider(BaseTTSProvider):
                     break
                 if retry_after is not None:
                     wait_s = retry_after + self.JITTER_SECS
+                elif is_server:
+                    # 5xx 退避（默认 0.3s），不再指数
+                    wait_s = self.HTTP_5XX_BACKOFF_SECS
                 else:
                     wait_s = self.BASE_BACKOFF_SECS * (2 ** (attempt - 1)) + self.JITTER_SECS
                 logger.warning(
                     f"[DoubaoTTS] 重试（attempt={attempt}/{self.MAX_RETRIES}）："
-                    f"指数退避 {wait_s:.1f}s {type(e).__name__}: {e}"
+                    f"退避 {wait_s:.1f}s {type(e).__name__}: {e}"
                 )
                 await asyncio.sleep(wait_s)
         assert last_exc is not None
@@ -2101,20 +2115,34 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                 except Exception:
                     pass
                 # 网络层：可重试
-                is_retryable = (
-                    _V3_RETRYABLE_NETWORK
-                    and not isinstance(e, DoubaoTTSResponseV3Error)
+                resp_obj_status = (
+                    int(getattr(resp_obj, "status_code", 0))
+                    if resp_obj is not None
+                    else 0
                 )
+                is_server_5xx = 500 <= resp_obj_status < 600
+                is_429 = resp_obj_status == 429
+                if not _V3_RETRYABLE_NETWORK or isinstance(e, DoubaoTTSResponseV3Error):
+                    is_retryable = False
+                elif is_server_5xx:
+                    # [P-fastfail] 5xx → 最多 MAX_5XX_RETRIES 次（默认 1 次重试）。
+                    is_retryable = attempt < self.MAX_5XX_RETRIES
+                else:
+                    # 429 / 网络层（无 resp_obj）：走 MAX_RETRIES。
+                    is_retryable = is_429 or resp_obj is None
                 if attempt >= self.MAX_RETRIES or not is_retryable:
                     logger.warning(
                         f"[DoubaoTTS-v3] 放弃重试（attempt={attempt}/{self.MAX_RETRIES}）："
                         f"{type(e).__name__}: {e}"
                     )
                     break
-                wait_s = self.BASE_BACKOFF_SECS * (2 ** (attempt - 1)) + self.JITTER_SECS
+                if is_server_5xx:
+                    wait_s = self.HTTP_5XX_BACKOFF_SECS
+                else:
+                    wait_s = self.BASE_BACKOFF_SECS * (2 ** (attempt - 1)) + self.JITTER_SECS
                 logger.warning(
                     f"[DoubaoTTS-v3] 重试（attempt={attempt}/{self.MAX_RETRIES}）："
-                    f"指数退避 {wait_s:.1f}s {type(e).__name__}: {e}"
+                    f"退避 {wait_s:.1f}s {type(e).__name__}: {e}"
                 )
                 await asyncio.sleep(wait_s)
         assert last_exc is not None
