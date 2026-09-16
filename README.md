@@ -27,10 +27,13 @@ cd novel-tts-app
 ```
 
 首次运行 `start.sh` 会自动：
-- 从 `.env.example` 复制 `.env`（记得填 API Key；至少一个 LLM + 一个 TTS）
-- 创建 `backend/.venv`（Python 3.11+）并装依赖
+- 从 `.env.example` 复制 `$NOVEL_TTS_HOME/.env`（默认 `~/.novel-tts/.env`；记得填 API Key；至少一个 LLM + 一个 TTS）
+- 创建 `$NOVEL_TTS_HOME/.venv`（Python 3.11+）并装依赖
 - 安装前端依赖并 `npm run build`（Next.js static export → `frontend/out/`）
 - 最后启动 **单进程 uvicorn**（1 worker）
+- 把 PID 写到 `$NOVEL_TTS_HOME/data/uvicorn.pid`；日志在 `$NOVEL_TTS_HOME/data/logs/`
+
+> 升级请直接 `git pull && ./start.sh`，**不要** `rm -rf` 项目目录 —— 详见下文「升级与数据迁移」。
 
 ### 2. 打开浏览器
 
@@ -148,11 +151,15 @@ novel-tts-app/
 │   ├── audio/*.zip                 # 打包下载的整本 ZIP
 │   ├── audio/_seg_cache/           # 段级 TTS 缓存
 │   └── uploads/*.txt               # 上传的小说源文件
-├── start.sh                        # 一键启动
+├── start.sh                        # 一键启动（带 --stop / --restart / --paths 子命令）
 ├── .env.example
 ├── .gitignore
 └── README.md
 ```
+
+> ⚠️ **`data/` 现在默认在 `$NOVEL_TTS_HOME/data/`（项目目录外）**。
+> 这里的 `data/` 只是旧部署残留 —— 新部署里项目目录**完全没有** data/，
+> 见下文「升级与数据迁移」。
 
 ---
 
@@ -279,15 +286,103 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 
 ---
 
-## 停服
+## 升级与数据迁移（不会丢数据）
 
-在跑 `start.sh` 的终端 **Ctrl+C** 即可（exec 前台模式）。
+`start.sh` 默认把 **所有运行时产物** 放在项目目录**外**的 `$NOVEL_TTS_HOME`
+（默认 `~/.novel-tts/`），所以 `git pull` / `git reset --hard` / `rm -rf` 项目目录
+**都不会**丢失数据、配置或 Python 依赖。
 
-若想后台跑：
-```bash
-PORT=28000 nohup ./start.sh > app.log 2>&1 &
-# 停服：pkill -f "uvicorn backend.app.main"
 ```
+项目目录（可随时 rm -rf）             运行时产物（保留）
+├── start.sh                          ~/.novel-tts/
+├── backend/                          ├── .env               ← API Key、JWT_SECRET
+├── frontend/                         ├── .venv/             ← Python 依赖（venv）
+└── ...                               └── data/
+                                          ├── app.db         ← SQLite 主库
+                                          ├── audio/         ← 生成的有声书
+                                          ├── logs/          ← app.log / stdout
+                                          └── icl_refs/      ← ICL 训练样本
+```
+
+### 查看当前生效路径
+```bash
+./start.sh --paths
+# 输出示例：
+#   NOVEL_TTS_HOME : /home/yourname/.novel-tts
+#   DATA_DIR       : /home/yourname/.novel-tts/data
+#   ...
+```
+
+### 升级流程（推荐）
+```bash
+cd /path/to/novel-tts
+./start.sh --stop     # 停服（仅停后台 uvicorn；不动数据）
+git pull
+./start.sh            # 后台启动；会自动 pip install / npm install / build
+```
+
+任何时候 `git pull` 都不会覆盖你的 `.env`、数据库、音频、训练样本 —— 它们全在
+`~/.novel-tts/` 下。
+
+### 把数据放到别的盘
+```bash
+export NOVEL_TTS_HOME=/mnt/ssd/.novel-tts
+mkdir -p "$NOVEL_TTS_HOME"
+./start.sh
+```
+把这个 export 加到 `~/.bashrc` / `~/.zshrc` 让它每次登录都生效。
+
+### 从旧部署迁移（一次性）
+
+旧版本的数据全在项目根的 `./data` 和 `./.env`。这次升级已经做了自动兼容：
+**首次启动新版 `start.sh` 时**，如果 `$NOVEL_TTS_HOME/.env` 不存在、但项目根的
+`.env` 存在，会自动复制过去（项目根 `.env` 保留为 `.env.local-backup`，可手动删）。
+
+如果你的旧数据在项目内 `./data/`，想顺手挪出去（推荐，让 `rm -rf` 项目目录也安全）：
+
+```bash
+./start.sh --stop
+export NOVEL_TTS_HOME=$HOME/.novel-tts
+mkdir -p "$NOVEL_TTS_HOME"
+
+# 一次性搬运
+mv ./data "$NOVEL_TTS_HOME/data"
+mv ./.env "$NOVEL_TTS_HOME/.env"   # 如果旧版把 .env 放在项目根
+
+# 以后升级就只是：git pull + ./start.sh
+git pull
+./start.sh
+```
+
+> 搬运前**务必**先 `./start.sh --stop` 停服，避免数据库写入中移动文件。
+> 数据库文件 `data/app.db` 正在被写时 `mv` 可能导致 SQLite 损坏。
+
+### 旧版"先删项目目录再 git clone"的危险操作
+升级**不需要**也不应该 `rm -rf` 项目目录。新流程是：
+- ❌  `rm -rf novel-tts && git clone ... && ./start.sh`（会丢数据库、API Key、训练样本）
+- ✅  `git pull && ./start.sh`（默认什么都不丢）
+
+如果只是想换部署位置（机器迁移、换硬盘），用上面"把数据放到别的盘"那一段。
+
+---
+
+## 停服 / 重启 / 状态
+
+`start.sh` 现在是带子命令的服务管理器：
+
+```bash
+./start.sh              # 后台启动（默认）
+./start.sh --foreground # 前台启动（Ctrl+C 停止）
+./start.sh --stop       # 停后台进程
+./start.sh --restart    # 重启
+./start.sh --status     # 看 PID / 端口 / 日志位置
+./start.sh --paths      # 看所有路径
+./start.sh --help       # 帮助
+```
+
+> ⚠️ 不要在外层 `nohup ... &` 套娃跑 `start.sh`（会留下僵尸脚本进程）。
+> 直接 `./start.sh` 默认就是后台模式，启动后立刻退出，PID 写到
+> `$NOVEL_TTS_HOME/data/uvicorn.pid`。
 
 ---
 
@@ -307,3 +402,13 @@ PORT=28000 nohup ./start.sh > app.log 2>&1 &
 
 **Q: 前端打开 404**
 → `frontend/out/index.html` 不存在。先 `cd frontend && npm install && npm run build`，或重跑 `start.sh`。
+
+**Q: 升级后数据没了 / API Key 失效 / 数据库被重建**
+→ 大概率是按老习惯 `rm -rf 项目目录 && git clone` 重新部署了。新版把所有运行时产物
+→ （`data/` `.venv/` `.env`）放在 `$NOVEL_TTS_HOME`（默认 `~/.novel-tts/`），项目
+→ 目录本身不再存任何状态，所以**升级不需要删项目目录**。正确流程见上文
+→ 「升级与数据迁移」一节：`./start.sh --stop && git pull && ./start.sh`。
+
+**Q: 怎么把数据库 / 音频挪到别的盘**
+→ `export NOVEL_TTS_HOME=/mnt/ssd/.novel-tts && ./start.sh --stop && mv ~/.novel-tts/* /mnt/ssd/.novel-tts/ && ./start.sh`。
+→ 写进 `~/.bashrc` 让 export 持久生效。

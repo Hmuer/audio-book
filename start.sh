@@ -6,16 +6,38 @@ cd "$PROJ_DIR"
 
 # ============================================================================
 # 用法:
-#   ./start.sh              后台运行（默认；PID 写入 data/uvicorn.pid）
+#   ./start.sh              后台运行（默认；PID 写入 $NOVEL_TTS_HOME/data/uvicorn.pid）
 #   ./start.sh --foreground 前台运行（Ctrl+C 停止）
 #   ./start.sh --stop       停止后台进程
 #   ./start.sh --restart    重启后台进程
 #   ./start.sh --status     查看运行状态
-# 也可用环境变量: FOREGROUND=1 ./start.sh 等价于 --foreground
+#   ./start.sh --paths      打印当前生效的所有路径（data/.venv/.env/uvicorn.pid/log）
+#   ./start.sh --help       显示帮助
+#
+# 升级流程（推荐）:
+#   cd /path/to/novel-tts
+#   ./start.sh --stop
+#   git pull
+#   ./start.sh
+# 代码与数据彻底分开：data/ .venv/ .env 都在 NOVEL_TTS_HOME（默认 ~/.novel-tts），
+# 任何时候 rm -rf 项目目录都不会丢数据；git reset --hard 也不会丢数据。
 # ============================================================================
 
-PID_FILE="data/uvicorn.pid"
-STDOUT_LOG="data/logs/uvicorn-stdout.log"   # 启动期/崩溃期 stdout；运行日志在 data/logs/app.log
+# ---------- NOVEL_TTS_HOME 解析（核心：把运行时产物从项目目录里抽出来） ----------
+# 优先级：环境变量 > 用户配置 > 默认 ~/.novel-tts
+# 用户可以 export NOVEL_TTS_HOME=/some/where 覆盖；不设置就放 ~/.novel-tts。
+DEFAULT_HOME="$HOME/.novel-tts"
+NOVEL_TTS_HOME="${NOVEL_TTS_HOME:-$DEFAULT_HOME}"
+
+# 关键路径
+DATA_DIR="$NOVEL_TTS_HOME/data"
+AUDIO_DIR="$DATA_DIR/audio"
+LOG_DIR="$DATA_DIR/logs"
+LOGS_APP_FILE="$LOG_DIR/app.log"
+PID_FILE="$DATA_DIR/uvicorn.pid"
+STDOUT_LOG="$LOG_DIR/uvicorn-stdout.log"
+VENV_DIR="$NOVEL_TTS_HOME/.venv"
+ENV_FILE="$NOVEL_TTS_HOME/.env"
 
 ACTION="daemon"
 case "${1:-}" in
@@ -24,13 +46,75 @@ case "${1:-}" in
   --stop)               ACTION="stop" ;;
   --restart)            ACTION="restart" ;;
   --status)             ACTION="status" ;;
+  --paths)              ACTION="paths" ;;
+  --help|-h)            ACTION="help" ;;
   "")                   ACTION="${FOREGROUND:+foreground}"; ACTION="${ACTION:-daemon}" ;;
-  *) echo "未知参数: $1（支持 --foreground / --daemon / --stop / --restart / --status）"; exit 1 ;;
+  *) echo "未知参数: $1（支持 --foreground / --daemon / --stop / --restart / --status / --paths / --help）"; exit 1 ;;
 esac
 
 is_running() {
   [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
 }
+
+# ---------- 帮助 ----------
+if [ "$ACTION" = "help" ]; then
+  cat <<'EOF'
+start.sh — AI 有声小说生成器启动脚本
+
+子命令:
+  --foreground / -f    前台运行（Ctrl+C 停止）
+  --daemon / -d        后台运行（默认）
+  --stop               停止后台进程
+  --restart            重启后台进程
+  --status             查看运行状态
+  --paths              打印所有生效路径
+  --help / -h          显示本帮助
+
+环境变量:
+  NOVEL_TTS_HOME       运行时产物根目录（默认 ~/.novel-tts）
+                       包含: data/ .venv/ .env
+
+升级流程（不会丢数据）:
+  cd /path/to/novel-tts
+  ./start.sh --stop
+  git pull
+  ./start.sh
+
+数据迁移（旧部署升级时，一次性）:
+  1. export NOVEL_TTS_HOME=$HOME/.novel-tts
+  2. mkdir -p "$NOVEL_TTS_HOME"
+  3. mv ./data "$NOVEL_TTS_HOME/data"          # 项目内 data → 外部
+  4. mv ./.env "$NOVEL_TTS_HOME/.env"          # 项目内 .env → 外部（如有）
+  5. 保留 .venv（重装依赖更快，但建议按需 rm -rf backend/.venv 让脚本重建）
+  6. 重新跑 ./start.sh
+EOF
+  exit 0
+fi
+
+# ---------- 路径展示 ----------
+if [ "$ACTION" = "paths" ]; then
+  cat <<EOF
+[paths] 当前生效路径
+  NOVEL_TTS_HOME : $NOVEL_TTS_HOME
+  DATA_DIR       : $DATA_DIR
+  AUDIO_DIR      : $AUDIO_DIR
+  LOG_DIR        : $LOG_DIR
+  PID_FILE       : $PID_FILE
+  STDOUT_LOG     : $STDOUT_LOG
+  LOGS_APP_FILE  : $LOGS_APP_FILE
+  VENV_DIR       : $VENV_DIR
+  ENV_FILE       : $ENV_FILE
+EOF
+  exit 0
+fi
+
+# ---------- 首次启动准备：创建目录 ----------
+mkdir -p "$DATA_DIR" "$AUDIO_DIR" "$LOG_DIR"
+
+# ---------- 启动前提示数据位置（用户友好；首次启动可一眼看清） ----------
+if [ ! -f "$NOVEL_TTS_HOME/.first_run_acknowledged" ]; then
+  echo "[paths] 数据/venv/.env 都在 $NOVEL_TTS_HOME（项目目录外，git reset 安全）"
+fi
 
 # ---------- 停止 ----------
 if [ "$ACTION" = "stop" ] || [ "$ACTION" = "restart" ]; then
@@ -58,7 +142,7 @@ fi
 # ---------- 状态 ----------
 if [ "$ACTION" = "status" ]; then
   if is_running; then
-    echo "[status] 运行中 (pid=$(cat "$PID_FILE"))，日志: $STDOUT_LOG 与 data/logs/app.log"
+    echo "[status] 运行中 (pid=$(cat "$PID_FILE"))，日志: $STDOUT_LOG 与 $LOGS_APP_FILE"
   else
     echo "[status] 未运行"
     exit 1
@@ -72,35 +156,39 @@ if { [ "$ACTION" = "daemon" ] || [ "$ACTION" = "foreground" ]; } && is_running; 
   exit 1
 fi
 
-# 0. 根 .env
-if [ ! -f .env ]; then
+# ---------- .env 加载顺序：优先 NOVEL_TTS_HOME/.env，回退到项目内 .env ----------
+# 兼容旧部署：旧版 .env 在项目根，新版挪到 NOVEL_TTS_HOME。
+if [ ! -f "$ENV_FILE" ] && [ -f .env ]; then
+  echo "[init] 未找到 $ENV_FILE，从项目内 .env 复制（仅一次性兼容）"
+  cp .env ./.env.local-backup
+  cp .env "$ENV_FILE"
+  echo "[init] 已迁移到 $ENV_FILE；项目内 .env 保留为 .env.local-backup（可手动删除）"
+fi
+if [ ! -f "$ENV_FILE" ] && [ ! -f .env ]; then
   echo "[init] 未找到 .env，从 .env.example 复制，请检查 API Key"
-  cp .env.example .env
+  cp .env.example "$ENV_FILE"
 fi
-# 导出 .env 变量
-if [ -f .env ]; then
-  set -a
-  # shellcheck disable=SC1091
-  source .env
-  set +a
-fi
+# shellcheck disable=SC1090
+set -a; source "$ENV_FILE"; set +a
+
+# ---------- 环境变量配置：把运行时产物路径 export 到进程 env ----------
+# 注意：必须在 source "$ENV_FILE" 之后 export，否则 .env 里的 DATA_DIR=./data 等
+# 字段会覆盖掉我们的 NOVEL_TTS_HOME 派生路径。
+# Pydantic BaseSettings 优先级：init kwargs > 环境变量 > dotenv > 默认值，
+# 所以这里 export 的值后端会自动读到（无需改后端代码）。
+export DATA_DIR="$DATA_DIR"
+export AUDIO_DIR="$AUDIO_DIR"
+export DATABASE_URL="sqlite+aiosqlite:///$DATA_DIR/app.db"
+export LOG_FILE="$LOGS_APP_FILE"
 
 BIND_HOST="${BIND_HOST:-127.0.0.1}"
 PORT="${PORT:-28000}"
-# ⚠️  UVICORN_TIMEOUT 语义：ASGI/uvicorn 侧 **TCP keep-alive 空闲超时**（秒）。
-#     它 ≠ 「一个 HTTP 请求允许跑多久」。想让一个接口撑 30 分钟，应走 202+后台任务+轮询
-#     （prepare / builds 已经是这种模式），不要靠把这里改成 0（无穷大）解决。
-#     设成 0 的副作用：半关闭/断网/NAT 超时后产生的僵尸 TCP 连接永远不回收，
-#     最终吃满文件句柄 / asyncio 事件循环负载。
 UVICORN_TIMEOUT="${UVICORN_TIMEOUT:-600}"
 if [ "$UVICORN_TIMEOUT" = "0" ]; then
   echo "[WARNING] UVICORN_TIMEOUT=0（keep-alive 无穷大）会导致僵尸连接堆积，建议改为 300~3600。" >&2
 fi
 
-# 1. 目录
-mkdir -p data/audio data/logs
-
-# 2. 前端构建（缓存）
+# ---------- 前端构建 ----------
 if [ ! -d frontend/out ] || [ ! -f frontend/out/index.html ]; then
   echo "[frontend] 首次构建 Next.js（static export）…"
   if [ ! -d frontend/node_modules ]; then
@@ -109,9 +197,9 @@ if [ ! -d frontend/out ] || [ ! -f frontend/out/index.html ]; then
   (cd frontend && npm run build)
 fi
 
-# 3. 后端 venv + 依赖
-if [ ! -d backend/.venv ]; then
-  echo "[backend] 创建 Python 3.11 venv …"
+# ---------- venv + 依赖（建在 NOVEL_TTS_HOME/.venv；不污染项目目录） ----------
+if [ ! -d "$VENV_DIR" ]; then
+  echo "[backend] 创建 Python 3.11+ venv 于 $VENV_DIR …"
   PY=""
   for cand in python3.11 python3.12 python3; do
     if command -v "$cand" >/dev/null 2>&1; then
@@ -130,21 +218,22 @@ if [ ! -d backend/.venv ]; then
     echo "ERROR: 找不到 Python 3.11+。请先安装。"
     exit 1
   fi
-  "$PY" -m venv backend/.venv
+  "$PY" -m venv "$VENV_DIR"
 fi
 
 # venv 布局兼容：Linux/macOS = bin/，Windows = Scripts/
-if [ -f backend/.venv/bin/python ]; then
-  VENV_PY="backend/.venv/bin/python"
-elif [ -f backend/.venv/Scripts/python.exe ]; then
-  VENV_PY="backend/.venv/Scripts/python.exe"
+if [ -f "$VENV_DIR/bin/python" ]; then
+  VENV_PY="$VENV_DIR/bin/python"
+elif [ -f "$VENV_DIR/Scripts/python.exe" ]; then
+  VENV_PY="$VENV_DIR/Scripts/python.exe"
 else
-  echo "ERROR: venv 损坏（找不到 python 可执行文件），删除 backend/.venv 后重试。"
+  echo "ERROR: venv 损坏（找不到 python 可执行文件），删除 $VENV_DIR 后重试。"
   exit 1
 fi
 
 "$VENV_PY" -m pip install --quiet --disable-pip-version-check -r backend/requirements.txt
 
+# ---------- 启动 ----------
 UVICORN_ARGS=(
   backend.app.main:app
   --host "$BIND_HOST"
@@ -154,10 +243,8 @@ UVICORN_ARGS=(
   --loop asyncio
 )
 
-# ---------- 后台运行 ----------
 if [ "$ACTION" = "daemon" ]; then
   : > "$STDOUT_LOG"
-  # nohup + & 脱离终端；venv 的 python -m uvicorn 避免 PATH/激活脚本平台差异
   nohup "$VENV_PY" -m uvicorn "${UVICORN_ARGS[@]}" >> "$STDOUT_LOG" 2>&1 &
   DAEMON_PID=$!
   echo "$DAEMON_PID" > "$PID_FILE"
@@ -179,7 +266,6 @@ if [ "$ACTION" = "daemon" ]; then
         break
       fi
     else
-      # 无 curl：给应用 5 秒初始化后仅确认进程存活
       sleep 5
       probe_ok=1
       break
@@ -191,23 +277,26 @@ if [ "$ACTION" = "daemon" ]; then
   if [ "$probe_ok" = "1" ]; then
     echo "=========================================="
     echo "  AI 有声小说生成器（后台运行）"
-    echo "  PID   $DAEMON_PID（data/uvicorn.pid）"
+    echo "  PID   $DAEMON_PID（$PID_FILE）"
     echo "  访问  http://${BIND_HOST}:${PORT}/"
-    echo "  日志  $STDOUT_LOG / data/logs/app.log"
+    echo "  日志  $STDOUT_LOG / $LOGS_APP_FILE"
+    echo "  数据  $NOVEL_TTS_HOME（项目目录外，git pull / rm -rf 安全）"
+    echo "  路径  ./start.sh --paths"
     echo "  停止  ./start.sh --stop    重启: ./start.sh --restart"
     echo "=========================================="
+    touch "$NOVEL_TTS_HOME/.first_run_acknowledged"
   else
     echo "[daemon] 进程在运行但端口 ${PORT} 暂未响应（首次构建/冷启动可能较慢），稍后用 ./start.sh --status 检查" >&2
   fi
   exit 0
 fi
 
-# ---------- 前台运行（默认） ----------
+# ---------- 前台运行 ----------
 echo ""
 echo "=========================================="
 echo "  AI 有声小说生成器"
 echo "  访问 http://${BIND_HOST}:${PORT}/"
-echo "  Docs  http://${BIND_HOST}:${PORT}/docs"
+echo "  数据  $NOVEL_TTS_HOME"
 echo "  Ctrl+C 停止   （默认后台运行: ./start.sh）"
 echo "=========================================="
 exec "$VENV_PY" -m uvicorn "${UVICORN_ARGS[@]}"
