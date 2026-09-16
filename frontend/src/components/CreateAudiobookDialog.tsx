@@ -50,11 +50,20 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
     }
   };
 
+  // 选择文件时：如果用户还没填过名字，用文件名（去后缀）预填；
+  // 已经填过则保留用户输入（用户的选择优先）。
+  const pickFile = (f: File | null) => {
+    setFile(f);
+    if (f && !name.trim()) {
+      setName(nameFromFilename(f.name));
+    }
+  };
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
     const f = e.dataTransfer.files?.[0];
-    if (f) setFile(f);
+    if (f) pickFile(f);
   };
 
   return (
@@ -196,7 +205,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                   ref={fileInputRef}
                   type="file"
                   accept=".txt,.md,.epub"
-                  onChange={e => setFile(e.target.files?.[0] ?? null)}
+                  onChange={e => pickFile(e.target.files?.[0] ?? null)}
                   className="hidden"
                 />
                 {file ? (
@@ -299,6 +308,23 @@ function SegmentIcon({ name }: { name: 'upload' | 'pen' }) {
     strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
   };
   if (name === 'upload')
-    return (<svg {...common}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>);
+    return (<svg {...common}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y1="15"/></svg>);
   return (<svg {...common}><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>);
+}
+
+/**
+ * 从文件名生成默认项目名：去掉最后一个后缀。
+ * - "神秘峡谷.txt"        → "神秘峡谷"
+ * - "alice.epub"          → "alice"
+ * - "book.tar.gz"         → "book.tar"   （只剥最后一层，符合用户直觉）
+ * - "no-extension"        → "no-extension"
+ * - ".env"                → ".env"       （隐藏文件没有"名字"，整段保留）
+ * - ""                    → ""
+ */
+function nameFromFilename(filename: string): string {
+  if (!filename) return '';
+  // 仅剥最后一个 .ext；找不到 "." 或以 "." 开头（隐藏文件）则原样返回
+  const i = filename.lastIndexOf('.');
+  if (i <= 0) return filename;
+  return filename.slice(0, i);
 }
