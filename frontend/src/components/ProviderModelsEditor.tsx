@@ -448,7 +448,7 @@ export default function ProviderModelsEditor() {
 
       <div className="text-[11px] text-ink-500 leading-relaxed">
         保存后即时生效（修改 <span className="font-mono">PROVIDERS_CONFIG</span> 与 <span className="font-mono">ACTIVE_*</span> 字段），
-        重启后端后恢复 .env 默认值或上次保存的结构。
+        配置自动持久化到 data/providers_config.json，重启后端自动恢复。
       </div>
     </div>
   );

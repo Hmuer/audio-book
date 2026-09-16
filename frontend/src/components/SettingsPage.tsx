@@ -460,7 +460,7 @@ export default function SettingsPage() {
       {/* 底部说明 */}
       {!loading && items && (
         <div className="text-xs text-ink-500 text-center py-2 leading-relaxed">
-          配置修改即时生效（内存级）。重启后端后恢复 .env 默认值，如需持久化请手动写入 .env 文件。
+          配置修改即时生效。运行时配置（白名单键）自动持久化到 app.db，厂商配置持久化到 data/providers_config.json，重启后端自动恢复。
         </div>
       )}
       </>)}

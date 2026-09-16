@@ -420,7 +420,7 @@ def save_providers_config(cfg: dict[str, Any]) -> None:
             pass
         tmp.replace(path)
     except Exception as e:
-        # 落盘失败只警告；下次重启还是会回退 .env 默认
+        # 落盘失败只警告；下次重启从 app_settings 表回填会缺这一项
         import logging
         logging.getLogger(__name__).warning(
             f"[providers_config] 落盘失败: {type(e).__name__}: {e}"

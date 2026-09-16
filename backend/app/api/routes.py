@@ -2139,7 +2139,7 @@ async def update_providers(
     return {
         "ok": True,
         "providers": [_redact_provider(p) for p in providers_in],
-        "note": "已保存到内存（重启后端后恢复 .env 默认）",
+        "note": "已持久化到 data/providers_config.json，重启后端自动生效",
     }
 
 
@@ -2176,7 +2176,7 @@ async def update_settings(
     req: SettingsUpdateReq,
     cred: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
 ):
-    """更新运行时配置（内存生效）。支持 int/str/bool/list[str]。"""
+    """更新运行时配置（内存 + app.db app_settings 表持久化）。支持 int/str/bool/list[str]/json。"""
     payload = decode_token(cred.credentials)
     if not payload:
         raise HTTPException(401, "无效凭证")
