@@ -20,6 +20,10 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
   const [err, setErr] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // 标记当前 name 是否是"自动从文件名预填"的。true 时允许被新的文件名覆盖；
+  // false（用户手动输入过）时不再自动覆盖。需要在用户每次输入 name 时手动 set 回 false。
+  // 用 ref 而非 state：仅用作内部决策标记，不影响 UI。
+  const nameAutoFilledRef = useRef(false);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -50,11 +54,14 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
     }
   };
 
-  // 选择文件时：如果用户还没填过名字，用文件名（去后缀）预填；
-  // 已经填过则保留用户输入（用户的选择优先）。
+  // 选择文件时：
+  // - 用户手动输入过的名字保留（不覆盖）
+  // - 当前名字是"自动从文件名预填"的，选新文件时同步更新到新文件名
+  // - 当前名字为空（无论 trimmed 还是 untrimmed）则用新文件名预填
   const pickFile = (f: File | null) => {
     setFile(f);
-    if (f && !name.trim()) {
+    if (f && (nameAutoFilledRef.current || !name.trim())) {
+      nameAutoFilledRef.current = true;
       setName(nameFromFilename(f.name));
     }
   };
@@ -136,7 +143,10 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
               <input
                 type="text"
                 value={name}
-                onChange={e => setName(e.target.value)}
+                onChange={e => {
+                  nameAutoFilledRef.current = false;
+                  setName(e.target.value);
+                }}
                 placeholder="例如：神秘峡谷"
                 disabled={busy}
                 autoFocus

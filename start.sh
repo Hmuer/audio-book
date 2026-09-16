@@ -48,7 +48,7 @@ case "${1:-}" in
   --status)             ACTION="status" ;;
   --paths)              ACTION="paths" ;;
   --help|-h)            ACTION="help" ;;
-  "")                   ACTION="${FOREGROUND:+foreground}"; ACTION="${ACTION:-daemon}" ;;
+  "")                   ACTION="daemon" ;;
   *) echo "未知参数: $1（支持 --foreground / --daemon / --stop / --restart / --status / --paths / --help）"; exit 1 ;;
 esac
 
