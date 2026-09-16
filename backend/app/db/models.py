@@ -430,3 +430,18 @@ class UsageEvent(Base):
     chars: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
+
+# =====================================================================
+# 运行时配置（KV 表，存 app.db）
+# =====================================================================
+# 替代旧 data/runtime_settings.json。
+# - key：settings 字段名（与 Pydantic BaseSettings 属性一一对应）
+# - value：JSON 字符串（统一一种类型，避免多列多类型；int/str/bool/list/obj 都序列化）
+# - updated_at：审计
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+

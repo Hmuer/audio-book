@@ -475,83 +475,92 @@ def _init_persistable_keys() -> None:
 
 
 def save_runtime_settings_to_disk(updates: dict[str, Any]) -> dict[str, Any]:
-    """P2 #14：把 PUT /settings 的 updates 持久化到 data/runtime_settings.json。
+    """P2 #14：同步包装的 save。路由 handler 已在 async 上下文里，应直接用
+    save_runtime_settings_async；本函数仅供测试 / 同步脚本调用。
 
-    仅白名单内的键被落盘；敏感字段（带 key/secret/token/password 的）一律忽略。
+    仅白名单内的键被落盘。允许持久化敏感字段（如 API Key），因为 app.db
+    已在 init_db 后 chmod 0600。
     返回 {"saved": [...], "skipped": [...]}。
     """
+    import asyncio as _asyncio
+    return _asyncio.run(save_runtime_settings_async(updates))
+
+
+async def save_runtime_settings_async(updates: dict[str, Any]) -> dict[str, Any]:
+    """异步版 save（路由 handler 调用）。"""
     import logging
     logger = logging.getLogger(__name__)
     saved: list[str] = []
     skipped: list[str] = []
+    if not updates:
+        return {"saved": saved, "skipped": skipped}
     try:
-        path = settings.DATA_DIR / "runtime_settings.json"
-        # 读旧
-        old: dict[str, Any] = {}
-        if path.is_file():
-            try:
-                old = _json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(old, dict):
-                    old = {}
-            except Exception:
-                old = {}
-        # 过滤敏感 + 白名单
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        from ..db.session import get_session_factory
+        from ..db.models import AppSetting
+
+        factory = get_session_factory()
+        rows: list[dict[str, Any]] = []
         for key, val in updates.items():
             if not isinstance(key, str):
                 skipped.append(f"{key}(非字符串键)")
                 continue
-            kl = key.lower()
-            if any(s in kl for s in (
-                "key", "secret", "token", "password", "passwd",
-            )):
-                skipped.append(f"{key}(敏感字段不持久化)")
-                continue
             if key not in _PERSISTABLE_EDITABLE_KEYS:
                 skipped.append(f"{key}(不在白名单)")
                 continue
-            old[key] = val
-            saved.append(key)
-        # 写
-        if saved:
-            import os as _os
-            settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(
-                _json.dumps(old, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
             try:
-                _os.chmod(tmp, 0o600)
-            except Exception:
-                pass
-            tmp.replace(path)
-            logger.info(f"[runtime_settings] 持久化 {len(saved)} 个键到 {path}")
+                serialized = _json.dumps(val, ensure_ascii=False)
+            except (TypeError, ValueError) as e:
+                skipped.append(f"{key}(序列化失败:{type(e).__name__})")
+                continue
+            rows.append({"key": key, "value": serialized})
+            saved.append(key)
+
+        if rows:
+            async with factory() as s:
+                async with s.begin():
+                    for row in rows:
+                        stmt = sqlite_insert(AppSetting).values(**row)
+                        stmt = stmt.on_conflict_do_update(
+                            index_elements=[AppSetting.key],
+                            set_={"value": stmt.excluded.value},
+                        )
+                        await s.execute(stmt)
+            logger.info(f"[runtime_settings] 持久化 {len(rows)} 个键到 app_settings 表")
     except Exception as e:
         logger.warning(f"[runtime_settings] 持久化失败: {type(e).__name__}: {e}")
     return {"saved": saved, "skipped": skipped}
 
 
 def load_runtime_settings_from_disk() -> int:
-    """P2 #14：启动时从 data/runtime_settings.json 恢复 settings.* 字段。
+    """P2 #14：同步包装的 load。仅供测试 / 同步脚本调用。
 
-    返回恢复的键数。
+    lifespan 里应直接用 load_runtime_settings_async（已在 event loop 内）。
     """
+    import asyncio as _asyncio
+    return _asyncio.run(load_runtime_settings_async())
+
+
+async def load_runtime_settings_async() -> int:
+    """异步版 load（lifespan 调用）。返回恢复的键数。"""
     import logging
     logger = logging.getLogger(__name__)
     try:
-        path = settings.DATA_DIR / "runtime_settings.json"
-        if not path.is_file():
-            return 0
-        raw = path.read_text(encoding="utf-8")
-        data = _json.loads(raw)
-        if not isinstance(data, dict):
-            return 0
+        from sqlalchemy import select
+        from ..db.session import get_session_factory
+        from ..db.models import AppSetting
+
+        factory = get_session_factory()
+        async with factory() as s:
+            result = await s.execute(select(AppSetting.key, AppSetting.value))
+            rows = [(k, v) for k, v in result.all()]
+
         n = 0
-        for key, val in data.items():
+        for key, raw in rows:
             if not isinstance(key, str) or not hasattr(settings, key):
                 continue
-            # 类型校验：尝试转换（与 routes.update_settings 同样的转换规则简化版）
             try:
+                val = _json.loads(raw)
                 current = getattr(settings, key)
                 if isinstance(current, bool):
                     if isinstance(val, str):
@@ -575,10 +584,54 @@ def load_runtime_settings_from_disk() -> int:
                 logger.warning(
                     f"[runtime_settings] 跳过 {key}: {type(e).__name__}: {e}"
                 )
-        logger.info(f"[runtime_settings] 从 {path} 恢复 {n} 个键")
+        if n:
+            logger.info(f"[runtime_settings] 从 app_settings 恢复 {n} 个键")
         return n
     except Exception as e:
-        logger.warning(f"[runtime_settings] 从磁盘恢复失败: {type(e).__name__}: {e}")
+        logger.warning(f"[runtime_settings] 从 DB 恢复失败: {type(e).__name__}: {e}")
+        return 0
+
+
+async def migrate_legacy_runtime_settings_json_once() -> int:
+    """首次启动时把 data/runtime_settings.json 导入 app_settings 表，导入成功后删除 JSON。
+
+    返回导入的键数。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        json_path = settings.DATA_DIR / "runtime_settings.json"
+        if not json_path.is_file():
+            return 0
+        try:
+            data = _json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(f"[migrate] runtime_settings.json 解析失败，跳过: {e}")
+            return 0
+        if not isinstance(data, dict) or not data:
+            # 即便为空也删掉，避免每次启动都白跑
+            try:
+                json_path.unlink()
+            except Exception:
+                pass
+            return 0
+
+        n = await save_runtime_settings_async(data)
+        # save_runtime_settings_async 已经过滤了非白名单；这里只看实际入库数
+        saved_n = len(n.get("saved", []))
+        if saved_n:
+            logger.info(
+                f"[migrate] 从 runtime_settings.json 导入 {saved_n} 个键到 app_settings"
+            )
+        # 无论 saved_n 多少都删 JSON（用户要求"迁移后删除"）
+        try:
+            json_path.unlink()
+            logger.info(f"[migrate] 已删除旧 {json_path}")
+        except Exception as e:
+            logger.warning(f"[migrate] 删除旧 JSON 失败: {e}")
+        return saved_n
+    except Exception as e:
+        logger.warning(f"[migrate] 迁移失败: {type(e).__name__}: {e}")
         return 0
 
 

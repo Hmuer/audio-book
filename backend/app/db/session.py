@@ -117,3 +117,21 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
         # 旧库迁移：补齐 Job 表新字段
         await conn.run_sync(_migrate_existing_sync)
+
+    # app.db 现在可能包含敏感字段（API Key 等），收紧权限 0600。
+    # 仅当 backend 用的是 SQLite 且文件存在时执行；其他数据库或首次 create_all
+    # 未刷盘时静默忽略。
+    try:
+        if "sqlite" in settings.DATABASE_URL:
+            from sqlalchemy.engine.url import make_url
+            from ..core.config import settings as _s
+            url = make_url(_s.DATABASE_URL)
+            db_path = url.database
+            if db_path:
+                from pathlib import Path as _P
+                p = _P(db_path)
+                if p.is_file():
+                    import os as _os
+                    _os.chmod(p, 0o600)
+    except Exception:
+        pass

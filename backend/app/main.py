@@ -71,22 +71,25 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # P2 #14：从 data/providers_config.json 和 data/runtime_settings.json 回填
-    # settings，避免「重启后丢失前端通过 PUT /providers 和 PUT /settings 写入的配置」。
-    # 必须在 init_db / startup 钩子之前先跑。
+    # 先建库（app_settings 表需要存在）→ 再回填 providers 配置 → 再迁移旧 JSON → 最后加载 app_settings
+    await init_db()
+    logger.info("DB initialized")
     try:
         from .core.config import (
             load_providers_config_from_disk,
-            load_runtime_settings_from_disk,
+            load_runtime_settings_async,
+            migrate_legacy_runtime_settings_json_once,
             _init_persistable_keys,
         )
         _init_persistable_keys()
+        # providers 还在 JSON（不在本次迁移范围内）
         load_providers_config_from_disk()
-        load_runtime_settings_from_disk()
+        # 一次性迁移：旧 runtime_settings.json → app_settings，迁移后 JSON 被删
+        await migrate_legacy_runtime_settings_json_once()
+        # 从 DB 回填到 settings.*
+        await load_runtime_settings_async()
     except Exception as e:
         logger.warning(f"[startup] 配置回填失败: {type(e).__name__}: {e}")
-    await init_db()
-    logger.info("DB initialized")
     # 启动时确保默认 admin 账号存在
     await seed_admin_user()
     # P2-1：拉取豆包官方 ListSpeakers（启动时一次；后续可手动调 refresh_remote_voices）

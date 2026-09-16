@@ -2247,10 +2247,10 @@ async def update_settings(
             skipped.append(f"CHAPTER_SPLIT_PATTERNS(编译异常: {e})")
             updated.remove("CHAPTER_SPLIT_PATTERNS")
 
-    # P2 #14：把 updates 中白名单内非敏感键持久化到 data/runtime_settings.json
+    # P2 #14：把 updates 中白名单内非敏感键持久化到 app.db app_settings 表
     try:
-        from ..core.config import save_runtime_settings_to_disk
-        persist_res = save_runtime_settings_to_disk(
+        from ..core.config import save_runtime_settings_async
+        persist_res = await save_runtime_settings_async(
             {k: getattr(settings, k, None) for k in updated}
         )
         if persist_res.get("saved"):
@@ -2267,7 +2267,7 @@ async def update_settings(
     if skipped:
         logger.warning(f"[Settings] 跳过: {skipped}")
 
-    note = "配置已即时生效（内存）。重启后端后恢复 .env 默认值。"
+    note = "配置已即时生效（内存 + app.db 持久化）。"
     if note_extras:
         note += " · " + " · ".join(note_extras)
 
