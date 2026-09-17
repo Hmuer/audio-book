@@ -139,7 +139,7 @@ class Settings(BaseSettings):
     #       }, ...
     #     ],
     #     "active": {
-    #       "tts": {"provider_id": "minimax", "model_id": "MiniMax-speech-01"},
+    #       "tts": {"provider_id": "minimax", "model_id": "MiniMax-speech-2.8-turbo"},
     #       "llm": {"provider_id": "minimax", "model_id": "MiniMax-M3"},
     #     }
     #   }
@@ -151,7 +151,12 @@ class Settings(BaseSettings):
     # 当前激活模型（指向 PROVIDERS_CONFIG 中的某个 provider.model）；
     # 用扁平字段便于 settings page 直接绑定与回填。
     ACTIVE_TTS_PROVIDER: str = "minimax"
-    ACTIVE_TTS_MODEL: str = "MiniMax-speech-01"
+    # [P-fix] 默认 MiniMax TTS 模型从老版本 speech-01 升到支持 emotion 的 speech-2.8-turbo。
+    # 历史：MiniMax 老 model（speech-01/02 等）服务端会拒收 emotion 参数，返回 120000 invalid params。
+    # 老用户的 DB app_settings 里如果残留旧值（MiniMax-speech-01），provider 仍会用老 model 合成，
+    # 但 MiniMax provider 本身已做防御：emotion 为 calm/neutral/空 时不发送 emotion 字段，
+    # 因此老 model 也能正常合成（仅无情感）。
+    ACTIVE_TTS_MODEL: str = "MiniMax-speech-2.8-turbo"
     ACTIVE_LLM_PROVIDER: str = "minimax"
     ACTIVE_LLM_MODEL: str = "MiniMax-M3"
 

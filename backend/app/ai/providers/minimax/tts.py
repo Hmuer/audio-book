@@ -209,6 +209,21 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                 await _rpm_wait_acquire()
 
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    # [P-fix] 兼容 MiniMax 老 model（speech-01 / speech-02 等）：
+                    #   服务端对老 model 不接受 emotion 参数（返回 120000 invalid params），
+                    #   但 provider 接口签名要求 emotion 必有值（默认 "calm"）。
+                    #   启发式：当 emotion 为空 / "calm" / "neutral" 时，直接不发送 emotion 字段，
+                    #   这样老 model 也能正常合成（只是不带情感）；只有用户**显式**选了
+                    #   非中性情感时，才把 emotion 字段加进 voice_setting。
+                    voice_setting: dict[str, Any] = {
+                        "voice_id": voice_id,
+                        "speed": speed,
+                        "vol": 1.0,
+                        "pitch": 0,
+                    }
+                    _emo = (emotion or "").strip().lower()
+                    if _emo and _emo not in {"calm", "neutral"}:
+                        voice_setting["emotion"] = _emo
                     resp = await client.post(
                         f"{self.base_url}/t2a_v2",
                         headers={
@@ -219,13 +234,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                             "model": model,
                             "text": text,
                             "stream": False,
-                            "voice_setting": {
-                                "voice_id": voice_id,
-                                "speed": speed,
-                                "vol": 1.0,
-                                "pitch": 0,
-                                "emotion": emotion,
-                            },
+                            "voice_setting": voice_setting,
                             "audio_setting": {
                                 "sample_rate": 32000,
                                 "bitrate": 128000,
