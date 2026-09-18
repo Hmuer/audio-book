@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   api,
   errToLog,
+  fetchMediaObjectUrl,
   ProjectDetailResp,
   BuildListItem,
   BuildDetailResp,
@@ -23,6 +24,25 @@ import WaveformPlayer from './WaveformPlayer';
 import { StatusBadge } from './ProjectListPage';
 
 type Tab = 'overview' | 'chapters' | 'voices' | 'builds' | 'settings';
+
+// ---------- 标签（tags）工具 ----------
+// 后端 Project.tags 是「逗号分隔的字符串」（DB 列 String(256)，schema `str | None`），
+// **不是数组**。历史上前端按 `string[]` 处理，造成两个缺陷：
+//   1) 保存时提交数组 → Pydantic 校验失败 → 项目设置页点保存必然 422；
+//   2) 详情页对字符串调 `.map()` → TypeError → 白屏。
+// 统一约定：与后端交互一律用字符串；仅在展示/编辑时转数组。
+function splitTags(tags: string | null | undefined): string[] {
+  if (!tags) return [];
+  return tags
+    .split(/[,，]/)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+/** 把用户输入的标签串规范化为后端要求的逗号分隔字符串（空则返回 ''）。 */
+function normalizeTagsInput(input: string): string {
+  return splitTags(input).join(',');
+}
 
 const TAB_LABELS: { key: Tab; label: string; icon: JSX.Element }[] = [
   {
@@ -129,6 +149,18 @@ export default function ProjectDetailPage({
   }, [preparing, projectId]);
 
   const playingKeyRef = useRef<string | null>(null);
+  // 音色试听走 Blob URL（/media 需鉴权头，而 <audio src> 带不上）—— 需手动释放
+  const previewObjUrlRef = useRef<string | null>(null);
+
+  const revokePreviewObjUrl = () => {
+    if (previewObjUrlRef.current) {
+      URL.revokeObjectURL(previewObjUrlRef.current);
+      previewObjUrlRef.current = null;
+    }
+  };
+
+  // 卸载时释放最后一次试听的 Blob URL
+  useEffect(() => () => revokePreviewObjUrl(), []);
 
   const stopPlayback = () => {
     if (audioRef.current) {
@@ -137,6 +169,7 @@ export default function ProjectDetailPage({
       try { audioRef.current.pause(); } catch {}
       try { audioRef.current.currentTime = 0; } catch {}
     }
+    revokePreviewObjUrl();
     playingKeyRef.current = null;
     setPlayingKey(null);
   };
@@ -188,7 +221,12 @@ export default function ProjectDetailPage({
     setLoadingVoice(voiceId);
     try {
       const r = await api.preview(text.slice(0, 80), voiceId, speed);
-      playUrl(key, r.audio_url);
+      // /media 挂载点要求鉴权，而 <audio src> 无法携带请求头 → 先取字节转 Blob URL，
+      // 否则直接塞 /media/xxx.mp3 会 401（试听全线播不出）
+      const objUrl = await fetchMediaObjectUrl(r.audio_url);
+      revokePreviewObjUrl();
+      previewObjUrlRef.current = objUrl;
+      playUrl(key, objUrl);
     } finally {
       setLoadingVoice(prev => (prev === voiceId ? null : prev));
     }
@@ -440,6 +478,9 @@ function OverviewTab({
   const failedDialogueBatchesN = prog?.dialogue_failed_batch_count ?? 0;
   const hasPartialFailures = failedCharSlicesN > 0 || failedDialogueBatchesN > 0;
 
+  // 后端 tags 是逗号分隔字符串，展示前拆成数组（不能直接 .map）
+  const tagList = splitTags(project.tags);
+
   const handlePrepare = async () => {
     setPrepareTip(null);
     try {
@@ -665,7 +706,7 @@ function OverviewTab({
           color="rgb(var(--ink-600))" />
       </div>
 
-      {(project.description || (project.tags && project.tags.length > 0)) && (
+      {(project.description || tagList.length > 0) && (
         <div className="glass-panel space-y-3">
           {project.description && (
             <div>
@@ -673,10 +714,10 @@ function OverviewTab({
               <div className="text-sm text-ink-700 leading-relaxed">{project.description}</div>
             </div>
           )}
-          {project.tags && project.tags.length > 0 && (
+          {tagList.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs text-ink-500">标签</span>
-              {project.tags.map((t, i) => (
+              {tagList.map((t, i) => (
                 <span key={i} className="chip-soft">#{t}</span>
               ))}
             </div>
@@ -2459,7 +2500,7 @@ function SettingsTab({
 }) {
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description || '');
-  const [tagsInput, setTagsInput] = useState((project.tags || []).join(', '));
+  const [tagsInput, setTagsInput] = useState(project.tags || '');
   const [narratorVoice, setNarratorVoice] = useState(
     project.default_narrator_voice_id || ''
   );
@@ -2475,7 +2516,7 @@ function SettingsTab({
   useEffect(() => {
     setName(project.name);
     setDescription(project.description || '');
-    setTagsInput((project.tags || []).join(', '));
+    setTagsInput(project.tags || '');
     setNarratorVoice(project.default_narrator_voice_id || '');
     setSpeed(project.default_speed ?? 1.0);
   }, [project.project_id, project.name, project.description, project.tags, project.default_narrator_voice_id, project.default_speed]);
@@ -2484,10 +2525,8 @@ function SettingsTab({
     setErr(null);
     setSaving(true);
     try {
-      const tags = tagsInput
-        .split(/[,，]/)
-        .map(s => s.trim())
-        .filter(Boolean);
+      // 后端 tags 是「逗号分隔字符串」，必须提交字符串（提交数组会被 Pydantic 判 422）
+      const tags = normalizeTagsInput(tagsInput);
       await api.projectUpdate(project.project_id, {
         name: name.trim(),
         description,

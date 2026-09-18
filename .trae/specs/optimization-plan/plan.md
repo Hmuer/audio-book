@@ -304,12 +304,12 @@
 
 > 完成一项把 `[ ]` 改为 `[x]`，并填写完成日期。
 
-### 批次 1 —— Tier A（前 5 条）
-- [ ] A-1 段缓存 get 补传 `sample_rate` — [build.py#L452-L455](file:///workspace/backend/app/services/build.py#L452-L455)
-- [ ] A-2 V3 补 `MAX_5XX_RETRIES` / `HTTP_5XX_BACKOFF_SECS` — [tts.py#L1754-L1769](file:///workspace/backend/app/ai/providers/doubao/tts.py#L1754-L1769)
-- [ ] A-3 preview 试听走签名 URL — [routes.py#L625-L629](file:///workspace/backend/app/api/routes.py#L625-L629)
-- [ ] A-4 `tags` 前端改为字符串提交（决策 1） — [ProjectDetailPage.tsx#L2487-L2497](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L2487-L2497)
-- [ ] A-5 `mode` 用 `None` 区分「未指定」 — [build.py#L772-L794](file:///workspace/backend/app/services/build.py#L772-L794)
+### 批次 1 —— Tier A（前 5 条）✅ 完成 2026-09-17
+- [x] A-1 段缓存 get 补传 `sample_rate` — [build.py#L452-L455](file:///workspace/backend/app/services/build.py#L452-L455) — 完成 2026-09-17
+- [x] A-2 V3 补 `MAX_5XX_RETRIES` / `HTTP_5XX_BACKOFF_SECS` — [tts.py#L1754-L1769](file:///workspace/backend/app/ai/providers/doubao/tts.py#L1754-L1769) — 完成 2026-09-17
+- [x] A-3 试听音频改走鉴权 fetch + Blob URL（非签名 URL，见实施记录） — [routes.py#L625-L629](file:///workspace/backend/app/api/routes.py#L625-L629) — 完成 2026-09-17
+- [x] A-4 `tags` 前端改为字符串提交（决策 1） — [ProjectDetailPage.tsx#L2487-L2497](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L2487-L2497) — 完成 2026-09-17
+- [x] A-5 `mode` 用 `None` 区分「未指定」 — [build.py#L772-L794](file:///workspace/backend/app/services/build.py#L772-L794) — 完成 2026-09-17
 
 ### 批次 2 —— 数据正确性 + 长任务
 - [ ] A-6 v3 `saw_error` 一律抛错 — [tts.py#L2035-L2060](file:///workspace/backend/app/ai/providers/doubao/tts.py#L2035-L2060)
@@ -359,3 +359,26 @@
 - 进程内限流 / 并发 semaphore 的跨进程协调（单 worker）
 - `owner_user_id IS NULL` 的可见性收紧
 - JWT 弱默认密钥的强制校验（本地 dev）
+
+---
+
+## 10. 实施记录
+
+### 批次 1（2026-09-17）
+
+| 项 | 改动 | 测试 / 证据 |
+|---|---|---|
+| A-1 | [build.py](file:///workspace/backend/app/services/build.py#L452-L455) `tts_segment_cache_get` 补传 `sample_rate=sample_rate`，与 put 完全对齐 | 新增 2 个往返测试于 [test_p1_emotion_srt_cache_red.py](file:///workspace/backend/tests/test_p1_emotion_srt_cache_red.py)；另以脚本取证：旧 get 键 `7b160089…` ≠ put 键 `130494e8…`，确认旧实现永不命中 |
+| A-2 | 5xx 常量提到模块级 `_MAX_5XX_RETRIES` / `_HTTP_5XX_BACKOFF_SECS`，v1 与 v3 类均引用（消除分叉根源） | [test_doubao_v3_protocol_red.py](file:///workspace/backend/tests/test_doubao_v3_protocol_red.py) 移除原先「在实例上手工注入两个属性」的掩盖写法，改为断言类级常量存在 |
+| A-3 | **改用鉴权 fetch + Blob URL**，而非签名 URL：新增 `api.fetchMediaObjectUrl()`，音色库/角色/旁白试听先带 `Authorization` 取字节再 `URL.createObjectURL` | 已处理 Blob URL 释放（替换播放源 + 组件卸载）；`tsc --noEmit` 与 `next build` 均通过。**未做真实浏览器试听验证** |
+| A-4 | 前端 `tags` 统一为字符串：`ProjectDetailResp.tags` 改为 `string \| null`，新增 `splitTags` / `normalizeTagsInput`，提交时 `join(',')`，展示时拆分 | `tsc --noEmit` 通过 |
+| A-5 | `start_build(mode: str \| None = None)` + `StartBuildRequest.mode` 改 `None` 默认，仅在 `mode is None` 时回落项目默认值 | 新增 [test_start_build_mode_red.py](file:///workspace/backend/tests/test_start_build_mode_red.py) 4 个用例（显式 classic 不被 multicast 覆盖 / 未传回落默认 / 无默认兜底 classic / 显式 multicast 仍抛错） |
+
+**回归结果**
+- 后端：`306 passed, 1 failed, 1 skipped`（用例数 300 → 306，为本次新增 6 个用例）
+- 前端：`npx tsc --noEmit` ✅ / `npx next build` ✅
+- 唯一失败 `test_project_e2e.py::test_project_full_lifecycle` 为**既有**的测试隔离问题（单独跑必过；批次 1 改动前的基线全量跑同样失败），对应本文件 **E-1 / P2-4**，非本次引入
+
+**A-3 方案调整说明**
+原计划写「preview 试听走签名 URL」，实施时改为 **鉴权 fetch + Blob URL**。原因：签名 token 是**单用途**的（`consume_media_token` 首次请求即写 `used_at`），把它交给 `<audio>` 后拖动进度条会触发第二次 Range 请求而 401 —— 等于把 B-6 的问题复制到试听上。Blob 方案一次性把字节读进内存：不经过 URL token、天然支持 seek、且不需要后端改动。
+副作用：音频较大时会占用内存（试听片段很短，可忽略）；章节 MP3 仍走既有签名 URL，其 seek 问题留给 **B-6**。

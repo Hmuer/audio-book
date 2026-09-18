@@ -448,10 +448,15 @@ async def tts_segment_cache_get(
 ) -> tuple[bytes, int] | None:
     """返回 (mp3_bytes, duration_ms)，未命中返回 None。先查内存，再查磁盘。
     P1-7：model + context_texts_hash 参与键计算；P1-4：sample_rate 参与键计算。
+
+    ⚠️ 这里必须与 tts_segment_cache_put 传**完全相同**的关键字参数：
+    之前 get 漏传 sample_rate，导致 put 写入的键带 `|sr:<n>`、get 查询的键不带，
+    缓存命中率恒为 0（每次构建都全额重调 TTS）。
     """
     key = _seg_cache_key(
         voice_id, speed, text, emotion=emotion, instruction=instruction,
         model=model, context_texts_hash=context_texts_hash,
+        sample_rate=sample_rate,
     )
     async with _tts_seg_mem_lock:
         hit = _tts_seg_mem_cache.get(key)
@@ -729,7 +734,7 @@ async def start_build(
     narrator_voice_id: str,
     speed: float = 1.0,
     *,
-    mode: str = "classic",
+    mode: str | None = None,
     tts_provider: str | None = None,
     narrator_emotion: str = "",
     narrator_instruction: str = "",
@@ -738,7 +743,9 @@ async def start_build(
     创建 Build + 每章 BuildArtifact（pending），启动后台 worker，立即返回。
 
     新增参数：
-      - mode: 'classic'（默认，逐章节分段 TTS 拼接）/'multicast'（多播剧，Seed-Audio 一体化，失败直接抛错）
+      - mode: None（未指定 → 回落 Project.default_build_mode，再兜底 'classic'）
+              / 'classic'（逐章节分段 TTS 拼接）/ 'multicast'（已废弃，直接抛错）
+              注意：显式传 'classic' 不会被项目默认值覆盖
       - tts_provider: 'minimax' | 'doubao' | None（None 时从 Project.default_tts_provider 读取，再兜底 settings.TTS_PROVIDER）
       - narrator_emotion / narrator_instruction: 旁白情感与风格指令（合成时透传 provider）
 
@@ -756,7 +763,6 @@ async def start_build(
 
     # 解析 tts_provider （优先级：参数 > Project.default_tts_provider > settings.TTS_PROVIDER > 'minimax'）
     effective_provider = (tts_provider or "").lower() or None
-    resolved_mode = (mode or "classic").lower()
     if not effective_provider:
         factory_sess = get_session_factory()
         try:
@@ -769,8 +775,15 @@ async def start_build(
     if not effective_provider:
         effective_provider = (_settings_mod.TTS_PROVIDER or "minimax").lower()
 
-    # mode 默认值：若 Project.default_build_mode 显式设定则覆盖
-    if not mode or resolved_mode == "classic":
+    # mode 解析：只按「调用方是否显式指定」分流。
+    #   mode is None → 未指定，回落 Project.default_build_mode（再兜底 classic）
+    #   mode 有值     → 以调用方为准
+    # 历史缺陷：旧判断 `if not mode or resolved_mode == "classic"` 因 mode 的默认值
+    # 本身就是 "classic"（且 resolved_mode 由 `mode or "classic"` 得出）而**恒为真**，
+    # 于是显式传 classic 也会被项目默认值覆盖 —— 只要某项目
+    # default_build_mode="multicast"，其所有构建都会在下面直接抛错，且无接口可绕过。
+    if mode is None:
+        resolved_mode = "classic"
         factory_sess2 = get_session_factory()
         try:
             async with factory_sess2() as s:
@@ -780,7 +793,7 @@ async def start_build(
         except Exception:
             pass
     else:
-        resolved_mode = mode.lower()
+        resolved_mode = str(mode).strip().lower() or "classic"
 
     # mode=multicast 已废弃（P0-5）：Seed-Audio 多播剧端点已停止迭代。
     # 按用户要求（#4 不降级契约）：选了 multicast 就直接抛错，让用户明确知道

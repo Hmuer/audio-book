@@ -675,7 +675,9 @@ class StartBuildRequest(BaseModel):
     narrator_voice_id: str = ""
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     # 多厂商 & 构建模式（Task 4/8 新增）
-    mode: str = Field(default="classic")  # classic | multicast
+    # None = 调用方未指定 → 由 build 层回落到 Project.default_build_mode，再兜底 classic。
+    # 显式传 "classic" 表示「明确要 classic」，不再被项目默认值覆盖。
+    mode: str | None = Field(default=None)  # classic | multicast | None(未指定)
     tts_provider: str | None = Field(default=None)
     # 旁白情感/风格指令（可选；角色的在 ProjectCharacter 上配置）
     narrator_emotion: str = Field(default="", max_length=32)

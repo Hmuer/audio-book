@@ -369,3 +369,83 @@ def test_p1_7_k5_cache_key_changes_with_sample_rate():
         sample_rate="",
     )
     assert explicit_empty == base
+
+
+# =====================================================================
+# A-1（整体优化批次 1）— 段缓存 get/put 往返一致性
+# =====================================================================
+@pytest.mark.asyncio
+async def test_a1_seg_cache_put_then_get_hits_with_sample_rate():
+    """传 sample_rate 时 put 后 get 必须命中（内存 + 磁盘链路）。
+
+    历史缺陷：`tts_segment_cache_get` 调 `_seg_cache_key` 时**漏传 sample_rate**，
+    而 `tts_segment_cache_put` 传了 —— put 写入的键带 `|sr:<n>`、get 查询的键不带，
+    两者永不相等 → 缓存命中率恒为 0，每次构建都全额重调 TTS。
+
+    本用例是唯一会同时走 get 与 put 的回归保护：既有测试只单独断言
+    `_seg_cache_key` 的输出，无法发现调用点参数不一致。
+    """
+    from backend.app.services import build as build_mod
+    from backend.app.services.build import (
+        tts_segment_cache_get,
+        tts_segment_cache_put,
+    )
+
+    # 清掉内存缓存，避免其他用例残留导致「假命中」
+    build_mod._tts_seg_mem_cache.clear()
+
+    fake_mp3 = b"\xff\xfb\x90\x64" + b"\x00" * 64
+    await tts_segment_cache_put(
+        "doubao:BV001_streaming", 1.0, "你好",
+        fake_mp3, 1234,
+        emotion="calm", instruction="", model="seed-tts-1.0",
+        context_texts_hash="", sample_rate=24000,
+    )
+    # 再清一次内存，强制 get 走磁盘路径（覆盖 key 一致性，而非命中内存残留）
+    build_mod._tts_seg_mem_cache.clear()
+
+    hit = await tts_segment_cache_get(
+        "doubao:BV001_streaming", 1.0, "你好",
+        emotion="calm", instruction="", model="seed-tts-1.0",
+        context_texts_hash="", sample_rate=24000,
+    )
+    assert hit is not None, (
+        "put 之后 get 必须命中：get/put 传给 _seg_cache_key 的参数必须完全一致"
+    )
+    assert hit[0] == fake_mp3
+    assert hit[1] == 1234
+
+
+@pytest.mark.asyncio
+async def test_a1_seg_cache_sample_rate_isolated():
+    """不同 sample_rate 不应互相命中（确认 sample_rate 真正参与键）。"""
+    from backend.app.services import build as build_mod
+    from backend.app.services.build import (
+        tts_segment_cache_get,
+        tts_segment_cache_put,
+    )
+
+    build_mod._tts_seg_mem_cache.clear()
+    fake_mp3 = b"\xff\xfb\x90\x64" + b"\x00" * 64
+    await tts_segment_cache_put(
+        "doubao:BV001_streaming", 1.0, "采样率隔离",
+        fake_mp3, 500,
+        emotion="", instruction="", model="", context_texts_hash="",
+        sample_rate=24000,
+    )
+    build_mod._tts_seg_mem_cache.clear()
+
+    # 换采样率 → 必须不命中
+    miss = await tts_segment_cache_get(
+        "doubao:BV001_streaming", 1.0, "采样率隔离",
+        emotion="", instruction="", model="", context_texts_hash="",
+        sample_rate=48000,
+    )
+    assert miss is None
+    # 同采样率 → 命中
+    hit = await tts_segment_cache_get(
+        "doubao:BV001_streaming", 1.0, "采样率隔离",
+        emotion="", instruction="", model="", context_texts_hash="",
+        sample_rate=24000,
+    )
+    assert hit is not None

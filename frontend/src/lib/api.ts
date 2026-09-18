@@ -114,6 +114,33 @@ async function _fetch<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+/**
+ * 用带鉴权头的 fetch 取回媒体文件，返回可用于 `<audio src>` 的 Blob URL（A-3）。
+ *
+ * 背景：后端 `/media` 挂载点要求鉴权（`Authorization: Bearer` 头，或 `?token=`），
+ * 但 `<audio src="...">` **无法携带请求头** → 直接把 `/media/xxx.mp3` 塞进 src
+ * 必然 401（音色试听全线播不出）。这里改为用带鉴权头的 fetch 取回字节再转
+ * Blob URL：既不用把 token 暴露在 URL 里，Blob 也天然支持 `<audio>` 拖动进度条。
+ *
+ * ⚠️ 调用方负责在替换播放源 / 组件卸载时 `URL.revokeObjectURL()`，否则内存泄漏。
+ */
+export async function fetchMediaObjectUrl(path: string): Promise<string> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const res = await fetch(`${BASE}${path}`, { headers });
+  if (res.status === 401) {
+    clearToken();
+    if (_onAuthFail) _onAuthFail();
+    throw new Error('登录已失效，请重新登录');
+  }
+  if (!res.ok) {
+    throw new Error(`音频获取失败: HTTP ${res.status}`);
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
 // ---------- Auth 类型 ----------
 
 export interface UserInfo {
@@ -556,7 +583,8 @@ export interface ProjectDetailResp {
   chapter_count: number;
   cover_color: string;
   description: string | null;
-  tags: string[] | null;
+  /** 逗号分隔的标签字符串（后端 schema 为 `str | None`，非数组；展示时用 splitTags 拆分） */
+  tags: string | null;
   default_narrator_voice_id: string | null;
   default_speed: number | null;
   created_at: string;

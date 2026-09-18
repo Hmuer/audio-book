@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, errToLog, Voice, IclTask } from '@/lib/api';
+import { api, errToLog, fetchMediaObjectUrl, Voice, IclTask } from '@/lib/api';
 import {
   GenderKey,
   normalizeGender,
@@ -170,6 +170,18 @@ function LibraryTab({ voices }: { voices: Voice[] }) {
   const [err, setErr] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const playingRef = useRef<string | null>(null);
+  // 试听走 Blob URL（/media 需要鉴权头，<audio src> 带不上）—— 需手动释放
+  const objUrlRef = useRef<string | null>(null);
+
+  const revokeObjUrl = () => {
+    if (objUrlRef.current) {
+      URL.revokeObjectURL(objUrlRef.current);
+      objUrlRef.current = null;
+    }
+  };
+
+  // 卸载时释放最后一次的 Blob URL
+  useEffect(() => () => revokeObjUrl(), []);
 
   const providerVoices = useMemo(
     () => (providerTab === 'all' ? voices : voices.filter(v => voiceProvider(v) === providerTab)),
@@ -196,6 +208,7 @@ function LibraryTab({ voices }: { voices: Voice[] }) {
       audioRef.current.onerror = null;
       try { audioRef.current.pause(); } catch {}
     }
+    revokeObjUrl();
     playingRef.current = null;
     setPlayingId(null);
   };
@@ -210,7 +223,15 @@ function LibraryTab({ voices }: { voices: Voice[] }) {
     setLoadingId(voiceId);
     try {
       const r = await api.preview(PREVIEW_TEXT, voiceId, 1.0);
-      if (!audioRef.current) return;
+      // /media 挂载点要求鉴权，而 <audio src> 无法携带请求头 → 先取字节转 Blob URL，
+      // 否则直接塞 /media/xxx.mp3 会 401（试听全线播不出）
+      const objUrl = await fetchMediaObjectUrl(r.audio_url);
+      if (!audioRef.current) {
+        URL.revokeObjectURL(objUrl);
+        return;
+      }
+      revokeObjUrl();
+      objUrlRef.current = objUrl;
       playingRef.current = voiceId;
       setPlayingId(voiceId);
       audioRef.current.onended = () => {
@@ -226,7 +247,7 @@ function LibraryTab({ voices }: { voices: Voice[] }) {
           setErr('试听播放失败');
         }
       };
-      audioRef.current.src = r.audio_url;
+      audioRef.current.src = objUrl;
       audioRef.current.play().catch(() => {
         if (playingRef.current === voiceId) {
           playingRef.current = null;

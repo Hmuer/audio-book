@@ -270,9 +270,17 @@ async def test_v3_network_error_5xx_retries_then_fails(monkeypatch):
     p._resolve_api_key = lambda: "fake"
     from backend.app.core import config as cfgmod
     cfgmod.settings.DOUBAO_TTS_V3_BASE_URL = "https://example.test/v3/tts/unidirectional"
-    # 5xx fastfail：MAX_5XX_RETRIES 决定最大尝试次数
-    p.MAX_5XX_RETRIES = 2
-    p.HTTP_5XX_BACKOFF_SECS = 0.0
+    # 5xx fastfail：MAX_5XX_RETRIES 决定最大尝试次数。
+    # ⚠️ 这里刻意**不**在实例上覆盖 MAX_5XX_RETRIES / HTTP_5XX_BACKOFF_SECS：
+    # 历史版本靠手工注入这两个属性让用例通过，掩盖了「v3 类漏定义常量 →
+    # 5xx 路径抛 AttributeError」的缺陷（常量原先只定义在 v1 类上）。
+    # 改为直接依赖类级常量，本用例才真正覆盖该回归。
+    assert hasattr(DoubaoTTSProviderV3, "MAX_5XX_RETRIES"), (
+        "DoubaoTTSProviderV3 必须定义 MAX_5XX_RETRIES（否则 5xx 路径 AttributeError）"
+    )
+    assert hasattr(DoubaoTTSProviderV3, "HTTP_5XX_BACKOFF_SECS"), (
+        "DoubaoTTSProviderV3 必须定义 HTTP_5XX_BACKOFF_SECS（否则 5xx 路径 AttributeError）"
+    )
     # 让 MAX_RETRIES 大于 MAX_5XX_RETRIES，确认限制来自 MAX_5XX_RETRIES
     p.MAX_RETRIES = 5
 

@@ -29,6 +29,17 @@ from backend.app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# =====================================================================
+# 5xx fastfail 重试策略（v1 / v3 共用，避免两个类各写一份导致分叉）
+# ---------------------------------------------------------------------
+# 5xx 是上游服务问题，重试 5 次要白等 10s+；上游 500 多为短暂瞬时。
+# _MAX_5XX_RETRIES=2 表示最多尝试 2 次（即 1 次重试），把用户感知从 13s 降到 < 3s。
+# 业务码可重试（3001/3002/3003/3010/3011）仍走 MAX_RETRIES —— 那是客户端配额相关，
+# 与 5xx 不是一类问题，因此单独定常量。
+# =====================================================================
+_MAX_5XX_RETRIES = 2
+_HTTP_5XX_BACKOFF_SECS = 0.3
+
 
 def _estimate_mp3_duration_ms(data: bytes) -> int:
     """解析 MPEG audio frame header 估算 MP3 时长（毫秒）。
@@ -1212,12 +1223,10 @@ class DoubaoTTSProvider(BaseTTSProvider):
     BASE_BACKOFF_SECS = 0.6
     JITTER_SECS = 0.3
 
-    # [P-fastfail] 5xx 是上游服务问题，重试 5 次浪费 10s+ 用户等待。
-    # 上游 500 多半是短暂瞬时（豆包常见），但指数退避 5 次意义不大；
-    # MAX_5XX_RETRIES=2 意味着最多尝试 2 次（1 次重试），把用户感知从 13s 降到 < 3s。
-    # 业务码可重试（3001/3002/3003/3010/3011）仍走 MAX_RETRIES，那是客户端配额相关。
-    MAX_5XX_RETRIES = 2
-    HTTP_5XX_BACKOFF_SECS = 0.3
+    # [P-fastfail] 5xx 走快失败策略 —— 常量定义在模块级 `_MAX_5XX_RETRIES`
+    # / `_HTTP_5XX_BACKOFF_SECS`，v1 与 v3 共用，避免两处各写一份后分叉。
+    MAX_5XX_RETRIES = _MAX_5XX_RETRIES
+    HTTP_5XX_BACKOFF_SECS = _HTTP_5XX_BACKOFF_SECS
 
     # -----------------------------------------------------------------
     # 音色列表
@@ -1767,6 +1776,13 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
     BASE_BACKOFF_SECS = 0.6
     JITTER_SECS = 0.3
     DEFAULT_SAMPLE_RATE = 24000
+
+    # [P-fastfail] 5xx 快失败：与 v1 共用模块级常量。
+    # 缺陷修复：这两个常量原先只在 v1 类上定义，v3 的重试分支却直接引用
+    # self.MAX_5XX_RETRIES / self.HTTP_5XX_BACKOFF_SECS →
+    # 开启 DOUBAO_TTS_USE_V3 且上游返回 5xx 时必然抛 AttributeError。
+    MAX_5XX_RETRIES = _MAX_5XX_RETRIES
+    HTTP_5XX_BACKOFF_SECS = _HTTP_5XX_BACKOFF_SECS
 
     @property
     def _endpoint(self) -> str:
