@@ -255,6 +255,72 @@ async def test_v3_business_error_raises_and_does_not_retry(monkeypatch):
 
 
 # ---------------------------------------------------------------------
+# A-6（批次 2）：音频分片之后中途报错 → 必须抛错，不得返回被截断的音频
+# ---------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_a6_v3_error_midstream_must_not_return_truncated_audio(monkeypatch):
+    """先收到音频分片、中途才收到错误 chunk：必须抛错，不能把截断音频当成功返回。
+
+    历史缺陷：判据是 `saw_error and not chunks` —— 只要已经收到任意音频分片，
+    就静默把 `b"".join(chunks)` 当成功返回。上层据此写盘、记账、算时长，
+    用户实际只听到半句，且字幕/进度全部错位（静默数据错误）。
+    """
+    from backend.app.ai.providers.doubao.tts import (
+        DoubaoTTSProviderV3,
+        DoubaoTTSResponseV3Error,
+    )
+    from backend.app.core import config as cfgmod
+
+    p = DoubaoTTSProviderV3()
+    p._resolve_api_key = lambda: "fake"
+    cfgmod.settings.DOUBAO_TTS_V3_BASE_URL = "https://example.test/v3/tts/unidirectional"
+
+    chunked_lines = "\n".join([
+        json.dumps({"audio": FAKE_MP3_A}),                        # 正常音频分片
+        json.dumps({"audio": FAKE_MP3_B}),
+        json.dumps({"code": 3001, "message": "quota exceeded"}),  # 中途报错
+    ]).encode("utf-8")
+
+    class _FakeResp:
+        status_code = 200
+        headers = {"X-Tt-Logid": "fake-logid-a6"}
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_lines(self):
+            for line in chunked_lines.split(b"\n"):
+                yield line.decode("utf-8")
+
+    class _FakeStreamCtx:
+        async def __aenter__(self):
+            return _FakeResp()
+
+        async def __aexit__(self, *args):
+            return False
+
+    class _FakeClientCtx:
+        def stream(self, *args, **kwargs):
+            return _FakeStreamCtx()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    import httpx
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: _FakeClientCtx())
+
+    with pytest.raises(DoubaoTTSResponseV3Error) as ei:
+        await p.synthesize_to_bytes("hi", "doubao:BV001_streaming")
+    assert ei.value.code == 3001, (
+        "中途出错必须抛出错误码，而不是返回已收到的音频分片"
+    )
+    assert "quota exceeded" in str(ei.value)
+
+
+# ---------------------------------------------------------------------
 # T-V3-6: 网络错（5xx）走 fastfail 重试 + 达 MAX_5XX_RETRIES 后抛错
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio

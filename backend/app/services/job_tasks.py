@@ -471,10 +471,22 @@ async def _recover_build_orphan(job: JobTask) -> bool:
     """
     恢复一个 build 孤儿：
       1) 取 Build 状态；终态直接覆盖 JobTask
-      2) 进程内 _ACTIVE_BUILDS 没持有 → 用既有 _run_build_inner 重新跑（已 done 章会 skip）
+      2) 进程内 _ACTIVE_BUILDS 没持有 → 注册后重新跑既有 _run_build_inner（已 done 章会 skip）
     返回 True 表示已 enqueue 新 task。
+
+    B-1：旧实现只用 `build_id in _ACTIVE_BUILDS` 判断"是否已在跑"，却**从不把恢复出
+    的 runner 注册进 _ACTIVE_BUILDS**，且恢复 runner 不刷新该 JobTask 心跳。于是
+    JobTask 心跳持续过期 → 每个看门狗周期（默认 30s）都再次判定为孤儿 → 反复 spawn
+    同一 build 的 worker：并发重复 TTS 调用与用量、章节文件 .tmp 同名互写、状态互相
+    覆盖。修复：判断与注册放进同一临界区，runner 内用 HeartbeatContext 维持心跳，
+    并在退出时释放锁 + 写 JobTask 终态。
     """
-    from .build import _ACTIVE_BUILDS, _run_build_inner
+    from .build import (
+        _ACTIVE_BUILDS,
+        _RUNNING_LOCK,
+        _run_build_inner,
+        _unregister_active_build,
+    )
     factory = get_session_factory()
     async with factory() as sess:
         from ..db.models import Build
@@ -504,13 +516,17 @@ async def _recover_build_orphan(job: JobTask) -> bool:
             "speed": b.speed,
             "voice_assignments_json": b.voice_assignments_json or "",
         }
+        job_task_id = job.task_id
 
-    # 进程锁内已有同 build_id 的活跃 worker → 跳过（避免双跑）
-    if build_snapshot["build_id"] in _ACTIVE_BUILDS:
-        logger.info(
-            f"[job_task][build] 本进程已有 build_id={build_snapshot['build_id'][:8]}... 在跑，跳过恢复"
-        )
-        return False
+    # 进程锁内已有同 build_id 的活跃 worker → 跳过（避免双跑）。
+    # 判断与注册必须在同一临界区，否则并发/频繁的看门狗仍可能双重 spawn（B-1）。
+    async with _RUNNING_LOCK:
+        if build_snapshot["build_id"] in _ACTIVE_BUILDS:
+            logger.info(
+                f"[job_task][build] 本进程已有 build_id={build_snapshot['build_id'][:8]}... 在跑，跳过恢复"
+            )
+            return False
+        _ACTIVE_BUILDS[build_snapshot["build_id"]] = build_snapshot["project_id"]
 
     # 重新跑（已 done 的 BuildArtifact 会自动跳过；cancelled 标志继续生效）
     try:
@@ -519,21 +535,51 @@ async def _recover_build_orphan(job: JobTask) -> bool:
         voice_assignments = {}
 
     async def _runner() -> None:
+        final_status = "failed"
+        final_error: str | None = None
         try:
-            await _run_build_inner(
-                build_id=build_snapshot["build_id"],
-                project_id=build_snapshot["project_id"],
-                voice_assignments=voice_assignments,
-                narrator_voice_id=build_snapshot["narrator_voice_id"],
-                speed=build_snapshot["speed"],
-                only_chapter_idxs=None,
-                source_build_id=None,
-            )
-        except Exception as e:
-            logger.error(
-                f"[job_task][build][runner] FAIL build_id={build_snapshot['build_id'][:8]}...: "
-                f"{type(e).__name__}: {e}",
-                exc_info=True,
+            # B-1：恢复出的 runner 必须持续心跳，否则 JobTask 又被判为孤儿 → 反复 spawn
+            async with HeartbeatContext(job_task_id):
+                try:
+                    await _run_build_inner(
+                        build_id=build_snapshot["build_id"],
+                        project_id=build_snapshot["project_id"],
+                        voice_assignments=voice_assignments,
+                        narrator_voice_id=build_snapshot["narrator_voice_id"],
+                        speed=build_snapshot["speed"],
+                        only_chapter_idxs=None,
+                        source_build_id=None,
+                    )
+                    f1 = get_session_factory()
+                    async with f1() as s1:
+                        b_after = await s1.get(Build, build_snapshot["build_id"])
+                        if b_after and b_after.status in ("success", "partial_success"):
+                            final_status = "success"
+                        elif b_after and b_after.status == "cancelled":
+                            final_status = "cancelled"
+                        elif b_after and b_after.status == "failed":
+                            final_status = "failed"
+                except Exception as e:
+                    logger.error(
+                        f"[job_task][build][runner] FAIL build_id={build_snapshot['build_id'][:8]}...: "
+                        f"{type(e).__name__}: {e}",
+                        exc_info=True,
+                    )
+                    final_error = f"{type(e).__name__}: {e}"
+                    final_status = "failed"
+        except asyncio.CancelledError:
+            final_status = "cancelled"
+            final_error = "build recover worker cancelled"
+            raise
+        finally:
+            try:
+                await finish_task(job_task_id, status=final_status, error_msg=final_error)
+            except Exception as e:
+                logger.warning(
+                    f"[job_task][build][runner] 写 JobTask 终态失败 task_id={job_task_id}: {e}"
+                )
+            await _unregister_active_build(
+                build_snapshot["build_id"], build_snapshot["project_id"],
             )
 
     asyncio.create_task(_runner(), name=f"build_recover_{build_snapshot['build_id'][:8]}")

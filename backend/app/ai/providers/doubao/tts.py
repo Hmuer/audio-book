@@ -2061,9 +2061,14 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                         except Exception:
                             # 单段解码失败不致命，继续收后续 chunk
                             continue
-                if saw_error and not chunks:
+                if saw_error:
+                    # 上游中途返回错误 chunk：**即使已经收到若干音频分片也必须抛错**。
+                    # 旧实现是 `saw_error and not chunks`，于是「先收到 N 个音频分片、
+                    # 中途才报错」会把**被截断的 MP3** 当成功返回 —— 上层据此写盘、
+                    # 记账、算时长，用户听到半句且字幕/进度全部错位（静默数据错误）。
                     raise DoubaoTTSResponseV3Error(
-                        f"v3 TTS 业务错：code={err_code} msg={err_msg}",
+                        f"v3 TTS 业务错：code={err_code} msg={err_msg}"
+                        + (f"（已收到 {len(chunks)} 个音频分片，仍判定失败）" if chunks else ""),
                         code=err_code,
                         logid=logid,
                     )

@@ -235,6 +235,12 @@ class Settings(BaseSettings):
     # 并起新 worker。避免"重启后端后 Build 永远合成中"。
     BUILD_RUNNING_TIMEOUT_HOURS: int = 6
 
+    # B-4：Build queued 超时（分钟）。若进程在「提交 Build(queued) 之后、
+    # 注册 worker 之前」被杀，该 build 会永远停在 queued：内存锁里没有它的
+    # worker，DB 活跃检查又只对 running 做超时兜底 → 之后每次 start_build 都
+    # 返回它，项目永久无法合成。这里基于 created_at 做兜底。
+    BUILD_QUEUED_TIMEOUT_MINUTES: int = 30
+
     # Auth (JWT)
     JWT_SECRET: str = "change-me-in-production-please-use-a-long-random-string"
     JWT_ALGORITHM: str = "HS256"

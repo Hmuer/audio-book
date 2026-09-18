@@ -1206,7 +1206,7 @@ async def api_media_sign(
     ttl_seconds: int = 300,
     current: User = Depends(get_current_user),
 ):
-    """签发一次性媒体签名 token（短时 + 资源绑定 + 单用途）。
+    """签发媒体签名 token（短时 + 资源绑定；TTL 内可重复使用，见 B-6）。
 
     - kind=chapter_mp3   必须带 idx（章节号）
     - kind=all_zip       整包 ZIP
@@ -1247,15 +1247,16 @@ async def api_media_stream(
     token: str,
     request: Request,
 ):
-    """用一次性 token 取出媒体文件。
+    """用媒体签名 token 取出媒体文件。
 
     不接受完整登录 JWT，只接受媒体签名 token（sub_kind=media）。
+    token 在 TTL 内可重复使用（B-6）：`<audio>` 拖动进度条会重复请求同一 URL。
     """
     payload = await consume_media_token(token)
     if not payload:
         raise HTTPException(
             401,
-            "media token 无效、已过期或已使用",
+            "media token 无效或已过期",
             headers={"WWW-Authenticate": "Bearer"},
         )
     build_id = payload["build_id"]
@@ -1947,6 +1948,7 @@ _EDITABLE_SETTINGS = {
     "TTS_TIMEOUT": ("int", "超时配置", "TTS 超时（秒）"),
     "UVICORN_TIMEOUT": ("int", "超时配置", "Uvicorn 超时（秒）"),
     "BUILD_RUNNING_TIMEOUT_HOURS": ("int", "超时配置", "Build 运行超时（小时）"),
+    "BUILD_QUEUED_TIMEOUT_MINUTES": ("int", "超时配置", "Build 排队超时（分钟，超时判定为孤儿）"),
     # 限流
     "LLM_MAX_CONCURRENCY": ("int", "限流配置", "LLM 最大并发"),
     "LLM_CHAR_EXTRACT_SLICE_SIZE": ("int", "限流配置", "角色识别切片大小（字符）"),

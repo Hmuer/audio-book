@@ -1,9 +1,10 @@
 """
-P1 #6 — 媒体签名 URL（一次性 + 资源绑定 + 短时）回归测试。
+P1 #6 — 媒体签名 URL（资源绑定 + 短时 + TTL 内可重复使用）回归测试。
 
 覆盖：
-- /api/media/sign 签发一次性 token 并校验资源归属；
-- token 消费一次后立刻失效；
+- /api/media/sign 签发 token 并校验资源归属；
+- **token 在 TTL 内可重复使用**（B-6：`<audio>` 拖动进度条会发第二次 Range 请求，
+  若坚持单用途则一拖就 401）；
 - token TTL 过期后无法使用；
 - 跨用户签发 → 403；
 - /api/media/stream 不接受完整登录 JWT（sub_kind=access 会被拒）。
@@ -104,8 +105,13 @@ async def test_sign_returns_url_and_consume_works(project_with_build):
 
 
 @pytest.mark.asyncio
-async def test_token_is_single_use(project_with_build):
-    """一次性 token：消费一次后立刻失效。"""
+async def test_token_reusable_within_ttl(project_with_build):
+    """B-6：token 在 TTL 内**可重复使用**（不再单用途）。
+
+    背景：该 URL 会被直接交给 `<audio src>`，浏览器拖动进度条 / 重新加载时会用
+    同一 URL 再发一次 Range 请求。旧实现「首次请求即写 used_at，之后一律 401」
+    导致一拖进度条就播放失败。现改为只按 expires_at 判定。
+    """
     from backend.app.main import app
     from backend.app.services.auth import seed_admin_user, create_access_token
     from backend.app.db.session import init_db
@@ -124,9 +130,14 @@ async def test_token_is_single_use(project_with_build):
         url = r.json()["url"]
         r2 = await client.get(url)
         assert r2.status_code == 200
-        # 第二次必须 401
+        # 第二次（模拟 <audio> 拖动进度条的 Range 请求）必须同样 200
         r3 = await client.get(url)
-        assert r3.status_code == 401
+        assert r3.status_code == 200, (
+            "TTL 内重复使用必须成功；单用途会让 <audio> 拖动/重载直接 401"
+        )
+        # 连续第三次也应可用（严格多次可用）
+        r4 = await client.get(url)
+        assert r4.status_code == 200
 
 
 @pytest.mark.asyncio

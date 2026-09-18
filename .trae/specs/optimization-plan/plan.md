@@ -95,7 +95,7 @@
 - 修复方向：`saw_error` 为真时一律抛错（无论是否已有 chunks），并把 `err_code/err_msg` 带出。
 - 验收：构造「先音频 chunk、后错误 chunk」的假响应，断言抛错而非返回截断数据。
 
-### A-7 `config_digest` 快照不完整 → 改了内容却复用旧产物 🟡
+### A-7 `config_digest` 快照不完整 → 改了内容却复用旧产物 ✅
 - 位置：计算 [build.py#L525-L553](file:///workspace/backend/app/services/build.py#L525-L553)；复用查询 [build.py#L869-L889](file:///workspace/backend/app/services/build.py#L869-L889)
 - 现象：只哈希 narrator / speed / voice_assignments / mode / tts_provider / 情感 / 角色风格，**不含**章节正文、对白、发音规则、采样率等。
 - 后果：用户润色正文、重新识别对白、增删发音规则后再次构建，只要音色语速未变 → digest 不变 → 直接复用历史成功 build，**新内容永不合成**。
@@ -107,49 +107,50 @@
 
 ## 3. Tier B —— 长任务稳定性
 
-### B-1 孤儿 build 恢复会每个看门狗周期重复 spawn 🟡
+### B-1 孤儿 build 恢复会每个看门狗周期重复 spawn ✅
 - 位置：[job_tasks.py#L470-L544](file:///workspace/backend/app/services/job_tasks.py#L470-L544)
 - 现象：`_recover_build_orphan` 只用 `if build_id in _ACTIVE_BUILDS` 去重，却**从不把自己注册进 `_ACTIVE_BUILDS`**；恢复出的 runner 也不更新该 JobTask 的心跳。
 - 后果：JobTask 心跳停止 → 每个看门狗周期（默认 30s）都重新判定为孤儿 → 再次 spawn 同一 build 的 worker。并发跑同一 build → 重复 TTS 调用与重复用量、章节文件 `.tmp` 同名互写、状态互相覆盖。
 - 修复方向：恢复时注册 `_ACTIVE_BUILDS` 并把心跳/任务生命周期纳入恢复 runner。
 
-### B-2 `start_build` 竞态：锁只包检查、不包创建 🟡
+### B-2 `start_build` 竞态：锁只包检查、不包创建 ✅
 - 位置：检查 [build.py#L821-L832](file:///workspace/backend/app/services/build.py#L821-L832)；插入/注册 [build.py#L922](file:///workspace/backend/app/services/build.py#L922)
 - 现象：`_RUNNING_LOCK` 临界区在创建 Build 之前就释放，两个并发请求可同时通过检查。
 - 后果：产生多个 queued/running build；后续用 `.scalar_one_or_none()` 查询活跃 build 会抛 `MultipleResultsFound` → 接口 500，需人工清理。
 - 修复方向：把「检查 + 插入 + 注册」合并进同一临界区，或用 DB 层唯一约束兜底。
 
-### B-3 终态覆盖：打包期间取消被写回 success 🟡
+### B-3 终态覆盖：打包期间取消被写回 success ✅
 - 位置：取消检查 [build.py#L1885-L1896](file:///workspace/backend/app/services/build.py#L1885-L1896)；终态写入 [build.py#L1941-L1962](file:///workspace/backend/app/services/build.py#L1941-L1962)
 - 现象：打包 ZIP（大书可能耗时较久）期间用户取消，worker 随后**无条件**写回 `success/partial_success`。
 - 后果：已取消的任务被「复活」为完成态，与用户意图相反。
 - 修复方向：终态写入改为条件更新（`WHERE status='running'`）后判断 rowcount。
 
-### B-4 卡在 queued 的孤儿 build 永久阻塞项目 🟡
+### B-4 卡在 queued 的孤儿 build 永久阻塞项目 ✅
 - 位置：[build.py#L851-L867](file:///workspace/backend/app/services/build.py#L851-L867)
 - 现象：活跃检查里只有 `status == "running"` 有超时兜底；`queued` 分支直接返回该 build。
 - 后果：若进程在「提交 Build(queued) 之后、注册 worker 之前」被杀，该 build 永远 queued → 之后每次 start_build 都返回它，项目永久无法合成。
 - 修复方向：`queued` 同样设超时兜底（基于 `created_at` / 心跳）。
 
-### B-5 retry build 跨 build 共享同一 MP3 文件 🟡
+### B-5 retry build 跨 build 共享同一 MP3 文件 ✅
 - 位置：复制文件名 [build.py#L1151-L1164](file:///workspace/backend/app/services/build.py#L1151-L1164)；删除 [build.py#L2055-L2093](file:///workspace/backend/app/services/build.py#L2055-L2093)
 - 现象：retry 对非失败章直接复用源 build 的 `audio_filename`；`delete_build` 按 `audio_filename` 无条件 `unlink`。
 - 后果：删除任一 build 会连带删掉另一个 build 引用的章节 MP3 → 单章下载/预览/M4B 全部 404。
 - 修复方向：retry 复用章硬链接/复制为自身命名，或删除时做引用计数（只删本 build 自产文件）。
 
-### B-6 一次性媒体 token 与 `<audio>` Range 请求不兼容 🟡
+### B-6 一次性媒体 token 与 `<audio>` Range 请求不兼容 ✅
 - 位置：[media_sign.py#L105-L145](file:///workspace/backend/app/services/media_sign.py#L105-L145)
 - 现象：`consume_media_token` 首次请求即写 `used_at`，二次请求返回 None → 401；token TTL 300s，前端无重签逻辑。
 - 后果：拖动进度条/重放即 401，播放超过 5 分钟后失效且无恢复路径。
 - 修复方向：流式媒体改为「短时多次可用」（只校验 `expires_at`，不置 `used_at`）。
 
-### B-7 SQLite 未设 `busy_timeout` / WAL，也未开启外键 🟡
+### B-7 SQLite 未设 `busy_timeout` / WAL，也未开启外键 ✅
 - 位置：[session.py#L17-L37](file:///workspace/backend/app/db/session.py#L17-L37)
 - 现象：连接参数只有 `check_same_thread=False`，无任何 `PRAGMA`。
 - 后果：build worker 每章多次 commit，与 prepare 后台、JobTask 看门狗、API 并发写 → `database is locked` 被当作整章失败（降级静音）甚至整 build 失败。外键未开导致 `ondelete` 级联不可靠。
 - 修复方向：连接事件里 `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;`。
+- **实施取舍**：只加了 `journal_mode=WAL` + `busy_timeout=5000` + `synchronous=NORMAL`；**未开 `foreign_keys=ON`**。原因：ORM 关系已用 `cascade="all, delete-orphan"` 在应用层做删除级联，而开启外键会让 `init_db` 前后可能存在的历史悬挂引用（旧库残留）直接导致写失败／拒绝删除，对个人单机库属于「为了更严格而更易坏」。WAL+busy_timeout 才是「database is locked」的真正解药。
 
-### B-8 取消 / 异常路径丢失 TTS 用量 🟡
+### B-8 取消 / 异常路径丢失 TTS 用量 ✅
 - 位置：取消分支 [build.py#L1890-L1896](file:///workspace/backend/app/services/build.py#L1890-L1896)；顶层异常 [build.py#L963-L981](file:///workspace/backend/app/services/build.py#L963-L981)
 - 现象：检测到 cancelled 后直接 `return`，跳过写 `tts_calls/tts_chars` 与 `record_tts_usage`。
 - 后果：被取消或中途失败的任务，已真实消耗的调用与字数全部不入账（个人使用下影响统计准确性）。
@@ -311,17 +312,17 @@
 - [x] A-4 `tags` 前端改为字符串提交（决策 1） — [ProjectDetailPage.tsx#L2487-L2497](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L2487-L2497) — 完成 2026-09-17
 - [x] A-5 `mode` 用 `None` 区分「未指定」 — [build.py#L772-L794](file:///workspace/backend/app/services/build.py#L772-L794) — 完成 2026-09-17
 
-### 批次 2 —— 数据正确性 + 长任务
-- [ ] A-6 v3 `saw_error` 一律抛错 — [tts.py#L2035-L2060](file:///workspace/backend/app/ai/providers/doubao/tts.py#L2035-L2060)
-- [ ] A-7 `config_digest` 纳入内容哈希 — [build.py#L525-L553](file:///workspace/backend/app/services/build.py#L525-L553)
-- [ ] B-1 孤儿恢复注册 `_ACTIVE_BUILDS` + 心跳 — [job_tasks.py#L470-L544](file:///workspace/backend/app/services/job_tasks.py#L470-L544)
-- [ ] B-2 `start_build` 临界区含创建与注册 — [build.py#L821-L832](file:///workspace/backend/app/services/build.py#L821-L832)
-- [ ] B-3 终态写入加取消保护 — [build.py#L1941-L1962](file:///workspace/backend/app/services/build.py#L1941-L1962)
-- [ ] B-4 `queued` 超时兜底 — [build.py#L851-L867](file:///workspace/backend/app/services/build.py#L851-L867)
-- [ ] B-5 retry 复用章改为独立文件 / 引用计数 — [build.py#L2055-L2093](file:///workspace/backend/app/services/build.py#L2055-L2093)
-- [ ] B-6 媒体 token 改为短时多次可用 — [media_sign.py#L105-L145](file:///workspace/backend/app/services/media_sign.py#L105-L145)
-- [ ] B-7 SQLite 设 WAL / busy_timeout / foreign_keys — [session.py#L17-L37](file:///workspace/backend/app/db/session.py#L17-L37)
-- [ ] B-8 取消/异常路径补记用量 — [build.py#L1890-L1896](file:///workspace/backend/app/services/build.py#L1890-L1896)
+### 批次 2 —— 数据正确性 + 长任务 ✅ 完成 2026-09-18
+- [x] A-6 v3 `saw_error` 一律抛错 — [tts.py#L2035-L2060](file:///workspace/backend/app/ai/providers/doubao/tts.py#L2035-L2060) — 完成 2026-09-18
+- [x] A-7 `config_digest` 纳入内容哈希 — [build.py#L525-L553](file:///workspace/backend/app/services/build.py#L525-L553) — 完成 2026-09-18
+- [x] B-1 孤儿恢复注册 `_ACTIVE_BUILDS` + 心跳 — [job_tasks.py#L470-L544](file:///workspace/backend/app/services/job_tasks.py#L470-L544) — 完成 2026-09-18
+- [x] B-2 `start_build` 临界区含创建与注册 — [build.py#L821-L832](file:///workspace/backend/app/services/build.py#L821-L832) — 完成 2026-09-18
+- [x] B-3 终态写入加取消保护 — [build.py#L1941-L1962](file:///workspace/backend/app/services/build.py#L1941-L1962) — 完成 2026-09-18
+- [x] B-4 `queued` 超时兜底 — [build.py#L851-L867](file:///workspace/backend/app/services/build.py#L851-L867) — 完成 2026-09-18
+- [x] B-5 retry 复用章改为独立文件（硬链接/复制，非引用计数） — [build.py#L2055-L2093](file:///workspace/backend/app/services/build.py#L2055-L2093) — 完成 2026-09-18
+- [x] B-6 媒体 token 改为短时多次可用 — [media_sign.py#L105-L145](file:///workspace/backend/app/services/media_sign.py#L105-L145) — 完成 2026-09-18
+- [x] B-7 SQLite 设 WAL / busy_timeout（**未开 foreign_keys**，原因见实施记录） — [session.py#L17-L37](file:///workspace/backend/app/db/session.py#L17-L37) — 完成 2026-09-18
+- [x] B-8 取消/异常路径补记用量 — [build.py#L1890-L1896](file:///workspace/backend/app/services/build.py#L1890-L1896) — 完成 2026-09-18
 
 ### 批次 3 —— 切模型 / 配豆包
 - [ ] C-1 设置页补齐「模型配置/合成质量/豆包配置」分组 — [SettingsPage.tsx#L111](file:///workspace/frontend/src/components/SettingsPage.tsx#L111)
@@ -382,3 +383,33 @@
 **A-3 方案调整说明**
 原计划写「preview 试听走签名 URL」，实施时改为 **鉴权 fetch + Blob URL**。原因：签名 token 是**单用途**的（`consume_media_token` 首次请求即写 `used_at`），把它交给 `<audio>` 后拖动进度条会触发第二次 Range 请求而 401 —— 等于把 B-6 的问题复制到试听上。Blob 方案一次性把字节读进内存：不经过 URL token、天然支持 seek、且不需要后端改动。
 副作用：音频较大时会占用内存（试听片段很短，可忽略）；章节 MP3 仍走既有签名 URL，其 seek 问题留给 **B-6**。
+
+### 批次 2（2026-09-18）
+
+| 项 | 改动 | 测试 / 证据 |
+|---|---|---|
+| A-6 | v3 流式解析：`if saw_error and not chunks:` → `if saw_error:`，即「先收到若干音频分片、中途才报错」也一律抛错，不再把被截断的 MP3 当成功返回 | [test_doubao_v3_protocol_red.py](file:///workspace/backend/tests/test_doubao_v3_protocol_red.py) 新增 `test_a6_v3_error_midstream_must_not_return_truncated_audio` |
+| A-7 | `_calc_config_digest` 增加 `content_digest` 参数并纳入哈希；新增 `_calc_content_digest(session, project_id, chapters)` 对章节正文/标题、ProjectDialogue、ProjectPronunciationRule 求 sha256；digest 计算移入有 session 的代码块（在读完 chapters 之后） | 新增 [test_config_digest_content_red.py](file:///workspace/backend/tests/test_config_digest_content_red.py) 4 个用例（正文/对白/发音规则改动均使 digest 变化） |
+| B-1 | `_recover_build_orphan`：把「是否已在跑」判断与 `_ACTIVE_BUILDS` 注册合入同一 `_RUNNING_LOCK` 临界区；恢复 runner 用 `HeartbeatContext(job_task_id)` 持续心跳，退出时 `finish_task` + `_unregister_active_build` | 新增 [test_batch2_lifecycle_red.py](file:///workspace/backend/tests/test_batch2_lifecycle_red.py) `test_b1_*`（断言注册进 `_ACTIVE_BUILDS`、心跳被刷新、二次恢复不重复 spawn） |
+| B-2 | 新增 `_START_LOCKS`（project 粒度）+ `_serialize_start_per_project`，对外 `start_build` 是包装后的串行化版本，`_start_build_impl` 为真实实现；把「检查—创建—注册」整段串起来 | `test_b2_*`：机制层断言同 project 并发度恒为 1；集成层并发 `gather` 两次 `start_build` 只产生 1 条 Build 且 build_id 相同 |
+| B-3 | 新增 `_apply_terminal_status()`：终态改为 `UPDATE ... WHERE build_id=? AND status='running'` + rowcount 判定，返回是否写回；`_run_build_inner` 据此跳过打包期间已被取消的写回，并在未写回时不把 Project 置为 done | `test_b3_terminal_write_skipped_if_not_running`（running→写回；cancelled→不写回且 zip_filename 保持为空） |
+| B-4 | 新增 `BUILD_QUEUED_TIMEOUT_MINUTES`（默认 30，可在设置页「超时配置」调整）；活跃检查里 `queued` 分支也按 `created_at` 做孤儿超时兜底（超时→cancelled 并起新 build） | `test_b4_stale_queued_build_is_cancelled`（超时孤儿被取消、新 build 启动） + `test_b4_fresh_queued_build_is_reused_not_cancelled`（未超时仍复用，防误杀） |
+| B-5 | 新增 `_link_or_copy()`（优先硬链接、异常退化复制）；retry 复用章改为另存为**新 build 自己命名**的文件（`build_{new}_chXXXX.mp3`）并同步另存时间轴 sidecar，新 artifact 指向新文件；不再直接复用源 build 的 filename | `test_b5_retry_reused_chapter_has_own_file`：reuse 章文件名不同；`delete_build(源)` 后 retry build 的章文件仍存在 |
+| B-6 | `consume_media_token` 去掉「已使用即拒绝」，仅校验 `expires_at`；`used_at` 只记录首次消费时间用于审计/清理 | [test_media_sign_red.py](file:///workspace/backend/tests/test_media_sign_red.py) 改为 `test_token_reusable_within_ttl`（第 2/3 次请求仍 200） |
+| B-7 | `session.py` 新增 `_install_sqlite_pragmas`：连接事件里 `journal_mode=WAL` / `busy_timeout=5000` / `synchronous=NORMAL`；chmod 0600 覆盖 `-wal`/`-shm`。**未开 `foreign_keys`**（见 B-7 实施取舍） | 新增 [test_sqlite_pragmas_red.py](file:///workspace/backend/tests/test_sqlite_pragmas_red.py)（PRAGMA 生效 + 多连接保持） |
+| B-8 | 新增 `_record_build_usage()`（写 Build.tts_calls/chars + `record_tts_usage`）：取消早退分支补记；终态路径在条件写回后无条件补记（打包期间被取消也入账）；成功章提交处增量落库 `tts_calls/chars`，使打包/DB 异常退出也保留到最近一章的真实用量 | `test_b8_cancelled_build_still_records_usage`（合成中取消→tts_calls>0 且写入 UsageEvent） + `test_b8_exception_path_keeps_consumed_usage`（打包抛异常仍保留用量） |
+
+**回归结果**
+- 新增测试文件 [test_batch2_lifecycle_red.py](file:///workspace/backend/tests/test_batch2_lifecycle_red.py)（9 用例），连同批次 1/2 相关套件：`74 passed`
+- 全量：`320 passed, 3 failed, 1 skipped`；3 个失败均已用 `git worktree` 在 **HEAD 基线**上复现，属**既有**测试隔离缺陷（非本批引入）：
+  - `test_project_e2e.py::test_project_full_lifecycle` — 单跑必过，全量跑失败（对应 E-1 / P2-4）
+  - `test_project_prepare_voice_pool_red.py::test_prepare_passes_user_id_to_recommend` — `username` 常量 + 跨测试 DB/模块身份污染导致 UNIQUE 冲突
+  - `test_review_fixes_red.py::test_retry_failed_inherits_provider_and_mode` — 段缓存跨测试串味，使「首次调用失败」的 mock 行为失效
+- 后端 `import backend.app.main` ✅
+
+**B-5 方案调整说明**
+原计划写「硬链接/复制为自身命名，或删除时做引用计数」。实施选**另存为独立文件**（硬链接优先、异常退化复制），未做引用计数。原因：引用计数需在 DB 里维护额外计数并在所有删除路径同步，复杂且易漏；另存文件把「每个 build 只拥有/删除自己的文件」这一不变式直接固化，`delete_build` 无需改动即可正确。硬链接同盘零拷贝，成本可忽略。
+
+**B-8 异常路径说明**
+「中途异常」采用**增量落库**（每章结束把 `tts_calls/chars` 写回 Build 行）而非把整段 worker 包进 `try/finally`：后者需要大范围重排缩进、风险高。增量方案的取舍是：极端情况下若异常发生在某个**章内**，该章的用量可能不计（前一章的已落库）；已可覆盖「已完成章节的用量不丢」这一主要诉求，且不触碰控制流。
+

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -244,6 +245,90 @@ async def _unregister_active_build(build_id: str, expected_project_id: str) -> N
             _ACTIVE_BUILDS.pop(build_id, None)
 
 
+async def _record_build_usage(
+    build_id: str,
+    project_id: str,
+    build_mode: str,
+    calls: int,
+    chars: int,
+) -> None:
+    """B-8：把 TTS 用量补记到 Build 行 + 项目级 UsageEvent。
+
+    worker 正常结束、被取消、异常退出都会调用本函数 —— 旧实现只在「正常走到
+    打包结束」时写用量，一旦检测到 cancelled 就 `return`，已真实消耗的调用与
+    字数全部不入账。各退出路径保证只调一次；calls<=0（全是缓存命中）时跳过，
+    不产生 0 值脏行。
+    """
+    if calls <= 0:
+        return
+    try:
+        factory = get_session_factory()
+        async with factory() as s:
+            b = await s.get(Build, build_id)
+            if b:
+                b.tts_calls = calls
+                b.tts_chars = chars
+                await s.commit()
+    except Exception as e:
+        logger.warning(
+            f"[build_worker] 补记 Build 用量失败 build_id={build_id[:8]}...: "
+            f"{type(e).__name__}: {e}"
+        )
+    from .usage import record_tts_usage
+    record_tts_usage(
+        project_id, build_id, calls=calls, chars=chars, detail=f"build_{build_mode}",
+    )
+
+
+async def _apply_terminal_status(
+    build_id: str,
+    *,
+    final_status: str,
+    progress_msg: str,
+    zip_filename: str | None,
+    total_size_bytes: int,
+    total_duration_ms: int,
+    failed_chapters: list[int],
+    tts_calls: int,
+    tts_chars: int,
+) -> bool:
+    """B-3：仅当 Build 仍为 running 时写终态（条件更新），返回是否真的写回。
+
+    打包 ZIP（大书可能耗时较久）期间用户可能已 cancel → status 已变 cancelled；
+    旧实现无条件把 status 改回 success/partial_success，等于把用户已取消的任务
+    "复活"。这里用 `UPDATE ... WHERE build_id=? AND status='running'` + rowcount
+    判定：任何非 running 的既有终态都不会被覆盖。
+    """
+    from sqlalchemy import update as _sa_update
+    factory = get_session_factory()
+    async with factory() as s:
+        res = await s.execute(
+            _sa_update(Build)
+            .where(Build.build_id == build_id, Build.status == "running")
+            .values(
+                status=final_status,
+                progress_msg=progress_msg,
+                zip_filename=zip_filename,
+                total_size_bytes=total_size_bytes,
+                total_duration_ms=total_duration_ms,
+                completed_at=datetime.now(UTC).replace(tzinfo=None),
+                failed_chapters_json=json.dumps(sorted(failed_chapters), ensure_ascii=False),
+                tts_calls=tts_calls,
+                tts_chars=tts_chars,
+            )
+        )
+        await s.commit()
+        applied = (res.rowcount or 0) > 0
+        if not applied:
+            b_cur = await s.get(Build, build_id)
+            logger.warning(
+                f"[build_worker] build_id={build_id[:8]}... 终态未写回："
+                f"打包期间已被取消/改变（当前 status="
+                f"{b_cur.status if b_cur else 'unknown'}），保持取消态而非 {final_status}"
+            )
+        return applied
+
+
 def _audio_filename(build_id: str, ch_idx: int, failed: bool = False) -> str:
     """每章 MP3 文件名；failed 章单独命名以便排查。"""
     suffix = "_failed" if failed else ""
@@ -260,6 +345,30 @@ def _timings_filename_of_audio(audio_filename: str) -> str:
     if audio_filename.endswith(".mp3"):
         return audio_filename[:-4] + "_timings.json"
     return audio_filename + "_timings.json"
+
+
+def _link_or_copy(src: Path, dst: Path) -> bool:
+    """B-5：把 src 另存为 dst（优先硬链接，跨设备/不支持时退化为复制）。
+
+    retry 复用章时用：让新 build 拥有以自身命名、自己引用的章节文件，而不是与
+    source build 共享同一文件名 —— 否则 `delete_build` 按 audio_filename 无条件
+    unlink，删任一方都会连带删掉另一方仍在引用的章节 MP3 / 时间轴 sidecar。
+    硬链接同盘零拷贝，正常不会失败；src 不存在时返回 False（调用方静默跳过）。
+    """
+    if not src.is_file():
+        return False
+    if dst.exists():
+        return True
+    try:
+        try:
+            os.link(src, dst)
+        except OSError:
+            # 跨文件系统等场景硬链接不可用 → 退化为实体复制
+            shutil.copy2(src, dst)
+        return True
+    except OSError as e:
+        logger.warning(f"[build] 另存复用章文件失败 {src.name} -> {dst.name}: {e}")
+        return False
 
 
 async def _load_voice_styles(project_id: str) -> dict[str, dict[str, str]]:
@@ -537,6 +646,7 @@ def _calc_config_digest(
     narrator_emotion: str = "",
     narrator_instruction: str = "",
     voice_styles: dict[str, dict[str, str]] | None = None,
+    content_digest: str = "",
 ) -> str:
     sorted_va = dict(sorted((voice_assignments or {}).items()))
     sorted_styles = dict(sorted((voice_styles or {}).items()))
@@ -551,11 +661,75 @@ def _calc_config_digest(
             "narrator_emotion": narrator_emotion or "",
             "narrator_instruction": narrator_instruction or "",
             "styles": sorted_styles,
+            # A-7：正文/对白/发音规则的内容哈希。缺了它会出现「改了内容却复用旧产物」：
+            # 用户润色正文、重新识别对白、增删发音规则后，只要音色语速不变，
+            # digest 不变 → 直接命中历史成功 build，新内容永远不会被合成。
+            "content": content_digest or "",
         },
         ensure_ascii=False,
         sort_keys=True,
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def _calc_content_digest(
+    session: Any, project_id: str, chapters: list[Chapter],
+) -> str:
+    """A-7：计算「会影响产出内容」的数据摘要（章节正文 + 对白 + 发音规则）。
+
+    为什么需要：`_calc_config_digest` 原先只覆盖 narrator/speed/voice_assignments/
+    mode/provider/情感，**不含任何内容数据**。于是「改了内容但没改音色」的场景
+    （润色正文、重新 prepare 识别对白、增删发音规则）会命中历史成功 build 的复用
+    逻辑，用户以为重新合成了，实际拿到的是旧产物。
+
+    实现：流式 update sha256，避免为大部头小说额外构造大字符串。
+    排序固定（按 idx / 段序 / priority），保证同一内容得到同一摘要。
+    """
+    h = hashlib.sha256()
+    # 1) 章节正文
+    for ch in chapters:
+        h.update(
+            f"c|{ch.idx}|{ch.title or ''}|{ch.text or ''}\n".encode("utf-8")
+        )
+    # 2) 对白归属
+    dlg_rows = (
+        await session.execute(
+            select(ProjectDialogue)
+            .where(ProjectDialogue.project_id == project_id)
+            .order_by(
+                ProjectDialogue.chapter_idx,
+                ProjectDialogue.segment_index,
+                ProjectDialogue.anchor_start,
+                ProjectDialogue.id,
+            )
+        )
+    ).scalars().all()
+    for d in dlg_rows:
+        h.update(
+            (
+                f"d|{d.chapter_idx}|{d.segment_index}|{d.anchor_start}|{d.anchor_end}|"
+                f"{d.speaker or ''}|{d.anchor_text or ''}|{d.text or ''}\n"
+            ).encode("utf-8")
+        )
+    # 3) 发音规则（仅启用中的参与替换，故 enabled 一并纳入）
+    rule_rows = (
+        await session.execute(
+            select(ProjectPronunciationRule)
+            .where(ProjectPronunciationRule.project_id == project_id)
+            .order_by(
+                ProjectPronunciationRule.priority,
+                ProjectPronunciationRule.id,
+            )
+        )
+    ).scalars().all()
+    for r in rule_rows:
+        h.update(
+            (
+                f"r|{r.character_id}|{r.rule_type}|{r.pattern}|{r.replacement}|"
+                f"{r.priority}|{int(bool(r.enabled))}\n"
+            ).encode("utf-8")
+        )
+    return h.hexdigest()[:32]
 
 
 def _zip_filename(build_id: str) -> str:
@@ -728,7 +902,40 @@ def _should_strict_fail(mode: str) -> bool:
 # start_build + 后台 worker
 # =====================================================================
 
-async def start_build(
+# B-2：start_build 的「检查活跃 → 创建 Build → 注册 _ACTIVE_BUILDS」不是原子的。
+# 两个并发请求（典型：前端双击「开始合成」）会同时通过 _RUNNING_LOCK 检查、
+# 各自插入一条 queued Build；此后任何 `status in (queued, running)` 的
+# `.scalar_one_or_none()` 都会抛 MultipleResultsFound → 接口 500，并留下两个
+# 互相抢跑的 worker（重复 TTS 调用、章节文件互写、状态互相覆盖）。
+#
+# 修复：给「同一 project 的 start_build」加一把 project 粒度的进程内串行锁，
+# 把整个 start_build（含首个活跃检查与末尾的 _ACTIVE_BUILDS 注册）串起来。
+# 第二个并发请求会等第一个注册完成后再进入，于是走「already running」分支复用
+# 同一 build。不同 project 互不阻塞；单机部署下 start_build 仅在用户点击时发生，
+# 串行化开销可忽略。
+_START_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _serialize_start_per_project(func):
+    """B-2：按 project_id 串行化 start_build，消除并发创建重复 Build 的竞态。"""
+
+    @functools.wraps(func)
+    async def _wrapper(*args, **kwargs):
+        project_id = kwargs.get("project_id")
+        if project_id is None and args:
+            project_id = args[0]
+        lock = _START_LOCKS.get(project_id)
+        if lock is None:
+            # 无 await 点 → 事件循环内原子，不会重复创建
+            lock = asyncio.Lock()
+            _START_LOCKS[project_id] = lock
+        async with lock:
+            return await func(*args, **kwargs)
+
+    return _wrapper
+
+
+async def _start_build_impl(
     project_id: str,
     voice_assignments: dict[str, str],
     narrator_voice_id: str,
@@ -823,14 +1030,6 @@ async def start_build(
         logger.warning(f"[build_start] 读取角色情感配置失败（按无情感继续）: {type(e).__name__}: {e}")
         voice_styles = {}
 
-    digest = _calc_config_digest(
-        narrator_voice_id, speed, voice_assignments,
-        mode=resolved_mode, tts_provider=effective_provider,
-        narrator_emotion=narrator_emotion,
-        narrator_instruction=narrator_instruction,
-        voice_styles=voice_styles,
-    )
-
     async with _RUNNING_LOCK:
         if any(pid == project_id for pid in _ACTIVE_BUILDS.values()):
             logger.info(f"[build_start] project_id={project_id[:8]}... already running")
@@ -861,6 +1060,18 @@ async def start_build(
         if not chapters:
             raise RuntimeError("项目没有章节，无法启动 build")
 
+        # A-7：把正文/对白/发音规则的内容哈希纳入 digest（放在读书 chapters 之后，
+        # 需要 session 查对白与发音规则）。
+        content_digest = await _calc_content_digest(session, project_id, chapters)
+        digest = _calc_config_digest(
+            narrator_voice_id, speed, voice_assignments,
+            mode=resolved_mode, tts_provider=effective_provider,
+            narrator_emotion=narrator_emotion,
+            narrator_instruction=narrator_instruction,
+            voice_styles=voice_styles,
+            content_digest=content_digest,
+        )
+
         stmt_active = select(Build).where(
             Build.project_id == project_id,
             Build.status.in_(("queued", "running")),
@@ -868,9 +1079,35 @@ async def start_build(
         active = (await session.execute(stmt_active)).scalar_one_or_none()
         if active:
             now = datetime.now(UTC).replace(tzinfo=None)
-            if active.status == "running" and active.started_at and (now - active.started_at > timedelta(hours=settings.BUILD_RUNNING_TIMEOUT_HOURS)):
+            # B-4：queued / running 都要有孤儿超时兜底。
+            # running 用 started_at（无则退化到 created_at）判超时；queued 没有
+            # started_at，用 created_at 判定「提交后迟迟没被任何 worker 接管」。
+            # 旧实现只对 running 兜底，queued 分支直接返回该 build —— 若进程在
+            # 「提交 Build(queued)、注册 worker 之前」被杀，它会永远 queued，
+            # 之后每次 start_build 都返回它，项目永久无法合成。
+            orphan_reason: str | None = None
+            if active.status == "running":
+                ref = active.started_at or active.created_at
+                if ref and (now - ref > timedelta(hours=settings.BUILD_RUNNING_TIMEOUT_HOURS)):
+                    orphan_reason = (
+                        f"running 超过 {settings.BUILD_RUNNING_TIMEOUT_HOURS}h，"
+                        "判定为被 kill 的孤儿任务，已取消并起新 Build"
+                    )
+            elif active.created_at and (
+                now - active.created_at > timedelta(minutes=settings.BUILD_QUEUED_TIMEOUT_MINUTES)
+            ):
+                orphan_reason = (
+                    f"queued 超过 {settings.BUILD_QUEUED_TIMEOUT_MINUTES}min，"
+                    "判定为未被 worker 接管的孤儿任务，已取消并起新 Build"
+                )
+            if orphan_reason:
+                logger.warning(
+                    f"[build_start] project_id={project_id[:8]}... 孤儿 build "
+                    f"{active.build_id[:8]}... status={active.status} → cancelled：{orphan_reason}"
+                )
                 active.status = "cancelled"
-                active.progress_msg = f"running 超过 {settings.BUILD_RUNNING_TIMEOUT_HOURS}h，判定为被 kill 的孤儿任务，已取消并起新 Build"
+                active.progress_msg = orphan_reason
+                active.completed_at = now
                 await session.commit()
             else:
                 logger.warning(
@@ -1027,6 +1264,10 @@ async def start_build(
     return cur_resp
 
 
+# B-2：对外暴露的 start_build 是「按 project 串行化」的包装版本。
+start_build = _serialize_start_per_project(_start_build_impl)
+
+
 async def cancel_build(project_id: str, build_id: str, reason: str | None = None) -> BuildResp:
     factory = get_session_factory()
     async with factory() as session:
@@ -1163,14 +1404,24 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
             src_art = source_art_by_idx.get(ch.idx)
             if ch.idx not in failed_ch_idxs and src_art and src_art.status == "done" and src_art.audio_filename:
                 expected_mp3 = audio_dir / src_art.audio_filename
-                if expected_mp3.is_file():
+                # B-5：不再直接复用 source build 的 audio_filename（两个 build 共享
+                # 同一文件名 → delete_build 按 audio_filename 无条件 unlink，删任一方
+                # 都会连带删掉另一方仍在引用的章节 MP3 / 时间轴 sidecar）。改为把源
+                # 文件以硬链接"另存"为新 build 自己命名的文件（同盘零拷贝；异常时退化
+                # 为复制），并同步另存时间轴 sidecar，使新 build 的下载/字幕自洽。
+                new_fname = _audio_filename(new_build_id, ch.idx, failed=False)
+                if _link_or_copy(expected_mp3, audio_dir / new_fname):
+                    _link_or_copy(
+                        audio_dir / _timings_filename_of_audio(src_art.audio_filename),
+                        audio_dir / _timings_filename_of_audio(new_fname),
+                    )
                     session.add(BuildArtifact(
                         build_id=new_build_id,
                         chapter_idx=ch.idx,
                         title=ch.title,
                         status="done",
-                        audio_filename=src_art.audio_filename,
-                        audio_url=src_art.audio_url,
+                        audio_filename=new_fname,
+                        audio_url=f"/media/{new_fname}",
                         duration_ms=src_art.duration_ms,
                         error_msg=None,
                     ))
@@ -1794,6 +2045,11 @@ async def _run_build_inner(
                 chapter_ok_flag[ch_idx] = True
                 if b:
                     b.completed_chapters = completed
+                    # B-8：每章结束就把当前 TTS 用量落库，这样即便后续打包/DB
+                    # 抛异常导致 worker 异常退出，Build 行也已保留到最近一章的
+                    # 真实用量（不再只有正常走完全程才写一次）。
+                    b.tts_calls = tts_calls_used
+                    b.tts_chars = tts_chars_used
                     if b.status == "cancelled":
                         logger.warning(f"[build_worker] cancelled after done ch {ch_idx+1}")
                         b.progress_msg = f"已取消：已完成 {completed}/{total} 章"
@@ -1901,10 +2157,16 @@ async def _run_build_inner(
         if b_check2 and b_check2.status == "cancelled":
             was_cancelled = True
     if was_cancelled:
+        # B-8：取消路径不能丢已真实消耗的 TTS 用量（旧实现直接 return，
+        # 跳过了写 tts_calls/tts_chars 与 UsageEvent）。
+        await _record_build_usage(
+            build_id, project_id, build_mode, tts_calls_used, tts_chars_used,
+        )
         total_elapsed_ms = int((_time.perf_counter() - t0) * 1000)
         logger.info(
             f"[build_worker] CANCELLED build_id={build_id[:8]}... total_ms={total_elapsed_ms} "
-            f"completed={completed}/{total} failed={failed_count}"
+            f"completed={completed}/{total} failed={failed_count} "
+            f"tts_calls={tts_calls_used} tts_chars={tts_chars_used}"
         )
         return
 
@@ -1951,41 +2213,39 @@ async def _run_build_inner(
     else:
         this_retry_failed = [i for i, ok in chapter_ok_flag.items() if not ok]
 
-    async with factory() as s:
-        b = await s.get(Build, build_id)
-        if b:
-            b.status = final_status
-            if strict_final_failed:
-                b.progress_msg = (
-                    f"strict 多播剧模式合成失败：{failed_count}/{total} 章出错，已中止（无占位降级）"
-                )
-            else:
-                b.progress_msg = (
-                    f"全部完成 {completed}/{total} 章"
-                    + (f"（{failed_count} 章失败已用静音占位）" if failed_count else "")
-                )
-            b.zip_filename = zip_fname
-            b.total_size_bytes = 0 if strict_final_failed else total_size_bytes
-            b.total_duration_ms = 0 if strict_final_failed else total_ms
-            b.completed_at = datetime.now(UTC).replace(tzinfo=None)
-            b.failed_chapters_json = json.dumps(sorted(this_retry_failed), ensure_ascii=False)
-            # TTS 用量：真实供应商调用（缓存命中不计次）
-            b.tts_calls = tts_calls_used
-            b.tts_chars = tts_chars_used
-            await s.commit()
+    # B-3：终态写入加取消保护（条件更新，仅当仍为 running 才写回）。
+    if strict_final_failed:
+        _progress_msg = (
+            f"strict 多播剧模式合成失败：{failed_count}/{total} 章出错，已中止（无占位降级）"
+        )
+    else:
+        _progress_msg = (
+            f"全部完成 {completed}/{total} 章"
+            + (f"（{failed_count} 章失败已用静音占位）" if failed_count else "")
+        )
+    terminal_applied = await _apply_terminal_status(
+        build_id,
+        final_status=final_status,
+        progress_msg=_progress_msg,
+        zip_filename=zip_fname,
+        total_size_bytes=0 if strict_final_failed else total_size_bytes,
+        total_duration_ms=0 if strict_final_failed else total_ms,
+        failed_chapters=this_retry_failed,
+        # TTS 用量：真实供应商调用（缓存命中不计次）
+        tts_calls=tts_calls_used,
+        tts_chars=tts_chars_used,
+    )
 
-    # 项目级用量汇总（UsageEvent 表，供 /usage 聚合展示）
-    from .usage import record_tts_usage
-    record_tts_usage(
-        project_id, build_id,
-        calls=tts_calls_used, chars=tts_chars_used,
-        detail=f"build_{build_mode}",
+    # B-8：无论终态是否写回，已真实消耗的 TTS 用量都要入账（打包期间被取消同理）。
+    await _record_build_usage(
+        build_id, project_id, build_mode, tts_calls_used, tts_chars_used,
     )
 
     # 构建结束同步项目状态：全量成功 → done（前端"已完成"）；
     # 部分成功 → partial_success；失败/取消保持 ready（用户可重新构建）。
-    # 仅当这是该项目最近一次构建时才回写，避免旧 build 完成覆盖新状态。
-    if final_status in ("success", "partial_success"):
+    # 仅当这是该项目最近一次构建、且终态确已写回时才回写，避免旧 build 完成
+    # 覆盖新状态，也避免「已取消」的 build 把项目置为 done。
+    if terminal_applied and final_status in ("success", "partial_success"):
         async with factory() as s:
             stmt_latest = select(Build).where(
                 Build.project_id == project_id

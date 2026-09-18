@@ -6,7 +6,8 @@
   当前用户对资源有读权限后，签发一个**单用途 + 短时 + 资源绑定**的签名 token。
 - 客户端再调 GET /api/media/stream?token=<signed>，服务端校验签名 token 后
   返回实际文件（先 302 → 内部 /media 路径或直接 FileResponse）。
-- 签名 token 默认 5 分钟过期；jti 一次性使用；后台清理（启动时 + 定期）。
+- 签名 token 默认 5 分钟过期；**TTL 内可重复使用**（见下方 consume_media_token 说明）；
+  后台清理（启动时 + 定期）。
 
 存储：
 - SQLite 表 media_sign_tokens（jti PK + payload + expires_at + used_at NULL）
@@ -78,7 +79,8 @@ async def issue_media_token(
     user_id: int,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
 ) -> dict[str, Any]:
-    """签发一次性媒体签名 token。返回 dict 含 token / expires_at / url。"""
+    """签发媒体签名 token（资源绑定 + 短时，TTL 内可重复使用）。
+    返回 dict 含 token / expires_at / url。"""
     from ..db.session import get_session_factory
 
     jti = uuid.uuid4().hex
@@ -103,9 +105,18 @@ async def issue_media_token(
 
 
 async def consume_media_token(token: str) -> dict[str, Any] | None:
-    """校验并"消费"一次性 token：成功返回 payload；过期/已用/签名错都返回 None。
+    """校验媒体签名 token：成功返回 payload；过期 / 签名错 / 找不到记录返回 None。
 
-    一次性的实现：成功后立即把 used_at 写上（即使后续因网络问题没下完，也不能再用）。
+    ⚠️ B-6 变更：token **不再是单用途**，在 TTL 内可重复使用。
+
+    为什么必须放开单用途：`/api/media/stream?token=...` 这个 URL 会被前端直接塞进
+    `<audio src>`，而浏览器在**拖动进度条 / 重新加载 / 重新绑定 src** 时会对同一 URL
+    再发一次（Range）请求。旧实现「首次请求即写 used_at，之后一律返回 None(401)」，
+    结果用户一拖动进度条播放就失败，且没有任何恢复路径。
+
+    安全性权衡：token 本身已由「资源绑定（build_id+kind+idx）+ 短 TTL（默认 300s）+
+    登录用户校验」保护，放开单用途不会额外暴露它本就无权访问的资源。
+    `used_at` 仍记录**首次**消费时间（供审计与清理参考），但不再作为拒绝条件。
     """
     try:
         payload = jwt.decode(
@@ -129,13 +140,13 @@ async def consume_media_token(token: str) -> dict[str, Any] | None:
         ).scalar_one_or_none()
         if not row:
             return None
-        if row.used_at is not None:
-            return None  # 一次性：已被消费
         if row.expires_at < _now():
             return None
-        # 标记已用
-        row.used_at = _now()
-        await s.commit()
+        # 只记录「首次消费时间」（审计/清理参考），**不作为拒绝条件**（B-6）：
+        # `<audio>` 拖动进度条会重复请求同一 URL，单用途会直接 401。
+        if row.used_at is None:
+            row.used_at = _now()
+            await s.commit()
         return {
             "build_id": row.build_id,
             "kind": row.kind,

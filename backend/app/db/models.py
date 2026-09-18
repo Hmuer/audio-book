@@ -362,17 +362,19 @@ class IclTrainingTask(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
-# P1 #6：媒体签名 URL（一次性 + 资源绑定 + 短时），用于避免在 URL 里
-# 携带完整登录 JWT。
+# P1 #6 / B-6：媒体签名 URL（资源绑定 + 短时 + **TTL 内可重复使用**），
+# 用于避免在 URL 里携带完整登录 JWT。
 class MediaSignToken(Base):
     __tablename__ = "media_sign_tokens"
 
     jti: Mapped[str] = mapped_column(String(64), primary_key=True)
     build_id: Mapped[str] = mapped_column(String(64), index=True)
-    kind: Mapped[str] = mapped_column(String(16))   # chapter_mp3 | all_zip
+    kind: Mapped[str] = mapped_column(String(16))   # chapter_mp3 | all_zip | book_m4b
     chapter_idx: Mapped[int | None] = mapped_column(Integer, nullable=True)
     user_id: Mapped[int] = mapped_column(Integer, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    # 首次消费时间（审计/清理参考）；**不再**作为「已用即拒」的判据 —— B-6：
+    # `<audio>` 拖动进度条会对同一 URL 重复发 Range 请求，单用途会导致播放中断。
     used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime)
 

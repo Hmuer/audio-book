@@ -1,4 +1,4 @@
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
     AsyncEngine,
@@ -14,15 +14,45 @@ _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
+def _install_sqlite_pragmas(engine: AsyncEngine) -> None:
+    """B-7：给 SQLite 连接设置并发相关 PRAGMA（仅 sqlite 引擎调用）。
+
+    - `journal_mode=WAL`：读写不再互相阻塞。默认的 rollback journal 下，
+      build worker 每章多次 commit，会与 prepare 后台、JobTask 看门狗、API 请求
+      抢同一把写锁，很容易触发 `database is locked`——而该异常在 worker 内会被
+      当作「整章失败」降级成静音占位。
+    - `busy_timeout=5000`：遇到锁时最多等 5s 再报错，避免瞬时争抢即失败。
+    - `synchronous=NORMAL`：WAL 下的推荐搭配，兼顾安全与写入吞吐。
+
+    说明：这里**不**开启 `foreign_keys=ON`。本项目的级联删除全部由 ORM 的
+    `cascade="all, delete-orphan"` 显式完成（见 delete_project 等），开启 FK
+    强制校验收益很小，但若历史库中存在悬挂外键，会直接导致写入被拒 —— 风险
+    大于收益，故暂不开启。
+    """
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_pragmas(dbapi_conn, _connection_record):  # noqa: ANN001
+        cursor = dbapi_conn.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        finally:
+            cursor.close()
+
+
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
+        is_sqlite = "sqlite" in settings.DATABASE_URL
         _engine = create_async_engine(
             settings.DATABASE_URL,
             echo=False,
             future=True,
-            connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {},
+            connect_args={"check_same_thread": False} if is_sqlite else {},
         )
+        if is_sqlite:
+            _install_sqlite_pragmas(_engine)
     return _engine
 
 
@@ -129,9 +159,17 @@ async def init_db() -> None:
             db_path = url.database
             if db_path:
                 from pathlib import Path as _P
+                import os as _os
                 p = _P(db_path)
-                if p.is_file():
-                    import os as _os
-                    _os.chmod(p, 0o600)
+                # 主库 + WAL/SHM 伴生文件（启用 WAL 后会出现）都可能含敏感数据，
+                # 一律收紧到 0600，避免只收主库、留下可读的 -wal/-shm。
+                targets = [
+                    p,
+                    p.with_name(p.name + "-wal"),
+                    p.with_name(p.name + "-shm"),
+                ]
+                for target in targets:
+                    if target.is_file():
+                        _os.chmod(target, 0o600)
     except Exception:
         pass
