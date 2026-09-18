@@ -971,7 +971,8 @@ function ChaptersTab({
   }, [expandedIdx, project.project_id]);
 
   // P1 #6：展开任意章节 / 进入项目时，为每个 chapter 批量签发一次性音频 URL。
-  // 5 分钟过期，过期后 audio tag 会报 401，前端应自动重新签发。
+  // 签名 TTL 5 分钟：过期后 audio tag 会拿到 401，由 WaveformPlayer 的
+  // onNeedNewSrc 回调触发单章重签并自动续播（见各处 <WaveformPlayer> 传参）。
   useEffect(() => {
     if (!hasAudio || !lastBuild) return;
     let cancelled = false;
@@ -1096,6 +1097,13 @@ function ChaptersTab({
                     <WaveformPlayer
                       src={audioUrl}
                       compact
+                      onNeedNewSrc={async () => {
+                        // 签名 URL 过期（TTL 5 分钟）后为该章重新签发
+                        const u = await api.buildChapterAudioUrl(
+                          project.project_id, lastBuild!.build_id, c.idx
+                        );
+                        setAudioUrls(prev => ({ ...prev, [c.idx]: u }));
+                      }}
                       onDownload={() => {
                         // P1 #6：先签发一次性下载 URL，再触发浏览器下载
                         api.buildChapterDownload(project.project_id, lastBuild!.build_id, c.idx)
@@ -2086,6 +2094,13 @@ function BuildDetailContent({
                 <WaveformPlayer
                   src={signedUrls[a.chapter_idx]}
                   compact
+                  onNeedNewSrc={async () => {
+                    // 签名 URL 过期（TTL 5 分钟）后为该章重新签发
+                    const u = await api.buildChapterAudioUrl(
+                      projectId, detail.build_id, a.chapter_idx
+                    );
+                    setSignedUrls(prev => ({ ...prev, [a.chapter_idx]: u }));
+                  }}
                   onDownload={() => {
                     // P1 #6：签发一次性下载 URL 后再触发浏览器下载
                     api.buildChapterDownload(projectId, detail.build_id, a.chapter_idx)

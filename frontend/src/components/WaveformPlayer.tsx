@@ -2,6 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 
+/** 播放源失效（签名 URL 过期）后，单个播放器最多自动重签几次 */
+const MAX_SRC_REFRESH_ATTEMPTS = 2;
+
 /**
  * 阿布平台的标准音频播放器。
  *
@@ -19,11 +22,18 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 export default function WaveformPlayer({
   src,
   onDownload,
+  onNeedNewSrc,
   compact = false,
   autoPlay = false,
 }: {
   src: string | null;
   onDownload?: () => void;
+  /**
+   * 播放源读取失败（最常见：媒体签名 URL 超过 5 分钟 TTL → 401）时调用，
+   * 由父组件为同一资源重新签发 URL。本组件会在新 src 到达后自动重试播放。
+   * 未提供时行为不变（直接展示错误）。
+   */
+  onNeedNewSrc?: () => void | Promise<void>;
   compact?: boolean;
   autoPlay?: boolean;
 }) {
@@ -57,6 +67,11 @@ export default function WaveformPlayer({
   const waitingTimerRef = useRef<number | null>(null);
   // 自动播放重试计数（src 切换时归零）
   const autoplayRetriesRef = useRef(0);
+  // 签名 URL 失效（401）后的自动重签次数：一次播放序列内最多重试 2 次，
+  // 成功拿到 metadata 后清零，避免「URL 真的坏了」时无限重签打转。
+  const srcRefreshRef = useRef(0);
+  // 本次 src 变更是否来自「重签后重试」→ 新源就绪后自动继续播放
+  const resumeAfterRefreshRef = useRef(false);
 
   // 同步 durationRef（seek 时只读 ref，避免依赖 state 造成陈旧闭包）
   useEffect(() => {
@@ -164,6 +179,12 @@ export default function WaveformPlayer({
   // ===== 播放端清理与兜底恢复（src 变更 / 组件卸载） =====
   useEffect(() => {
     autoplayRetriesRef.current = 0;
+    // 若本次 src 变更是「签名失效后重签」，说明用户此前已点过播放 → 继续播。
+    // play() 可能因缺少用户手势被浏览器拒绝，此时保持暂停，等用户再点一次即可。
+    if (resumeAfterRefreshRef.current && audioRef.current) {
+      resumeAfterRefreshRef.current = false;
+      audioRef.current.play().catch(() => {});
+    }
   }, [src]);
 
   useEffect(() => {
@@ -576,6 +597,8 @@ export default function WaveformPlayer({
             setDuration(Number.isFinite(d) ? d : 0);
             setLoaded(true);
             setPlayError(null);
+            // 这一轮 src 真的能播了 → 清零重签计数
+            srcRefreshRef.current = 0;
             // 元数据就绪 → 应用之前因 duration=0 而被暂存的 seek（修复"拖到 N 但从头播放"）
             const pending = pendingSeekRef.current;
             if (pending != null && Number.isFinite(d) && d > 0) {
@@ -669,6 +692,26 @@ export default function WaveformPlayer({
             setIsBuffering(false);
             setIsPlaying(false);
             clearWaitingTimer();
+            // 媒体签名 URL 只有 5 分钟 TTL，过期后本请求拿到的是 401 JSON，
+            // 浏览器表现即 "FFmpegDemuxer: data source error"（MediaError.code=2）。
+            // 这里自动重签一次再播，省掉用户手动刷新页面。（code=3 是解码失败，重签没用）
+            if (
+              onNeedNewSrc &&
+              code !== 3 &&
+              srcRefreshRef.current < MAX_SRC_REFRESH_ATTEMPTS
+            ) {
+              srcRefreshRef.current += 1;
+              resumeAfterRefreshRef.current = true;
+              setPlayError('播放地址已过期，正在重新获取…');
+              void Promise.resolve()
+                .then(onNeedNewSrc)
+                .catch((err2) => {
+                  console.warn('[WaveformPlayer] 重新签发播放地址失败:', err2);
+                  resumeAfterRefreshRef.current = false;
+                  setPlayError(msg);
+                });
+              return;
+            }
             setPlayError(msg);
           }}
           onLoadedData={() => {}}
