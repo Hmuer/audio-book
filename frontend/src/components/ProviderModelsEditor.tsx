@@ -430,11 +430,15 @@ export default function ProviderModelsEditor() {
         ) : (
           draft.providers.map((p, i) => (
             <ProviderCard
-              key={p.id}
+              // key 用数组下标而非 p.id：id 输入框正在编辑时，
+              // 若 key 跟随 p.id 变化会让整张卡片卸载重建、输入框每敲一字就失焦。
+              key={i}
               p={p}
               pIdx={i}
-              keyShown={!!showKey[p.id]}
-              onToggleKey={() => setShowKey(s => ({ ...s, [p.id]: !s[p.id] }))}
+              isSecretShown={field => !!showKey[`${p.id}:${field}`]}
+              onToggleSecret={field =>
+                setShowKey(s => ({ ...s, [`${p.id}:${field}`]: !s[`${p.id}:${field}`] }))
+              }
               onUpdateProvider={updateProvider}
               onRemove={removeProvider}
               onUpdateModel={updateModel}
@@ -455,17 +459,74 @@ export default function ProviderModelsEditor() {
 }
 
 // =====================================================================
+// 子组件：敏感字段输入
+// 后端 GET 对 api_key / secret / app_id / icl_api_key / icl_access_key
+// 一律返回 "***LAST4" 占位（或空串）。本组件统一处理三种状态：
+//  - 未改动 → 原样提交占位符，后端保留旧值
+//  - 点「重写」→ 清空，等待用户填入新值
+//  - 用户输入 → 作为新值提交（覆盖）
+// =====================================================================
+function SecretInput({
+  value, onChange, placeholder, visible, onToggleVisible,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  placeholder: string;
+  visible: boolean;
+  onToggleVisible: () => void;
+}) {
+  const isPlaceholder = typeof value === 'string' && value.startsWith('***');
+  return (
+    <div className="relative">
+      <input
+        type={visible ? 'text' : 'password'}
+        value={value}
+        onChange={e => {
+          const v = e.target.value;
+          // 占位符状态下用户只在掩码内编辑 → 视为未改动，保留占位符再次提交
+          onChange(isPlaceholder && v.startsWith('***') ? value : v);
+        }}
+        placeholder={isPlaceholder ? '点「重写」填入新值' : placeholder}
+        spellCheck={false}
+        autoComplete="off"
+        className="input-base w-full !pr-20 font-mono !text-xs"
+      />
+      <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+        {isPlaceholder && (
+          <button
+            type="button"
+            onClick={() => onChange('')}
+            className="text-[11px] text-ink-500 hover:text-brand-300 px-1.5 py-0.5"
+            title="清空当前值，填入新的"
+          >
+            重写
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onToggleVisible}
+          className="text-[11px] text-ink-500 hover:text-ink-700 px-1.5 py-0.5"
+        >
+          {visible ? '隐藏' : '显示'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
 // 子组件：单厂商卡片
 // =====================================================================
 function ProviderCard({
-  p, pIdx, keyShown, onToggleKey, onUpdateProvider, onRemove,
+  p, pIdx, isSecretShown, onToggleSecret, onUpdateProvider, onRemove,
   onUpdateModel, onAddModel, onRemoveModel,
   doubaoTtsOptions,
 }: {
   p: ProviderConfig;
   pIdx: number;
-  keyShown: boolean;
-  onToggleKey: () => void;
+  /** 某个敏感字段是否明文显示（key 为字段名） */
+  isSecretShown: (field: string) => boolean;
+  onToggleSecret: (field: string) => void;
   onUpdateProvider: (idx: number, patch: Partial<ProviderConfig>) => void;
   onRemove: (idx: number) => void;
   onUpdateModel: (pIdx: number, globalMIdx: number, patch: Partial<ProviderModel>) => void;
@@ -474,18 +535,72 @@ function ProviderCard({
   /** 豆包 TTS 模型下拉选项（已存在的官方 resource_id）。未提供时回退到自由文本。 */
   doubaoTtsOptions?: { id: string; label: string; description: string }[];
 }) {
-  // 是否启用 TTS id 下拉：厂商 id 含 doubao 且选项已就绪
-  const useDoubaoTtsSelect = !!doubaoTtsOptions && p.id.toLowerCase().includes('doubao');
+  // 豆包厂商：id 含 doubao。用于展示 5 个专属凭据与 2 个专属端点。
+  const isDoubao = p.id.toLowerCase().includes('doubao');
+  // 是否启用 TTS id 下拉：豆包厂商且选项已就绪
+  const useDoubaoTtsSelect = isDoubao && !!doubaoTtsOptions;
   const ttsModels = getModelsOfKind(p, 'tts');
   const llmModels = getModelsOfKind(p, 'llm');
 
-  // 后端返回的 api_key 是脱敏占位 "***LAST4" 或完整字符串。
-  // - 用户没改 → 直接当作占位符提交（后端会保留原 key）
-  // - 用户改了 → 当作新 key 提交（覆盖）
-  // 输入框本身显示占位符，避免展示完整 key；
-  // 单独用一个 boolean keyDirty 标识用户输入了内容。
-  const isPlaceholder = typeof p.api_key === 'string' && p.api_key.startsWith('***');
-  const apiKeyDisplay = isPlaceholder ? p.api_key : (p.api_key || '');
+  /** 已配置的敏感字段徽标（脱敏值与 configured 标记由后端 GET 提供） */
+  const configuredBadge = (field: string, raw: string | undefined) => {
+    const v = raw ?? '';
+    if (!v.startsWith('***')) return null;
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-brand-500/10 text-brand-300 border border-brand-500/20">
+        <span className="w-1 h-1 rounded-full bg-brand-400" />
+        已配置（{v}）
+      </span>
+    );
+  };
+
+  const secretField = (
+    field: 'api_key' | 'secret' | 'app_id' | 'icl_api_key' | 'icl_access_key',
+    title: string,
+    placeholder: string,
+    hint?: string,
+  ) => {
+    const val = (p[field] as string) ?? '';
+    const wasConfigured = !!p[`${field}_configured`];
+    return (
+      <div>
+        <div className="text-[11px] text-ink-500 mb-1 flex items-center gap-2 flex-wrap">
+          <span>{title}</span>
+          {configuredBadge(field, val)}
+        </div>
+        <SecretInput
+          value={val}
+          onChange={v => onUpdateProvider(pIdx, { [field]: v } as Partial<ProviderConfig>)}
+          placeholder={placeholder}
+          visible={isSecretShown(field)}
+          onToggleVisible={() => onToggleSecret(field)}
+        />
+        {hint && <div className="text-[10px] text-ink-500 mt-1">{hint}</div>}
+        {!val && wasConfigured && (
+          <div className="text-[10px] text-amber-300 mt-1">已清空，保存后该值会被移除</div>
+        )}
+      </div>
+    );
+  };
+
+  const endpointField = (
+    field: 'icl_endpoint' | 'tts_v3_endpoint',
+    title: string,
+    placeholder: string,
+  ) => (
+    <div>
+      <div className="text-[11px] text-ink-500 mb-1">{title}</div>
+      <input
+        type="text"
+        value={(p[field] as string) ?? ''}
+        onChange={e => onUpdateProvider(pIdx, { [field]: e.target.value } as Partial<ProviderConfig>)}
+        placeholder={placeholder}
+        spellCheck={false}
+        className="input-base w-full font-mono !text-xs"
+      />
+      <div className="text-[10px] text-ink-500 mt-1">可填 path（以 / 开头，自动拼 base_url）或完整 URL</div>
+    </div>
+  );
 
   return (
     <div
@@ -541,56 +656,7 @@ function ProviderCard({
 
       {/* 凭据 + Base URL */}
       <div className="p-4 grid gap-3 md:grid-cols-2">
-        <div>
-          <div className="text-[11px] text-ink-500 mb-1 flex items-center gap-2">
-            <span>API Key（TTS 与 LLM 共用）</span>
-            {isPlaceholder && (
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-brand-500/10 text-brand-300 border border-brand-500/20">
-                <span className="w-1 h-1 rounded-full bg-brand-400" />
-                已配置（{apiKeyDisplay}）
-              </span>
-            )}
-          </div>
-          <div className="relative">
-            <input
-              type={keyShown ? 'text' : 'password'}
-              value={p.api_key}
-              onChange={e => {
-                // 第一次输入时如果还是占位符，则清空让用户重新填入完整 key
-                const v = e.target.value;
-                if (isPlaceholder && v === p.api_key) return;
-                // 占位符状态下用户改了内容：替换为空（避免把占位符当完整 key 提交）
-                const next = isPlaceholder && v.startsWith('***') ? '' : v;
-                onUpdateProvider(pIdx, { api_key: next });
-              }}
-              placeholder={isPlaceholder ? '点击「重写」按钮以填入新的 API Key' : 'sk-...'}
-              className="input-base w-full !pr-24 font-mono !text-xs"
-            />
-            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-              {isPlaceholder && (
-                <button
-                  type="button"
-                  onClick={() => onUpdateProvider(pIdx, { api_key: '' })}
-                  className="text-[11px] text-ink-500 hover:text-brand-300 px-1.5 py-0.5"
-                  title="清空当前 key，填入新的"
-                >
-                  重写
-                </button>
-              )}
-              <button
-                onClick={onToggleKey}
-                className="text-[11px] text-ink-500 hover:text-ink-700 px-1.5 py-0.5"
-              >
-                {keyShown ? '隐藏' : '显示'}
-              </button>
-            </div>
-          </div>
-          {isPlaceholder && p.api_key === '' && (
-            <div className="text-[10px] text-amber-300 mt-1">
-              已清空，保存后该厂商的 API Key 会被移除
-            </div>
-          )}
-        </div>
+        {secretField('api_key', 'API Key（TTS 与 LLM 共用）', 'sk-...')}
         <div>
           <div className="text-[11px] text-ink-500 mb-1">Base URL</div>
           <input
@@ -601,6 +667,26 @@ function ProviderCard({
             className="input-base w-full font-mono !text-xs"
           />
         </div>
+        {isDoubao && (<>
+          {secretField(
+            'secret', '豆包 SK（Secret Key）', '与 AK 配套的 SK',
+            '旧版控制台：APP_ID 为纯数字时才作为鉴权依据',
+          )}
+          {secretField(
+            'app_id', '豆包 APP_ID', '纯数字 APP_ID',
+            '纯数字 → 走旧版鉴权（X-Api-App-Id / X-Api-Access-Key）',
+          )}
+          {secretField(
+            'icl_api_key', 'ICL API Key（声音复刻）', '新版控制台 ICL key',
+            '留空时回退到上面的 API Key',
+          )}
+          {secretField(
+            'icl_access_key', 'ICL Access Key（声音复刻·旧版）', '旧版 ICL access key',
+            '留空则仅使用新版 key',
+          )}
+          {endpointField('icl_endpoint', 'ICL 训练端点', '/api/v1/voice_clone')}
+          {endpointField('tts_v3_endpoint', 'TTS v3 端点', '/api/v3/tts/unidirectional')}
+        </>)}
       </div>
 
       {/* 模型列表 */}
@@ -742,8 +828,9 @@ function ModelSection({
         )}
         {models.map((m, idx) => {
           const globalIdx = allModels.indexOf(m);
+          // key 用全局下标而非模型 id：id 正在被编辑时若 key 跟随变化会卸载重建、输入框失焦
           return (
-            <div key={`${m.id}_${idx}_${globalIdx}`} className="px-3 py-2 grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
+            <div key={globalIdx} className="px-3 py-2 grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
               <input
                 value={m.label}
                 onChange={e => onUpdate(globalIdx, { label: e.target.value })}

@@ -119,6 +119,46 @@ def concat_mp3_files(*parts: bytes) -> bytes:
     return bytes(out)
 
 
+_DEFAULT_MINIMAX_MODEL = "speech-2.8-turbo"
+
+
+def _strip_model_prefix(model: str | None) -> str:
+    """把模型 ID 归一为 MiniMax 接口要求的内部名（C-5）。
+
+    例："MiniMax-speech-01" → "speech-01"；"minimax:speech-2.8-turbo" →
+    "speech-2.8-turbo"。激活/未激活两条构造分支共用本函数，避免「未激活多厂商
+    时 `_internal_model` 被硬编码死值、显式 model 与 ACTIVE_TTS_MODEL 均失效」。
+    """
+    mid = (model or "").strip()
+    if ":" in mid:
+        mid = mid.split(":", 1)[1]
+    if mid.startswith("MiniMax-"):
+        mid = mid[len("MiniMax-"):]
+    return mid or _DEFAULT_MINIMAX_MODEL
+
+
+# C-4：MiniMax 业务错误码（HTTP 200 且 base_resp.status_code != 0）分类。
+# 下列错误重试不会变好，且每次重试都可能被上游计费 → 直接失败，不再白等退避：
+#   1004 鉴权失败 / 1008 余额不足 / 1026 输出内容错误 / 1027 输出内容错误 /
+#   2013 输入格式信息不正常
+# 其余（1000 未知 / 1001 超时 / 1002 限流 / 1013 服务内部错误 / 1039 并发限流 等）
+# 保持可重试。
+_PERMANENT_BIZ_CODES = frozenset({1004, 1008, 1026, 1027, 2013})
+
+
+class MiniMaxTTSError(RuntimeError):
+    """MiniMax 调用错误。
+
+    retryable=False 表示永久性错误（鉴权/余额/参数/内容不合法、HTTP 4xx），
+    重试只会白等退避并可能被上游计费，应直接抛出。
+    """
+
+    def __init__(self, message: str, *, retryable: bool = True, code: int | None = None):
+        super().__init__(message)
+        self.retryable = retryable
+        self.code = code
+
+
 class MiniMaxTTSProvider(BaseTTSProvider):
     name = "minimax"
     provider = "minimax"
@@ -131,20 +171,16 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         if prov and prov.get("id") == "minimax" and prov.get("api_key"):
             self.api_key = api_key or prov["api_key"]
             self.base_url = (base_url or prov.get("base_url") or settings.TTS_BASE_URL).rstrip("/")
-            self.model = model or settings.ACTIVE_TTS_MODEL or "speech-2.8-turbo"
-            # 模型 ID 形如 "MiniMax-speech-01"，去掉厂商前缀得 "speech-01"
-            mid = self.model
-            if ":" in mid:
-                mid = mid.split(":", 1)[1]
-            if mid.startswith("MiniMax-"):
-                mid = mid[len("MiniMax-"):]
-            self._internal_model = mid
+            self.model = model or settings.ACTIVE_TTS_MODEL or _DEFAULT_MINIMAX_MODEL
+            self._internal_model = _strip_model_prefix(self.model)
             self.extra_headers = dict(prov.get("extra_headers") or {})
         else:
             self.api_key = api_key or settings.TTS_API_KEY
             self.base_url = (base_url or settings.TTS_BASE_URL).rstrip("/")
-            self.model = model or "speech-2.8-turbo"
-            self._internal_model = "speech-2.8-turbo"
+            # C-5：未走多厂商激活分支时，同样尊重显式 model 与 ACTIVE_TTS_MODEL，
+            # 并用同一套前缀剥离逻辑得出内部 model（旧实现为硬编码死值）。
+            self.model = model or settings.ACTIVE_TTS_MODEL or _DEFAULT_MINIMAX_MODEL
+            self._internal_model = _strip_model_prefix(self.model)
             self.extra_headers = dict(extra_headers or {})
         self.timeout = httpx.Timeout(
             connect=settings.TTS_TIMEOUT,
@@ -191,8 +227,8 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             return make_silent_mp3(50), 50
         text = apply_onomatopoeia(text, voice_id=voice_id)
         text_chars = len(text)
-        # 多厂商激活模型：取自 PROVIDERS_CONFIG.active.tts；兜底硬编码值
-        model = getattr(self, "_internal_model", None) or "speech-2.8-turbo"
+        # 多厂商激活模型：取自 PROVIDERS_CONFIG.active.tts；兜底默认值
+        model = getattr(self, "_internal_model", None) or _DEFAULT_MINIMAX_MODEL
         speed = max(0.5, min(2.0, float(speed)))
         # voice_id 若含 minimax: 前缀，合成前剥离（API 端要求纯 id）
         if voice_id.startswith("minimax:"):
@@ -262,8 +298,15 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                             err_msg = base_msg or resp.text[:500]
                         except Exception:
                             err_msg = resp.text[:500]
-                        raise RuntimeError(
-                            f"TTS HTTP {resp.status_code}: {err_msg}"
+                        # C-4：HTTP 4xx（429 除外）为永久错误（参数/鉴权/路径不对），
+                        # 重试无意义；5xx / 429 保持可重试。
+                        _retryable = not (
+                            400 <= resp.status_code < 500 and resp.status_code != 429
+                        )
+                        raise MiniMaxTTSError(
+                            f"TTS HTTP {resp.status_code}: {err_msg}",
+                            retryable=_retryable,
+                            code=resp.status_code,
                         )
                     try:
                         resp_json = resp.json()
@@ -276,9 +319,17 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                     hex_audio = data.get("audio")
                     if not hex_audio:
                         base_resp = resp_json.get("base_resp") or {}
-                        if base_resp.get("status_code", 0) != 0:
-                            raise RuntimeError(
-                                f"TTS 错误: {base_resp.get('status_msg') or resp.text[:200]}"
+                        biz_code = base_resp.get("status_code", 0)
+                        if biz_code != 0:
+                            try:
+                                _code = int(biz_code)
+                            except (TypeError, ValueError):
+                                _code = None
+                            # C-4：鉴权/余额/参数/内容类业务码重试不会变好 → 直接失败
+                            raise MiniMaxTTSError(
+                                f"TTS 错误: {base_resp.get('status_msg') or resp.text[:200]}",
+                                retryable=_code not in _PERMANENT_BIZ_CODES,
+                                code=_code,
                             )
                         raise RuntimeError(
                             f"TTS 响应缺失 data.audio: {resp_json}"
@@ -300,6 +351,14 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             except Exception as e:
                 last_exc = e
                 elapsed = _time.perf_counter() - t0
+                # C-4：永久性错误（鉴权/余额/参数/内容非法、HTTP 4xx）→ 不重试、不白等
+                if isinstance(e, MiniMaxTTSError) and not e.retryable:
+                    logger.error(
+                        f"[TTS] FAIL (permanent, no retry) model={model} voice={voice_id} "
+                        f"chars={text_chars} code={e.code} trace_id={trace_id} "
+                        f"status={http_status} ms={int(elapsed*1000)} {e}"
+                    )
+                    raise
                 if is_last_attempt:
                     logger.error(
                         f"[TTS] FAIL (final attempt={attempt}) model={model} voice={voice_id} chars={text_chars} "

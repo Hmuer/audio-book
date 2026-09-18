@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import time as _time
 from typing import Any, Callable, Optional
 
@@ -8,7 +9,9 @@ from .providers.minimax.tts import MiniMaxTTSProvider
 
 
 _llm_instance: BaseLLMProvider | None = None
-_tts_instances: dict[str, BaseTTSProvider] = {}
+# C-3：provider 名 → (配置指纹, 实例)。缓存键带上配置指纹，运行中改端点/模型/
+# key/DOUBAO_TTS_USE_V3 等会自然命中「指纹不同」→ 重建实例，无需重启后端。
+_tts_instances: dict[str, tuple[str, BaseTTSProvider]] = {}
 # 遗留单例引用：conftest._isolate_data_dir 通过它注入 mock；保持对外属性一致。
 _tts_instance: BaseTTSProvider | None = None
 _tts_default_instance: BaseTTSProvider | None = None
@@ -97,6 +100,40 @@ def _resolve_provider_name(provider: Optional[str]) -> str:
     return (settings.TTS_PROVIDER or "minimax").lower()
 
 
+def _tts_config_fingerprint() -> str:
+    """C-3：TTS 实例缓存的配置指纹。
+
+    TTS provider 实例在构造时快照了端点/模型/key/超时/v3 开关等配置。若缓存只按
+    provider 名索引，运行中改这些配置后会继续复用旧实例，必须重启才生效。
+
+    这里把「会影响 provider 构造的配置」一起哈希：所有 `DOUBAO_*` / `TTS_*` /
+    `ACTIVE_TTS_*` 字段 + 结构化 `PROVIDERS_CONFIG`。只在这些字段变化时指纹才变，
+    因此不会因无关配置（如日志级别）抖动而频繁重建。
+    """
+    from ..core.config import settings
+
+    parts: list[str] = []
+    for name in sorted(dir(settings)):
+        if not (
+            name.startswith("DOUBAO_")
+            or name.startswith("TTS_")
+            or name.startswith("ACTIVE_TTS_")
+        ):
+            continue
+        try:
+            parts.append(f"{name}={getattr(settings, name)}")
+        except Exception:
+            continue
+    parts.append(f"PROVIDERS_CONFIG={settings.PROVIDERS_CONFIG or ''}")
+    raw = "|".join(parts)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def invalidate_tts_cache() -> None:
+    """清空 TTS 实例缓存（改配置后如需立即强制重建可调用）。"""
+    _tts_instances.clear()
+
+
 def get_tts(provider: Optional[str] = None) -> BaseTTSProvider:
     """按厂商名获取 TTS 实例（按 provider 名缓存单例）。
 
@@ -128,10 +165,14 @@ def get_tts(provider: Optional[str] = None) -> BaseTTSProvider:
         # 未知厂商名：兜底 minimax
         key, factory_fn = TTSRegistry["minimax"]
 
-    cached = _tts_instances.get(key)
-    if cached is None:
+    # C-3：缓存键附带配置指纹 → 配置变更后自动重建实例（不必重启后端）
+    fp = _tts_config_fingerprint()
+    entry = _tts_instances.get(key)
+    if entry is None or entry[0] != fp:
         cached = factory_fn()
-        _tts_instances[key] = cached
+        _tts_instances[key] = (fp, cached)
+    else:
+        cached = entry[1]
 
     if provider is None:
         _tts_default_instance = cached

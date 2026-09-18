@@ -863,6 +863,21 @@ export interface ProviderConfig {
   api_key: string;
   base_url: string;
   tts_endpoint?: string;
+  // 豆包专用凭据（其余厂商可忽略）。GET 时敏感字段一律为 "***LAST4" 占位或空。
+  secret?: string;
+  app_id?: string;
+  icl_api_key?: string;
+  icl_access_key?: string;
+  // 豆包专用端点：可填 path（以 / 开头，自动拼 base_url）或完整 URL。
+  icl_endpoint?: string;
+  tts_v3_endpoint?: string;
+  seed_audio_endpoint?: string;
+  // 敏感字段的「是否已配置」标记（GET 时后端附带；值为真表示库里已有非空值）
+  api_key_configured?: boolean;
+  secret_configured?: boolean;
+  app_id_configured?: boolean;
+  icl_api_key_configured?: boolean;
+  icl_access_key_configured?: boolean;
   extra_headers?: Record<string, string>;
   models: ProviderModel[];
 }

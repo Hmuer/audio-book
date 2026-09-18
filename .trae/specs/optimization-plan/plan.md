@@ -324,12 +324,12 @@
 - [x] B-7 SQLite 设 WAL / busy_timeout（**未开 foreign_keys**，原因见实施记录） — [session.py#L17-L37](file:///workspace/backend/app/db/session.py#L17-L37) — 完成 2026-09-18
 - [x] B-8 取消/异常路径补记用量 — [build.py#L1890-L1896](file:///workspace/backend/app/services/build.py#L1890-L1896) — 完成 2026-09-18
 
-### 批次 3 —— 切模型 / 配豆包
-- [ ] C-1 设置页补齐「模型配置/合成质量/豆包配置」分组 — [SettingsPage.tsx#L111](file:///workspace/frontend/src/components/SettingsPage.tsx#L111)
-- [ ] C-2 厂商编辑器补豆包凭据 + 修 key 失焦 — [ProviderModelsEditor.tsx#L433](file:///workspace/frontend/src/components/ProviderModelsEditor.tsx#L433)
-- [ ] C-3 工厂缓存纳入配置指纹 / 提供失效 — [factory.py#L131-L134](file:///workspace/backend/app/ai/factory.py#L131-L134)
-- [ ] C-4 MiniMax 区分可重试业务错误 — [minimax/tts.py#L300-L334](file:///workspace/backend/app/ai/providers/minimax/tts.py#L300-L334)
-- [ ] C-5 MiniMax `_internal_model` 复用 model 剥离逻辑 — [minimax/tts.py#L143-L148](file:///workspace/backend/app/ai/providers/minimax/tts.py#L143-L148)
+### 批次 3 —— 切模型 / 配豆包 ✅ 完成 2026-09-18
+- [x] C-1 设置页补齐「豆包配置/合成质量」分组 — [SettingsPage.tsx#L110-L115](file:///workspace/frontend/src/components/SettingsPage.tsx#L110-L115) — 完成 2026-09-18
+- [x] C-2 厂商编辑器补豆包凭据 + 修 key 失焦 — [ProviderModelsEditor.tsx](file:///workspace/frontend/src/components/ProviderModelsEditor.tsx) — 完成 2026-09-18
+- [x] C-3 工厂缓存纳入配置指纹 + `invalidate_tts_cache` — [factory.py#L103-L173](file:///workspace/backend/app/ai/factory.py#L103-L173) — 完成 2026-09-18
+- [x] C-4 MiniMax 区分可重试/永久错误（业务码 + HTTP 4xx） — [minimax/tts.py#L122-L155](file:///workspace/backend/app/ai/providers/minimax/tts.py#L122-L155) — 完成 2026-09-18
+- [x] C-5 MiniMax `_internal_model` 复用 `_strip_model_prefix` — [minimax/tts.py#L122-L133](file:///workspace/backend/app/ai/providers/minimax/tts.py#L122-L133) — 完成 2026-09-18
 
 ### 批次 4 —— 日常体验
 - [ ] D-1 轮询不覆盖未保存编辑 — [ProjectDetailPage.tsx#L1238-L1242](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L1238-L1242)
@@ -412,4 +412,29 @@
 
 **B-8 异常路径说明**
 「中途异常」采用**增量落库**（每章结束把 `tts_calls/chars` 写回 Build 行）而非把整段 worker 包进 `try/finally`：后者需要大范围重排缩进、风险高。增量方案的取舍是：极端情况下若异常发生在某个**章内**，该章的用量可能不计（前一章的已落库）；已可覆盖「已完成章节的用量不丢」这一主要诉求，且不触碰控制流。
+
+### 批次 3（2026-09-18）
+
+| 项 | 改动 | 测试 / 证据 |
+|---|---|---|
+| C-1 | `groupOrder` 补入 **「豆包配置」与「合成质量」**（此前 9 个 `DOUBAO_*` / `ICL_MAX_AUDIO_BYTES` / `TTS_MAX_SEGMENT_CHARS` / `POLISH_ENABLED` 项在高级配置页完全不可见）；`GROUP_META` 同步补两组图标与描述，并把「超时配置」描述更新为「…与 Build 运行/排队超时」 | `npx tsc --noEmit` ✅ / `npx next build` ✅ |
+| C-2 | `ProviderConfig` 类型补 `secret` / `app_id` / `icl_api_key` / `icl_access_key` / `icl_endpoint` / `tts_v3_endpoint` / `seed_audio_endpoint` 与 5 个 `*_configured` 标记；新增通用 `SecretInput`（占位符 `***LAST4` → 保留 / 「重写」→ 清空 / 输入 → 覆盖）与 `secretField` / `endpointField` 渲染助手；豆包卡片新增 4 个专属凭据 + 2 个专属端点输入；**修 key 失焦**：`ProviderCard` 的 React key 由 `p.id` 改为数组下标，`ModelSection` 行 key 由 `${m.id}_${idx}_${globalIdx}` 改为 `globalIdx`（两处都是「被编辑字段同时充当 key」导致的卸载重建） | `npx tsc --noEmit` ✅ / `npx next build` ✅ |
+| C-3 | `_tts_instances` 由 `dict[str, BaseTTSProvider]` 改为 `dict[str, tuple[指纹, 实例]]`；新增 `_tts_config_fingerprint()`（哈希全部 `DOUBAO_*` / `TTS_*` / `ACTIVE_TTS_*` 字段 + `PROVIDERS_CONFIG`）与 `invalidate_tts_cache()`；`get_tts` 命中指纹不一致时重建实例 | [test_batch3_model_config_red.py](file:///workspace/backend/tests/test_batch3_model_config_red.py) `test_c3_*`（指纹随 TTS 配置变化、改配置后免手工清缓存即重建、同配置复用同实例） |
+| C-4 | 新增 `MiniMaxTTSError(retryable, code)` 与 `_PERMANENT_BIZ_CODES = {1004, 1008, 1026, 1027, 2013}`；HTTP **4xx（429 除外）** 判为永久错误；`base_resp.status_code` 命中永久集合判为永久错误；重试循环对 `retryable=False` 立即 `raise`（不再白等约 34s 退避） | `test_c4_*` 4 用例（永久业务码不重试 / 可重试业务码重试 / HTTP 4xx 不重试 / HTTP 5xx 仍重试） |
+| C-5 | 抽出 `_strip_model_prefix()`（剥 `minimax:` 冒号前缀与 `MiniMax-` 厂商前缀，空值回退 `_DEFAULT_MINIMAX_MODEL`）；**激活与未激活两条构造分支共用**，未激活分支不再把 `_internal_model` 硬编码为 `speech-2.8-turbo`，显式 `model` 与 `ACTIVE_TTS_MODEL` 恢复生效 | `test_c5_*` 4 用例（变体剥离 / 未激活分支尊重显式 model / 未激活分支回退 ACTIVE_TTS_MODEL / 激活分支同样剥离） |
+
+**回归结果**
+- 新增 [test_batch3_model_config_red.py](file:///workspace/backend/tests/test_batch3_model_config_red.py)（11 用例）：`11 passed`
+- 全量：`331 passed, 3 failed, 1 skipped`（用例数 324 → 335，为本次新增 11 个用例）
+- 3 个失败与批次 2 完全一致（`test_project_e2e` / `test_project_prepare_voice_pool_red` / `test_review_fixes_red`），均已在 HEAD 基线复现，属**既有**测试隔离缺陷（对应 E-1），非本批引入
+- 前端：`npx tsc --noEmit` ✅ / `npx next build` ✅
+
+**C-1 范围调整说明**
+原计划写「补齐 `groupOrder` 与分组元信息」，未区分三组性质。实施时只补了**「豆包配置」「合成质量」**——它们是真正「有配置项但 UI 无入口」的组。第三个组「模型配置」的字段为 `PROVIDERS_CONFIG` / `ACTIVE_TTS_*` 与 5 个标注「（遗留）」的扁平凭据，均已由「模型厂商」标签页（ProviderModelsEditor）承载或明确不再展示；把它加入 `groupOrder` 会让用户暴露在一个可手改的 `PROVIDERS_CONFIG` JSON 输入框与遗留凭据上，与页面既有设计（`SettingsPage.tsx` 原注释）相悖。
+
+**C-2 脱敏回写说明**
+未改动后端：`PUT /api/providers` 已对 5 个敏感字段（`api_key` / `secret` / `app_id` / `icl_api_key` / `icl_access_key`）做「`***` 开头 → 保留旧值」处理，与本批前端 `SecretInput` 的占位符语义天然对齐；端点类字段按原值透传，后端 `doubao_field()` 负责「以 `/` 开头则拼 `base_url`」。
+
+**未做真机验证**
+C-1 / C-2 只做了类型检查与生产构建，**未在浏览器中实际点击验证**（新增豆包凭据表单、id 输入框连续输入不失焦）。
 

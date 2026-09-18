@@ -7,7 +7,9 @@ import ProviderModelsEditor from './ProviderModelsEditor';
 // ---------- 常量 ----------
 type IconName = 'cpu' | 'clock' | 'gauge' | 'database' | 'scissors' | 'file-text' | 'lock' | 'cog' | 'box' | 'layers';
 const GROUP_META: Record<string, { icon: IconName; desc: string }> = {
-  '超时配置': { icon: 'clock', desc: '各环节请求超时与 Build 运行超时' },
+  '豆包配置': { icon: 'box', desc: '豆包 TTS 协议开关、端点、采样率与各产品 RPM' },
+  '合成质量': { icon: 'cpu', desc: '分段上限、润色纠错与严格失败模式' },
+  '超时配置': { icon: 'clock', desc: '各环节请求超时与 Build 运行/排队超时' },
   '限流配置': { icon: 'gauge', desc: '并发度、RPM 限流、批处理参数' },
   '缓存配置': { icon: 'database', desc: 'TTS 段缓存 LRU / 磁盘过期策略' },
   '章节切分': { icon: 'scissors', desc: '章节识别正则匹配（可在线增删改，保存后即时生效）' },
@@ -106,9 +108,10 @@ export default function SettingsPage() {
     return g;
   }, [items]);
 
-  // 注：模型配置组改为单独的 "模型厂商" 标签页（ProviderModelsEditor），
-  // 这里只展示高级配置。
-  const groupOrder = ['超时配置', '限流配置', '缓存配置', '章节切分', '日志配置', '认证配置', '系统'];
+  // 注：后端 `_EDITABLE_SETTINGS` 的「模型配置」组由单独的「模型厂商」标签页
+  // （ProviderModelsEditor）承载（含 PROVIDERS_CONFIG / ACTIVE_* 与遗留扁平凭据），
+  // 这里只展示豆包运行参数、合成质量等高级配置。
+  const groupOrder = ['豆包配置', '合成质量', '超时配置', '限流配置', '缓存配置', '章节切分', '日志配置', '认证配置', '系统'];
 
   const dirtyKeys = useMemo(() => {
     if (!items) return [];
