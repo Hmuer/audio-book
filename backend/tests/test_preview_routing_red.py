@@ -47,12 +47,15 @@ async def test_preview_uses_voice_id_routing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_preview_routes_doubao_and_icl_prefix_to_doubao_provider(monkeypatch):
-    """doubao:/icl: 前缀在 factory 层路由到 DoubaoTTSProvider（preview 依赖该行为）。"""
+    """doubao:/icl: 前缀在 factory 层路由到豆包 provider（v1 或 v3 均可；preview 依赖该行为）。"""
     from backend.app.ai.factory import get_tts_by_voice_id
-    from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider
+    from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider, DoubaoTTSProviderV3
     from backend.app.core import config as cfgmod
 
     monkeypatch.setattr(cfgmod.settings, "DOUBAO_AK", "test-ak")
 
-    assert isinstance(get_tts_by_voice_id("doubao:zh_female_qingxin"), DoubaoTTSProvider)
-    assert isinstance(get_tts_by_voice_id("icl:clone_x"), DoubaoTTSProvider)
+    # 走哪一版协议由 settings.DOUBAO_TTS_USE_V3 决定（默认 v3），这里只关心
+    # 「必须落到豆包 provider，而不是 minimax」。
+    doubao_providers = (DoubaoTTSProvider, DoubaoTTSProviderV3)
+    assert isinstance(get_tts_by_voice_id("doubao:zh_female_qingxin"), doubao_providers)
+    assert isinstance(get_tts_by_voice_id("icl:clone_x"), doubao_providers)

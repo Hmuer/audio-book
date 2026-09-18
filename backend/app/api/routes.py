@@ -1977,7 +1977,7 @@ _EDITABLE_SETTINGS = {
     # 认证
     "JWT_EXP_DAYS": ("int", "认证配置", "JWT 过期天数"),
     # ---- 豆包运行参数（页面化 P-env）----
-    "DOUBAO_TTS_USE_V3": ("bool", "豆包配置", "豆包 TTS 切 v3 协议（默认 False）"),
+    "DOUBAO_TTS_USE_V3": ("bool", "豆包配置", "豆包 TTS 切 v3 协议（默认 True；关掉会退回 v1 老端点）"),
     "DOUBAO_TTS_RPM_LIMIT": ("int", "豆包配置", "豆包 TTS RPM 限流"),
     "DOUBAO_SEED_AUDIO_RPM_LIMIT": ("int", "豆包配置", "豆包 Seed-Audio RPM 限流"),
     "DOUBAO_ICL_RPM_LIMIT": ("int", "豆包配置", "豆包 ICL RPM 限流"),

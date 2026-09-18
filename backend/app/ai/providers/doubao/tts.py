@@ -159,7 +159,22 @@ async def _post_json_for_v1(
         logid = resp.headers.get("X-Tt-Logid") or resp.headers.get("x-tt-logid")
         # 响应体读完再判定（业务码非 3000 时 HTTP 仍可能 200）
         raw = await resp.aread()
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            # 非 2xx 时上游会在 body 里给出真正的原因（业务码 / message），而
+            # raise_for_status() 只抛一句 "Server error '500 ...'"，把 body 丢掉会让
+            # 排查只剩一个 logid（实测踩到：v1 稳定 500 却看不到原因）。
+            # 保留原异常上的 request/response（重试判定依赖 .response.status_code），
+            # 仅把上游响应体补进 message。
+            # 注：httpx 的 `.request` 是 property，未设置时会抛 RuntimeError，
+            # 所以取底层 `_request` 而不是 `e.request`。
+            body = raw.decode("utf-8", "replace").strip()
+            raise httpx.HTTPStatusError(
+                f"HTTP {resp.status_code}: {body[:500] or '(empty body)'}",
+                request=getattr(e, "_request", None),
+                response=getattr(e, "response", None) or resp,
+            ) from None
         try:
             data = json.loads(raw)
         except Exception as e:
@@ -1700,9 +1715,10 @@ class DoubaoTTSProvider(BaseTTSProvider):
 #       或错误 {code, message}（通常第一个 chunk）。客户端拼接 audio 字段解码得到 MP3。
 #
 # 与 v1 共存策略：
-#   - v1 (DoubaoTTSProvider) 保留为兜底，endpoints /api/v1/tts
-#   - factory 按 settings.DOUBAO_TTS_USE_V3 (bool, 默认 False) 路由到 v3 或 v1
-#   - 真实 Key 联调后再把默认改 True（P1-1 完成后由用户决策）
+#   - v3 为默认路径：settings.DOUBAO_TTS_USE_V3 默认 True（2026-09-18 起）
+#   - v1 (DoubaoTTSProvider, endpoints /api/v1/tts) 仅作显式兜底：把开关手动关掉才走
+#     旧默认 False 的原因已不成立 —— v1 的 _build_payload 里 app.appid/app.token 恒为空，
+#     新版控制台单一 API Key 走 v1 必然 500（实测 BV158_streaming）
 # =====================================================================
 
 _DEFAULT_V3_ENDPOINT = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"

@@ -95,8 +95,15 @@ class Settings(BaseSettings):
     # ===== P1-1: v3 单向流式 TTS =====
     # DOUBAO_TTS_USE_V3 = False 时 factory 路由到 v1 (DoubaoTTSProvider)；
     # = True 时路由到 v3 (DoubaoTTSProviderV3)。
-    # 默认 False：等真实 Key 联调后再切。P1-1 范围只到 v3 骨架 + 测试。
-    DOUBAO_TTS_USE_V3: bool = False
+    #
+    # 默认 True（2026-09-18 改）：v1 端点发出去的请求体是坏的 —— `app.appid`
+    # / `app.token` 恒为空串（见 tts.py `_build_payload`），只带一个
+    # `Authorization: Bearer;<key>` 头，新版控制台的单一 API Key 按这个契约
+    # 调 /api/v1/tts 必然被上游拒（表现为 HTTP 500 + logid）。
+    # 实测：BV158_streaming（1.0 小模型音色）在 v1 下稳定 500；同一套凭据走 v3
+    # （X-Api-Key + X-Api-Resource-Id）才是新版控制台的正规用法，且 v3 同时覆盖
+    # 1.0 / 2.0 / ICL 三类音色。v1 仅保留为显式兜底（手动改 False）。
+    DOUBAO_TTS_USE_V3: bool = True
     # v3 端点覆写（生产/测试可指代理/沙箱）
     DOUBAO_TTS_V3_BASE_URL: str = ""
     DOUBAO_SEED_AUDIO_BASE_URL: str = "https://openspeech.bytedance.com/api/v1/seed_audio"

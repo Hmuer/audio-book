@@ -315,6 +315,9 @@ async def test_synth_routes_icl_prefix_to_doubao(monkeypatch):
     from backend.app.core import config as cfgmod
 
     monkeypatch.setattr(cfgmod.settings, "DOUBAO_AK", "test-ak")
+    # 本用例断言的是 v1 协议的 payload 语义（cluster=volcano_icl 等），
+    # 显式关掉 v3 开关，不依赖 DOUBAO_TTS_USE_V3 的默认值。
+    monkeypatch.setattr(cfgmod.settings, "DOUBAO_TTS_USE_V3", False)
 
     inst = get_tts_by_voice_id("icl:clone_x")
     assert isinstance(inst, DoubaoTTSProvider), (
