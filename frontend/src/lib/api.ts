@@ -655,6 +655,8 @@ export interface DialogueLine {
   speaker: string;
   text: string;
   confidence: number;
+  /** 逐段语音指令（豆包 2.0 context_texts）：prepare 阶段由 LLM 生成，合成时随该段下发；空串=不下发 */
+  instruction?: string;
 }
 
 export interface ChapterDetail {

@@ -1208,6 +1208,15 @@ function ChaptersTab({
                                         </span>
                                       )}
                                       <span className="text-ink-800">{l.text}</span>
+                                      {l.dlg?.instruction && (
+                                        <div
+                                          className="mt-0.5 text-[11px] text-ink-500 leading-snug"
+                                          title="LLM 逐段生成的语音指令（豆包 2.0 context_texts），合成该段时下发给 TTS"
+                                        >
+                                          <span className="mr-1 px-1 py-0.5 rounded border border-ink-400 text-[10px]">指令</span>
+                                          {l.dlg.instruction}
+                                        </div>
+                                      )}
                                     </>
                                   ) : (
                                     <span className="text-ink-700">{l.text}</span>

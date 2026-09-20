@@ -10,6 +10,7 @@
   VI-7  _build_segments_for_chapter：对白 instruction 为空 → 回落角色级
   VI-8  _build_segments_for_chapter：一句对白切成多个子段 → 子段共享同一条指令；跨章节各自生效
   VI-9  _calc_content_digest：只改逐段 instruction 会改变 digest
+  VI-10 章节详情 API 透出逐段 instruction（空串不显示）
 
 说明：conftest.py 已注入 MockLLMProvider；本文件用自建 _FakeLLM 精确控制 LLM 输出，
 通过 monkeypatch 替换 service 模块内的 get_llm 绑定。
@@ -338,3 +339,48 @@ async def test_vi9_content_digest_changes_with_dialogue_instruction(_isolate_dat
     assert d_before != d_after, (
         "只改逐段 instruction 也必须改变内容摘要 —— 否则改了指令会命中历史 build 被直接复用"
     )
+
+
+# ---------------------------------------------------------------------
+# VI-10：章节详情 API 透出逐段指令
+#
+# 逐段指令是 LLM 自动生成的，如果只落库不透出，用户就完全看不到 LLM
+# 到底给每句写了什么 —— 出错时无从判断是 prompt 问题还是模型问题。
+# ---------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_vi10_chapter_detail_exposes_dialogue_instruction(_isolate_data_dir):
+    import json as _json
+
+    from backend.app.db.models import Project, ProjectDialogue
+    from backend.app.db.session import get_session_factory, init_db
+    from backend.app.services.project import create_project, get_project_chapter_detail
+
+    await init_db()
+    pid = (await create_project("VI-10 指令透出")).project_id
+    factory = get_session_factory()
+    chapters = _chapters("「你好。」「嗯。」")
+
+    async with factory() as s:
+        p = await s.get(Project, pid)
+        p.chapters_json = _json.dumps(
+            [{"idx": c.idx, "title": c.title, "text": c.text} for c in chapters],
+            ensure_ascii=False,
+        )
+        s.add(ProjectDialogue(
+            project_id=pid, chapter_idx=0, segment_index=0,
+            anchor_start=1, anchor_end=5, anchor_text="你好",
+            speaker="小明", text="你好", confidence=1.0,
+            instruction="用颤抖沙哑、带着绝望的哭腔说",
+        ))
+        # 第二条故意留空：平淡对白不下发指令，前端也不应显示
+        s.add(ProjectDialogue(
+            project_id=pid, chapter_idx=0, segment_index=1,
+            anchor_start=6, anchor_end=9, anchor_text="嗯",
+            speaker="小红", text="嗯", confidence=1.0, instruction="",
+        ))
+        await s.commit()
+
+    detail = await get_project_chapter_detail(pid, 0)
+    by_seg = {d.segment_index: d for d in detail.dialogues}
+    assert by_seg[0].instruction == "用颤抖沙哑、带着绝望的哭腔说"
+    assert by_seg[1].instruction == ""

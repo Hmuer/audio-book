@@ -93,6 +93,10 @@ class DialogueLine(BaseModel):
     speaker: str
     text: str
     confidence: float = 1.0
+    # 逐段语音指令（豆包 2.0 的 context_texts）：prepare 的 instructions 阶段由 LLM
+    # 生成、合成时逐段下发。空串 = 不下发指令（平淡对白不必强行加情绪）。透出给前端
+    # 是为了让用户能看见 LLM 到底给每句写了什么，而不是一个黑盒。
+    instruction: str = ""
 
 
 class ChapterDetail(BaseModel):
@@ -2013,6 +2017,7 @@ async def get_project_chapter_detail(
                 speaker=d.speaker or "",
                 text=d.text or "",
                 confidence=d.confidence,
+                instruction=getattr(d, "instruction", "") or "",
             )
             for d in rows
         ]
@@ -2053,6 +2058,7 @@ async def update_dialogue_speaker(
             speaker=d.speaker or "",
             text=d.text or "",
             confidence=d.confidence,
+            instruction=getattr(d, "instruction", "") or "",
         )
 
 
