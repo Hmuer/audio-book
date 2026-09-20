@@ -238,11 +238,14 @@
 - 后果：SRT/LRC 与音频、章间标记、进度显示出现数百毫秒级漂移；不同厂商口径不一致。
 - 修复方向：静音帧按精确帧数生成；豆包统一改用 `core/mp3_util.mp3_duration_ms`。
 
-### D-8 对白 anchor 用 `find` 取首次出现 → 重复短句错位 🟡
-- 位置：[chapter.py#L244-L248](file:///workspace/backend/app/services/chapter.py#L244-L248)
-- 现象：`ch.text.find(dlg.anchor_text)` 对每个对白都返回首次出现位置。
-- 后果：中文小说中「「嗯。」」这类短对白反复出现时，旁白切片错位 → 对白被重复朗读或漏读。
-- 修复方向：从游标之后搜索，或优先采用 LLM 返回的偏移并做本章内校验。
+### D-8 对白 anchor 用 `find` 取首次出现 → 重复短句错位 ✅
+- 位置：[chapter.py#L243-L262](file:///workspace/backend/app/services/chapter.py#L243-L262)
+- 现象：`ch.text.find(dlg.anchor_text)` 对每个对白都返回**首次**出现位置。
+- 后果：中文小说中「「嗯。」」这类短对白反复出现时，第 2..N 句对白全被搬到第一处 → 旁白切片错位（挤成一坨）、收尾旁白把已读过的对白原文再朗读一遍。用户听感即「对白和它附近的旁白内容混乱」（2026-09-20 反馈）。
+- **已修复 2026-09-20**：两条都做了 —— ① 优先采信 LLM 偏移并做本章内校验（`ch.text.startswith(a_text, local_start)` 且 `local_start >= cursor`）；② 否则 `ch.text.find(a_text, cursor)` **从游标单调往后**搜；③ cursor 之后找不到才退化为全文查找（保持旧行为兜底）。
+- 验证：新增 [test_dialogue_anchor_slicing_red.py](file:///workspace/backend/tests/test_dialogue_anchor_slicing_red.py) 4 用例（SA-1 重复对白、SA-2 偏移量全为 0、SA-3「旁白 = 原文去掉对白 anchor」不变式、SA-4 旁白里也引用了该短语时采信准确 start），**在修复前 4 条全红、修复后全绿**。
+- 附带发现：`_split_long_text`（拆句）本身没有 bug —— 用「拼接后与原文去空白等价 + 200 例随机」验证过，不丢字、不乱序。本次混乱全部来自 anchor 切片。
+- 未覆盖：`anchor_text` 在正文里彻底找不到时（LLM 归一化了引号，如把「」写成""）仍按 LLM 坐标切，理论上可能把对白原文留在旁白里。沙箱库抽样 328 条对白 **0 条**命中该分支（注意：沙箱库是测试夹具数据，非线上正文），暂不处理。
 
 ---
 
@@ -341,7 +344,7 @@
 - [ ] D-5 `WaveformPlayer` src 变化复位状态 — [WaveformPlayer.tsx#L164-L167](file:///workspace/frontend/src/components/WaveformPlayer.tsx#L164-L167)
 - [ ] D-6 ~~收紧拟声词替换规则~~ — **已失效**：豆包 2.0 单一化后 MiniMax TTS 被弃用，`minimax/onomatopoeia.py` 已随 provider 一并删除，无替换规则可收紧
 - [ ] D-7 静音帧精确化 + 豆包时长统一 — [mp3_util.py#L180](file:///workspace/backend/app/core/mp3_util.py#L180)
-- [ ] D-8 对白 anchor 从游标后搜索 — [chapter.py#L244-L248](file:///workspace/backend/app/services/chapter.py#L244-L248)
+- [x] D-8 对白 anchor 从游标后搜索 — [chapter.py#L243-L262](file:///workspace/backend/app/services/chapter.py#L243-L262) — 完成 2026-09-20（详见 §5 D-8）
 
 ### 批次 5 —— 工程化
 - [ ] E-1 统一测试导入路径 + 重置全局单例 — [conftest.py](file:///workspace/backend/tests/conftest.py)

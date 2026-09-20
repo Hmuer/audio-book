@@ -241,12 +241,25 @@ def _build_segments_for_chapter(
         local_start = dlg.anchor_start
         local_end = dlg.anchor_end
         # 校验并修正 anchor 位置：LLM 返回的位置可能不准（尤其中文/字节位置错位），
-        # 优先用 anchor_text 在 ch.text 中精确定位，避免 narrator 段误切片包含对白内容
+        # 优先用 anchor_text 在 ch.text 中精确定位，避免 narrator 段误切片包含对白内容。
+        #
+        # ⚠️ 查找必须**从 cursor 单调往后**。同一句短对白（「嗯。」「什么？」）在一章里
+        # 会重复出现，而 `ch.text.find()` 只返回**第一处** —— 于是第 2..N 句对白全被搬到
+        # 第一处，两处对白之间的旁白切片全部错位（挤成一坨），收尾旁白还会把已经读过的
+        # 对白原文再朗读一遍。听感上就是「对白和它附近的旁白内容混乱」。
         if getattr(dlg, "anchor_text", None):
-            found = ch.text.find(dlg.anchor_text)
-            if found >= 0:
-                local_start = found
-                local_end = found + len(dlg.anchor_text)
+            a_text = dlg.anchor_text
+            if local_start >= cursor and ch.text.startswith(a_text, local_start):
+                # LLM 给的 start 与原文对得上（重复对白排在后面时也走这里），直接采信
+                local_end = local_start + len(a_text)
+            else:
+                found = ch.text.find(a_text, cursor)
+                if found < 0:
+                    # cursor 之后找不到：anchor 与已消费区间重叠或排序异常，退化为全文查找
+                    found = ch.text.find(a_text)
+                if found >= 0:
+                    local_start = found
+                    local_end = found + len(a_text)
         # narrator 段：[cursor, local_start)
         if cursor < local_start:
             narrator_text = ch.text[cursor:local_start].strip()
