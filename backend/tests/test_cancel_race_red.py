@@ -34,34 +34,12 @@ async def test_cancel_then_restart_old_worker_finally_does_not_release_new(_isol
         _ACTIVE_BUILDS, _RUNNING_LOCK,
     )
     from backend.app.db.session import init_db
-    from backend.app.core import config as cfgmod
     from backend.app.ai import factory as aifact
     from backend.tests.mock_providers import MockTTSProvider, MockLLMProvider
 
-    cfgmod.settings.MULTICAST_STRICT_MODE = True
-
-    class _BlockMC:
-        """阻塞直到外部释放事件，然后抛错模拟 cancel 后 worker 退出。"""
-        provider = "doubao"
-
-        def __init__(self):
-            self.unblock = asyncio.Event()
-
-        async def synthesize_chapter_to_file(self, segments, output_path, *, speed=1.0,
-                                             chapter_title="", instruction_text=None):
-            try:
-                await asyncio.wait_for(self.unblock.wait(), timeout=10.0)
-            except asyncio.TimeoutError:
-                pass
-            raise RuntimeError("cancel 后旧 worker 终于失败")
-
-    block_mc = _BlockMC()
-    prev_tts, prev_llm, prev_mc = (
-        aifact._tts_instance, aifact._llm_instance, aifact._multicast_instance,
-    )
+    prev_tts, prev_llm = aifact._tts_instance, aifact._llm_instance
     aifact._tts_instance = MockTTSProvider()
     aifact._llm_instance = MockLLMProvider()
-    aifact._multicast_instance = block_mc
     try:
         await init_db()
         pid = (await create_project("cancel→restart race 测试")).project_id
@@ -79,7 +57,7 @@ async def test_cancel_then_restart_old_worker_finally_does_not_release_new(_isol
         )
         await prepare_project(pid)
 
-        # 1) 启动 Build A（multicast + strict → 一定会 failed）
+        # 1) 启动 Build A
         resp_a = await start_build(
             project_id=pid, voice_assignments={},
             narrator_voice_id="doubao:zh_female_qingxin",
@@ -97,7 +75,7 @@ async def test_cancel_then_restart_old_worker_finally_does_not_release_new(_isol
                 f"当前={list(_ACTIVE_BUILDS.keys())}"
             )
 
-        # 3) 立即重新启动新 Build B（同样 multicast strict → 同样会失败/被 cancel）
+        # 3) 立即重新启动新 Build B
         resp_b = await start_build(
             project_id=pid, voice_assignments={},
             narrator_voice_id="doubao:zh_female_qingxin",
@@ -109,10 +87,7 @@ async def test_cancel_then_restart_old_worker_finally_does_not_release_new(_isol
             f"restart 后 bid_b 必须立即注册；实际 _ACTIVE_BUILDS={list(_ACTIVE_BUILDS.keys())}"
         )
 
-        # 4) 释放旧 worker 阻塞，让旧 worker 终于进入 finally
-        block_mc.unblock.set()
-
-        # 5) 等旧 worker 退出（finally 调 _unregister_active_build），但只释放自己的 build_id
+        # 4) 等旧 worker 退出（finally 调 _unregister_active_build），但只释放自己的 build_id
         #    → 即使 build_id 已不在 _ACTIVE_BUILDS（被 cancel 释放过），也只释放自己的 bid_a。
         #    注意 bid_b 仍必须存在。
         for _ in range(40):
@@ -137,8 +112,6 @@ async def test_cancel_then_restart_old_worker_finally_does_not_release_new(_isol
     finally:
         aifact._tts_instance = prev_tts
         aifact._llm_instance = prev_llm
-        aifact._multicast_instance = prev_mc
-        cfgmod.settings.MULTICAST_STRICT_MODE = False
         # 清理残留
         async with _RUNNING_LOCK:
             stale = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]
@@ -156,30 +129,12 @@ async def test_ensure_project_not_running_releases_after_cancel(_isolate_data_di
         _ACTIVE_BUILDS, _ensure_project_not_running, start_build, cancel_build, _RUNNING_LOCK,
     )
     from backend.app.db.session import init_db
-    from backend.app.core import config as cfgmod
     from backend.app.ai import factory as aifact
     from backend.tests.mock_providers import MockTTSProvider, MockLLMProvider
 
-    cfgmod.settings.MULTICAST_STRICT_MODE = True
-
-    class _BlockMC:
-        provider = "doubao"
-
-        def __init__(self):
-            self._evt = asyncio.Event()
-
-        async def synthesize_chapter_to_file(self, segments, output_path, *, speed=1.0,
-                                             chapter_title="", instruction_text=None):
-            await self._evt.wait()
-            raise RuntimeError("block")
-
-    block_mc = _BlockMC()
-    prev_tts, prev_llm, prev_mc = (
-        aifact._tts_instance, aifact._llm_instance, aifact._multicast_instance,
-    )
+    prev_tts, prev_llm = aifact._tts_instance, aifact._llm_instance
     aifact._tts_instance = MockTTSProvider()
     aifact._llm_instance = MockLLMProvider()
-    aifact._multicast_instance = block_mc
     try:
         await init_db()
         pid = (await create_project("ensure-not-running 测试")).project_id
@@ -208,8 +163,7 @@ async def test_ensure_project_not_running_releases_after_cancel(_isolate_data_di
         await cancel_build(project_id=pid, build_id=bid)
         await _ensure_project_not_running(pid, "测试")  # 不应抛错
 
-        # 3) 释放 block，让 worker 退出
-        block_mc._evt.set()
+        # 3) 等 worker 退出
         for _ in range(40):
             async with _RUNNING_LOCK:
                 if bid not in _ACTIVE_BUILDS:
@@ -218,8 +172,6 @@ async def test_ensure_project_not_running_releases_after_cancel(_isolate_data_di
     finally:
         aifact._tts_instance = prev_tts
         aifact._llm_instance = prev_llm
-        aifact._multicast_instance = prev_mc
-        cfgmod.settings.MULTICAST_STRICT_MODE = False
         async with _RUNNING_LOCK:
             stale = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]
             for k in stale:
@@ -238,72 +190,43 @@ async def test_concurrent_start_same_project_is_blocked(_isolate_data_dir):
         _ACTIVE_BUILDS, _ensure_project_not_running, _RUNNING_LOCK,
     )
     from backend.app.db.session import init_db
-    from backend.app.core import config as cfgmod
-    from backend.app.ai import factory as aifact
-    from backend.tests.mock_providers import MockTTSProvider, MockLLMProvider
 
-    cfgmod.settings.MULTICAST_STRICT_MODE = True
-
-    class _BlockMC:
-        provider = "doubao"
-
-        def __init__(self):
-            self._evt = asyncio.Event()
-
-        async def synthesize_chapter_to_file(self, segments, output_path, *, speed=1.0,
-                                             chapter_title="", instruction_text=None):
-            await self._evt.wait()
-            raise RuntimeError("block")
-
-    block_mc = _BlockMC()
-    prev_tts, prev_llm, prev_mc = (
-        aifact._tts_instance, aifact._llm_instance, aifact._multicast_instance,
+    await init_db()
+    pid = (await create_project("concurrent 测试")).project_id
+    await import_file(
+        pid,
+        (
+            "第一章 初见\n内容一。\n\n"
+            "第二章 启程\n内容二。\n"
+        ).encode("utf-8"),
+        "book.txt",
     )
-    aifact._tts_instance = MockTTSProvider()
-    aifact._llm_instance = MockLLMProvider()
-    aifact._multicast_instance = block_mc
+    await prepare_project(pid)
+
+    # 模拟"已经有一个活跃 build"：直接注册一个 fake build_id
+    async with _RUNNING_LOCK:
+        _ACTIVE_BUILDS["fake_active_build"] = pid
     try:
-        await init_db()
-        pid = (await create_project("concurrent 测试")).project_id
-        await import_file(
-            pid,
-            (
-                "第一章 初见\n内容一。\n\n"
-                "第二章 启程\n内容二。\n"
-            ).encode("utf-8"),
-            "book.txt",
-        )
-        await prepare_project(pid)
+        with pytest.raises(ValueError, match="正在合成"):
+            await _ensure_project_not_running(pid, "测试")
 
-        # 模拟"已经有一个活跃 build"：直接注册一个 fake build_id
+        # 直接添加第二个 fake 不应影响原有检测（按 build_id 维度）
         async with _RUNNING_LOCK:
-            _ACTIVE_BUILDS["fake_active_build"] = pid
-        try:
-            with pytest.raises(ValueError, match="正在合成"):
-                await _ensure_project_not_running(pid, "测试")
+            _ACTIVE_BUILDS["another_fake"] = pid
+        with pytest.raises(ValueError, match="正在合成"):
+            await _ensure_project_not_running(pid, "测试")
 
-            # 直接添加第二个 fake 不应影响原有检测（按 build_id 维度）
-            async with _RUNNING_LOCK:
-                _ACTIVE_BUILDS["another_fake"] = pid
-            with pytest.raises(ValueError, match="正在合成"):
-                await _ensure_project_not_running(pid, "测试")
+        # 释放其中一个
+        async with _RUNNING_LOCK:
+            _ACTIVE_BUILDS.pop("fake_active_build", None)
+        with pytest.raises(ValueError, match="正在合成"):
+            await _ensure_project_not_running(pid, "测试")
 
-            # 释放其中一个
-            async with _RUNNING_LOCK:
-                _ACTIVE_BUILDS.pop("fake_active_build", None)
-            with pytest.raises(ValueError, match="正在合成"):
-                await _ensure_project_not_running(pid, "测试")
-
-            # 全释放
-            async with _RUNNING_LOCK:
-                _ACTIVE_BUILDS.pop("another_fake", None)
-            await _ensure_project_not_running(pid, "测试")  # 不抛错
-        finally:
-            async with _RUNNING_LOCK:
-                _ACTIVE_BUILDS.pop("fake_active_build", None)
-                _ACTIVE_BUILDS.pop("another_fake", None)
+        # 全释放
+        async with _RUNNING_LOCK:
+            _ACTIVE_BUILDS.pop("another_fake", None)
+        await _ensure_project_not_running(pid, "测试")  # 不抛错
     finally:
-        aifact._tts_instance = prev_tts
-        aifact._llm_instance = prev_llm
-        aifact._multicast_instance = prev_mc
-        cfgmod.settings.MULTICAST_STRICT_MODE = False
+        async with _RUNNING_LOCK:
+            _ACTIVE_BUILDS.pop("fake_active_build", None)
+            _ACTIVE_BUILDS.pop("another_fake", None)

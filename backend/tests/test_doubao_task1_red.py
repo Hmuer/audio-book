@@ -27,8 +27,7 @@ def test_settings_new_fields_without_doubao_env(monkeypatch):
     for key in list(os.environ.keys()):
         if key.startswith("DOUBAO_"):
             monkeypatch.delenv(key, raising=False)
-    for key in ("TTS_PROVIDER", "MULTICAST_STRICT_MODE"):
-        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("TTS_PROVIDER", raising=False)
 
     # 强制重新构造 Settings 实例（不依赖模块级 settings 缓存）
     from backend.app.core.config import Settings
@@ -40,11 +39,8 @@ def test_settings_new_fields_without_doubao_env(monkeypatch):
     assert s.DOUBAO_SK == ""
     assert s.DOUBAO_APP_ID == ""
     assert s.DOUBAO_TTS_RPM_LIMIT == 60
-    assert s.DOUBAO_SEED_AUDIO_RPM_LIMIT == 10
-    assert s.MULTICAST_STRICT_MODE is True
     assert s.DOUBAO_TTS_BASE_URL  # 应非空，有默认地址
     assert s.DOUBAO_ICL_BASE_URL
-    assert s.DOUBAO_SEED_AUDIO_BASE_URL
 
 
 # ---------------------------------------------------------------------
@@ -69,7 +65,7 @@ async def test_project_build_new_fields_and_icl_task_persist(db_session):
         name="Demo",
         status="draft",
         default_tts_provider="doubao",
-        default_build_mode="multicast",
+        default_build_mode="classic",
     )
     s.add(p)
 
@@ -80,7 +76,7 @@ async def test_project_build_new_fields_and_icl_task_persist(db_session):
         status="queued",
         narrator_voice_id="doubao:female-qingxin",
         speed=1.0,
-        mode="multicast",
+        mode="classic",
         tts_provider="doubao",
     )
     s.add(b)
@@ -114,11 +110,11 @@ async def test_project_build_new_fields_and_icl_task_persist(db_session):
     # 读回 Project
     p2 = await s.get(Project, "proj-abc")
     assert p2.default_tts_provider == "doubao"
-    assert p2.default_build_mode == "multicast"
+    assert p2.default_build_mode == "classic"
 
     # 读回 Build
     b2 = await s.get(Build, "build-xyz")
-    assert b2.mode == "multicast"
+    assert b2.mode == "classic"
     assert b2.tts_provider == "doubao"
 
     # 读回 ICL 任务

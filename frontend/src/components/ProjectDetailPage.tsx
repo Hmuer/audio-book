@@ -2179,10 +2179,9 @@ function CreateBuildModal({
     });
     return m;
   });
-  // 构建模式：multicast 已废弃（P0-5），UI 上仍保留入口但 Build 入口直接抛错提示改 classic。
   // TTS 厂商**不再由用户选择**：每个角色的音色自带命名空间前缀（doubao: / icl:），
   // 合成时后端按 voice_id 前缀自动路由到对应厂商。
-  const [mode, setMode] = useState<'classic' | 'multicast'>('classic');
+  // 多播剧（Seed-Audio）模式已下线，构建模式固定为 classic。
   // 旁白情感/风格指令（本次构建快照；角色级情感在「音色」页配置）
   const [narrEmotion, setNarrEmotion] = useState('');
   const [narrInstruction, setNarrInstruction] = useState('');
@@ -2201,8 +2200,6 @@ function CreateBuildModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  const isMulticast = mode === 'multicast';
-
   const submit = async () => {
     setErr(null);
     if (!narrator) {
@@ -2217,7 +2214,6 @@ function CreateBuildModal({
         voice_assignments: charVoices,
         narrator_voice_id: narrator,
         speed,
-        mode,
         // [P-2.5] 不再传 tts_provider；后端按 voice_id 前缀自动路由。
         narrator_emotion: narrEmotion,
         narrator_instruction: narrInstruction.trim(),
@@ -2283,67 +2279,24 @@ function CreateBuildModal({
         )}
 
         <div className="space-y-5 relative">
-          {/* 构建模式 + TTS 引擎 */}
+          {/* 构建模式（多播剧 Seed-Audio 已下线，固定 classic） */}
           <div className="space-y-2">
             <div className="text-sm text-ink-700 flex items-center gap-2">
               <span className="w-6 h-6 rounded-lg grid place-items-center bg-brand-500/20 text-brand-300 text-xs">1</span>
               合成模式
             </div>
-            <div className="grid grid-cols-2 gap-2.5">
-              <button
-                onClick={() => setMode('classic')}
-                className={`text-left rounded-lg border p-3 transition-all
-                  ${!isMulticast
-                    ? 'bg-brand-500/12 border-brand-500/40'
-                    : 'bg-ink-100 border-ink-300/70 hover:bg-ink-200 hover:border-ink-400'}`}
-              >
-                <div className="flex items-center gap-2">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-ink-600">
-                    <path d="M4 12h16" /><path d="M4 6h16" /><path d="M4 18h16" />
-                  </svg>
-                  <span className="text-sm font-medium text-ink-800">经典模式</span>
-                  <span className="chip-soft !px-1.5 !py-0.5 !text-[11px] ml-auto">逐句合成</span>
-                </div>
-                <p className="text-[11px] text-ink-500 mt-1.5 leading-relaxed">
-                  按对白逐句合成后拼接，角色音色与情绪控制更精细
-                </p>
-              </button>
-              <button
-                onClick={() => setMode('multicast')}
-                className={`text-left rounded-lg border p-3 transition-all
-                  ${isMulticast
-                    ? 'bg-brand-500/12 border-brand-500/40'
-                    : 'bg-ink-100 border-ink-300/70 hover:bg-ink-200 hover:border-ink-400'}`}
-              >
-                <div className="flex items-center gap-2">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-ink-600">
-                    <circle cx="9" cy="8" r="3" /><circle cx="17" cy="14" r="3" /><path d="M11 10l4 2" />
-                  </svg>
-                  <span className="text-sm font-medium text-ink-800">多播剧模式</span>
-                  <span className="chip-soft !px-1.5 !py-0.5 !text-[11px] ml-auto">Seed-Audio</span>
-                </div>
-                <p className="text-[11px] text-ink-500 mt-1.5 leading-relaxed">
-                  豆包多模态一体化生成多角色播剧，含情绪/氛围，仅豆包引擎
-                </p>
-              </button>
-            </div>
-
-            {/* [P-2.5] TTS 厂商不再由用户选择；后端按角色音色前缀自动路由。
-                仅在多播剧已废弃时保留入口。 */}
-            {/* 多播剧严格模式提示 */}
-            {isMulticast && (
-              <div className="rounded-lg px-3.5 py-2.5 text-xs leading-relaxed border border-amber-500/40 bg-amber-500/10 text-amber-200 flex items-start gap-2">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5">
-                  <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-                  <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+            <div className="rounded-lg border p-3 bg-brand-500/12 border-brand-500/40">
+              <div className="flex items-center gap-2">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-ink-600">
+                  <path d="M4 12h16" /><path d="M4 6h16" /><path d="M4 18h16" />
                 </svg>
-                <span>
-                  多播剧采用<b>严格失败模式</b>：任一章节合成失败时整个构建立即标记为失败，
-                  <b>不会降级生成占位音频</b>；可在构建详情中对失败章节发起重试。
-                  旁白与角色音色须选择豆包（doubao:）或复刻（icl:）音色。
-                </span>
+                <span className="text-sm font-medium text-ink-800">经典模式</span>
+                <span className="chip-soft !px-1.5 !py-0.5 !text-[11px] ml-auto">逐句合成</span>
               </div>
-            )}
+              <p className="text-[11px] text-ink-500 mt-1.5 leading-relaxed">
+                按对白逐句合成后拼接，角色音色与情绪控制更精细
+              </p>
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -2357,9 +2310,8 @@ function CreateBuildModal({
               onChange={setNarrator}
               onPreview={() => {}}
             />
-            {/* 旁白情感/语气（可选）：classic 模式生效；角色情感在「音色」页配置 */}
-            {!isMulticast && (
-              <div className="rounded-lg border border-ink-300/70 bg-ink-100 p-3 space-y-2">
+            {/* 旁白情感/语气（可选）；角色情感在「音色」页配置 */}
+            <div className="rounded-lg border border-ink-300/70 bg-ink-100 p-3 space-y-2">
                 <button
                   type="button"
                   className="text-xs text-ink-600 hover:text-brand-300 flex items-center gap-1"
@@ -2391,11 +2343,9 @@ function CreateBuildModal({
                       onChange={e => setNarrInstruction(e.target.value)}
                       maxLength={200}
                     />
-                    <span className="text-[11px] text-ink-500">多播剧模式下由 Seed-Audio 自行把控情绪，此处配置不生效。</span>
                   </div>
                 )}
               </div>
-            )}
           </div>
 
           <div className="space-y-2">

@@ -844,7 +844,8 @@ def _build_to_status_resp(b: Build, artifacts: list[BuildArtifact]) -> BuildStat
 # =====================================================================
 
 _VALID_PROVIDERS = {"doubao"}
-_VALID_MODES = {"classic", "multicast"}
+# 多播剧（Seed-Audio）模式已下线，合法构建模式只剩 classic
+_VALID_MODES = {"classic"}
 # 前缀 → 归属哪个 tts_provider（MiniMax TTS 已弃用，minimax: 不再映射）
 _PREFIX_TO_PROVIDER: dict[str, str] = {
     "doubao": "doubao",
@@ -888,25 +889,6 @@ def _validate_tts_namespace(
         )
     if norm_provider and norm_provider not in _VALID_PROVIDERS:
         raise RuntimeError(f"未知 tts_provider: {tts_provider}，可选 {sorted(_VALID_PROVIDERS)}")
-
-
-def _validate_multicast_provider(build_mode: str, tts_provider_label: str) -> None:
-    """已废弃（P0-5 + #4 不降级）：mode=multicast 现在在 start_build 入口直接抛错。
-
-    函数保留仅为兼容历史调用栈（无副作用）；新代码不应再依赖。
-    """
-    return  # noop
-
-
-def _should_strict_fail(mode: str) -> bool:
-    """严格失败判定。
-
-    历史：mode=multicast + MULTICAST_STRICT_MODE=True → 任何章节失败直接 Build 失败。
-    P0-5 + #4 后：mode=multicast 在 start_build 入口直接抛错，根本进不到合成；
-    保留函数仅为兼容历史调用栈，恒返回 False。
-    """
-    return False
-
 
 
 # =====================================================================
@@ -962,7 +944,8 @@ async def _start_build_impl(
 
     新增参数：
       - mode: None（未指定 → 回落 Project.default_build_mode，再兜底 'classic'）
-              / 'classic'（逐章节分段 TTS 拼接）/ 'multicast'（已废弃，直接抛错）
+              / 'classic'（逐章节分段 TTS 拼接）。多播剧（Seed-Audio）模式已下线，
+              传 "multicast" 会直接抛错。
               注意：显式传 'classic' 不会被项目默认值覆盖
       - tts_provider: 'doubao' | None（None 时从 Project.default_tts_provider 读取，再兜底 settings.TTS_PROVIDER）
       - narrator_emotion / narrator_instruction: 旁白情感与风格指令（合成时透传 provider）
@@ -998,8 +981,8 @@ async def _start_build_impl(
     #   mode 有值     → 以调用方为准
     # 历史缺陷：旧判断 `if not mode or resolved_mode == "classic"` 因 mode 的默认值
     # 本身就是 "classic"（且 resolved_mode 由 `mode or "classic"` 得出）而**恒为真**，
-    # 于是显式传 classic 也会被项目默认值覆盖 —— 只要某项目
-    # default_build_mode="multicast"，其所有构建都会在下面直接抛错，且无接口可绕过。
+    # 于是显式传 classic 也会被项目默认值覆盖 —— 只要某项目的 default_build_mode
+    # 是已下线模式，其所有构建都会在下面直接抛错，且无接口可绕过（只能改数据库）。
     if mode is None:
         resolved_mode = "classic"
         factory_sess2 = get_session_factory()
@@ -1013,14 +996,14 @@ async def _start_build_impl(
     else:
         resolved_mode = str(mode).strip().lower() or "classic"
 
-    # mode=multicast 已废弃（P0-5）：Seed-Audio 多播剧端点已停止迭代。
+    # 多播剧（Seed-Audio）模式已下线（P0-5）：Seed-Audio 多播剧端点已停止迭代。
     # 按用户要求（#4 不降级契约）：选了 multicast 就直接抛错，让用户明确知道
     # 该模式已不支持、需改用 classic，而不是静默切到 classic 后还按 classic
     # 跑（那会让用户以为多播剧仍在生效）。classic 模式同样支持多角色
     # （voice_assignments 角色分配 + narrator），功能上等价。
     if resolved_mode == "multicast":
         raise RuntimeError(
-            "mode=multicast 已不再支持（Seed-Audio 多播剧端点已停止迭代），"
+            "多播剧（Seed-Audio）模式已下线：mode=multicast 已不再支持，"
             "请改用 mode=classic；classic 模式同样支持多角色（voice_assignments）"
         )
 
@@ -1550,71 +1533,25 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
     return cur_resp
 
 
-# Seed-Audio 整章一体化合成已废弃（P0-5）。mode=multicast 在 start_build 入口
-# 直接抛错（#4 不降级），根本不会调用以下函数。下面三个函数保留仅为兼容
-# 历史调用栈，无副作用。
-_MC_CHARS_PER_SEC = 4.0
-_MC_CHUNK_TARGET_SECS = 100.0
-
-
-def _estimate_multicast_secs(seg_dicts: list[dict], speed: float) -> float:
-    """已废弃（P0-5）：返回 0，让任何依赖此函数的旧调用立刻走零时长分支。"""
-    return 0.0
-
-
-async def _multicast_synth_chapter(
-    mc: Any,
-    seg_dicts: list[dict],
-    output_path: str,
-    *,
-    speed: float = 1.0,
-    chapter_title: str = "",
-    max_secs: float = 120.0,
-) -> tuple[str, int]:
-    """已废弃（P0-5）：Seed-Audio 整章合成路径已下线。
-
-    函数保留仅防止历史调用栈 ImportError；新代码不应再调用。
-    """
-    raise RuntimeError(
-        "mode=multicast 已废弃（P0-5）：Seed-Audio 多播剧整章生成端点已停止迭代，"
-        "请使用 classic 模式（逐章节分段 TTS 拼接）。"
-    )
-
-
 def _write_chapter_timings(
     build_id: str,
     ch_idx: int,
     segs: list[_Segment],
     dur_list: list[int],
     *,
-    total_dur_ms: int,
-    estimated: bool,
     seg_text_override: dict[int, str] | None = None,
 ) -> None:
     """写章节时间轴 sidecar JSON（SRT/LRC 生成数据源）。
 
-    - estimated=False（classic）：dur_list 为每段真实合成时长，start_ms 顺序累加
-    - estimated=True（multicast 整章一体化）：无逐段时长，按"字符数(静音按 silence_ms)"
-      占比把 total_dur_ms 分摊到各段
+    dur_list 为每段真实合成时长，start_ms 顺序累加。
     sidecar 与章节 MP3 同目录同名（_timings.json 后缀），写失败仅告警不影响合成。
     """
     override = seg_text_override or {}
     try:
-        weights: list[int] = []
-        for i, s in enumerate(segs):
-            if s.kind == "silence":
-                weights.append(max(int(s.silence_ms or 0), 1))
-            else:
-                weights.append(max(len(override.get(i) or s.text or ""), 1))
-        sum_w = sum(weights) or 1
-
         entries: list[dict] = []
         cursor_ms = 0
         for i, s in enumerate(segs):
-            if estimated:
-                dur_ms = int(total_dur_ms * weights[i] / sum_w)
-            else:
-                dur_ms = int(dur_list[i] or 0) if i < len(dur_list) else 0
+            dur_ms = int(dur_list[i] or 0) if i < len(dur_list) else 0
             entries.append({
                 "kind": s.kind,
                 "speaker": s.speaker or "",
@@ -1627,8 +1564,9 @@ def _write_chapter_timings(
         sidecar = Path(settings.AUDIO_DIR) / _timings_filename(build_id, ch_idx)
         tmp = str(sidecar) + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
+            # estimated 恒为 False：classic 逐段合成，时长均为真实值（保留字段兼容读取方）
             json.dump(
-                {"version": 1, "estimated": estimated, "segs": entries},
+                {"version": 1, "estimated": False, "segs": entries},
                 f, ensure_ascii=False,
             )
         os.replace(tmp, sidecar)
@@ -1718,7 +1656,6 @@ async def _run_build_inner(
         if not b:
             raise RuntimeError(f"Build 不存在: {build_id}")
         build_mode = (b.mode or "classic").lower()
-        strict_mode = _should_strict_fail(build_mode)
         tts_provider_label = b.tts_provider or "doubao"
         # 情感/语气配置快照（build 启动时从 ProjectCharacter 拷贝，这里只读快照）
         narrator_emotion = (b.narrator_emotion or "").strip()
@@ -1751,12 +1688,10 @@ async def _run_build_inner(
                 f"status={b.status}（已取消/失败），不复活，worker 直接退出"
             )
             return
-        # 注：原 _validate_multicast_provider() 已废弃（P0-5）；mode=multicast 在
-        # start_build 入口直接抛错（#4 不降级），此处不再拦截。
 
     logger.info(
         f"[build_worker] build_id={build_id[:8]}... total_chapters={total} "
-        f"mode={build_mode} strict={strict_mode} tts_provider={tts_provider_label} "
+        f"mode={build_mode} tts_provider={tts_provider_label} "
         f"styles={len(voice_styles)} narrator_emo={narrator_emotion!r}"
     )
 
@@ -1774,31 +1709,11 @@ async def _run_build_inner(
     completed = 0
     failed_count = 0
     chapter_ok_flag: dict[int, bool] = {}
-    strict_abort_flag = False  # strict 模式下首次失败即标记后续章节 skip
-    # TTS 用量计数（真实供应商调用；缓存命中不计 calls，multicast 每章 1 次）
+    # TTS 用量计数（真实供应商调用；缓存命中不计 calls）
     tts_calls_used = 0
     tts_chars_used = 0
 
     for ch_idx, ch in enumerate(chapters):
-        # strict 模式一旦出现失败，后续章节直接 skip 标记 failed（不写文件）
-        if strict_abort_flag:
-            chapter_ok_flag[ch_idx] = False
-            failed_count += 1
-            chapter_outputs[ch_idx] = (None, None)
-            async with factory() as s:
-                stmt_art = select(BuildArtifact).where(
-                    BuildArtifact.build_id == build_id,
-                    BuildArtifact.chapter_idx == ch_idx,
-                )
-                art = (await s.execute(stmt_art)).scalar_one_or_none()
-                if art:
-                    art.status = "failed"
-                    art.error_msg = "strict 模式：前序章节失败，已中止后续章节合成"
-                    art.audio_filename = None
-                    art.audio_url = None
-                    art.duration_ms = None
-                await s.commit()
-            continue
         cancelled_now = False
         async with factory() as s:
             b_check = await s.get(Build, build_id)
@@ -1958,10 +1873,6 @@ async def _run_build_inner(
                 speaker_styles=voice_styles,
             )
 
-            # 注：mode=multicast 分支已在 P0-5 删除（Seed-Audio 整章一体化生成端点
-            # 已停止迭代）；#4 后 start_build 入口对 mode=multicast 直接抛错。
-            # 下面所有路径都按 classic 逐段 TTS 合成处理。
-
             async def _synth_seg(s: _Segment) -> tuple[_Segment, bytes, int]:
                 nonlocal tts_calls_used, tts_chars_used
                 if s.kind == "silence":
@@ -2041,8 +1952,6 @@ async def _run_build_inner(
             _write_chapter_timings(
                 build_id, ch_idx, segs,
                 [r[2] for r in results],
-                total_dur_ms=ch_dur_ms,
-                estimated=False,
             )
 
             async with factory() as s:
@@ -2090,42 +1999,7 @@ async def _run_build_inner(
             failed_count += 1
             chapter_ok_flag[ch_idx] = False
 
-            # strict 模式（multicast + MULTICAST_STRICT_MODE）：
-            #   - 不写占位静音 MP3
-            #   - BuildArtifact 仅 status=failed + error_msg，audio_filename/audio_url 留空
-            #   - 置 strict_abort_flag，后续章跳过多走 failed
-            if strict_mode:
-                strict_abort_flag = True
-                chapter_outputs[ch_idx] = (None, None)
-                async with factory() as s:
-                    stmt_art = select(BuildArtifact).where(
-                        BuildArtifact.build_id == build_id,
-                        BuildArtifact.chapter_idx == ch_idx,
-                    )
-                    art = (await s.execute(stmt_art)).scalar_one_or_none()
-                    if art:
-                        art.status = "failed"
-                        art.audio_filename = None
-                        art.audio_url = None
-                        art.duration_ms = None
-                        art.error_msg = f"{type(ch_err).__name__}: {ch_err}"[:500]
-                    b = await s.get(Build, build_id)
-                    if b:
-                        b.completed_chapters = completed
-                        if b.status == "cancelled":
-                            logger.warning(f"[build_worker] cancelled after fail ch {ch_idx+1}")
-                            b.progress_msg = f"已取消：已完成 {completed}/{total} 章"
-                            b.completed_at = datetime.now(UTC).replace(tzinfo=None)
-                    await s.commit()
-                    if b and b.status == "cancelled":
-                        break
-                # strict 模式：首次失败立即终止后续章节合成
-                logger.warning(
-                    f"[build_worker] strict 模式下中止：build_id={build_id[:8]}... "
-                    f"ch {ch_idx+1}/{total} 失败 → 直接整包 failed"
-                )
-                break  # 退出 for ch_idx, ch in enumerate(chapters)
-            # --- 非 strict：降级逻辑（占位静音 MP3 + partial_success）---
+            # --- 降级逻辑（占位静音 MP3 + partial_success）---
             # 占位静音按最近一章成功音频的采样率生成，避免章界拼接点采样率跳变；
             # 找不到历史音频时回退到豆包默认采样率
             ph_sr = int(settings.DOUBAO_AUDIO_SAMPLE_RATE)
@@ -2202,29 +2076,22 @@ async def _run_build_inner(
                 pass
         total_ms += _d or 0
 
-    # strict 模式 + 有失败：不生成 ZIP（避免打包无意义文件），最终状态强制 failed
-    strict_final_failed = False
-    if strict_mode and failed_count > 0:
-        strict_final_failed = True
-        final_status = "failed"
-        zip_fname = None  # type: ignore
-    else:
-        zip_fname = _zip_filename(build_id)
-        zip_path = str(audio_dir / zip_fname)
-        _build_book_zip(
-            zip_path,
-            job_id=build_id,
-            job_title=job_title,
-            chapter_outputs=chapter_outputs,
-            chapter_titles=[c.title for c in chapters],
-        )
+    zip_fname = _zip_filename(build_id)
+    zip_path = str(audio_dir / zip_fname)
+    _build_book_zip(
+        zip_path,
+        job_id=build_id,
+        job_title=job_title,
+        chapter_outputs=chapter_outputs,
+        chapter_titles=[c.title for c in chapters],
+    )
 
-        if failed_count == 0:
-            final_status = "success"
-        elif completed >= 1 and total >= 1:
-            final_status = "partial_success"
-        else:
-            final_status = "failed"
+    if failed_count == 0:
+        final_status = "success"
+    elif completed >= 1 and total >= 1:
+        final_status = "partial_success"
+    else:
+        final_status = "failed"
 
     if only_set is not None:
         this_retry_failed = sorted([ch_idx for ch_idx, ok in chapter_ok_flag.items() if ch_idx in only_set and not ok])
@@ -2232,22 +2099,17 @@ async def _run_build_inner(
         this_retry_failed = [i for i, ok in chapter_ok_flag.items() if not ok]
 
     # B-3：终态写入加取消保护（条件更新，仅当仍为 running 才写回）。
-    if strict_final_failed:
-        _progress_msg = (
-            f"strict 多播剧模式合成失败：{failed_count}/{total} 章出错，已中止（无占位降级）"
-        )
-    else:
-        _progress_msg = (
-            f"全部完成 {completed}/{total} 章"
-            + (f"（{failed_count} 章失败已用静音占位）" if failed_count else "")
-        )
+    _progress_msg = (
+        f"全部完成 {completed}/{total} 章"
+        + (f"（{failed_count} 章失败已用静音占位）" if failed_count else "")
+    )
     terminal_applied = await _apply_terminal_status(
         build_id,
         final_status=final_status,
         progress_msg=_progress_msg,
         zip_filename=zip_fname,
-        total_size_bytes=0 if strict_final_failed else total_size_bytes,
-        total_duration_ms=0 if strict_final_failed else total_ms,
+        total_size_bytes=total_size_bytes,
+        total_duration_ms=total_ms,
         failed_chapters=this_retry_failed,
         # TTS 用量：真实供应商调用（缓存命中不计次）
         tts_calls=tts_calls_used,

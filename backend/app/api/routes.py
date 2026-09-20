@@ -3,6 +3,7 @@ import logging
 import time as _time
 import urllib.parse
 from pathlib import Path
+from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -674,10 +675,11 @@ class StartBuildRequest(BaseModel):
     voice_assignments: dict[str, str] = Field(default_factory=dict)
     narrator_voice_id: str = ""
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
-    # 多厂商 & 构建模式（Task 4/8 新增）
-    # None = 调用方未指定 → 由 build 层回落到 Project.default_build_mode，再兜底 classic。
+    # 构建模式（Task 4/8 新增）。多播剧（Seed-Audio）模式已下线，
+    # 有效值只剩 "classic"；None = 调用方未指定 → 由 build 层回落到
+    # Project.default_build_mode，再兜底 classic。
     # 显式传 "classic" 表示「明确要 classic」，不再被项目默认值覆盖。
-    mode: str | None = Field(default=None)  # classic | multicast | None(未指定)
+    mode: Literal["classic"] | None = Field(default=None)
     tts_provider: str | None = Field(default=None)
     # 旁白情感/风格指令（可选；角色的在 ProjectCharacter 上配置）
     narrator_emotion: str = Field(default="", max_length=32)
@@ -1981,7 +1983,6 @@ _EDITABLE_SETTINGS = {
     # ---- 豆包运行参数（页面化 P-env）----
     "DOUBAO_TTS_USE_V3": ("bool", "豆包配置", "豆包 TTS 切 v3 协议（默认 True；关掉会退回 v1 老端点）"),
     "DOUBAO_TTS_RPM_LIMIT": ("int", "豆包配置", "豆包 TTS RPM 限流"),
-    "DOUBAO_SEED_AUDIO_RPM_LIMIT": ("int", "豆包配置", "豆包 Seed-Audio RPM 限流"),
     "DOUBAO_ICL_RPM_LIMIT": ("int", "豆包配置", "豆包 ICL RPM 限流"),
     "DOUBAO_ICL_POLL_INTERVAL_SECS": ("float", "豆包配置", "豆包 ICL 训练轮询间隔（秒）"),
     "DOUBAO_ICL_TIMEOUT_SECS": ("int", "豆包配置", "豆包 ICL 训练超时（秒）"),
@@ -1989,9 +1990,6 @@ _EDITABLE_SETTINGS = {
     "DOUBAO_AUDIO_SAMPLE_RATE": ("int", "豆包配置", "豆包合成采样率（Hz，默认 24000）"),
     "DOUBAO_AUDIO_LOUDNESS_RATE": ("int", "豆包配置", "豆包合成响度（-50~100，默认 0）"),
     "DOUBAO_TTS_V3_BASE_URL": ("str", "豆包配置", "豆包 v3 TTS 端点（留空走 provider）"),
-    "DOUBAO_SEED_AUDIO_BASE_URL": ("str", "豆包配置", "豆包 Seed-Audio 端点（留空走 provider）"),
-    # ---- 合成质量 ----
-    "MULTICAST_STRICT_MODE": ("bool", "合成质量", "多播剧严格失败模式（任何章失败 → 整 Build 失败）"),
 }
 
 # 只读字段（展示用，不可通过 API 修改）

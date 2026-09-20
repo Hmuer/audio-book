@@ -159,7 +159,7 @@ class Build(Base):
     narrator_voice_id: Mapped[str] = mapped_column(String(128), default="")
     speed: Mapped[float] = mapped_column(Float, default=1.0)
     voice_assignments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # 多厂商 + 多模式（classic/multicast）
+    # 多厂商 + 构建模式（历史值 classic/multicast；multicast 已下线，新构建恒为 classic）
     mode: Mapped[str] = mapped_column(String(32), default="classic")
     tts_provider: Mapped[str] = mapped_column(String(32), default="minimax")
 
@@ -228,7 +228,7 @@ class ProjectCharacter(Base):
     # 情感/语气（合成时透传给 TTS provider）：emotion 为英文枚举风格值
     # （如 calm/happy/sad/angry，MiniMax 官方枚举；豆包同理），空串 = 用 provider 默认
     emotion: Mapped[str] = mapped_column(String(32), default="")
-    # 自由文本风格指令（豆包 TTS 2.0 / Seed-Audio 的 instruction_text；MiniMax 忽略）
+    # 自由文本风格指令（豆包 TTS 2.0 的 instruction_text；MiniMax 忽略）
     instruction: Mapped[str] = mapped_column(String(512), default="")
 
     project: Mapped[Project] = relationship(back_populates="project_characters")

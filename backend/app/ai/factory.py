@@ -1,7 +1,7 @@
 import asyncio
 import hashlib
 import time as _time
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from .base import BaseLLMProvider, BaseTTSProvider
 from .providers.minimax.llm import MiniMaxLLMProvider
@@ -14,11 +14,6 @@ _tts_instances: dict[str, tuple[str, BaseTTSProvider]] = {}
 # 遗留单例引用：conftest._isolate_data_dir 通过它注入 mock；保持对外属性一致。
 _tts_instance: BaseTTSProvider | None = None
 _tts_default_instance: BaseTTSProvider | None = None
-# 多播剧（Seed-Audio）provider 自 v3 迁移起已废弃（P0-5）。
-# 保留这个属性仅为兼容既有 conftest/test 通过 `aifact._multicast_instance = ...`
-# 注入的写法；新代码不应再访问。新行为：mode=multicast 在 build 入口处被重定向到
-# classic（全部旁白音色 + 角色音色），不再走任何"整章一体化"路径。
-_multicast_instance: Any | None = None
 
 # 全局 TTS 并发限流 semaphore（单例）。
 # 所有 worker（整本合成、单章合成、项目 Build）共用同一计数，
@@ -44,36 +39,15 @@ def get_llm() -> BaseLLMProvider:
 # =====================================================================
 # 延迟导入避免循环依赖；工厂函数返回 **新实例**，但 get_tts/provided 会按 provider 名缓存。
 def _factory_doubao() -> BaseTTSProvider:
-    # 延迟导入：豆包 provider 可能不存在（Task 3 尚未实现）时兜底返回最小可用对象
-    try:
-        from ..core.config import settings
-        # P1-1：settings.DOUBAO_TTS_USE_V3=True 时路由到 v3 单向流式 provider；
-        # 否则沿用 v1（端点 /api/v1/tts，业务码 JSON 协议）
-        if getattr(settings, "DOUBAO_TTS_USE_V3", False):
-            from .providers.doubao.tts import DoubaoTTSProviderV3
-            return DoubaoTTSProviderV3()
-        from .providers.doubao.tts import DoubaoTTSProvider  # type: ignore
-        return DoubaoTTSProvider()
-    except Exception:
-        # 当 DoubaoTTSProvider 还未创建时，返回一个「Stub」对象，它的 provider='doubao'
-        # 使得 Task 2 的测试可以先通过 Registry 路由层面通过（synthesize 会抛「未实现」）。
-        # 真正的 Task 3 完成后这个分支就永远不会命中。
-        return _DoubaoStubProvider()
-
-
-class _DoubaoStubProvider(BaseTTSProvider):
-    """临时占位 Provider：Task 3 完成前避免 factory.get_tts('doubao') 因 ImportError 崩。"""
-    name = "doubao_stub"
-    provider = "doubao"
-
-    async def list_voices(self):  # type: ignore[override]
-        return []
-
-    async def synthesize_to_bytes(self, text, voice_id, *, emotion="calm", speed=1.0, instruction_text=None, speaker_style=None):  # type: ignore[override]
-        raise RuntimeError("DoubaoTTSProvider 尚未实现，请先完成 Task 3")
-
-    async def synthesize_to_file(self, text, voice_id, output_path, *, emotion="calm", speed=1.0, instruction_text=None, speaker_style=None):  # type: ignore[override]
-        raise RuntimeError("DoubaoTTSProvider 尚未实现，请先完成 Task 3")
+    # 延迟导入避免循环依赖
+    from ..core.config import settings
+    # P1-1：settings.DOUBAO_TTS_USE_V3=True 时路由到 v3 单向流式 provider；
+    # 否则沿用 v1（端点 /api/v1/tts，业务码 JSON 协议）
+    if getattr(settings, "DOUBAO_TTS_USE_V3", False):
+        from .providers.doubao.tts import DoubaoTTSProviderV3
+        return DoubaoTTSProviderV3()
+    from .providers.doubao.tts import DoubaoTTSProvider  # type: ignore
+    return DoubaoTTSProvider()
 
 
 # 前缀命名空间 -> (provider 标识, 工厂函数)
@@ -195,17 +169,6 @@ def get_tts_by_voice_id(voice_id: str) -> BaseTTSProvider:
     return get_tts(None)
 
 
-def get_multicast_tts():
-    """多播剧（Seed-Audio 1.0）provider 已废弃（P0-5）。
-
-    历史：返回 _multicast_instance 单例（测试可注入 mock）。
-    现在：mode=multicast 在 build 入口处直接重定向到 classic，不再调用此函数。
-    函数保留仅为向后兼容（如有旧 conftest 注入残留），返回 None 让调用方立刻失败。
-    """
-    global _multicast_instance
-    return _multicast_instance  # 永远 None（除非测试在 conftest 注入）
-
-
 def get_tts_sem() -> asyncio.Semaphore:
     """惰性初始化全局 TTS semaphore（事件循环内创建）。"""
     global _tts_sem
@@ -215,7 +178,7 @@ def get_tts_sem() -> asyncio.Semaphore:
 
 
 # =====================================================================
-# 豆包 TTS / ICL / Seed-Audio 共享 RPM 限流桶（固定间隔 token bucket）
+# 豆包 TTS / ICL 共享 RPM 限流桶（固定间隔 token bucket）
 # 与 MiniMax 同款算法，保证任意两个请求最小间隔 60/RPM_LIMIT 秒。
 # 实现一个通用工厂以避免在每个 provider 内重复代码。
 # =====================================================================
@@ -257,16 +220,10 @@ class _RPMBucket:
         self._next_allowed = 0.0
 
 
-# 三个独立桶（豆包三产品 RPM 限制可能独立）
+# 两个独立桶（豆包 TTS / ICL 的 RPM 限制可能独立）
 def _doubao_tts_rpm() -> int:
     from ..core.config import settings
     return max(1, int(settings.DOUBAO_TTS_RPM_LIMIT))
-
-
-def _doubao_seed_audio_rpm() -> int:
-    """Seed-Audio 多播剧 RPM 桶（P0-5 已废弃，保留桶避免单测注入残留时 KeyError）。"""
-    from ..core.config import settings
-    return max(1, int(settings.DOUBAO_SEED_AUDIO_RPM_LIMIT))
 
 
 def _doubao_icl_rpm() -> int:
@@ -277,19 +234,12 @@ def _doubao_icl_rpm() -> int:
 
 
 _doubao_tts_bucket = _RPMBucket(_doubao_tts_rpm)
-_doubao_seed_audio_bucket = _RPMBucket(_doubao_seed_audio_rpm)
 _doubao_icl_bucket = _RPMBucket(_doubao_icl_rpm)
 
 
 async def _doubao_rpm_wait_acquire(bucket: str = "tts") -> None:
-    """豆包 RPM 限流统一入口。
-
-    bucket ∈ {'tts', 'seed_audio', 'icl'}
-    注：'seed_audio' 已废弃（P0-5）；保留仅防止旧调用 KeyError。
-    """
-    if bucket == "seed_audio":
-        await _doubao_seed_audio_bucket.acquire()
-    elif bucket == "icl":
+    """豆包 RPM 限流统一入口。bucket ∈ {'tts', 'icl'}。"""
+    if bucket == "icl":
         await _doubao_icl_bucket.acquire()
     else:
         await _doubao_tts_bucket.acquire()
@@ -297,18 +247,14 @@ async def _doubao_rpm_wait_acquire(bucket: str = "tts") -> None:
 
 def _doubao_rpm_remaining_secs(bucket: str = "tts") -> float:
     """距离下一次放行还剩多少秒（429 兜底等待用）。"""
-    if bucket == "seed_audio":
-        return _doubao_seed_audio_bucket.remaining_secs()
     if bucket == "icl":
         return _doubao_icl_bucket.remaining_secs()
     return _doubao_tts_bucket.remaining_secs()
 
 
 def _reset_doubao_rpm_bucket_for_tests(bucket: str | None = None) -> None:
-    """pytest 用：重置所有豆包 RPM 桶（避免单测串扰）。"""
+    """pytest 用：重置豆包 RPM 桶（避免单测串扰）。"""
     if bucket is None or bucket == "tts":
         _doubao_tts_bucket.reset()
-    if bucket is None or bucket == "seed_audio":
-        _doubao_seed_audio_bucket.reset()
     if bucket is None or bucket == "icl":
         _doubao_icl_bucket.reset()

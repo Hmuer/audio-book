@@ -49,7 +49,7 @@ class BaseTTSProvider(ABC):
     ) -> tuple[bytes, int]:
         """同步合成音频，返回 (MP3 bytes, duration_ms)。
 
-        - instruction_text: 风格/情绪描述指令（豆包 TTS 2.0 / Seed-Audio 支持，MiniMax 可选）
+        - instruction_text: 风格/情绪描述指令（豆包 TTS 2.0 支持，MiniMax 可选）
         - speaker_style: 官方音色预置风格 id（部分豆包音色支持，如"亲切""热情"）
         """
         ...

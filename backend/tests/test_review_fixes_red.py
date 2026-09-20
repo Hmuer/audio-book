@@ -1,9 +1,7 @@
 """Review 修复回归 — 独立代码审查发现的问题（2026-09）。
 
 T-RF1 retry-failed 必须继承源 Build 的 mode/tts_provider（原 Critical：
-多播剧/豆包 Build 重试会静默退化为 classic+MiniMax）。
-T-RF2 _validate_multicast_provider：multicast + 非 doubao → 抛 ValueError（禁止降级）。
-T-RF3 _multicast_synth_chapter：预估超 120s 上限的章节分段生成再拼接。
+Build 重试会静默退化为 classic+MiniMax）。
 T-RF4 DoubaoTTSProvider 端点读 settings.DOUBAO_TTS_BASE_URL（.env 覆写生效）。
 T-RF5 ICL create reqid 每次唯一（不再用 id(self)）。
 """
@@ -18,60 +16,6 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
-
-# ---------------------------------------------------------------------
-# T-RF2（P0-5 改写）：_validate_multicast_provider 现在是 noop（不再拒绝降级）
-# ---------------------------------------------------------------------
-def test_validate_multicast_provider_is_noop_after_deprecation():
-    from backend.app.services.build import _validate_multicast_provider
-
-    # P0-5 之后：mode=multicast + tts_provider=任意 都不再抛错
-    _validate_multicast_provider("multicast", "doubao")   # 历史合法
-    _validate_multicast_provider("classic", "minimax")    # 历史合法
-    _validate_multicast_provider("classic", "doubao")     # 历史合法
-    _validate_multicast_provider("multicast", "minimax")  # 历史非法 → 现在不抛
-    _validate_multicast_provider("MULTICAST", "")         # 历史非法 → 现在不抛
-    # 函数返回 None
-    assert _validate_multicast_provider("multicast", "doubao") is None
-
-
-# ---------------------------------------------------------------------
-# T-RF3（P0-5 改写）：_multicast_synth_chapter / _estimate_multicast_secs 已废弃
-# ---------------------------------------------------------------------
-@pytest.mark.asyncio
-async def test_multicast_synth_chapter_raises_after_deprecation(tmp_path):
-    """P0-5 之后：_multicast_synth_chapter 调用立刻抛 RuntimeError（提示用户改 classic）。"""
-    from backend.app.services.build import _multicast_synth_chapter
-
-    class _RecordingMC:
-        def __init__(self):
-            self.calls: list[list[dict]] = []
-
-        async def synthesize_chapter_to_file(self, segments, output_path, *, speed=1.0,
-                                             chapter_title="", instruction_text=None):
-            self.calls.append(list(segments))
-            Path(output_path).write_bytes(b"\xff\xfb\x90\x64\x00" + (b"\x00" * 1024))
-            return output_path, 1000
-
-    mc = _RecordingMC()
-    out = str(tmp_path / "ch0000.mp3")
-    segs = [{"kind": "narration", "speaker": "", "text": "测试",
-             "voice_id": "doubao:zh_female_qingxin", "silence_ms": 0}]
-    with pytest.raises(RuntimeError, match="mode=multicast 已废弃"):
-        await _multicast_synth_chapter(mc, segs, out, speed=1.0, max_secs=120.0)
-    # mc 不应被调用
-    assert mc.calls == []
-
-
-def test_estimate_multicast_secs_returns_zero_after_deprecation():
-    """P0-5 之后：_estimate_multicast_secs 永远返回 0（不再用于任何调度逻辑）。"""
-    from backend.app.services.build import _estimate_multicast_secs
-
-    segs = [{"kind": "narration", "speaker": "", "text": "字" * 500,
-             "voice_id": "doubao:zh_female_qingxin", "silence_ms": 0} for _ in range(10)]
-    assert _estimate_multicast_secs(segs, 1.0) == 0.0
-    assert _estimate_multicast_secs(segs, 0.5) == 0.0
 
 
 # ---------------------------------------------------------------------
@@ -154,11 +98,8 @@ async def test_retry_failed_inherits_provider_and_mode(_isolate_data_dir):
     )
     from backend.app.db.session import init_db, get_session_factory
     from backend.app.db.models import Build
-    from backend.app.core import config as cfgmod
     from backend.app.ai import factory as aifact
     from backend.tests.mock_providers import MockTTSProvider, MockLLMProvider
-
-    cfgmod.settings.MULTICAST_STRICT_MODE = True
 
     # mock TTS 标 provider='doubao'（让 factory.get_tts('doubao') 命中 mock），
     # 第一次合成失败触发 retry；后续正常 → 最终 success。
@@ -188,7 +129,7 @@ async def test_retry_failed_inherits_provider_and_mode(_isolate_data_dir):
                 instruction_text=instruction_text, speaker_style=speaker_style,
             )
 
-    prev_tts, prev_llm, prev_mc = aifact._tts_instance, aifact._llm_instance, aifact._multicast_instance
+    prev_tts, prev_llm = aifact._tts_instance, aifact._llm_instance
     aifact._tts_instance = _FailFirstCallDoubaoTTS()
     aifact._llm_instance = MockLLMProvider()
     try:
@@ -239,8 +180,6 @@ async def test_retry_failed_inherits_provider_and_mode(_isolate_data_dir):
     finally:
         aifact._tts_instance = prev_tts
         aifact._llm_instance = prev_llm
-        aifact._multicast_instance = prev_mc
-        cfgmod.settings.MULTICAST_STRICT_MODE = False
         async with _RUNNING_LOCK:
             # 清掉可能残留的 (build_id -> pid) 键，避免污染后续测试
             stale_keys = [bid for bid, pidv in _ACTIVE_BUILDS.items() if pidv == pid]

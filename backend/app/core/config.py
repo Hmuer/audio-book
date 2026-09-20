@@ -37,14 +37,13 @@ DEFAULT_PROVIDERS_TEMPLATE: list[dict[str, Any]] = [
         "app_id": "",
         "icl_api_key": "",
         "icl_access_key": "",
-        # ---- 端点（4 个；运行时仍可走 settings.* 兜底）----
+        # ---- 端点（3 个；运行时仍可走 settings.* 兜底）----
         # base_url + tts_endpoint 拼出完整 tts URL
-        # icl_endpoint / tts_v3_endpoint / seed_audio_endpoint 独立
+        # icl_endpoint / tts_v3_endpoint 独立
         "base_url": "https://openspeech.bytedance.com",
         "tts_endpoint": "/api/v1/tts",
         "icl_endpoint": "/api/v1/voice_clone",
         "tts_v3_endpoint": "/api/v3/tts/unidirectional",
-        "seed_audio_endpoint": "/api/v1/seed_audio",
         "extra_headers": {},
         "models": [
             {"id": "volcano_tts", "label": "豆包语音合成 2.0", "kind": "tts"},
@@ -102,7 +101,6 @@ class Settings(BaseSettings):
     DOUBAO_TTS_USE_V3: bool = True
     # v3 端点覆写（生产/测试可指代理/沙箱）
     DOUBAO_TTS_V3_BASE_URL: str = ""
-    DOUBAO_SEED_AUDIO_BASE_URL: str = "https://openspeech.bytedance.com/api/v1/seed_audio"
 
     # ===== P1-4: 合成期采样率/响度统一（所有段在合成时统一 sample_rate/loudness） =====
     # 默认 24000Hz 与豆包 v3 audio_params 默认值一致；m4b 后处理保留 loudnorm 兜底
@@ -112,7 +110,6 @@ class Settings(BaseSettings):
 
     # RPM 限流（多厂商独立桶）
     DOUBAO_TTS_RPM_LIMIT: int = 60
-    DOUBAO_SEED_AUDIO_RPM_LIMIT: int = 10
     # ICL 查询被 worker(每 poll 间隔) + 前端详情轮询双路触发，12/min 不够用
     DOUBAO_ICL_RPM_LIMIT: int = 60
 
@@ -120,10 +117,6 @@ class Settings(BaseSettings):
     DOUBAO_ICL_POLL_INTERVAL_SECS: float = 5.0
     DOUBAO_ICL_TIMEOUT_SECS: int = 1800
     ICL_MAX_AUDIO_BYTES: int = 10 * 1024 * 1024  # 10MB
-
-    # 多播剧严格失败模式（默认 true：任何章节失败 → 整 Build 失败，不占位降级）
-    # 留配置点仅用于集成测试做对照回归，线上应保持 True。
-    MULTICAST_STRICT_MODE: bool = True
 
     # =====================================================================
     # 多厂商模型配置（PROVIDERS_CONFIG）
@@ -350,7 +343,7 @@ def _migrate_legacy_providers() -> None:
                 prov["tts_endpoint"] = settings.DOUBAO_TTS_BASE_URL
             if settings.DOUBAO_ICL_BASE_URL:
                 prov["icl_endpoint"] = settings.DOUBAO_ICL_BASE_URL
-            # tts_v3_endpoint / seed_audio_endpoint 旧 env 无对应项，保留模板默认
+            # tts_v3_endpoint 旧 env 无对应项，保留模板默认
     payload = {
         "providers": providers,
         "active": {
@@ -673,14 +666,14 @@ def doubao_field(name: str) -> str:
 
     name ∈ {
       "api_key" / "secret" / "app_id" / "icl_api_key" / "icl_access_key",
-      "tts_endpoint" / "icl_endpoint" / "tts_v3_endpoint" / "seed_audio_endpoint",
+      "tts_endpoint" / "icl_endpoint" / "tts_v3_endpoint",
     }
     """
     p = get_provider("doubao") or {}
     raw = (p.get(name) or "").strip()
     if raw:
         # 端点类字段：若只是 path（以 / 开头），自动拼上 base_url
-        if name in ("tts_endpoint", "icl_endpoint", "tts_v3_endpoint", "seed_audio_endpoint") and raw.startswith("/"):
+        if name in ("tts_endpoint", "icl_endpoint", "tts_v3_endpoint") and raw.startswith("/"):
             base = (p.get("base_url") or "https://openspeech.bytedance.com").rstrip("/")
             return f"{base}{raw}"
         return raw
@@ -694,7 +687,6 @@ def doubao_field(name: str) -> str:
         "tts_endpoint": settings.DOUBAO_TTS_BASE_URL or "https://openspeech.bytedance.com/api/v1/tts",
         "icl_endpoint": settings.DOUBAO_ICL_BASE_URL or "https://openspeech.bytedance.com/api/v1/voice_clone",
         "tts_v3_endpoint": settings.DOUBAO_TTS_V3_BASE_URL or "https://openspeech.bytedance.com/api/v3/tts/unidirectional",
-        "seed_audio_endpoint": settings.DOUBAO_SEED_AUDIO_BASE_URL or "https://openspeech.bytedance.com/api/v1/seed_audio",
     }
     return (fallback_map.get(name) or "").strip()
 

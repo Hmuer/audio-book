@@ -1,10 +1,10 @@
 """P-env：把运行时可变参数从 .env 迁出 — 验证页面化路径完整。
 
 覆盖：
-  T-EM-1  doubao provider 模板含全部 5 个凭据字段 + 4 个端点字段
+  T-EM-1  doubao provider 模板含全部 5 个凭据字段 + 3 个端点字段
   T-EM-2  doubao_field() 优先返回 provider 字典，provider 空时回退 settings
   T-EM-3  doubao_field() 端点字段自动拼 base_url（path-only 形式）
-  T-EM-4  /api/settings 白名单 14 项新增（豆包 11 + 日志 2 + multicast 1）
+  T-EM-4  /api/settings 白名单新增项（豆包 9 + 日志 2 = 11）
   T-EM-5  /api/settings PUT float 字段（DOUBAO_ICL_POLL_INTERVAL_SECS）能正确转换
   T-EM-6  _redact_provider 脱敏新增 5 个字段
   T-EM-7  legacy 迁移：env 里有 DOUBAO_AK/SK 时自动迁到 provider 字典
@@ -26,7 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # T-EM-1：doubao provider 模板 schema
 # ---------------------------------------------------------------------
 def test_em_1_doubao_provider_template_has_full_fields():
-    """DEFAULT_PROVIDERS_TEMPLATE 里的 doubao 厂商应包含 5 凭据 + 4 端点字段。"""
+    """DEFAULT_PROVIDERS_TEMPLATE 里的 doubao 厂商应包含 5 凭据 + 3 端点字段。"""
     from backend.app.core.config import DEFAULT_PROVIDERS_TEMPLATE
 
     doubao = next(p for p in DEFAULT_PROVIDERS_TEMPLATE if p["id"] == "doubao")
@@ -34,8 +34,8 @@ def test_em_1_doubao_provider_template_has_full_fields():
     for f in ("api_key", "secret", "app_id", "icl_api_key", "icl_access_key"):
         assert f in doubao, f"doubao 模板缺 {f} 字段"
         assert doubao[f] == "", f"doubao.{f} 默认应为空"
-    # 4 端点字段
-    for f in ("tts_endpoint", "icl_endpoint", "tts_v3_endpoint", "seed_audio_endpoint"):
+    # 3 端点字段
+    for f in ("tts_endpoint", "icl_endpoint", "tts_v3_endpoint"):
         assert f in doubao, f"doubao 模板缺 {f} 字段"
         assert doubao[f], f"doubao.{f} 应有默认值"
 
@@ -95,29 +95,25 @@ def test_em_3_doubao_endpoint_field_concatenates_base_url():
 
 
 # ---------------------------------------------------------------------
-# T-EM-4：白名单含 14 项新增
+# T-EM-4：白名单含新增项
 # ---------------------------------------------------------------------
-def test_em_4_editable_settings_has_14_new_keys():
-    """_EDITABLE_SETTINGS 应包含豆包 11 + 日志 2 + multicast 1 = 14 项新键。"""
+def test_em_4_editable_settings_has_new_keys():
+    """_EDITABLE_SETTINGS 应包含豆包 9 + 日志 2 = 11 项新键。"""
     from backend.app.api.routes import _EDITABLE_SETTINGS
 
     expected_new = {
-        # 豆包 11 项
+        # 豆包 9 项
         "DOUBAO_TTS_USE_V3",
         "DOUBAO_TTS_RPM_LIMIT",
-        "DOUBAO_SEED_AUDIO_RPM_LIMIT",
         "DOUBAO_ICL_RPM_LIMIT",
         "DOUBAO_ICL_POLL_INTERVAL_SECS",
         "DOUBAO_ICL_TIMEOUT_SECS",
         "ICL_MAX_AUDIO_BYTES",
         "DOUBAO_AUDIO_SAMPLE_RATE",
         "DOUBAO_AUDIO_LOUDNESS_RATE",
-        # 端点 2 项已通过 doubao_field 走 provider，不再放白名单
         # 日志 2 项
         "LOG_MAX_BYTES",
         "LOG_BACKUP_COUNT",
-        # 合成质量 1 项
-        "MULTICAST_STRICT_MODE",
     }
     for k in expected_new:
         assert k in _EDITABLE_SETTINGS, f"_EDITABLE_SETTINGS 缺 {k}"

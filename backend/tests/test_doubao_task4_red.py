@@ -127,17 +127,6 @@ def test_calc_config_digest_differs_by_tts_provider():
     assert d1 != d2, "相同 narrator/VA，不同 tts_provider 必须产生不同 digest"
 
 
-def test_calc_config_digest_differs_by_mode():
-    from backend.app.services.build import _calc_config_digest
-    d1 = _calc_config_digest(
-        "doubao:zh_female_qingxin", 1.0, {}, mode="classic", tts_provider="doubao",
-    )
-    d2 = _calc_config_digest(
-        "doubao:zh_female_qingxin", 1.0, {}, mode="multicast", tts_provider="doubao",
-    )
-    assert d1 != d2, "相同 narrator/VA，不同 mode 必须产生不同 digest"
-
-
 def test_calc_config_digest_backward_compatible_no_mode_provider():
     """不提供 mode/tts_provider 参数时，默认用 classic/doubao 填充，保证与旧测试一致。"""
     from backend.app.services.build import _calc_config_digest

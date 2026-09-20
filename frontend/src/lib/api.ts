@@ -456,8 +456,6 @@ export const api = {
       voice_assignments: Record<string, string>;
       narrator_voice_id: string;
       speed?: number;
-      /** 构建模式：classic（逐句合成）/ multicast（Seed-Audio 多播剧一体化生成） */
-      mode?: 'classic' | 'multicast';
       /** TTS 厂商：doubao（MiniMax TTS 已弃用） */
       tts_provider?: 'doubao';
       /** 旁白情感（英文枚举风格值，空串 = provider 默认） */
@@ -744,8 +742,8 @@ export interface BuildListItem {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
-  /** 构建模式：classic（逐句合成）/ multicast（Seed-Audio 多播剧） */
-  mode?: 'classic' | 'multicast' | null;
+  /** 构建模式（多播剧 Seed-Audio 已下线，当前恒为 classic） */
+  mode?: 'classic' | null;
   /** TTS 厂商：doubao（MiniMax TTS 已弃用） */
   tts_provider?: 'doubao' | null;
   /** TTS 用量（真实供应商调用，不含缓存命中） */
@@ -769,7 +767,7 @@ export interface BuildDetailResp {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
-  mode?: 'classic' | 'multicast' | null;
+  mode?: 'classic' | null;
   tts_provider?: 'doubao' | null;
   failed_chapters?: number[] | null;
   is_retry?: boolean;
@@ -824,7 +822,7 @@ export interface BuildStatusResp {
   progress_msg: string | null;
   completed_chapters: number;
   total_chapters: number;
-  mode?: 'classic' | 'multicast' | null;
+  mode?: 'classic' | null;
   tts_provider?: 'doubao' | null;
   failed_chapters?: number[] | null;
   artifacts: BuildArtifactResp[];
@@ -838,7 +836,7 @@ export interface BuildResp {
   total_chapters: number;
   completed_chapters: number;
   created_at: string;
-  mode?: 'classic' | 'multicast' | null;
+  mode?: 'classic' | null;
   tts_provider?: 'doubao' | null;
 }
 
@@ -873,7 +871,6 @@ export interface ProviderConfig {
   // 豆包专用端点：可填 path（以 / 开头，自动拼 base_url）或完整 URL。
   icl_endpoint?: string;
   tts_v3_endpoint?: string;
-  seed_audio_endpoint?: string;
   // 敏感字段的「是否已配置」标记（GET 时后端附带；值为真表示库里已有非空值）
   api_key_configured?: boolean;
   secret_configured?: boolean;
