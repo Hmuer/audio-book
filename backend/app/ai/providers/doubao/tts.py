@@ -1218,8 +1218,11 @@ class DoubaoTTSProvider(BaseTTSProvider):
 #     },
 #   }
 #
-# 响应：HTTP Chunked 流式 JSON 序列，每个 chunk 为 {audio: <base64>, ...}
-#       或错误 {code, message}（通常第一个 chunk）。客户端拼接 audio 字段解码得到 MP3。
+# 响应：HTTP Chunked 流式 JSON 序列（一行一个 JSON）。成功 chunk 形如
+#       {"code": 0 或 20000000, "message": "OK", "data": "<base64 音频分片>",
+#        "sentence": {...}, "usage": {...}}（见 _V3_SUCCESS_CODES 注释）；
+#       失败 chunk 形如 {"code": <非成功码>, "message": "..."}。
+#       客户端把所有 chunk 的 data 字段解码后拼接得到 MP3。
 #
 # 与 v1 共存策略：
 #   - v3 为默认路径：settings.DOUBAO_TTS_USE_V3 默认 True（2026-09-18 起）
@@ -1232,10 +1235,19 @@ _DEFAULT_V3_ENDPOINT = "https://openspeech.bytedance.com/api/v3/tts/unidirection
 # 固定值（官方协议要求；新鉴权方式也必须带上）
 _V3_FIXED_X_API_APP_KEY = "aGjiRDfUWi"
 
-# v3 业务码：0=成功；非 0=失败。文档示例：
-# 20000000/20000001/20000002/20000003/40000001 等。具体可重试判定不在 v3 spec 中
-# 明确，这里保守：网络层 + 5xx 重试，业务码直接抛错（不静默错）。
+# v3 业务码：成功码见 _V3_SUCCESS_CODES；非成功码一律抛错（不静默错）。
+# 具体可重试判定不在 v3 spec 中明确，这里保守：网络层 + 5xx 重试，业务码直接抛错。
 _V3_RETRYABLE_NETWORK = True  # 网络错 / 5xx / 429 重试
+
+# ⚠️ 成功码不止 0：文档《单向流式语音合成HTTP》响应示例写的是 `"code": 0`，
+# 并注明「message 返回 OK 则表示合成成功」，但**实测返回的是 `code=20000000,
+# message=OK`**（2026-09-20，音色 zh_female_vv_uranus_bigtts，logid
+# 2026092013535759634A20BCF37CCA033B，HTTP 200、耗时 2s、音频正常）。
+# 20000000 不在官方错误码表（6561/2534853）里，属该接口的 OK 码。
+# 旧实现只认 0，于是把成功响应当成业务错——并且因为错误分支会 `continue`，
+# 顺带把同一条 chunk 里的音频也跳过了，两个 bug 互相掩盖。
+_V3_SUCCESS_CODES: frozenset[int] = frozenset({0, 20000000})
+
 
 
 class DoubaoTTSResponseV3Error(RuntimeError):
@@ -1624,6 +1636,9 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                 saw_error = False
                 err_msg = ""
                 err_code = -1
+                # 诊断用：记下实际收到过哪些字段名。协议字段名一旦猜错，
+                # 「响应无 audio chunk」这种报错本身不提供任何线索，只能靠这里。
+                seen_keys: list[str] = []
                 async for line in resp.aiter_lines():
                     line = (line or "").strip()
                     if not line:
@@ -1635,14 +1650,20 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                         continue
                     if not isinstance(obj, dict):
                         continue
-                    # 错误 chunk
+                    for k in obj:
+                        if k not in seen_keys and len(seen_keys) < 12:
+                            seen_keys.append(k)
+                    # 失败 chunk：成功码见 _V3_SUCCESS_CODES（0 与 20000000 都表示 OK）
                     code_val = obj.get("code")
-                    if code_val is not None and int(code_val) != 0:
+                    if code_val is not None and int(code_val) not in _V3_SUCCESS_CODES:
                         saw_error = True
                         err_code = int(code_val)
                         err_msg = str(obj.get("message") or "")
                         continue
-                    audio_b64 = obj.get("audio") or ""
+                    # 音频字段：官方文档《单向流式语音合成HTTP》响应示例为 `data`
+                    # （"data": "<base64 encoded audio chunk>"）。`audio` 是历史实现
+                    # 猜错的名字，保留兜底以兼容可能存在的其它版本。
+                    audio_b64 = obj.get("data") or obj.get("audio") or ""
                     if audio_b64:
                         try:
                             chunks.append(base64.b64decode(audio_b64, validate=False))
@@ -1662,7 +1683,8 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                     )
                 if not chunks:
                     raise DoubaoTTSResponseV3Error(
-                        "v3 TTS 响应无 audio chunk",
+                        "v3 TTS 响应无音频分片（成功码但既无 data 也无 audio 字段）"
+                        f"；实际收到的字段={seen_keys or '(无 JSON 行)'}",
                         code=-1,
                         logid=logid,
                     )
