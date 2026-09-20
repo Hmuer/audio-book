@@ -12,8 +12,8 @@ TTS 拼接），不再走任何「整章一体化」路径。
   T-MC3  factory.get_multicast_tts() 永远返回 None（旧 conftest 注入的
          _multicast_instance 也不再有效，保留仅为向后兼容）
   T-MC4  _validate_tts_namespace 不再因 mode=multicast 抛错：
-         - tts_provider='minimax' + mode='multicast' 不抛（历史会抛）
-         - tts_provider=''  + mode='multicast' 不抛（历史会抛）
+         - tts_provider='doubao' + mode='multicast' 不抛（历史会抛）
+         - tts_provider=''      + mode='multicast' 不抛（历史会抛）
   T-MC5  Build 完成后 mode 字段持久化为 'classic'（即降级后用户看到的值）
 """
 from __future__ import annotations
@@ -31,8 +31,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # ---------------------------------------------------------------------
 # Mock 适配：当 tts_provider='doubao' 时 factory.get_tts('doubao') 会按
-# provider 标识匹配 MockTTSProvider；MockTTSProvider 默认 provider='minimax'，
-# 这里提供一个 provider='doubao' 的子类让 mock 注入命中 factory 路由。
+# provider 标识匹配 MockTTSProvider（MockTTSProvider.provider='doubao'），
+# 这里仍提供一个显式子类，便于单测显式注入而不依赖 conftest。
 # ---------------------------------------------------------------------
 class _DoubaoMockTTS:
     """Mock TTS 子类：标记 provider='doubao'，避免调用真实 DoubaoTTSProvider。
@@ -186,17 +186,17 @@ def test_factory_get_multicast_tts_returns_none_after_deprecation():
 # ---------------------------------------------------------------------
 # T-MC5：_validate_tts_namespace 不再因 mode=multicast 抛错
 # ---------------------------------------------------------------------
-def test_validate_tts_namespace_no_longer_rejects_multicast_with_minimax():
-    """历史：mode=multicast + tts_provider='minimax' 会抛 RuntimeError。
+def test_validate_tts_namespace_no_longer_rejects_multicast_with_doubao():
+    """历史：mode=multicast + tts_provider='doubao' 会抛 RuntimeError。
     P0-5 之后：mode=multicast 在 start_build 入口降级为 classic，_validate_tts_namespace
-    不再对 mode=multicast 做特殊校验（minimax + multicast 不再报错）。"""
+    不再对 mode=multicast 做特殊校验（doubao + multicast 不再报错）。"""
     from backend.app.services.build import _validate_tts_namespace
 
-    # minimax + multicast：历史抛错，现在 OK（降级）
+    # doubao + multicast：历史抛错，现在 OK（降级）
     _validate_tts_namespace(
-        tts_provider="minimax",
+        tts_provider="doubao",
         mode="multicast",
-        narrator_voice_id="minimax:male-qn-jingying",
+        narrator_voice_id="doubao:zh_male_qingcang_uranus_bigtts",
         voice_assignments={},
     )
 

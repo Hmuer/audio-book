@@ -1,8 +1,8 @@
 """Task 4 RED — /api/voices 聚合 + start_build 命名空间校验（升级版 P-2.5）。
 
-T-VA1 /api/voices 必须聚合 minimax: + doubao: 两套音色；返回结构里每条 voice['provider'] ∈ {'minimax','doubao'}。
-T-VA2 [P-2.5 反转] 跨厂商音色（doubao:/minimax:/icl: 混用）→ **不再抛错**，允许按 voice_id 自动路由。
-T-VA3 [P-2.5 反转] narrator 与角色音色厂商不一致 → 不再报错。
+T-VA1 /api/voices 聚合豆包音色；每条 voice['provider'] == 'doubao'（MiniMax TTS 已弃用）。
+T-VA2 [P-2.5] 混用 doubao:/icl: 音色 → **不抛错**，允许按 voice_id 自动路由。
+T-VA3 [P-2.5] narrator 与角色音色来源不一致 → 不报错。
 T-VA4 前缀合法（mode/provider 在白名单）→ 通过。
 """
 from __future__ import annotations
@@ -26,49 +26,34 @@ def test_list_voices_aggregates_providers():
     result = asyncio.run(list_voices())
     voices = result["voices"]
     providers = {v.get("provider") for v in voices}
-    assert "minimax" in providers, f"聚合结果中缺少 minimax 音色，providers 集合={providers}"
     assert "doubao" in providers, f"聚合结果中缺少 doubao 音色，providers 集合={providers}"
     assert result["count"] == len(voices)
-    # 每条音色必须有 provider 字段，且值为 minimax/doubao 之一
+    # 每条音色必须有 provider 字段，且值为 doubao（MiniMax TTS 已弃用）
     for v in voices:
-        assert v.get("provider") in ("minimax", "doubao"), f"voice.provider 未知：{v}"
+        assert v.get("provider") == "doubao", f"voice.provider 未知：{v}"
 
 
 # ---------------------------------------------------------------------
-# T-VA2 / T-VA3：[P-2.5] 命名空间校验（升级版：跨厂商允许，不再抛错）
+# T-VA2 / T-VA3：[P-2.5] 命名空间校验（升级版：混用允许，不再抛错）
 # 直接测 build.py 中的 _validate_tts_namespace 函数。
 # ---------------------------------------------------------------------
-def test_namespace_allows_cross_provider_voices():
-    """[P-2.5] 跨厂商音色混用不再抛错：合成时按 voice_id 前缀自动路由厂商。"""
+def test_namespace_allows_mixed_voice_sources():
+    """[P-2.5] doubao:/icl: 音色混用不再抛错：合成时按 voice_id 前缀自动路由。"""
     from backend.app.services.build import _validate_tts_namespace
 
-    # doubao provider + minimax 音色：旧版抛错，新版允许
-    _validate_tts_namespace(
-        tts_provider="doubao",
-        mode="classic",
-        narrator_voice_id="minimax:male-qn-jingying",
-        voice_assignments={"角色A": "minimax:female-qn-lanyin"},
-    )
-    # minimax provider + doubao 音色：旧版抛错，新版允许
-    _validate_tts_namespace(
-        tts_provider="minimax",
-        mode="classic",
-        narrator_voice_id="doubao:zh_female_qingxin",
-        voice_assignments={"角色A": "minimax:female-qn-lanyin"},
-    )
-    # narrator doubao + 角色 minimax：旧版抛错，新版允许
+    # doubao 旁白 + icl 角色：允许
     _validate_tts_namespace(
         tts_provider="doubao",
         mode="classic",
         narrator_voice_id="doubao:zh_female_qingxin",
-        voice_assignments={"角色A": "minimax:male-qn-jingying"},
+        voice_assignments={"角色A": "icl:custom_clone_001"},
     )
-    # 全部混用
+    # 未显式指定 provider（空串）：同样允许
     _validate_tts_namespace(
-        tts_provider="minimax",
+        tts_provider="",
         mode="classic",
-        narrator_voice_id="icl:custom_clone_001",
-        voice_assignments={"甲": "doubao:zh_female_qingxin", "乙": "minimax:female-qn-lanyin"},
+        narrator_voice_id="doubao:zh_female_qingxin",
+        voice_assignments={"角色A": "doubao:zh_male_qingnianqingche"},
     )
 
 
@@ -108,12 +93,12 @@ def test_namespace_allows_matching_prefixes():
         narrator_voice_id="doubao:zh_female_qingxin",
         voice_assignments={"角色A": "doubao:zh_male_qingnianqingche"},
     )
-    # minimax 前缀 + tts_provider=minimax → OK
+    # icl 前缀 + tts_provider=doubao → OK
     _validate_tts_namespace(
-        tts_provider="minimax",
+        tts_provider="doubao",
         mode="classic",
-        narrator_voice_id="minimax:male-qn-jingying",
-        voice_assignments={"角色A": "minimax:female-qn-lanyin"},
+        narrator_voice_id="icl:custom_clone_001",
+        voice_assignments={"角色A": "doubao:zh_male_qingnianqingche"},
     )
 
 
@@ -134,10 +119,10 @@ def test_namespace_allows_icl_prefix_for_doubao():
 def test_calc_config_digest_differs_by_tts_provider():
     from backend.app.services.build import _calc_config_digest
     d1 = _calc_config_digest(
-        "minimax:male-qn-jingying", 1.0, {}, mode="classic", tts_provider="minimax",
+        "doubao:zh_male_qingcang_uranus_bigtts", 1.0, {}, mode="classic", tts_provider="doubao",
     )
     d2 = _calc_config_digest(
-        "minimax:male-qn-jingying", 1.0, {}, mode="classic", tts_provider="doubao",
+        "doubao:zh_male_qingcang_uranus_bigtts", 1.0, {}, mode="classic", tts_provider="icl",
     )
     assert d1 != d2, "相同 narrator/VA，不同 tts_provider 必须产生不同 digest"
 
@@ -154,10 +139,10 @@ def test_calc_config_digest_differs_by_mode():
 
 
 def test_calc_config_digest_backward_compatible_no_mode_provider():
-    """不提供 mode/tts_provider 参数时，默认用 classic/minimax 填充，保证与旧测试一致。"""
+    """不提供 mode/tts_provider 参数时，默认用 classic/doubao 填充，保证与旧测试一致。"""
     from backend.app.services.build import _calc_config_digest
     d_kw = _calc_config_digest(
-        "male-qn-jingying", 1.0, {}, mode="classic", tts_provider="minimax",
+        "zh_male_qingcang_uranus_bigtts", 1.0, {}, mode="classic", tts_provider="doubao",
     )
-    d_no = _calc_config_digest("male-qn-jingying", 1.0, {})
+    d_no = _calc_config_digest("zh_male_qingcang_uranus_bigtts", 1.0, {})
     assert d_kw == d_no

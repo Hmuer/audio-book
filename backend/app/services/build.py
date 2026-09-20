@@ -42,10 +42,10 @@ from ..db.models import (
 )
 from ..db.session import get_session_factory
 from ..ai.factory import get_tts
-from ..ai.providers.minimax.tts import (
+from ..core.mp3_util import (
     make_silent_mp3,
     concat_mp3_files,
-    _estimate_mp3_duration_ms,
+    mp3_duration_ms,
 )
 from .chapter import Chapter, _Segment, _build_segments_for_chapter
 from .book_split import strip_chapter_prefix
@@ -94,7 +94,7 @@ def _build_book_zip(
             if path and os.path.isfile(path):
                 zf.write(path, arcname=entry_name)
             else:
-                zf.writestr(entry_name, make_silent_mp3(100))
+                zf.writestr(entry_name, make_silent_mp3(100, sample_rate=settings.DOUBAO_AUDIO_SAMPLE_RATE))
 
 
 # =====================================================================
@@ -111,7 +111,7 @@ class BuildResp(BaseModel):
     narrator_voice_id: str
     speed: float
     mode: str = "classic"
-    tts_provider: str = "minimax"
+    tts_provider: str = "doubao"
     created_at: str | None
     failed_chapters: list[int] | None
     is_retry: bool
@@ -138,7 +138,7 @@ class BuildDetailResp(BaseModel):
     narrator_voice_id: str
     speed: float
     mode: str = "classic"
-    tts_provider: str = "minimax"
+    tts_provider: str = "doubao"
     zip_url: str | None
     total_size_kb: int | None
     total_duration_sec: float | None
@@ -160,7 +160,7 @@ class BuildListItem(BaseModel):
     total_chapters: int
     completed_chapters: int
     mode: str = "classic"
-    tts_provider: str = "minimax"
+    tts_provider: str = "doubao"
     started_at: str | None
     completed_at: str | None
     created_at: str | None
@@ -178,7 +178,7 @@ class BuildStatusResp(BaseModel):
     completed_chapters: int
     total_chapters: int
     mode: str = "classic"
-    tts_provider: str = "minimax"
+    tts_provider: str = "doubao"
     artifacts: list[BuildArtifactResp]
     failed_chapters: list[int] | None
 
@@ -200,8 +200,8 @@ def _parse_failed_chapters_json(s: str | None) -> list[int] | None:
 
 
 async def _ensure_default_narrator(narrator_voice_id: str | None) -> str:
-    """narrator 为空时兜底到 minimax:male-qn-jingying；音色库无此 id 时取第一个。
-    注意：新命名空间已统一加 minimax: 前缀；同时兼容「无前缀 legacy id」。
+    """narrator 为空时兜底到擎苍 2.0（豆包 2.0 中音色）；音色库无此 id 时取第一个。
+    注意：MiniMax TTS 已弃用，兜底改为豆包 2.0 音色；同时兼容「无前缀 legacy id」。
     """
     if narrator_voice_id:
         return narrator_voice_id
@@ -209,7 +209,7 @@ async def _ensure_default_narrator(narrator_voice_id: str | None) -> str:
     voices = await tts.list_voices()
     if voices:
         vid = (
-            next((v["id"] for v in voices if v.get("id") in ("minimax:male-qn-jingying", "male-qn-jingying")), None)
+            next((v["id"] for v in voices if v.get("id") in ("doubao:zh_male_qingcang_uranus_bigtts", "zh_male_qingcang_uranus_bigtts")), None)
             or voices[0].get("id", "")
         )
         return vid
@@ -642,7 +642,7 @@ def _calc_config_digest(
     voice_assignments: dict[str, str],
     *,
     mode: str = "classic",
-    tts_provider: str = "minimax",
+    tts_provider: str = "doubao",
     narrator_emotion: str = "",
     narrator_instruction: str = "",
     voice_styles: dict[str, dict[str, str]] | None = None,
@@ -656,7 +656,7 @@ def _calc_config_digest(
             "speed": round(float(speed), 6),
             "va": sorted_va,
             "mode": (mode or "classic").lower(),
-            "tts_provider": (tts_provider or "minimax").lower(),
+            "tts_provider": (tts_provider or "doubao").lower(),
             # 情感/语气也参与摘要：改了情感但音色没变也应生成新 build
             "narrator_emotion": narrator_emotion or "",
             "narrator_instruction": narrator_instruction or "",
@@ -746,7 +746,7 @@ def _build_to_resp(b: Build) -> BuildResp:
         narrator_voice_id=b.narrator_voice_id,
         speed=b.speed,
         mode=b.mode or "classic",
-        tts_provider=b.tts_provider or "minimax",
+        tts_provider=b.tts_provider or "doubao",
         created_at=b.created_at.isoformat() if b.created_at else None,
         failed_chapters=_parse_failed_chapters_json(b.failed_chapters_json),
         is_retry=bool(b.is_retry),
@@ -765,7 +765,7 @@ def _build_to_detail(b: Build, artifacts: list[BuildArtifact]) -> BuildDetailRes
         narrator_voice_id=b.narrator_voice_id,
         speed=b.speed,
         mode=b.mode or "classic",
-        tts_provider=b.tts_provider or "minimax",
+        tts_provider=b.tts_provider or "doubao",
         zip_url=f"/media/{b.zip_filename}" if b.zip_filename else None,
         total_size_kb=total_kb,
         total_duration_sec=round((b.total_duration_ms or 0) / 1000.0, 2),
@@ -797,7 +797,7 @@ def _build_to_list_item(b: Build) -> BuildListItem:
         total_chapters=b.total_chapters,
         completed_chapters=b.completed_chapters,
         mode=b.mode or "classic",
-        tts_provider=b.tts_provider or "minimax",
+        tts_provider=b.tts_provider or "doubao",
         started_at=b.started_at.isoformat() if b.started_at else None,
         completed_at=b.completed_at.isoformat() if b.completed_at else None,
         created_at=b.created_at.isoformat() if b.created_at else None,
@@ -816,7 +816,7 @@ def _build_to_status_resp(b: Build, artifacts: list[BuildArtifact]) -> BuildStat
         completed_chapters=b.completed_chapters,
         total_chapters=b.total_chapters,
         mode=b.mode or "classic",
-        tts_provider=b.tts_provider or "minimax",
+        tts_provider=b.tts_provider or "doubao",
         artifacts=[
             BuildArtifactResp(
                 chapter_idx=a.chapter_idx,
@@ -836,11 +836,10 @@ def _build_to_status_resp(b: Build, artifacts: list[BuildArtifact]) -> BuildStat
 # TTS 命名空间校验（Task 4 / Task 8）
 # =====================================================================
 
-_VALID_PROVIDERS = {"minimax", "doubao"}
+_VALID_PROVIDERS = {"doubao"}
 _VALID_MODES = {"classic", "multicast"}
-# 前缀 → 归属哪个 tts_provider
+# 前缀 → 归属哪个 tts_provider（MiniMax TTS 已弃用，minimax: 不再映射）
 _PREFIX_TO_PROVIDER: dict[str, str] = {
-    "minimax": "minimax",
     "doubao": "doubao",
     "icl": "doubao",
 }
@@ -866,15 +865,20 @@ def _validate_tts_namespace(
 
     历史：旧版硬约束「旁白/角色音色必须属于同一 tts_provider」，导致用户每
     次配置都要先选厂商、然后只能用该厂商的音色。新行为：合成时**按 voice_id
-    前缀自动路由 TTS 厂商**（doubao:/icl: → 豆包；minimax: → MiniMax；无前缀
-    → tts_provider 兜底），用户可以混用任意厂商的音色。
+    前缀自动路由 TTS 厂商**（doubao:/icl: → 豆包；无前缀 → tts_provider 兜底），
+    用户可以混用任意音色。
 
-    保留 mode 合法性校验（未知 mode 直接抛错），其他全部删除。
+    MiniMax TTS 已弃用：老数据里 Build.tts_provider == "minimax" 时给一条明确的
+    迁移提示，而不是抛一个没有信息量的「未知 tts_provider」。
     """
     norm_mode = (mode or "classic").lower()
     if norm_mode not in _VALID_MODES:
         raise RuntimeError(f"未知 build.mode: {mode}，可选 {sorted(_VALID_MODES)}")
     norm_provider = (tts_provider or "").lower()
+    if norm_provider == "minimax":
+        raise RuntimeError(
+            "该构建使用的 MiniMax 语音合成已弃用，请重新推荐音色后新建构建"
+        )
     if norm_provider and norm_provider not in _VALID_PROVIDERS:
         raise RuntimeError(f"未知 tts_provider: {tts_provider}，可选 {sorted(_VALID_PROVIDERS)}")
 
@@ -953,7 +957,7 @@ async def _start_build_impl(
       - mode: None（未指定 → 回落 Project.default_build_mode，再兜底 'classic'）
               / 'classic'（逐章节分段 TTS 拼接）/ 'multicast'（已废弃，直接抛错）
               注意：显式传 'classic' 不会被项目默认值覆盖
-      - tts_provider: 'minimax' | 'doubao' | None（None 时从 Project.default_tts_provider 读取，再兜底 settings.TTS_PROVIDER）
+      - tts_provider: 'doubao' | None（None 时从 Project.default_tts_provider 读取，再兜底 settings.TTS_PROVIDER）
       - narrator_emotion / narrator_instruction: 旁白情感与风格指令（合成时透传 provider）
 
     合成幂等（三层去重，mode/tts_provider 已纳入 config_digest）：
@@ -968,7 +972,7 @@ async def _start_build_impl(
 
     narrator_voice_id = await _ensure_default_narrator(narrator_voice_id)
 
-    # 解析 tts_provider （优先级：参数 > Project.default_tts_provider > settings.TTS_PROVIDER > 'minimax'）
+    # 解析 tts_provider （优先级：参数 > Project.default_tts_provider > settings.TTS_PROVIDER > 'doubao'）
     effective_provider = (tts_provider or "").lower() or None
     if not effective_provider:
         factory_sess = get_session_factory()
@@ -980,7 +984,7 @@ async def _start_build_impl(
         except Exception:
             pass
     if not effective_provider:
-        effective_provider = (_settings_mod.TTS_PROVIDER or "minimax").lower()
+        effective_provider = (_settings_mod.TTS_PROVIDER or "doubao").lower()
 
     # mode 解析：只按「调用方是否显式指定」分流。
     #   mode is None → 未指定，回落 Project.default_build_mode（再兜底 classic）
@@ -1308,6 +1312,13 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
             raise ValueError(f"Build 不存在: {source_build_id}")
         project_id = source_build.project_id
 
+        # MiniMax TTS 已弃用：老 build 无法重试（其 tts_provider/minimax: 音色都已失效），
+        # 这里显式报出可操作的迁移提示，而不是继承 minimax 后在别处抛出难懂的内部错误。
+        if (source_build.tts_provider or "").lower() == "minimax":
+            raise RuntimeError(
+                "该构建使用的 MiniMax 语音合成已弃用，请重新推荐音色后新建构建"
+            )
+
         p = await session.get(Project, project_id)
         if not p:
             raise ValueError(f"项目不存在: {project_id}")
@@ -1386,10 +1397,10 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
             narrator_voice_id=narrator_voice_id,
             speed=speed,
             voice_assignments_json=new_voice_json,
-            # 重试必须继承源 Build 的合成配置：否则多播剧/豆包 Build 重试会
-            # 静默退化为 classic+MiniMax（模型默认值），违反"不降级"契约
+            # 重试必须继承源 Build 的合成配置：否则豆包 Build 重试会
+            # 静默退化为默认厂商，违反"不降级"契约
             mode=(source_build.mode or "classic"),
-            tts_provider=(source_build.tts_provider or "minimax"),
+            tts_provider=(source_build.tts_provider or "doubao"),
             config_digest=source_build.config_digest,
             is_retry=True,
             # 情感/语气配置同样继承快照（保证 digest 一致 + 合成结果一致）
@@ -1701,7 +1712,7 @@ async def _run_build_inner(
             raise RuntimeError(f"Build 不存在: {build_id}")
         build_mode = (b.mode or "classic").lower()
         strict_mode = _should_strict_fail(build_mode)
-        tts_provider_label = b.tts_provider or "minimax"
+        tts_provider_label = b.tts_provider or "doubao"
         # 情感/语气配置快照（build 启动时从 ProjectCharacter 拷贝，这里只读快照）
         narrator_emotion = (b.narrator_emotion or "").strip()
         narrator_instruction = (b.narrator_instruction or "").strip()
@@ -1745,9 +1756,8 @@ async def _run_build_inner(
     from ..ai.factory import get_tts_sem, get_tts_by_voice_id
     # [P-2.5] 不再预先拿一个全局 tts 实例。改为每段按 voice_id 路由：
     #   - doubao:/icl: 前缀 → 豆包
-    #   - minimax: 前缀 → MiniMax
     #   - 无前缀 → 用 tts_provider_label 兜底（默认 settings.TTS_PROVIDER）
-    # 这样旁白/角色可以混用任意厂商的音色，不再被「跨厂商音色」约束。
+    # 这样旁白/角色可以混用任意音色，不再被「跨厂商音色」约束。
     fallback_provider = (tts_provider_label or "").lower() or None
     sem = get_tts_sem()
     audio_dir = Path(settings.AUDIO_DIR)
@@ -1823,7 +1833,7 @@ async def _run_build_inner(
 
             if ch_ok_path is not None:
                 mp3_bytes = ch_ok_path.read_bytes()
-                ch_ok_duration_ms = int(ch_ok_duration_ms or 0) or _estimate_mp3_duration_ms(mp3_bytes)
+                ch_ok_duration_ms = int(ch_ok_duration_ms or 0) or mp3_duration_ms(mp3_bytes)
                 chapter_outputs[ch_idx] = (str(ch_ok_path), ch_ok_duration_ms)
                 completed += 1
                 chapter_ok_flag[ch_idx] = True
@@ -1882,7 +1892,7 @@ async def _run_build_inner(
 
             if ch_ok_path is not None:
                 mp3_bytes = ch_ok_path.read_bytes()
-                ch_ok_duration_ms = int(ch_ok_duration_ms or 0) or _estimate_mp3_duration_ms(mp3_bytes)
+                ch_ok_duration_ms = int(ch_ok_duration_ms or 0) or mp3_duration_ms(mp3_bytes)
                 chapter_outputs[ch_idx] = (str(ch_ok_path), ch_ok_duration_ms)
                 completed += 1
                 chapter_ok_flag[ch_idx] = True
@@ -1995,12 +2005,12 @@ async def _run_build_inner(
             tasks = [_synth_seg(seg) for seg in segs]
             results = await asyncio.gather(*tasks)
 
-            # 按本章第一个真实音频段的采样率补齐静音帧（MiniMax=32k；豆包返回其默认值）
-            silence_ms_rate: int = 32000
+            # 按本章第一个真实音频段的采样率补齐静音帧；无真实段时用豆包默认采样率
+            silence_ms_rate: int = int(settings.DOUBAO_AUDIO_SAMPLE_RATE)
             for _s, _b, _d in results:
                 if _b:
                     from ..core.mp3_util import mp3_sample_rate as _sr
-                    silence_ms_rate = _sr(_b) or 32000
+                    silence_ms_rate = _sr(_b) or int(settings.DOUBAO_AUDIO_SAMPLE_RATE)
                     break
             from ..core.mp3_util import make_silent_mp3 as _mk_silent
             filled: list[tuple[_Segment, bytes, int]] = []
@@ -2017,7 +2027,7 @@ async def _run_build_inner(
             with open(tmp_fpath, "wb") as f:
                 f.write(ch_bytes)
             os.replace(tmp_fpath, ch_fpath)
-            ch_dur_ms = _estimate_mp3_duration_ms(ch_bytes)
+            ch_dur_ms = mp3_duration_ms(ch_bytes)
             chapter_outputs[ch_idx] = (ch_fpath, ch_dur_ms)
 
             # 章内时间轴 sidecar（SRT/LRC 用）：gather 保序 → results[i] 对应 segs[i]
@@ -2109,13 +2119,14 @@ async def _run_build_inner(
                 )
                 break  # 退出 for ch_idx, ch in enumerate(chapters)
             # --- 非 strict：降级逻辑（占位静音 MP3 + partial_success）---
-            # 占位静音按最近一章成功音频的采样率生成，避免章界拼接点采样率跳变
-            ph_sr = 32000
+            # 占位静音按最近一章成功音频的采样率生成，避免章界拼接点采样率跳变；
+            # 找不到历史音频时回退到豆包默认采样率
+            ph_sr = int(settings.DOUBAO_AUDIO_SAMPLE_RATE)
             from ..core.mp3_util import mp3_sample_rate as _msr
             for _prev_path, _ in reversed(chapter_outputs[:ch_idx]):
                 if _prev_path:
                     try:
-                        ph_sr = _msr(Path(_prev_path).read_bytes()) or 32000
+                        ph_sr = _msr(Path(_prev_path).read_bytes()) or int(settings.DOUBAO_AUDIO_SAMPLE_RATE)
                     except OSError:
                         pass
                     break

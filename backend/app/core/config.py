@@ -17,10 +17,8 @@ DEFAULT_PROVIDERS_TEMPLATE: list[dict[str, Any]] = [
         "enabled": True,
         "api_key": "",
         "base_url": "https://api.minimaxi.com/v1",
-        "tts_endpoint": "/v1/t2a_v2",
         "extra_headers": {},
         "models": [
-            {"id": "MiniMax-speech-01", "label": "Speech-01 (TTS 2.0)", "kind": "tts"},
             {"id": "MiniMax-M3", "label": "MiniMax-M3", "kind": "llm"},
         ],
     },
@@ -62,8 +60,6 @@ class Settings(BaseSettings):
         case_sensitive=True,
         extra="ignore",
     )
-    TTS_API_KEY: str = ""
-    TTS_BASE_URL: str = "https://api.minimaxi.com/v1"
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = "https://api.minimaxi.com/v1"
     LLM_MODEL_PRO: str = "MiniMax-M3"
@@ -72,8 +68,8 @@ class Settings(BaseSettings):
     LLM_MODEL_FAST: str = "MiniMax-M3"
 
     # ============ 多厂商 TTS 路由 ============
-    # 全局默认 TTS 厂商（minimax | doubao）。Project.default_tts_provider 可覆写。
-    TTS_PROVIDER: str = "minimax"
+    # 全局默认 TTS 厂商（当前仅 doubao；Project.default_tts_provider 可覆写）。
+    TTS_PROVIDER: str = "doubao"
 
     # ============ 豆包语音全家桶 ============
     # 凭据：留空表示不启用豆包能力，系统降级仅用 MiniMax 且不报错。
@@ -135,18 +131,18 @@ class Settings(BaseSettings):
     # schema:
     #   {
     #     "providers": [
-    #       {"id": "minimax", "label": "MiniMax", "enabled": true,
-    #        "api_key": "...", "base_url": "https://...",
-    #        "tts_endpoint": "/v1/t2a_v2",
+    #       {"id": "doubao", "label": "火山引擎豆包语音", "enabled": true,
+    #        "api_key": "...", "base_url": "https://openspeech.bytedance.com",
+    #        "tts_endpoint": "/api/v1/tts",
     #        "extra_headers": {"X-Trace": "1"},
     #        "models": [
-    #          {"id": "MiniMax-speech-01", "label": "Speech-01", "kind": "tts"},
-    #          {"id": "MiniMax-M3", "label": "M3", "kind": "llm"},
+    #          {"id": "volcano_tts", "label": "豆包语音合成 2.0", "kind": "tts"},
+    #          {"id": "Doubao-pro-32k", "label": "Doubao-pro-32k", "kind": "llm"},
     #        ]
     #       }, ...
     #     ],
     #     "active": {
-    #       "tts": {"provider_id": "minimax", "model_id": "MiniMax-speech-2.8-turbo"},
+    #       "tts": {"provider_id": "doubao", "model_id": "volcano_tts"},
     #       "llm": {"provider_id": "minimax", "model_id": "MiniMax-M3"},
     #     }
     #   }
@@ -157,13 +153,11 @@ class Settings(BaseSettings):
 
     # 当前激活模型（指向 PROVIDERS_CONFIG 中的某个 provider.model）；
     # 用扁平字段便于 settings page 直接绑定与回填。
-    ACTIVE_TTS_PROVIDER: str = "minimax"
-    # [P-fix] 默认 MiniMax TTS 模型从老版本 speech-01 升到支持 emotion 的 speech-2.8-turbo。
-    # 历史：MiniMax 老 model（speech-01/02 等）服务端会拒收 emotion 参数，返回 120000 invalid params。
-    # 老用户的 DB app_settings 里如果残留旧值（MiniMax-speech-01），provider 仍会用老 model 合成，
-    # 但 MiniMax provider 本身已做防御：emotion 为 calm/neutral/空 时不发送 emotion 字段，
-    # 因此老 model 也能正常合成（仅无情感）。
-    ACTIVE_TTS_MODEL: str = "MiniMax-speech-2.8-turbo"
+    ACTIVE_TTS_PROVIDER: str = "doubao"
+    # MiniMax 语音合成已弃用（本项目 TTS 只保留豆包），默认 TTS 模型指向豆包卡片里的
+    # volcano_tts（豆包语音合成 2.0）。老用户 DB app_settings 里残留的 "MiniMax-*"
+    # 值不会再被任何 provider 使用（MiniMax TTS provider 已删除）。
+    ACTIVE_TTS_MODEL: str = "volcano_tts"
     ACTIVE_LLM_PROVIDER: str = "minimax"
     ACTIVE_LLM_MODEL: str = "MiniMax-M3"
 
@@ -214,10 +208,6 @@ class Settings(BaseSettings):
     # 相对保守的值：短对白 1s/TTS，100 并发 ≈ 100 段/秒的吞吐。
     # 如果调用方遇到 TTS RPM 429，可下调到 50 / 20。
     TTS_MAX_CONCURRENCY: int = 200
-    # TTS 分钟级 RPM 限流：60 秒窗口内最多 N 次 t2a_v2 请求。
-    # 使用固定间隔 token bucket：每 (60/N) 秒放 1 个请求，严格匀速零脉冲。
-    # 充值用户官方 20 RPM，默认 12 留 40% 安全余量（账号共享/网络抖动）。
-    TTS_RPM_LIMIT: int = 12
     # TTS 段缓存：内存 LRU 上限（条）；超上限淘汰最旧。
     # 注：磁盘缓存不限制大小（AUDIO_DIR/_seg_cache/），重启后仍可命中。
     TTS_SEGMENT_CACHE_MAX_ENTRIES: int = 20_000
@@ -311,8 +301,9 @@ settings = Settings()
 
 # ============================================================
 # 启动期迁移：如果 PROVIDERS_CONFIG 为空（首次启动 / 老配置），
-# 将扁平 TTS_API_KEY / LLM_API_KEY 等一次性迁移到厂商结构。
+# 将扁平 LLM_API_KEY 等一次性迁移到厂商结构。
 # 老字段保留为兜底（兼容未来回滚 / 未迁移代码）。
+# 注：MiniMax TTS 已弃用，其厂商卡片只承载 LLM，故凭据取 LLM_* 而不是已删除的 TTS_*。
 # ============================================================
 def _migrate_legacy_providers() -> None:
     if settings.PROVIDERS_CONFIG:
@@ -322,11 +313,11 @@ def _migrate_legacy_providers() -> None:
         prov = dict(tmpl)
         prov["models"] = [dict(m) for m in tmpl["models"]]
         providers.append(prov)
-    # 注入 miniMax 老凭据
+    # 注入 miniMax 老凭据（MiniMax 仅剩 LLM，凭据/端点统一走 LLM_* 扁平字段）
     for prov in providers:
         if prov["id"] == "minimax":
-            prov["api_key"] = settings.TTS_API_KEY or settings.LLM_API_KEY
-            prov["base_url"] = settings.TTS_BASE_URL or settings.LLM_BASE_URL
+            prov["api_key"] = settings.LLM_API_KEY
+            prov["base_url"] = settings.LLM_BASE_URL
             # 找到 LLM 模型
             for m in prov["models"]:
                 if m["kind"] == "llm":
@@ -351,7 +342,7 @@ def _migrate_legacy_providers() -> None:
     payload = {
         "providers": providers,
         "active": {
-            "tts": {"provider_id": "minimax", "model_id": "MiniMax-speech-01"},
+            "tts": {"provider_id": "doubao", "model_id": "volcano_tts"},
             "llm": {"provider_id": "minimax", "model_id": settings.LLM_MODEL_PRO or "MiniMax-M3"},
         },
     }

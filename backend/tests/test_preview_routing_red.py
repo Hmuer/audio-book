@@ -51,8 +51,12 @@ async def test_preview_routes_doubao_and_icl_prefix_to_doubao_provider(monkeypat
     from backend.app.ai.factory import get_tts_by_voice_id
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider, DoubaoTTSProviderV3
     from backend.app.core import config as cfgmod
+    from backend.app.ai import factory as aifact
 
     monkeypatch.setattr(cfgmod.settings, "DOUBAO_AK", "test-ak")
+    # 清掉 conftest 注入的 mock（provider 也是 "doubao"，会遮蔽真实豆包路由）
+    monkeypatch.setattr(aifact, "_tts_instance", None)
+    aifact.invalidate_tts_cache()
 
     # 走哪一版协议由 settings.DOUBAO_TTS_USE_V3 决定（默认 v3），这里只关心
     # 「必须落到豆包 provider，而不是 minimax」。

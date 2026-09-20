@@ -19,7 +19,7 @@ import {
 
 /**
  * 音色库页面（#/audiobooks/voices）
- *  Tab 1 音色库：MiniMax + 豆包 + 我的 ICL 复刻音色，多维筛选 + 试听
+ *  Tab 1 音色库：豆包 + 我的 ICL 复刻音色，多维筛选 + 试听
  *  Tab 2 小模型免费：豆包 seed-tts-1.0 官方免费音色 21+，后端 free_only 过滤
  *  Tab 3 声音复刻：上传参考音频创建 ICL 训练任务，轮询训练状态，管理我的音色
  */
@@ -102,7 +102,7 @@ export default function VoiceLibraryPage({ voices }: { voices: Voice[] }) {
           <div className="min-w-0 flex-1">
             <h1 className="headline text-xl">音色库</h1>
             <p className="text-xs text-ink-500 mt-1">
-              共 {voices.length} 个音色 · MiniMax / 豆包官方 / 自定义声音复刻
+              共 {voices.length} 个音色 · 豆包官方 / 自定义声音复刻
             </p>
           </div>
           <div className="flex items-center gap-1 shrink-0">
@@ -292,7 +292,6 @@ function LibraryTab({ voices }: { voices: Voice[] }) {
         <div className="flex items-center gap-1.5 flex-wrap">
           {([
             ['all', '全部'],
-            ['minimax', PROVIDER_LABELS.minimax],
             ['doubao', PROVIDER_LABELS.doubao],
             ['icl', PROVIDER_LABELS.icl],
           ] as [ProviderKey | 'all', string][]).map(([key, label]) => {

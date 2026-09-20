@@ -52,7 +52,7 @@ async def project_with_build(_isolate_data_dir):
             narrator_voice_id="",
             speed=1.0,
             mode="classic",
-            tts_provider="minimax",
+            tts_provider="doubao",
             zip_filename=f"build_{bid}_all.zip",
         ))
         s.add(BuildArtifact(
@@ -247,7 +247,7 @@ async def test_token_expires():
         s.add(Build(
             build_id=bid, project_id=pid, status="success",
             total_chapters=1, completed_chapters=1,
-            narrator_voice_id="", speed=1.0, mode="classic", tts_provider="minimax",
+            narrator_voice_id="", speed=1.0, mode="classic", tts_provider="doubao",
         ))
         await s.commit()
         info = await issue_media_token(

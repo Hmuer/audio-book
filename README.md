@@ -87,7 +87,7 @@ cp .env.example .env
 
 ### 多厂商配置
 
-实际项目已支持 **MiniMax**、**Doubao（含 ICL 声音复刻）**、**OpenAI 兼容**、**自定义 OpenAI 兼容端点** 等多厂商并存，并通过 `PROVIDERS_CONFIG` JSON + `ACTIVE_TTS_PROVIDER` / `ACTIVE_TTS_MODEL` / `ACTIVE_LLM_PROVIDER` / `ACTIVE_LLM_MODEL` 四个指针选择。**不要再去**配置已废弃的 `LLM_BASE_URL` / `TTS_BASE_URL` / `LLM_MODEL_PRO` / `LLM_MODEL_FAST` 字段——它们保留仅作兼容，新 UI 不再展示。
+实际项目已支持 **MiniMax（LLM）**、**豆包 TTS（含 ICL 声音复刻）**、**OpenAI 兼容**、**自定义 OpenAI 兼容端点** 等并存，并通过 `PROVIDERS_CONFIG` JSON + `ACTIVE_TTS_PROVIDER` / `ACTIVE_TTS_MODEL` / `ACTIVE_LLM_PROVIDER` / `ACTIVE_LLM_MODEL` 四个指针选择。**不要再去**配置已废弃的 `LLM_BASE_URL` / `LLM_MODEL_PRO` / `LLM_MODEL_FAST` 字段——它们保留仅作兼容，新 UI 不再展示。（MiniMax 语音合成已彻底弃用，TTS 只保留豆包。）
 
 具体厂商卡片配置请在「设置」页按厂商填写 API Key（仅管理员可见明文；其他用户只能看到脱敏后的 `***LAST4`）。
 

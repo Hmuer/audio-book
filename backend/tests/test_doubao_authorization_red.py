@@ -54,8 +54,6 @@ def test_providers_config_key_is_used_when_present(reset_providers_config, monke
     monkeypatch.setattr(cfgmod.settings, "DOUBAO_AK", "")
     monkeypatch.delenv("MEGACORE_ACCESS_KEY_FROM_ENV", raising=False)
     _set_providers_config(cfgmod, [
-        {"id": "minimax", "label": "MiniMax", "enabled": True, "api_key": "",
-         "base_url": "", "models": []},
         {"id": "doubao", "label": "火山引擎豆包语音", "enabled": True,
          "api_key": "sk-from-providers-config-5781",
          "base_url": "https://openspeech.bytedance.com/api/v1", "models": []},

@@ -62,12 +62,9 @@ def test_f2_v2_doubao_voice_is_usable_on_v3():
 
 
 def test_f3_other_providers_and_missing_model_are_passed():
-    """非豆包 / 复刻音色 / 元数据缺失 → 一律放行，避免误伤。"""
+    """复刻音色 / 元数据缺失 → 一律放行，避免误伤。"""
     from backend.app.ai.providers.doubao.tts import is_voice_usable_on_v3
 
-    assert is_voice_usable_on_v3(
-        {"id": "minimax:male-qn-jingying", "provider": "minimax"}
-    ) is True
     assert is_voice_usable_on_v3(
         {"id": "icl:clone_abc", "provider": "icl"}
     ) is True

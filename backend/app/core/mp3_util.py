@@ -130,6 +130,19 @@ def mp3_sample_rate(mp3_bytes: bytes) -> int | None:
     return None
 
 
+def concat_mp3_files(*parts: bytes) -> bytes:
+    """按段顺序拼接多段 MP3 字节（空段跳过）。
+
+    为什么放在 core：MiniMax TTS 弃用后，这里不再是"MiniMax 专属工具"，
+    而是 build 流水线通用的拼接原语，归属 core 避免对已删除 provider 的反向依赖。
+    """
+    out = bytearray()
+    for p in parts:
+        if p:
+            out.extend(p)
+    return bytes(out)
+
+
 def _frame_bytes(sample_rate: int, kbps: int) -> tuple[int, int, int, bytes]:
     """构造 (header_version, bitrate_idx, sr_idx, 4字节帧头) + 帧长。"""
     # 找采样率所属版本与索引
@@ -166,7 +179,8 @@ def make_silent_mp3(duration_ms: int, sample_rate: int = 32000, kbps: int = 128)
     """生成指定采样率的静音 MP3（MPEG L3, 128kbps, 单声道语义）。
 
     与真实 TTS 音频同采样率拼接，消除旧实现 44.1kHz 假帧造成的
-    段间采样率不一致（杂音/卡顿隐患）。默认 32kHz = MiniMax 输出。
+    段间采样率不一致（杂音/卡顿隐患）。默认值 32kHz 为历史兼容保留，
+    调用方（build）应显式传 settings.DOUBAO_AUDIO_SAMPLE_RATE 保持与豆包输出一致。
     """
     duration_ms = max(int(duration_ms), 1)
     try:

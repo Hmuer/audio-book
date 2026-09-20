@@ -1,7 +1,9 @@
 """Task 2 RED tests — Factory Registry + get_tts(provider) + get_tts_by_voice_id + 限流桶。
 
-T-TR1: get_tts('minimax').name == 'minimax'; get_tts('doubao') 返回 DoubaoTTSProvider（未配置凭据仅初始化可创建，synthesize 抛错）。
-T-TR2: get_tts_by_voice_id 按前缀返回对应 provider 实例。
+T-TR1: get_tts('doubao') 返回 DoubaoTTSProvider（未配置凭据仅初始化可创建，synthesize 抛错）。
+T-TR2: get_tts_by_voice_id 按前缀返回对应 provider 实例；minimax: 前缀已弃用 → 显式报错。
+
+历史：MiniMax TTS 已弃用，get_tts('minimax') / minimax: 前缀路由用例随 provider 删除。
 """
 from __future__ import annotations
 
@@ -18,18 +20,17 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 # ---------------------------------------------------------------------
-# T-TR1：get_tts(provider) 多厂商路由
+# T-TR1：get_tts(provider) 路由
 # ---------------------------------------------------------------------
-def test_get_tts_minimax_returns_correct_provider():
-    from backend.app.ai.factory import get_tts
-    p = get_tts("minimax")
-    assert p.provider == "minimax"
-
-
 def test_get_tts_default_respects_settings(monkeypatch):
     """显式指定 provider='doubao' 时，能得到一个 DoubaoTTSProvider 实例。"""
-    from backend.app.ai.factory import get_tts
-    p = get_tts("doubao")
+    from backend.app.ai import factory as aifact
+
+    # 清掉 conftest 注入的 mock：mock 的 provider 现在也是 "doubao"，
+    # 会按 provider 标识命中路由从而遮蔽真实 DoubaoTTSProvider。
+    monkeypatch.setattr(aifact, "_tts_instance", None)
+    aifact.invalidate_tts_cache()
+    p = aifact.get_tts("doubao")
     # Doubao provider 类名称，避免 import 循环（factory 内部延迟导入规避）
     assert p.provider in ("doubao",)
     assert p.name in ("doubao_tts", "doubao") or "doubao" in p.name.lower()
@@ -41,9 +42,6 @@ def test_get_tts_default_respects_settings(monkeypatch):
 def test_get_tts_by_voice_id_prefix_mapping():
     from backend.app.ai.factory import get_tts_by_voice_id
 
-    p_mx = get_tts_by_voice_id("minimax:male-qn-jingying")
-    assert p_mx.provider == "minimax"
-
     p_db = get_tts_by_voice_id("doubao:zh_female_qingxin")
     assert p_db.provider == "doubao"
 
@@ -51,20 +49,28 @@ def test_get_tts_by_voice_id_prefix_mapping():
     # icl 走 DoubaoTTSProvider
     assert p_icl.provider == "doubao"
 
-    # 无前缀 → 按全局默认 provider
+    # 无前缀 → 按全局默认 provider（doubao）
     p_any = get_tts_by_voice_id("some-legacy-id")
-    assert p_any.provider in ("minimax", "doubao")
+    assert p_any.provider == "doubao"
+
+
+def test_get_tts_by_voice_id_minimax_prefix_raises():
+    """minimax: 前缀已弃用 → 显式报错（不静默兜底成豆包）。"""
+    from backend.app.ai.factory import get_tts_by_voice_id
+
+    with pytest.raises(RuntimeError, match="MiniMax 语音合成已弃用"):
+        get_tts_by_voice_id("minimax:male-qn-jingying")
 
 
 def test_get_tts_by_voice_id_unknown_prefix_still_returns_default():
-    """unknown 前缀时不抛 KeyError，回退到 settings.TTS_PROVIDER。"""
+    """unknown 前缀时不抛 KeyError，回退到 settings.TTS_PROVIDER（doubao）。"""
     from backend.app.ai.factory import get_tts_by_voice_id
     p = get_tts_by_voice_id("unknown:xyz")
-    assert p.provider in ("minimax", "doubao")
+    assert p.provider == "doubao"
 
 
 # ---------------------------------------------------------------------
-# Doubao RPM 限流桶：固定间隔匀速（参考 minimax 同款算法验证）
+# Doubao RPM 限流桶：固定间隔匀速
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_doubao_rpm_bucket_enforces_interval():

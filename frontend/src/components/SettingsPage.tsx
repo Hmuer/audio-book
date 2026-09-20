@@ -39,7 +39,7 @@ function GroupIcon({ name, size = 16 }: { name: IconName; size?: number }) {
   }
 }
 
-const SENSITIVE_KEYS = new Set(['TTS_API_KEY', 'LLM_API_KEY', 'JWT_SECRET']);
+const SENSITIVE_KEYS = new Set(['LLM_API_KEY', 'JWT_SECRET']);
 
 type DraftValue = string | string[];
 type DraftMap = Record<string, DraftValue>;

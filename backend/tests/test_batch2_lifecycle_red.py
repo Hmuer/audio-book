@@ -103,7 +103,7 @@ async def test_b1_orphan_recovery_registers_active_and_heartbeats(_isolate_data_
         s.add(Build(
             build_id=bid, project_id=pid, status="running", total_chapters=2,
             narrator_voice_id="female-tianmei", speed=1.0, mode="classic",
-            tts_provider="minimax", started_at=_utcnow(),
+            tts_provider="doubao", started_at=_utcnow(),
         ))
         await s.commit()
 
@@ -243,7 +243,7 @@ async def test_b3_terminal_write_skipped_if_not_running(_isolate_data_dir):
         s.add(Build(
             build_id=bid_run, project_id=pid, status="running", total_chapters=1,
             narrator_voice_id="female-tianmei", speed=1.0, mode="classic",
-            tts_provider="minimax",
+            tts_provider="doubao",
         ))
         await s.commit()
     applied = await _apply_terminal_status(
@@ -262,7 +262,7 @@ async def test_b3_terminal_write_skipped_if_not_running(_isolate_data_dir):
         s.add(Build(
             build_id=bid_cancel, project_id=pid, status="cancelled", total_chapters=1,
             narrator_voice_id="female-tianmei", speed=1.0, mode="classic",
-            tts_provider="minimax", progress_msg="已取消：已完成 1/1 章",
+            tts_provider="doubao", progress_msg="已取消：已完成 1/1 章",
         ))
         await s.commit()
     applied2 = await _apply_terminal_status(
@@ -295,7 +295,7 @@ async def test_b4_stale_queued_build_is_cancelled(_isolate_data_dir):
         s.add(Build(
             build_id=stale_id, project_id=pid, status="queued", total_chapters=2,
             progress_msg="卡住的 queued", narrator_voice_id="female-tianmei",
-            speed=1.0, mode="classic", tts_provider="minimax",
+            speed=1.0, mode="classic", tts_provider="doubao",
             created_at=old,
         ))
         await s.commit()
@@ -333,7 +333,7 @@ async def test_b4_fresh_queued_build_is_reused_not_cancelled(_isolate_data_dir):
         s.add(Build(
             build_id=fresh_id, project_id=pid, status="queued", total_chapters=2,
             progress_msg="刚排队", narrator_voice_id="female-tianmei",
-            speed=1.0, mode="classic", tts_provider="minimax",
+            speed=1.0, mode="classic", tts_provider="doubao",
         ))
         await s.commit()
 
@@ -430,7 +430,7 @@ class _GateTTS:
     """第一次真实合成即阻塞，便于测试在「某章正在合成」时精确触发取消。"""
 
     name = "gate_tts"
-    provider = "minimax"
+    provider = "doubao"
 
     def __init__(self):
         self._super = None

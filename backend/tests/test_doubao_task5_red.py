@@ -312,8 +312,12 @@ async def test_list_voices_includes_icl_for_user(_isolate_data_dir):
 async def test_synth_routes_icl_prefix_to_doubao(monkeypatch):
     from backend.app.ai.factory import get_tts_by_voice_id, get_tts
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider
+    from backend.app.ai import factory as aifact
     from backend.app.core import config as cfgmod
 
+    # 清掉 conftest 注入的 mock（provider 也是 "doubao"，会遮蔽真实豆包路由）
+    monkeypatch.setattr(aifact, "_tts_instance", None)
+    aifact.invalidate_tts_cache()
     monkeypatch.setattr(cfgmod.settings, "DOUBAO_AK", "test-ak")
     # 本用例断言的是 v1 协议的 payload 语义（cluster=volcano_icl 等），
     # 显式关掉 v3 开关，不依赖 DOUBAO_TTS_USE_V3 的默认值。

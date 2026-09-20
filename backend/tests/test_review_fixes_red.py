@@ -227,7 +227,7 @@ async def test_retry_failed_inherits_provider_and_mode(_isolate_data_dir):
             assert (nb.mode or "classic").lower() == "classic", (
                 f"retry Build 必须继承 mode=classic，实际 {nb.mode!r}"
             )
-            assert (nb.tts_provider or "minimax").lower() == "doubao", (
+            assert (nb.tts_provider or "doubao").lower() == "doubao", (
                 f"retry Build 必须继承 tts_provider=doubao，实际 {nb.tts_provider!r}"
             )
         # 等 retry worker 结束，避免污染后续测试

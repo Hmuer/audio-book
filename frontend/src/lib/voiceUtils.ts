@@ -1,8 +1,9 @@
-// 音色数据工具：多厂商（MiniMax / 豆包 / ICL 复刻）字段归一化
+// 音色数据工具：多来源（豆包 / ICL 复刻）字段归一化
 // 后端各 provider 字段口径不一致：
-//   minimax: gender="男声"/"女声"/"中性"，description 有值
 //   doubao : gender="male"/"female"/"neutral"，无 description，有 zh_tags/scene/age/dialect
 //   icl    : gender="neutral"，有 zh_tags
+//
+// 历史：MiniMax TTS 已弃用，音色不再有 minimax 来源。
 
 import { Voice } from './api';
 
@@ -23,7 +24,7 @@ export function normalizeGender(v: Voice): GenderKey {
   return GENDER_MAP[v.gender] || '中性';
 }
 
-/** 展示用描述：minimax 用 description，doubao/icl 用中文标签/场景兜底 */
+/** 展示用描述：doubao/icl 用中文标签/场景兜底 */
 export function voiceDescription(v: Voice): string {
   if (v.description) return v.description;
   if (v.zh_tags?.length) return v.zh_tags.join(' · ');
@@ -31,16 +32,14 @@ export function voiceDescription(v: Voice): string {
   return '—';
 }
 
-export type ProviderKey = 'minimax' | 'doubao' | 'icl';
+export type ProviderKey = 'doubao' | 'icl';
 
 export function voiceProvider(v: Voice): ProviderKey {
-  if (v.provider === 'minimax' || v.id.startsWith('minimax:')) return 'minimax';
   if (v.provider === 'icl' || v.id.startsWith('icl:')) return 'icl';
   return 'doubao';
 }
 
 export const PROVIDER_LABELS: Record<ProviderKey, string> = {
-  minimax: 'MiniMax',
   doubao: '豆包',
   icl: '我的复刻',
 };

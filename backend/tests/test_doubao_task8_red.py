@@ -71,7 +71,7 @@ async def test_multicast_mode_raises_at_start_build(_isolate_data_dir):
             return []
 
         async def synthesize_to_bytes(self, text, voice_id, *, emotion="calm", speed=1.0, **kw):
-            from backend.app.ai.providers.minimax.tts import make_silent_mp3
+            from backend.app.core.mp3_util import make_silent_mp3
             dur_ms = max(200, int(len(text) * 200 / max(0.5, min(2.0, float(speed)))))
             self.calls.append({"text": text, "voice_id": voice_id})
             if "启程" in text or "远行" in text or "背包" in text or "我们出发" in text:
@@ -216,8 +216,8 @@ async def test_classic_nonstrict_build_survives_chapter_failure(_isolate_data_di
         await prepare_project(pid)
         resp = await start_build(
             project_id=pid, voice_assignments={},
-            narrator_voice_id="minimax:male-qn-jingying",
-            tts_provider="minimax", mode="classic",
+            narrator_voice_id="doubao:zh_male_qingcang_uranus_bigtts",
+            tts_provider="doubao", mode="classic",
         )
         bid = resp.build_id
         for _ in range(60):

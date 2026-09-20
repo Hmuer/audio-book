@@ -380,7 +380,7 @@ async def api_list_voices(
 ):
     """列出可用音色（当前用户视角：含其可用 ICL 克隆音色）。
 
-    - tts_provider: 限定厂商（minimax / doubao / icl）
+    - tts_provider: 限定厂商（doubao / icl；MiniMax TTS 已弃用）
     - free_only=True: 只返回豆包小模型 (seed-tts-1.0) 且 free=True 的音色（P2-5）
     """
     user_id = getattr(current, "id", None)
@@ -394,8 +394,8 @@ async def list_voices(
     free_only: bool = False,
 ):
     """列出可用音色（服务层，可直接调用）。
-    - tts_provider 未给：返回 minimax + doubao（两套并集，按 id 去重）。
-    - tts_provider ∈ {minimax, doubao, icl}：仅返回对应厂商音色。
+    - tts_provider 未给：返回 doubao 音色（MiniMax TTS 已弃用）。
+    - tts_provider ∈ {doubao, icl}：仅返回对应厂商音色。
     - icl_user_id 给出时：附带该用户已训练可用的 ICL 克隆音色（icl:<clone_id>）。
     - free_only=True：只保留豆包小模型 (model=seed-tts-1.0) 且 free=True 的音色（P2-5）。
     每条音色都带有 provider 字段，前端可据此分组。
@@ -406,7 +406,7 @@ async def list_voices(
     if tts_provider:
         requested_providers = [tts_provider.lower()]
     else:
-        requested_providers = ["minimax", "doubao"]
+        requested_providers = ["doubao"]
 
     # ICL 音色只在请求 doubao/icl 或全量聚合时附带（icl: 走豆包合成通道）
     want_icl = icl_user_id is not None and (
@@ -607,7 +607,7 @@ async def api_tts_preview(
         f"voice={req.voice_id} text_len={len(req.text)} speed={req.speed}"
     )
     try:
-        # 按音色命名空间前缀路由厂商（minimax: → MiniMax；doubao:/icl: → 豆包）
+        # 按音色命名空间前缀路由厂商（doubao:/icl: → 豆包；minimax: 已弃用会显式报错）
         tts = get_tts_by_voice_id(req.voice_id)
         audio_dir = Path(settings.AUDIO_DIR)
         audio_dir.mkdir(parents=True, exist_ok=True)
@@ -1938,8 +1938,7 @@ _EDITABLE_SETTINGS = {
     "ACTIVE_LLM_PROVIDER": ("str", "模型配置", "激活的 LLM 厂商"),
     "ACTIVE_LLM_MODEL": ("str", "模型配置", "激活的 LLM 模型"),
     # ---- 遗留扁平字段（保留兜底；新 UI 不再展示）----
-    "TTS_API_KEY": ("str", "模型配置", "TTS API Key（遗留）"),
-    "TTS_BASE_URL": ("str", "模型配置", "TTS Base URL（遗留）"),
+    # 注：MiniMax TTS 的 TTS_API_KEY / TTS_BASE_URL / TTS_RPM_LIMIT 已随 TTS 一起删除。
     "LLM_API_KEY": ("str", "模型配置", "LLM API Key（遗留）"),
     "LLM_BASE_URL": ("str", "模型配置", "LLM Base URL（遗留）"),
     "LLM_MODEL_PRO": ("str", "模型配置", "LLM 模型（遗留）"),
@@ -1956,7 +1955,6 @@ _EDITABLE_SETTINGS = {
     "DIALOGUE_BATCH_CONCURRENCY": ("int", "限流配置", "对白归属批并发度"),
     "DIALOGUE_BATCH_RETRY_COUNT": ("int", "限流配置", "对白归属重试次数"),
     "TTS_MAX_CONCURRENCY": ("int", "限流配置", "TTS 最大并发"),
-    "TTS_RPM_LIMIT": ("int", "限流配置", "TTS RPM 限流"),
     # 缓存
     "TTS_SEGMENT_CACHE_MAX_ENTRIES": ("int", "缓存配置", "段缓存 LRU 上限（条）"),
     "TTS_SEGMENT_CACHE_TTL_DAYS": ("int", "缓存配置", "段缓存过期天数"),
@@ -2028,8 +2026,8 @@ class SettingsUpdateReq(BaseModel):
 def _redact_provider(p: dict) -> dict:
     """脱敏单个厂商：所有 secret/key 字段只回显末4位 + configured 标志，绝不回显明文。
 
-    支持脱敏的字段（豆包 5 凭据 + MiniMax 1 个）：
-      - api_key          (通用 / MiniMax)
+    支持脱敏的字段（豆包 5 凭据 + MiniMax LLM 1 个）：
+      - api_key          (通用 / MiniMax LLM)
       - secret           (豆包 SK)
       - app_id           (豆包 APP_ID，纯数字，但也脱敏避免泄露账号)
       - icl_api_key      (豆包新版 ICL key)

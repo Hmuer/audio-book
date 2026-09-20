@@ -13,7 +13,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # monkeypatch env 必须在导入 backend 之前
-os.environ.setdefault("TTS_API_KEY", "test")
 os.environ.setdefault("LLM_API_KEY", "test")
 # 测试固定用 admin/admin，方便 fixture 里登录拿 token
 os.environ.setdefault("SEED_ADMIN_USER", "admin")

@@ -107,10 +107,10 @@ export default function ProjectDetailPage({
   const [loadingVoice, setLoadingVoice] = useState<string | null>(null);
 
   const narratorDefault = useMemo(
-    // 后端音色 id 已带厂商前缀（minimax:/doubao:/icl:），无前缀匹配会退化成 voices[0]
+    // 后端音色 id 已带命名空间前缀（doubao:/icl:），无前缀匹配会退化成 voices[0]
     () =>
-      voices.find(v => v.id === 'minimax:male-qn-jingying') ||
-      voices.find(v => v.id.endsWith('male-qn-jingying')) ||
+      voices.find(v => v.id === 'doubao:zh_male_qingcang_uranus_bigtts') ||
+      voices.find(v => v.id.endsWith('zh_male_qingcang_uranus_bigtts')) ||
       voices[0],
     [voices]
   );
@@ -2171,7 +2171,7 @@ function CreateBuildModal({
     return m;
   });
   // 构建模式：multicast 已废弃（P0-5），UI 上仍保留入口但 Build 入口直接抛错提示改 classic。
-  // TTS 厂商**不再由用户选择**：每个角色的音色自带命名空间前缀（doubao: / minimax: / icl:），
+  // TTS 厂商**不再由用户选择**：每个角色的音色自带命名空间前缀（doubao: / icl:），
   // 合成时后端按 voice_id 前缀自动路由到对应厂商。
   const [mode, setMode] = useState<'classic' | 'multicast'>('classic');
   // 旁白情感/风格指令（本次构建快照；角色级情感在「音色」页配置）
@@ -2201,7 +2201,7 @@ function CreateBuildModal({
       return;
     }
     // [P-2.5] 不再做「跨厂商音色 → 拒绝」检查。
-    // 后端按 voice_id 前缀自动路由 TTS 厂商，旁白/角色可以混用任何命名空间（doubao: / minimax: / icl:）。
+    // 后端按 voice_id 前缀自动路由 TTS 厂商，旁白/角色可以混用任何命名空间（doubao: / icl:）。
     setBusy(true);
     try {
       await api.buildCreate(projectId, {

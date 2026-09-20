@@ -34,8 +34,8 @@ def test_settings_new_fields_without_doubao_env(monkeypatch):
     from backend.app.core.config import Settings
 
     s = Settings()
-    # 默认仍走 minimax，保证向后兼容
-    assert s.TTS_PROVIDER == "minimax"
+    # MiniMax TTS 已弃用：全局默认 TTS 厂商改为豆包
+    assert s.TTS_PROVIDER == "doubao"
     assert s.DOUBAO_AK == ""
     assert s.DOUBAO_SK == ""
     assert s.DOUBAO_APP_ID == ""

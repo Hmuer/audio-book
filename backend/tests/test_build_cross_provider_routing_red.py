@@ -1,8 +1,8 @@
-"""[P-2.5] Build worker 路由：每段合成按 voice_id 前缀选 TTS 实例，跨厂商不再报错。
+"""[P-2.5] Build worker 路由：每段合成按 voice_id 前缀选 TTS 实例，混用来源不再报错。
 
 历史硬约束：旁白/角色音色必须属于同一 tts_provider，否则 Build 入口直接抛 RuntimeError。
-新行为：合成时按 voice_id 前缀路由厂商（doubao:/icl: → 豆包；minimax: → MiniMax），
-        用户可以在一个 Build 里混用任意厂商的音色。
+新行为：合成时按 voice_id 前缀路由（doubao:/icl: → 豆包），
+        用户可以在一个 Build 里混用 doubao:/icl: 音色（MiniMax TTS 已弃用）。
 """
 from __future__ import annotations
 
@@ -15,14 +15,7 @@ def _run(coro):
 
 
 def test_segment_routes_by_voice_id_prefix(monkeypatch):
-    """[P-2.5] worker 选 tts 应按 voice_id 前缀：doubao: 走豆包，minimax: 走 MiniMax。
-
-    验证手段：
-      1) 后端 _validate_tts_namespace 不再硬约束跨厂商音色（已覆盖在下方）
-      2) worker 函数内对 seg_tts 的选择逻辑：用源码静态扫描确认每段按 voice_id
-         前缀调用 get_tts_by_voice_id，无前缀时走 fallback_provider 兜底
-      3) factory.get_tts_by_voice_id 自身按前缀正确路由（已有 task2 RED 覆盖）
-    """
+    """[P-2.5] worker 选 tts 应按 voice_id 前缀：doubao:/icl: 走豆包。"""
     import inspect
     from backend.app.services import build as build_mod
 
@@ -44,22 +37,22 @@ def test_segment_routes_by_voice_id_prefix(monkeypatch):
 
 
 def test_cross_provider_build_does_not_raise():
-    """[P-2.5] 跨厂商音色配置 Build 应不抛错（与旧硬约束相反）。"""
+    """[P-2.5] doubao:/icl: 音色混用配置 Build 应不抛错（与旧硬约束相反）。"""
     from backend.app.services.build import _validate_tts_namespace
 
     # 旧版这会抛 RuntimeError；新版必须通过
     _validate_tts_namespace(
-        tts_provider="minimax",  # 即便默认是 minimax
+        tts_provider="doubao",
         mode="classic",
-        narrator_voice_id="doubao:zh_female_qingxin",  # 旁白是豆包
+        narrator_voice_id="doubao:zh_female_qingxin",  # 旁白是豆包官方音色
         voice_assignments={
-            "甲": "minimax:male-qn-jingying",  # 角色用 MiniMax
-            "乙": "icl:custom_clone_001",     # 角色用 ICL（豆包）
+            "甲": "doubao:zh_male_qingcang_uranus_bigtts",  # 角色用豆包官方音色
+            "乙": "icl:custom_clone_001",                    # 角色用 ICL（豆包）
         },
     )
     _validate_tts_namespace(
         tts_provider="doubao",
         mode="classic",
-        narrator_voice_id="minimax:male-qn-jingying",
+        narrator_voice_id="icl:custom_clone_001",
         voice_assignments={"甲": "doubao:zh_female_qingxin"},
     )

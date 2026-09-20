@@ -5,15 +5,12 @@ Mock LLM / TTS Provider，用于 pytest 离线测试。
 from __future__ import annotations
 from typing import Any, Type, TypeVar
 from pydantic import BaseModel
-import json as _json
 from pathlib import Path
 
 from backend.app.ai.base import BaseLLMProvider, BaseTTSProvider
-from backend.app.ai.providers.minimax.tts import make_silent_mp3, _estimate_mp3_duration_ms
+from backend.app.core.mp3_util import make_silent_mp3
 
 T = TypeVar("T", bound=BaseModel)
-
-VOICES_FILE = Path(__file__).resolve().parent.parent / "app" / "ai" / "providers" / "minimax" / "voices.json"
 
 
 class MockLLMProvider(BaseLLMProvider):
@@ -120,9 +117,9 @@ class MockLLMProvider(BaseLLMProvider):
             # 从 prompt 抽取角色名，给每个挑一个默认音色
             import re as _re
             recs = [
-                {"character_name": "林若雪", "suggested_voice_id": "minimax:female-tianmei", "reason": "少女匹配甜美音色"},
-                {"character_name": "李明", "suggested_voice_id": "minimax:male-qn-qingse", "reason": "青年男声"},
-                {"character_name": "王大爷", "suggested_voice_id": "minimax:male-qn-badao", "reason": "老年沧桑"},
+                {"character_name": "林若雪", "suggested_voice_id": "doubao:zh_female_vv_uranus_bigtts", "reason": "少女匹配甜美音色"},
+                {"character_name": "李明", "suggested_voice_id": "doubao:zh_male_ruyaqingnian_uranus_bigtts", "reason": "青年男声"},
+                {"character_name": "王大爷", "suggested_voice_id": "doubao:zh_male_baqiqingshu_uranus_bigtts", "reason": "老年沧桑"},
             ]
             # 从 prompt 抽取实际角色名，替换默认值
             try:
@@ -132,14 +129,14 @@ class MockLLMProvider(BaseLLMProvider):
                 names = _re.findall(r'"name"\s*:\s*"([^"]+)"', char_block)
                 if names:
                     default_voices = {
-                        "林若雪": "minimax:female-tianmei",
-                        "李明": "minimax:male-qn-qingse",
-                        "王大爷": "minimax:male-qn-badao",
+                        "林若雪": "doubao:zh_female_vv_uranus_bigtts",
+                        "李明": "doubao:zh_male_ruyaqingnian_uranus_bigtts",
+                        "王大爷": "doubao:zh_male_baqiqingshu_uranus_bigtts",
                     }
                     recs = [
                         {
                             "character_name": n,
-                            "suggested_voice_id": default_voices.get(n, "minimax:male-qn-jingying"),
+                            "suggested_voice_id": default_voices.get(n, "doubao:zh_male_qingcang_uranus_bigtts"),
                             "reason": f"{n} 默认推荐",
                         }
                         for n in names
@@ -207,21 +204,12 @@ def _extract_text_block(p: str, start: str, end: str) -> str:
 class MockTTSProvider(BaseTTSProvider):
     """返回静音 MP3，不需要真的调 TTS。每段按长度估算时长。"""
     name = "mock_tts"
-    provider = "minimax"
+    provider = "doubao"
 
     def __init__(self):
-        with open(VOICES_FILE, "r", encoding="utf-8") as f:
-            raw = _json.load(f)
-        # 注入 provider 前缀命名空间，与 MiniMaxTTSProvider.list_voices 行为一致
-        normalized: list[dict[str, Any]] = []
-        for v in raw:
-            vv = dict(v)
-            vid = vv.get("id", "")
-            if vid and not vid.startswith("minimax:"):
-                vv["id"] = f"minimax:{vid}"
-            vv.setdefault("provider", "minimax")
-            normalized.append(vv)
-        self._voices = normalized
+        # 音色表直接复用豆包内置清单（MiniMax TTS 已弃用，不再有 minimax voices.json）
+        from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider
+        self._voices = DoubaoTTSProvider()._builtin_voices_sync()
 
     async def list_voices(self) -> list[dict[str, Any]]:
         return self._voices

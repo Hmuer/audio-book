@@ -408,7 +408,7 @@ async def test_v3_network_error_5xx_retries_then_fails(monkeypatch):
 # ---------------------------------------------------------------------
 # T-V3-7: factory 路由（settings.DOUBAO_TTS_USE_V3 开关）
 # ---------------------------------------------------------------------
-def test_factory_routes_to_v3_when_use_v3_flag_on():
+def test_factory_routes_to_v3_when_use_v3_flag_on(monkeypatch):
     from backend.app.ai import factory as aifact
     from backend.app.ai.providers.doubao.tts import (
         DoubaoTTSProvider,
@@ -416,6 +416,8 @@ def test_factory_routes_to_v3_when_use_v3_flag_on():
     )
     from backend.app.core.config import settings
 
+    # 清掉 conftest 注入的 mock（provider 也是 "doubao"，会遮蔽真实路由）
+    monkeypatch.setattr(aifact, "_tts_instance", None)
     # 清缓存
     aifact._tts_instances.clear()
     prev = settings.DOUBAO_TTS_USE_V3

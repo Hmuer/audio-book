@@ -124,7 +124,7 @@ async def test_providers_persistence_roundtrip(admin_token):
             }
         ],
         "active": {
-            "tts": {"provider_id": "minimax", "model_id": "MiniMax-speech-01"},
+            "tts": {"provider_id": "doubao", "model_id": "volcano_tts"},
             "llm": {"provider_id": "minimax", "model_id": "MiniMax-M3"},
         },
     }
@@ -161,10 +161,10 @@ async def test_sensitive_keys_are_now_persisted(admin_token):
 
     _init_persistable_keys()
 
-    # TTS_API_KEY 确实是 _EDITABLE_SETTINGS 白名单里的 str 键（types=str）
-    secret_key = "TTS_API_KEY"
+    # LLM_API_KEY 确实是 _EDITABLE_SETTINGS 白名单里的 str 键（types=str）
+    secret_key = "LLM_API_KEY"
     from backend.app.api.routes import _EDITABLE_SETTINGS
-    assert secret_key in _EDITABLE_SETTINGS, "前提：TTS_API_KEY 应在白名单里"
+    assert secret_key in _EDITABLE_SETTINGS, "前提：LLM_API_KEY 应在白名单里"
     assert _EDITABLE_SETTINGS[secret_key][0] == "str"
 
     new_secret = "sk-new-secret-" + uuid.uuid4().hex

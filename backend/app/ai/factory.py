@@ -5,7 +5,6 @@ from typing import Any, Callable, Optional
 
 from .base import BaseLLMProvider, BaseTTSProvider
 from .providers.minimax.llm import MiniMaxLLMProvider
-from .providers.minimax.tts import MiniMaxTTSProvider
 
 
 _llm_instance: BaseLLMProvider | None = None
@@ -44,10 +43,6 @@ def get_llm() -> BaseLLMProvider:
 # TTS 多厂商 Registry：音色 ID 前缀 → provider 工厂函数
 # =====================================================================
 # 延迟导入避免循环依赖；工厂函数返回 **新实例**，但 get_tts/provided 会按 provider 名缓存。
-def _factory_minimax() -> BaseTTSProvider:
-    return MiniMaxTTSProvider()
-
-
 def _factory_doubao() -> BaseTTSProvider:
     # 延迟导入：豆包 provider 可能不存在（Task 3 尚未实现）时兜底返回最小可用对象
     try:
@@ -83,8 +78,8 @@ class _DoubaoStubProvider(BaseTTSProvider):
 
 # 前缀命名空间 -> (provider 标识, 工厂函数)
 # icl: 前缀使用同一个 DoubaoTTSProvider（合成接口一致，provider 参数内剥离 icl:）
+# MiniMax TTS 已弃用，不再注册 "minimax" 前缀。
 TTSRegistry: dict[str, tuple[str, Callable[[], BaseTTSProvider]]] = {
-    "minimax": ("minimax", _factory_minimax),
     "doubao": ("doubao", _factory_doubao),
     "icl": ("doubao", _factory_doubao),
 }
@@ -97,7 +92,7 @@ def _resolve_provider_name(provider: Optional[str]) -> str:
     if provider:
         return provider.lower()
     from ..core.config import settings
-    return (settings.TTS_PROVIDER or "minimax").lower()
+    return (settings.TTS_PROVIDER or "doubao").lower()
 
 
 def _tts_config_fingerprint() -> str:
@@ -144,7 +139,7 @@ def get_tts(provider: Optional[str] = None) -> BaseTTSProvider:
       - provider=None → 直接返回 _tts_instance（经典行为）
       - provider=pname → 若 _tts_instance.provider 与目标 provider 标识匹配，则优先返回 mock
         （保证测试注入在显式指定 provider 时也生效）
-    任何显式指定 provider（包括 minimax/doubao/icl）最终都会走 Registry 正常路由或 mock 路由。
+    任何显式指定 provider（doubao/icl）最终都会走 Registry 正常路由或 mock 路由。
     """
     global _tts_default_instance, _tts_instances
     # 若存在注入 mock：匹配 provider 标签时直接返回
@@ -158,12 +153,12 @@ def get_tts(provider: Optional[str] = None) -> BaseTTSProvider:
             return _tts_instance
     pname = _resolve_provider_name(provider)
 
-    # 在 Registry 里找一个能匹配到该 provider 标识的入口（优先 minimax/doubao）
+    # 在 Registry 里找一个能匹配到该 provider 标识的入口（当前仅 doubao/icl）
     if pname in TTSRegistry:
         key, factory_fn = TTSRegistry[pname]
     else:
-        # 未知厂商名：兜底 minimax
-        key, factory_fn = TTSRegistry["minimax"]
+        # 未知厂商名：兜底 doubao（MiniMax TTS 已弃用，不再兜底到它）
+        key, factory_fn = TTSRegistry["doubao"]
 
     # C-3：缓存键附带配置指纹 → 配置变更后自动重建实例（不必重启后端）
     fp = _tts_config_fingerprint()
@@ -180,9 +175,19 @@ def get_tts(provider: Optional[str] = None) -> BaseTTSProvider:
 
 
 def get_tts_by_voice_id(voice_id: str) -> BaseTTSProvider:
-    """通过音色 ID 的命名空间前缀选择 provider；无前缀/未知前缀按全局默认。"""
+    """通过音色 ID 的命名空间前缀选择 provider；无前缀/未知前缀按全局默认。
+
+    `minimax:` 前缀**显式报错而不静默兜底**：老项目/老 build 里存的是
+    `minimax:male-qn-jingying` 这类 id，静默当成豆包 speaker 发出去只会换回一个
+    更难懂的上游错误；这里直接给出可操作的迁移提示。
+    """
     if voice_id and ":" in voice_id:
         prefix = voice_id.split(":", 1)[0].lower()
+        if prefix == "minimax":
+            raise RuntimeError(
+                "MiniMax 语音合成已弃用：本项目只支持豆包音色（doubao: / icl: 前缀）。"
+                "请重新推荐音色或改用豆包 2.0 音色（*_uranus_bigtts）"
+            )
         if prefix in TTSRegistry:
             pname, _ = TTSRegistry[prefix]
             return get_tts(pname)

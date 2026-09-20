@@ -150,7 +150,7 @@ async def test_build_rate_limit_returns_429_after_3_attempts(admin_token, projec
                 f"/api/projects/{project_id}/builds",
                 headers={"Authorization": f"Bearer {admin_token}"},
                 json={
-                    "narrator_voice_id": "minimax:male-qn-jingying",
+                    "narrator_voice_id": "doubao:zh_male_qingcang_uranus_bigtts",
                     "speed": 1.0,
                     "voice_assignments": {},
                 },
@@ -160,7 +160,7 @@ async def test_build_rate_limit_returns_429_after_3_attempts(admin_token, projec
             f"/api/projects/{project_id}/builds",
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
-                "narrator_voice_id": "minimax:male-qn-jingying",
+                "narrator_voice_id": "doubao:zh_male_qingcang_uranus_bigtts",
                 "speed": 1.0,
                 "voice_assignments": {},
             },
@@ -192,7 +192,7 @@ async def test_prepare_and_build_have_separate_buckets(admin_token, project_id):
             f"/api/projects/{project_id}/builds",
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
-                "narrator_voice_id": "minimax:male-qn-jingying",
+                "narrator_voice_id": "doubao:zh_male_qingcang_uranus_bigtts",
                 "speed": 1.0,
                 "voice_assignments": {},
             },

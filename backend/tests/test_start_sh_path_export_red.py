@@ -116,7 +116,7 @@ def test_old_env_with_legacy_data_dir_does_not_override_nth(tmp_path):
     novel_home.mkdir()
     env_file = tmp_path / "env"
     env_file.write_text(
-        "TTS_API_KEY=test\n"
+        "LLM_API_KEY=test\n"
         "DATA_DIR=./data\n"                                            # ← 旧值
         "AUDIO_DIR=./data/audio\n"
         "DATABASE_URL=sqlite+aiosqlite:///./data/app.db\n"             # ← 旧值
@@ -139,7 +139,7 @@ def test_no_legacy_path_fields_still_uses_nth(tmp_path):
     novel_home = tmp_path / "novel-tts"
     novel_home.mkdir()
     env_file = tmp_path / "env"
-    env_file.write_text("TTS_API_KEY=test\n")  # 只有 API key
+    env_file.write_text("LLM_API_KEY=test\n")  # 只有 API key
 
     env = _run(env_file, novel_home)
 
@@ -158,7 +158,7 @@ def test_only_database_url_overridden_by_env(tmp_path):
     novel_home.mkdir()
     env_file = tmp_path / "env"
     env_file.write_text(
-        "TTS_API_KEY=test\n"
+        "LLM_API_KEY=test\n"
         "DATABASE_URL=sqlite+aiosqlite:///./data/app.db\n"
     )
 

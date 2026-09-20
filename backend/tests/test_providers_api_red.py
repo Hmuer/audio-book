@@ -1,8 +1,8 @@
 """多厂商 API 端到端测试。
 
 覆盖：
-- GET /api/providers 返回默认 minimax + doubao 厂商
-- GET /api/providers active 字段正确指向 minimax 默认模型
+- GET /api/providers 返回默认 minimax(LLM) + doubao(TTS) 厂商
+- GET /api/providers active 字段正确指向默认 doubao TTS / minimax LLM
 - PUT /api/providers 完整保存：新建厂商 / 切换激活 / 新增模型
 - PUT /api/providers 校验：active.provider_id 不存在 → 400
 - PUT /api/providers 校验：active.model_id 不存在 → 400
@@ -40,7 +40,7 @@ def _auth(token: str) -> dict:
 
 
 def test_get_providers_default_shape(client_and_state):
-    """GET /api/providers 返回默认 minimax + doubao + active 默认指向 minimax。"""
+    """GET /api/providers 返回默认 minimax(LLM) + doubao 厂商 + TTS 默认指向 doubao。"""
     client, _ = client_and_state
     token = _login(client)
     r = client.get("/api/providers", headers=_auth(token))
@@ -50,9 +50,9 @@ def test_get_providers_default_shape(client_and_state):
     ids = {p["id"] for p in providers}
     assert "minimax" in ids
     assert "doubao" in ids
-    # 默认激活：minimax + speech-01（tts） + MiniMax-M3（llm）
-    assert body["active"]["tts"]["provider_id"] == "minimax"
-    assert body["active"]["tts"]["model_id"] == "MiniMax-speech-01"
+    # 默认激活：TTS = doubao/volcano_tts（MiniMax TTS 已弃用）；LLM = minimax/MiniMax-M3
+    assert body["active"]["tts"]["provider_id"] == "doubao"
+    assert body["active"]["tts"]["model_id"] == "volcano_tts"
     assert body["active"]["llm"]["provider_id"] == "minimax"
     assert body["active"]["llm"]["model_id"] == "MiniMax-M3"
 
@@ -161,24 +161,25 @@ def test_multiple_models_in_one_provider(client_and_state):
     r = client.get("/api/providers", headers=_auth(token))
     cfg = r.json()
 
-    # 给 minimax 加多个 tts 模型 + 多个 llm 模型
-    cfg["providers"][0]["models"].extend([
-        {"id": "minimax-tts-v2", "label": "Speech v2", "kind": "tts"},
-        {"id": "minimax-llm-fast", "label": "Fast LLM", "kind": "llm"},
+    # 给 doubao 加多个 tts 模型 + 多个 llm 模型（MiniMax 卡片现在只承载 LLM）
+    doubao = next(p for p in cfg["providers"] if p["id"] == "doubao")
+    doubao["models"].extend([
+        {"id": "doubao-tts-v2", "label": "Speech v2", "kind": "tts"},
+        {"id": "doubao-llm-fast", "label": "Fast LLM", "kind": "llm"},
     ])
-    # 切换 tts 激活到新模型
-    cfg["active"]["tts"] = {"provider_id": "minimax", "model_id": "minimax-tts-v2"}
-    cfg["active"]["llm"] = {"provider_id": "minimax", "model_id": "minimax-llm-fast"}
+    # 切换激活到新模型
+    cfg["active"]["tts"] = {"provider_id": "doubao", "model_id": "doubao-tts-v2"}
+    cfg["active"]["llm"] = {"provider_id": "doubao", "model_id": "doubao-llm-fast"}
     r = client.put("/api/providers", headers=_auth(token), json=cfg)
     assert r.status_code == 200, r.text
 
     r = client.get("/api/providers", headers=_auth(token))
     body = r.json()
-    minimax = next(p for p in body["providers"] if p["id"] == "minimax")
-    model_ids = {m["id"] for m in minimax["models"]}
-    assert {"minimax-tts-v2", "minimax-llm-fast"}.issubset(model_ids)
-    assert body["active"]["tts"]["model_id"] == "minimax-tts-v2"
-    assert body["active"]["llm"]["model_id"] == "minimax-llm-fast"
+    doubao = next(p for p in body["providers"] if p["id"] == "doubao")
+    model_ids = {m["id"] for m in doubao["models"]}
+    assert {"doubao-tts-v2", "doubao-llm-fast"}.issubset(model_ids)
+    assert body["active"]["tts"]["model_id"] == "doubao-tts-v2"
+    assert body["active"]["llm"]["model_id"] == "doubao-llm-fast"
 
 
 def test_put_providers_rejects_missing_providers_field(client_and_state):

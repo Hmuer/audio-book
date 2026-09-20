@@ -163,9 +163,9 @@ export interface Voice {
   id: string;
   name: string;
   gender: string;
-  /** 仅 minimax 音色保证有值；豆包/ICL 用 zh_tags/scene 兜底（见 voiceUtils.voiceDescription） */
+  /** 部分音色带 description；豆包/ICL 用 zh_tags/scene 兜底（见 voiceUtils.voiceDescription） */
   description?: string;
-  /** 厂商命名空间：minimax / doubao / icl（icl: 为用户复刻音色，走豆包合成通道） */
+  /** 命名空间：doubao / icl（icl: 为用户复刻音色，走豆包合成通道；minimax 已弃用） */
   provider?: string;
   /** doubao/icl 音色字段：child / teen / youth / middle / old */
   age?: string;
@@ -458,11 +458,11 @@ export const api = {
       speed?: number;
       /** 构建模式：classic（逐句合成）/ multicast（Seed-Audio 多播剧一体化生成） */
       mode?: 'classic' | 'multicast';
-      /** TTS 厂商：minimax / doubao（multicast 模式必须 doubao） */
-      tts_provider?: 'minimax' | 'doubao';
+      /** TTS 厂商：doubao（MiniMax TTS 已弃用） */
+      tts_provider?: 'doubao';
       /** 旁白情感（英文枚举风格值，空串 = provider 默认） */
       narrator_emotion?: string;
-      /** 旁白风格指令（自由文本，豆包支持；MiniMax 忽略） */
+      /** 旁白风格指令（自由文本，豆包支持） */
       narrator_instruction?: string;
     }
   ) =>
@@ -744,8 +744,8 @@ export interface BuildListItem {
   created_at: string;
   /** 构建模式：classic（逐句合成）/ multicast（Seed-Audio 多播剧） */
   mode?: 'classic' | 'multicast' | null;
-  /** TTS 厂商：minimax / doubao */
-  tts_provider?: 'minimax' | 'doubao' | null;
+  /** TTS 厂商：doubao（MiniMax TTS 已弃用） */
+  tts_provider?: 'doubao' | null;
   /** TTS 用量（真实供应商调用，不含缓存命中） */
   tts_calls?: number;
   tts_chars?: number;
@@ -768,7 +768,7 @@ export interface BuildDetailResp {
   completed_at: string | null;
   created_at: string;
   mode?: 'classic' | 'multicast' | null;
-  tts_provider?: 'minimax' | 'doubao' | null;
+  tts_provider?: 'doubao' | null;
   failed_chapters?: number[] | null;
   is_retry?: boolean;
   tts_calls?: number;
@@ -823,7 +823,7 @@ export interface BuildStatusResp {
   completed_chapters: number;
   total_chapters: number;
   mode?: 'classic' | 'multicast' | null;
-  tts_provider?: 'minimax' | 'doubao' | null;
+  tts_provider?: 'doubao' | null;
   failed_chapters?: number[] | null;
   artifacts: BuildArtifactResp[];
 }
@@ -837,7 +837,7 @@ export interface BuildResp {
   completed_chapters: number;
   created_at: string;
   mode?: 'classic' | 'multicast' | null;
-  tts_provider?: 'minimax' | 'doubao' | null;
+  tts_provider?: 'doubao' | null;
 }
 
 // ---------- 系统设置 ----------

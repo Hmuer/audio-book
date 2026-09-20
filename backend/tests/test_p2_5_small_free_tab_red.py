@@ -3,8 +3,7 @@
 覆盖：
   T-P25-1  list_voices(free_only=True) 只保留 doubao provider 且 free=True 且 model=seed-tts-1.0 的音色
   T-P25-2  list_voices(free_only=True) 排除 ICL 复刻音色（不属于官方免费列表）
-  T-P25-3  list_voices(free_only=True) 排除 MiniMax 音色
-  T-P25-4  list_voices(free_only=True) 排除豆包大模型 2.0 音色（model=seed-tts-2.0）
+  T-P25-3  list_voices(free_only=True) 排除豆包大模型 2.0 音色（model=seed-tts-2.0）
   T-P25-5  list_voices() 默认（free_only=False）行为不变（兼容旧调用方）
   T-P25-6  HTTP GET /api/voices?free_only=true 端到端路由
   T-P25-7  HTTP GET /api/voices?free_only=false 显式关闭
@@ -39,13 +38,7 @@ async def test_p2_5_1_free_only_filters_to_doubao_small_free_only(monkeypatch):
     """free_only=True 时返回的全是 doubao + free=True + model=seed-tts-1.0。"""
     from backend.app.api import routes as mod
 
-    # mock 三个 provider 的 list_voices 返回
-    async def _fake_minimax():
-        return [
-            {"id": "minimax:nn", "name": "MiniMax女声", "provider": "minimax"},
-            {"id": "minimax:nm", "name": "MiniMax男声", "provider": "minimax"},
-        ]
-
+    # mock doubao provider 的 list_voices 返回
     async def _fake_doubao():
         return [
             # 小模型免费（应保留）
@@ -60,14 +53,12 @@ async def test_p2_5_1_free_only_filters_to_doubao_small_free_only(monkeypatch):
         ]
 
     async def _fetch_side_effect(p):
-        return await {"minimax": _fake_minimax, "doubao": _fake_doubao}[p]()
+        return await _fake_doubao()
 
     # patch _fetch 内部用的 _get_tts；用 monkeypatch 把 list_voices 在 provider 实例上的实现替掉
     class _Stub:
         async def list_voices(self_inner):
             return await _fake_doubao() if False else []  # 实际走 patch
-
-    from backend.app.ai.factory import get_tts as real_get_tts
 
     def _stub_get_tts(p):
         class _Inst:
@@ -132,44 +123,10 @@ async def test_p2_5_2_free_only_excludes_icl_clones(monkeypatch):
 
 
 # ---------------------------------------------------------------------
-# T-P25-3：free_only=True 排除 MiniMax
+# T-P25-3：free_only=True 排除豆包大模型 2.0
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_p2_5_3_free_only_excludes_minimax(monkeypatch):
-    """即使 MiniMax 数据里 free=True 也应被 provider 字段排除。"""
-    from backend.app.api import routes as mod
-    from backend.app.ai import factory as _factory_mod
-
-    async def _fake_minimax():
-        return [
-            {"id": "minimax:nn", "name": "mm", "provider": "minimax",
-             "free": True, "model": "seed-tts-1.0"},
-        ]
-
-    async def _fake_doubao():
-        return [
-            {"id": "doubao:BV001_streaming", "name": "通用女声",
-             "provider": "doubao", "free": True, "model": "seed-tts-1.0"},
-        ]
-
-    def _stub_get_tts(p):
-        class _Inst:
-            async def list_voices(self_inner):
-                return await {"minimax": _fake_minimax, "doubao": _fake_doubao}[p]()
-        return _Inst()
-
-    monkeypatch.setattr(_factory_mod, "get_tts", _stub_get_tts)
-    out = await mod.list_voices(free_only=True, icl_user_id=None)
-    ids = [v["id"] for v in out["voices"]]
-    assert all(not i.startswith("minimax:") for i in ids)
-    assert ids == ["doubao:BV001_streaming"]
-
-
-# ---------------------------------------------------------------------
-# T-P25-4：free_only=True 排除豆包大模型 2.0
-# ---------------------------------------------------------------------
-@pytest.mark.asyncio
-async def test_p2_5_4_free_only_excludes_big_model_v2(monkeypatch):
+async def test_p2_5_3_free_only_excludes_big_model_v2(monkeypatch):
     """豆包大模型 2.0 即使 free=True 也要被 model 字段过滤掉。"""
     from backend.app.api import routes as mod
     from backend.app.ai import factory as _factory_mod
@@ -200,13 +157,9 @@ async def test_p2_5_4_free_only_excludes_big_model_v2(monkeypatch):
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_p2_5_5_default_no_filter_keeps_all(monkeypatch):
-    """free_only=False（默认）时返回所有厂商所有音色（不应用过滤）。"""
+    """free_only=False（默认）时返回所有音色（不应用过滤）。"""
     from backend.app.api import routes as mod
     from backend.app.ai import factory as _factory_mod
-
-    async def _fake_minimax():
-        return [{"id": "minimax:nn", "name": "mm", "provider": "minimax",
-                 "free": True, "model": "seed-tts-1.0"}]
 
     async def _fake_doubao():
         return [
@@ -219,14 +172,14 @@ async def test_p2_5_5_default_no_filter_keeps_all(monkeypatch):
     def _stub_get_tts(p):
         class _Inst:
             async def list_voices(self_inner):
-                return await {"minimax": _fake_minimax, "doubao": _fake_doubao}[p]()
+                return await _fake_doubao()
         return _Inst()
 
     monkeypatch.setattr(_factory_mod, "get_tts", _stub_get_tts)
     out = await mod.list_voices(free_only=False, icl_user_id=None)
     ids = sorted(v["id"] for v in out["voices"])
-    assert ids == ["doubao:BV001_streaming", "doubao:zh_male_uranus_bigtts", "minimax:nn"]
-    assert out["count"] == 3
+    assert ids == ["doubao:BV001_streaming", "doubao:zh_male_uranus_bigtts"]
+    assert out["count"] == 2
 
 
 # ---------------------------------------------------------------------
@@ -245,10 +198,6 @@ async def test_p2_5_6_http_route_free_only_true(_isolate_data_dir):
     await seed_admin_user()
     admin_tok, _ = create_access_token("admin")
 
-    async def _fake_minimax():
-        return [{"id": "minimax:nn", "name": "mm", "provider": "minimax",
-                 "free": True, "model": "seed-tts-1.0"}]
-
     async def _fake_doubao():
         return [
             {"id": "doubao:BV001_streaming", "name": "通用女声",
@@ -260,7 +209,7 @@ async def test_p2_5_6_http_route_free_only_true(_isolate_data_dir):
     def _stub_get_tts(p):
         class _Inst:
             async def list_voices(self_inner):
-                return await {"minimax": _fake_minimax, "doubao": _fake_doubao}[p]()
+                return await _fake_doubao()
         return _Inst()
 
     _factory_mod.get_tts = _stub_get_tts
@@ -282,7 +231,7 @@ async def test_p2_5_6_http_route_free_only_true(_isolate_data_dir):
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_p2_5_7_http_route_free_only_false(_isolate_data_dir):
-    """free_only=false 时返回所有厂商音色（不过滤）。"""
+    """free_only=false 时返回所有音色（不过滤）。"""
     from backend.app.main import app
     from backend.app.db.session import init_db
     from backend.app.services.auth import seed_admin_user, create_access_token
@@ -292,9 +241,6 @@ async def test_p2_5_7_http_route_free_only_false(_isolate_data_dir):
     await init_db()
     await seed_admin_user()
     admin_tok, _ = create_access_token("admin")
-
-    async def _fake_minimax():
-        return [{"id": "minimax:nn", "name": "mm", "provider": "minimax"}]
 
     async def _fake_doubao():
         return [
@@ -307,7 +253,7 @@ async def test_p2_5_7_http_route_free_only_false(_isolate_data_dir):
     def _stub_get_tts(p):
         class _Inst:
             async def list_voices(self_inner):
-                return await {"minimax": _fake_minimax, "doubao": _fake_doubao}[p]()
+                return await _fake_doubao()
         return _Inst()
 
     _factory_mod.get_tts = _stub_get_tts
@@ -320,7 +266,7 @@ async def test_p2_5_7_http_route_free_only_false(_isolate_data_dir):
         )
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body["count"] == 3
+        assert body["count"] == 2
 
 
 # ---------------------------------------------------------------------

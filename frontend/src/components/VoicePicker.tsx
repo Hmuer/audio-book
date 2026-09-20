@@ -272,7 +272,6 @@ export default function VoicePicker({
           <div className="flex items-center gap-1 mb-2.5">
             {([
               ['all', `全部 ${voices.length}`],
-              ['minimax', PROVIDER_LABELS.minimax],
               ['doubao', PROVIDER_LABELS.doubao],
               ['icl', PROVIDER_LABELS.icl],
             ] as [ProviderKey | 'all', string][]).map(([key, label]) => {

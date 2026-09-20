@@ -1,12 +1,14 @@
-"""音色推荐：聚合多厂商 + ICL 复刻的候选池 + prompt 透传测试。
+"""音色推荐：聚合豆包官方 + ICL 复刻的候选池 + prompt 透传测试。
 
 覆盖：
-  T-VR-1  _aggregate_voice_pool 聚合 minimax + doubao + 用户 ICL 三方
+  T-VR-1  _aggregate_voice_pool 聚合 doubao + 用户 ICL 两方
   T-VR-2  _aggregate_voice_pool 在 user_id=None 时跳过 ICL
-  T-VR-3  recommend_voices_with_llm 的 prompt 同时含 minimax/doubao/icl 三方音色 id
-  T-VR-4  recommend_voices_with_llm 的 prompt 含 provider 字段（让 LLM 能跨厂商）
+  T-VR-3  recommend_voices_with_llm 的 prompt 同时含 doubao/icl 两方音色 id
+  T-VR-4  recommend_voices_with_llm 的 prompt 含 provider 字段
   T-VR-5  recommend_voices_with_llm 单 provider 异常时降级（其他仍能返回）
   T-VR-6  recommend_voices_with_llm 向后兼容旧调用（不传 user_id / project_id）
+
+历史：MiniMax TTS 已弃用，候选池不再聚合 minimax 音色。
 """
 from __future__ import annotations
 
@@ -25,15 +27,6 @@ if str(PROJECT_ROOT) not in sys.path:
 # ---------------------------------------------------------------------
 # Mock 工厂：返回定制音色集合
 # ---------------------------------------------------------------------
-
-
-def _make_minimax_voices() -> list[dict]:
-    return [
-        {"id": "minimax:male-qn-qingse", "name": "青涩青年音色", "gender": "男声",
-         "description": "青年·清涩·干净", "provider": "minimax"},
-        {"id": "minimax:female-tianmei", "name": "甜美女性音色", "gender": "女声",
-         "description": "少女·甜蜜·软糯", "provider": "minimax"},
-    ]
 
 
 def _make_doubao_voices() -> list[dict]:
@@ -61,20 +54,17 @@ def _make_icl_voices(user_id: int) -> list[dict]:
 def patch_factory(monkeypatch):
     """monkeypatch service._fetch_provider_voices 与 _fetch_icl_voices。
 
-    get_tts("minimax"/"doubao") 在测试默认会被 conftest 注入的 MockTTSProvider
-    拦截；为了让 doubao 也返回"豆包"音色，需要替换 service 层的辅助函数。
+    get_tts("doubao") 在测试默认会被 conftest 注入的 MockTTSProvider 拦截；
+    为了让 doubao 返回定制"豆包"音色，需要替换 service 层的辅助函数。
     """
     from backend.app.services import voice_recommender as vr
 
-    minimax_voices = _make_minimax_voices()
     doubao_voices = _make_doubao_voices()
     # 用一个可变容器，便于单测 override 抛错场景
     state = {
-        "minimax": minimax_voices,
         "doubao": doubao_voices,
         "icl": lambda user_id: _make_icl_voices(user_id) if user_id else [],
         "icl_raise": False,
-        "minimax_raise": False,
         "doubao_raise": False,
     }
 
@@ -96,7 +86,7 @@ def patch_factory(monkeypatch):
 
 
 # ---------------------------------------------------------------------
-# T-VR-1：聚合 minimax + doubao + ICL
+# T-VR-1：聚合 doubao + ICL
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_aggregate_voice_pool_includes_all_providers(patch_factory):
@@ -104,18 +94,17 @@ async def test_aggregate_voice_pool_includes_all_providers(patch_factory):
 
     pool = await _aggregate_voice_pool(user_id=42)
     ids = {v["id"] for v in pool}
-    # 三个 provider 都有
-    assert "minimax:male-qn-qingse" in ids
+    # doubao + icl 都有
     assert "doubao:zh_female_vv_uranus_bigtts" in ids
     assert "icl:clone_abc" in ids
     # BV120 是 model=seed-tts-1.0 的小模型音色，v3 端点不支持该资源
     # （实测 403 + code=45000030），推荐池里必须已经剔除
     assert "doubao:BV120_streaming" not in ids
-    # 共 5 个（2 minimax + 2 doubao + 1 icl；BV120 被过滤）
-    assert len(pool) == 5
+    # 共 3 个（2 doubao + 1 icl；BV120 被过滤）
+    assert len(pool) == 3
     # 每项带 provider 字段
     providers = {v.get("provider") for v in pool}
-    assert providers == {"minimax", "doubao", "icl"}
+    assert providers == {"doubao", "icl"}
 
 
 # ---------------------------------------------------------------------
@@ -128,7 +117,7 @@ async def test_aggregate_voice_pool_no_icl_when_user_none(patch_factory):
     pool = await _aggregate_voice_pool(user_id=None)
     providers = {v.get("provider") for v in pool}
     assert "icl" not in providers
-    assert providers == {"minimax", "doubao"}
+    assert providers == {"doubao"}
 
 
 # ---------------------------------------------------------------------
@@ -136,21 +125,20 @@ async def test_aggregate_voice_pool_no_icl_when_user_none(patch_factory):
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_aggregate_voice_pool_degrades_on_provider_failure(patch_factory):
-    """minimax 抛错时，doubao + icl 仍返回。"""
+    """doubao 抛错时，icl 仍返回。"""
     from backend.app.services.voice_recommender import _aggregate_voice_pool
 
-    patch_factory["minimax_raise"] = True
+    patch_factory["doubao_raise"] = True
     pool = await _aggregate_voice_pool(user_id=1)
     ids = {v["id"] for v in pool}
-    # minimax 音色没拿到，但 doubao/icl 仍在
-    assert not any(v.startswith("minimax:") for v in ids)
-    assert any(v.startswith("doubao:") for v in ids)
+    # doubao 音色没拿到，但 icl 仍在
+    assert not any(v.startswith("doubao:") for v in ids)
     assert "icl:clone_abc" in ids
 
 
 @pytest.mark.asyncio
 async def test_aggregate_voice_pool_degrades_on_icl_failure(patch_factory):
-    """icl 抛错时，minimax + doubao 仍返回。"""
+    """icl 抛错时，doubao 仍返回。"""
     from backend.app.services.voice_recommender import _aggregate_voice_pool
 
     patch_factory["icl_raise"] = True
@@ -158,15 +146,13 @@ async def test_aggregate_voice_pool_degrades_on_icl_failure(patch_factory):
     ids = {v["id"] for v in pool}
     assert not any(v.startswith("icl:") for v in ids)
     assert any(v.startswith("doubao:") for v in ids)
-    assert any(v.startswith("minimax:") for v in ids)
 
 
 # ---------------------------------------------------------------------
-# T-VR-3 / T-VR-4：prompt 同时含三家音色 id + provider 字段
+# T-VR-3 / T-VR-4：prompt 同时含两类音色 id + provider 字段
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_recommend_prompt_contains_all_three_providers(patch_factory):
-    from backend.app.ai import factory as _factory
+async def test_recommend_prompt_contains_all_providers(patch_factory):
     from backend.app.ai.factory import get_llm
     from backend.app.services.voice_recommender import recommend_voices_with_llm
     from backend.app.services.character import Character
@@ -187,8 +173,7 @@ async def test_recommend_prompt_contains_all_three_providers(patch_factory):
             break
     assert prompt is not None, "应触发 LLM 调用，calls 中应有 配音导演 prompt"
 
-    # T-VR-3：三家音色 id 都出现
-    assert "minimax:female-tianmei" in prompt
+    # T-VR-3：doubao / icl 音色 id 都出现
     assert "doubao:zh_female_vv_uranus_bigtts" in prompt
     assert "icl:clone_abc" in prompt
 
@@ -197,12 +182,12 @@ async def test_recommend_prompt_contains_all_three_providers(patch_factory):
     m = re.search(r"【音色列表】\s*(\[.*?\])\s*$", prompt, re.DOTALL)
     assert m, "prompt 末尾应有【音色列表】JSON 块"
     voices_block = json.loads(m.group(1))
-    assert isinstance(voices_block, list) and len(voices_block) >= 5
+    assert isinstance(voices_block, list) and len(voices_block) >= 3
     # 每条音色 dict 含 provider 字段
     for v in voices_block:
         assert "id" in v and "provider" in v, f"音色 {v} 缺少 id/provider"
     providers = {v["provider"] for v in voices_block}
-    assert providers == {"minimax", "doubao", "icl"}
+    assert providers == {"doubao", "icl"}
 
 
 # ---------------------------------------------------------------------

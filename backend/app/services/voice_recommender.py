@@ -1,10 +1,9 @@
 """音色推荐（基于 LLM 的特征匹配）。
 
-历史 bug：原本只取单一 provider 的音色（默认 minimax），导致推荐结果永远是
-minimax 的 id，豆包官方 200+ 音色和用户 ICL 复刻音色从未出现在候选池。
+聚合所有可用音色 + 当前用户的 ICL 复刻音色，按 id 去重；
+prompt 给 LLM 看到每个音色的 `provider` 字段，让它能在豆包官方音色与复刻音色间选择。
 
-修复：聚合所有已启用厂商的音色 + 当前用户的 ICL 复刻音色，按 id 去重；
-prompt 给 LLM 看到每个音色的 `provider` 字段，让它能跨厂商选择。
+历史：MiniMax TTS 已弃用，音色池不再包含 minimax 音色（仅 doubao + icl）。
 """
 from __future__ import annotations
 
@@ -43,23 +42,21 @@ PROMPT_BASE = r"""
 4. 多个角色尽量不要选同一个音色，保证辨识度；若 prompt 里有【旁白音色】，该音色旁白专用，**任何角色都不得使用**
 5. 返回 reason 简要说明匹配点
 
-⚠️ 音色列表里每个音色带有 `provider` 字段（minimax / doubao / icl）：
-- minimax: MiniMax 官方音色
+⚠️ 音色列表里每个音色带有 `provider` 字段（doubao / icl）：
 - doubao:  豆包官方音色（带 model 字段，1.0 小模型 vs 2.0 大模型）
 - icl:     当前用户上传训练的声音复刻音色（专属该用户）
 
-你可以跨厂商选择：建议优先看音色特征是否匹配角色，不局限厂商；但请在
-reason 里简明说明选择理由。LLM 选出来的 voice_id 在 build 阶段如果与项目
-默认 TTS 厂商不一致，前端会提示用户手动切换或重新推荐。
+你可以跨类选择：建议优先看音色特征是否匹配角色，不局限音色来源；但请在
+reason 里简明说明选择理由。
 
 输出格式：
 {
   "data": [
-    {"character_name": "林若雪", "suggested_voice_id": "female-tianmei", "reason": "17岁内向少女，匹配甜美少女音色的温柔轻声风格。"}
+    {"character_name": "林若雪", "suggested_voice_id": "doubao:zh_female_vv_uranus_bigtts", "reason": "17岁内向少女，匹配甜美少女音色的温柔轻声风格。"}
   ]
 }
 ⚠️输出必须是 JSON，顶层一定有 data 字段，每个角色一条。
-⚠️suggested_voice_id 必须是音色列表里出现的 id（含命名空间前缀，如 "minimax:female-tianmei" 或 "doubao:zh_female_vv_uranus_bigtts" 或 "icl:clone_xxx"），不要自创。
+⚠️suggested_voice_id 必须是音色列表里出现的 id（含命名空间前缀，如 "doubao:zh_female_vv_uranus_bigtts" 或 "icl:clone_xxx"），不要自创。
 """
 
 
@@ -101,9 +98,8 @@ async def _aggregate_voice_pool(user_id: int | None = None) -> list[dict]:
 
     返回 list[dict]，每个 dict 至少含 id/name/gender/description/provider 字段。
     """
-    # 并发拉 minimax + doubao + ICL
+    # 并发拉 doubao + ICL（MiniMax TTS 已弃用，不再拉 minimax 音色）
     tasks = [
-        _fetch_provider_voices("minimax"),
         _fetch_provider_voices("doubao"),
         _fetch_icl_voices(user_id),
     ]
@@ -155,8 +151,8 @@ def _is_usable_voice(voice: dict) -> bool:
 # ----------------------------------------------------------------------
 
 # 旁白兜底音色，口径与 build._ensure_default_narrator 一致
-# （新命名空间带 minimax: 前缀，同时兼容无前缀 legacy id）。
-_DEFAULT_NARRATOR_IDS = ("minimax:male-qn-jingying", "male-qn-jingying")
+# （豆包 2.0 擎苍；同时兼容无前缀 legacy id）。
+_DEFAULT_NARRATOR_IDS = ("doubao:zh_male_qingcang_uranus_bigtts", "zh_male_qingcang_uranus_bigtts")
 
 
 def _resolve_narrator_voice_id(
@@ -168,8 +164,8 @@ def _resolve_narrator_voice_id(
 
     优先级：显式入参 > Project.default_narrator_voice_id > 兜底默认。
 
-    兜底默认只在音色池里确实存在 male-qn-jingying 时才采用（与 build 的兜底同源）；
-    池中没有该 id 时返回空串，宁可不约束也不误排一个无关音色。
+    兜底默认只在音色池里确实存在擎苍 2.0（doubao:zh_male_qingcang_uranus_bigtts）
+    时才采用（与 build 的兜底同源）；池中没有该 id 时返回空串，宁可不约束也不误排一个无关音色。
     """
     if explicit and explicit.strip():
         return explicit.strip()
@@ -343,7 +339,7 @@ async def recommend_voices_with_llm(
 def _norm_gender_for_prompt(gender: str) -> str:
     """统一音色 gender 字符串为"男声/女声/中性"。
 
-    minimax 已是男声/女声/中性；doubao 是 male/female/neutral；icl 是中性。
+    doubao 是 male/female/neutral；icl 是中性；同时兼容中文写法。
     """
     g = (gender or "").strip().lower()
     if g in ("male", "男", "男声", "m"):

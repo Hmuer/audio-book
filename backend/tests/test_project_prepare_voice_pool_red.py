@@ -54,7 +54,7 @@ def stub_recommend(monkeypatch):
         return [
             VoiceRecommendation(
                 character_name=c.name,
-                suggested_voice_id="minimax:female-tianmei",
+                suggested_voice_id="doubao:zh_female_vv_uranus_bigtts",
                 reason="默认推荐",
             )
             for c in characters
