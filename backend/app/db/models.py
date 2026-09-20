@@ -248,6 +248,10 @@ class ProjectDialogue(Base):
     speaker: Mapped[str] = mapped_column(String(128), default="")
     text: Mapped[str] = mapped_column(Text, default="")
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    # 该句对白的豆包 2.0 语音指令（TTS 的 context_texts），由 LLM 在 prepare 的
+    # instructions 阶段逐段生成；空串 = 不下发指令（用音色默认语气）。
+    # 长度上限与角色级 instruction 一致（512），便于落库口径统一。
+    instruction: Mapped[str] = mapped_column(String(512), default="")
 
     project: Mapped[Project] = relationship(back_populates="project_dialogues")
 

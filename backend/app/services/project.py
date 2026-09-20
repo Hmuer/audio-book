@@ -43,6 +43,7 @@ from .dialogue import (
     ChapterDialogueBatchResult,
 )
 from .voice_recommender import VoiceRecommendation, recommend_voices_with_llm
+from .voice_instruction import generate_dialogue_instructions
 
 logger = logging.getLogger(__name__)
 
@@ -850,7 +851,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         prog["char_full_text_len"] = len(full_text)
         await _write_progress(prog)
 
-        if prog.get("stage") in ("characters", "dedup", "dialogues", "voice_recs", "done") and char_raw_list:
+        if prog.get("stage") in ("characters", "dedup", "dialogues", "instructions", "voice_recs", "done") and char_raw_list:
             logger.info(
                 f"[project_prepare] project_id={project_id[:8]}... "
                 f"命中角色识别 checkpoint：已完成 {len(completed_slice_idxs)}/{len(char_slices)} 切片，"
@@ -968,7 +969,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             raise RuntimeError(f"角色识别全部切片失败（{len(char_slices)} 片）：{bad}")
 
         # 4c. dedup（完成后 checkpoint 跳到 dedup=done）
-        if prog.get("stage") in ("dedup", "dialogues", "voice_recs", "done") and prog.get("dedup_done"):
+        if prog.get("stage") in ("dedup", "dialogues", "instructions", "voice_recs", "done") and prog.get("dedup_done"):
             name_map: dict[str, str] = dict(prog.get("name_map", {}) or {})
             characters = [Character(**d) for d in prog.get("deduped_characters", []) or []]
             if not name_map:
@@ -1181,6 +1182,71 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             f"ms={int((_time.perf_counter()-pt)*1000)}"
         )
 
+        # 5.5 逐段语音指令（豆包 2.0 的 context_texts）：对白归属完成后、音色推荐前
+        # - 用 LLM 为每句对白生成「情绪 + 语气 + 节奏 + 音色质感」的自然语言指令，参与逐段合成
+        # - checkpoint：完成后写 instructions_done + instructions_raw（"chapter:segment" → 指令），
+        #   重跑 prepare 命中则跳过、不再调 LLM（口径与对白归属/音色推荐一致）
+        # - 批级失败不致命（service 内整批按空串）；VOICE_INSTRUCTION_ENABLED=False 时整段跳过且不调 LLM
+        pt = _time.perf_counter()
+        instruction_map: dict[tuple[int, int], str] = {}
+        if not bool(getattr(settings, "VOICE_INSTRUCTION_ENABLED", True)):
+            logger.info(
+                f"[project_prepare] project_id={project_id[:8]}... "
+                f"VOICE_INSTRUCTION_ENABLED=False，逐段语音指令整段跳过（按空串落库）"
+            )
+        elif prog.get("stage") in ("instructions", "voice_recs", "done") and prog.get("instructions_done"):
+            raw_instr = prog.get("instructions_raw", {}) or {}
+            if isinstance(raw_instr, dict):
+                for k, v in raw_instr.items():
+                    try:
+                        ch_s, seg_s = str(k).split(":", 1)
+                        instruction_map[(int(ch_s), int(seg_s))] = str(v or "")
+                    except Exception:
+                        continue
+            elif isinstance(raw_instr, list):
+                # 兼容 list of dict 形态（chapter_idx/segment_index/instruction）
+                for item in raw_instr:
+                    try:
+                        instruction_map[
+                            (int(item["chapter_idx"]), int(item["segment_index"]))
+                        ] = str(item.get("instruction") or "")
+                    except Exception:
+                        continue
+            logger.info(
+                f"[project_prepare] project_id={project_id[:8]}... "
+                f"命中逐段语音指令 checkpoint：instructions={len(instruction_map)}"
+            )
+        else:
+            # all_attrs_per_chapter 按章下标 = ch.idx 排列，逐段下标即落库用的 segment_index
+            dialogues_for_instr: dict[int, list] = {
+                ch_idx: attrs
+                for ch_idx, attrs in enumerate(all_attrs_per_chapter)
+                if attrs
+            }
+            try:
+                instruction_map = await generate_dialogue_instructions(
+                    chapters, dialogues_for_instr, characters
+                )
+            except Exception as e:
+                # service 内已做批级容错，这里再保一层：指令生成失败绝不能拖垮 prepare
+                logger.warning(
+                    f"[project_prepare] project_id={project_id[:8]}... "
+                    f"voice_instruction failed: {type(e).__name__}: {e}"
+                )
+                instruction_map = {}
+            prog["stage"] = "instructions"
+            prog["instructions_done"] = True
+            prog["instructions_raw"] = {
+                f"{k[0]}:{k[1]}": v for k, v in instruction_map.items()
+            }
+            await _write_progress(prog)
+        logger.info(
+            f"[project_prepare] project_id={project_id[:8]}... "
+            f"instructions={len(instruction_map)} "
+            f"non_empty={sum(1 for v in instruction_map.values() if v)} "
+            f"ms={int((_time.perf_counter()-pt)*1000)}"
+        )
+
         # 6. 音色推荐（完成后 checkpoint 跳过）
         pt = _time.perf_counter()
         if prog.get("stage") in ("voice_recs", "done") and prog.get("voice_recs_done"):
@@ -1270,6 +1336,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     speaker_raw = _f(a, "speaker", "")
                     text_raw = _f(a, "text", "")
                     conf_raw = _f(a, "confidence", 1.0)
+                    # 逐段语音指令：按 (chapter_idx, segment_index) 对齐回填；缺失/空 → 空串
+                    dlg_instruction = (instruction_map.get((ch_idx, seg_idx), "") or "")[:512]
                     session.add(ProjectDialogue(
                         project_id=project_id,
                         chapter_idx=ch_idx,
@@ -1280,6 +1348,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                         speaker=str(speaker_raw),
                         text=str(text_raw),
                         confidence=float(conf_raw) if conf_raw is not None else 1.0,
+                        instruction=dlg_instruction,
                     ))
             p.chapters_json = chapters_json
             p.chapter_count = len(chapters)

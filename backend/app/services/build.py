@@ -707,10 +707,15 @@ async def _calc_content_digest(
         )
     ).scalars().all()
     for d in dlg_rows:
+        # 逐段语音指令（ProjectDialogue.instruction）参与内容摘要：它由 prepare 的
+        # instructions 阶段生成、逐段下发给豆包 TTS 2.0（context_texts），会直接改变
+        # 该段的合成结果。若不纳入哈希，用户只改了/重新生成了逐段指令而音色语速没变时，
+        # content_digest 不变 → 命中历史成功 build 被直接复用，新指令不会生效。
         h.update(
             (
                 f"d|{d.chapter_idx}|{d.segment_index}|{d.anchor_start}|{d.anchor_end}|"
-                f"{d.speaker or ''}|{d.anchor_text or ''}|{d.text or ''}\n"
+                f"{d.speaker or ''}|{d.anchor_text or ''}|{d.text or ''}|"
+                f"{getattr(d, 'instruction', '') or ''}\n"
             ).encode("utf-8")
         )
     # 3) 发音规则（仅启用中的参与替换，故 enabled 一并纳入）
@@ -2447,9 +2452,12 @@ async def estimate_project_build(project_id: str, speed: float = 1.0) -> BuildEs
     # MP3 128kbps ≈ 16KB/s
     est_zip_mb = est_audio_sec * 16.0 / (1024.0 * 1024.0)
 
-    # LLM prepare 估算（角色切片 + 消歧批次 + 对白批次 + 音色推荐）
+    # LLM prepare 估算（角色切片 + 消歧批次 + 对白批次 + 逐段语音指令批次 + 音色推荐）
     slice_size = max(1, int(_settings.LLM_CHAR_EXTRACT_SLICE_SIZE))
     dlg_batch = max(1, int(_settings.DIALOGUE_BATCH_CHAPTERS))
+    # 逐段语音指令：按章切批，一次 LLM 调用处理 VOICE_INSTRUCTION_BATCH_CHAPTERS 章
+    vi_enabled = bool(getattr(_settings, "VOICE_INSTRUCTION_ENABLED", True))
+    vi_batch = max(1, int(getattr(_settings, "VOICE_INSTRUCTION_BATCH_CHAPTERS", 6) or 6))
     est_llm_calls = 0
     if not prepared:
         import math
@@ -2457,6 +2465,7 @@ async def estimate_project_build(project_id: str, speed: float = 1.0) -> BuildEs
             math.ceil(total_chars / slice_size)      # 角色提取切片
             + 2                                       # 消歧（通常 1-2 批）
             + math.ceil(max(len(chapters), 1) / dlg_batch)  # 对白归属批次
+            + (math.ceil(max(len(chapters), 1) / vi_batch) if vi_enabled else 0)  # 逐段语音指令批次
             + 1                                       # 音色推荐
         )
 

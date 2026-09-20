@@ -104,6 +104,10 @@ _PROJECT_CHARACTERS_NEW_COLUMNS = {
     "emotion": "VARCHAR(32) DEFAULT ''",
     "instruction": "VARCHAR(512) DEFAULT ''",
 }
+# 对白：逐段语音指令（豆包 2.0 context_texts，旧库补列；空串=不下发）
+_PROJECT_DIALOGUES_NEW_COLUMNS = {
+    "instruction": "VARCHAR(512) DEFAULT ''",
+}
 
 
 def _migrate_existing_sync(conn) -> None:
@@ -134,6 +138,12 @@ def _migrate_existing_sync(conn) -> None:
         for col, ddl in _PROJECT_CHARACTERS_NEW_COLUMNS.items():
             if col not in existing_cols:
                 conn.execute(text(f"ALTER TABLE project_characters ADD COLUMN {col} {ddl}"))
+
+    if "project_dialogues" in tables:
+        existing_cols = {c["name"] for c in insp.get_columns("project_dialogues")}
+        for col, ddl in _PROJECT_DIALOGUES_NEW_COLUMNS.items():
+            if col not in existing_cols:
+                conn.execute(text(f"ALTER TABLE project_dialogues ADD COLUMN {col} {ddl}"))
 
 
 async def init_db() -> None:

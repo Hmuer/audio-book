@@ -1954,6 +1954,10 @@ _EDITABLE_SETTINGS = {
     "DIALOGUE_BATCH_CHAPTERS": ("int", "限流配置", "对白归属批大小（章/批）"),
     "DIALOGUE_BATCH_CONCURRENCY": ("int", "限流配置", "对白归属批并发度"),
     "DIALOGUE_BATCH_RETRY_COUNT": ("int", "限流配置", "对白归属重试次数"),
+    # 逐段语音指令（豆包 2.0 context_texts，LLM 生成）
+    "VOICE_INSTRUCTION_ENABLED": ("bool", "限流配置", "逐段语音指令（豆包 2.0 context_texts，LLM 生成）"),
+    "VOICE_INSTRUCTION_BATCH_CHAPTERS": ("int", "限流配置", "逐段语音指令批大小（章/批）"),
+    "VOICE_INSTRUCTION_BATCH_CONCURRENCY": ("int", "限流配置", "逐段语音指令批并发度"),
     "TTS_MAX_CONCURRENCY": ("int", "限流配置", "TTS 最大并发"),
     # 缓存
     "TTS_SEGMENT_CACHE_MAX_ENTRIES": ("int", "缓存配置", "段缓存 LRU 上限（条）"),

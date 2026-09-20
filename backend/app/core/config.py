@@ -203,6 +203,18 @@ class Settings(BaseSettings):
     # 对白归属单批 LLM 调用失败后的业务层重试次数（0=不重试，provider 层另有兜底 3 次）
     DIALOGUE_BATCH_RETRY_COUNT: int = 2
 
+    # ===== 逐段语音指令（豆包 2.0 的 context_texts）=====
+    # 用 LLM 为每一句对白生成「语音指令」（情绪/语气/节奏/音色质感的自然语言描述），
+    # 参与逐段合成，让同一角色的不同情绪段落听感更贴合原文。
+    # 成本含义：官方明确「该字段文字不参与计费」，但**生成指令的 LLM 调用会计费**——
+    # 调用次数 ≈ ceil(有对白的章节数 / VOICE_INSTRUCTION_BATCH_CHAPTERS)，
+    # 与对白归属同量级；关掉可退回「只用角色级 emotion/instruction」的旧行为。
+    VOICE_INSTRUCTION_ENABLED: bool = True
+    # 一次 LLM 调用最多处理几章（与 DIALOGUE_BATCH_CHAPTERS 同思路，按章切批）
+    VOICE_INSTRUCTION_BATCH_CHAPTERS: int = 6
+    # 批并发度：同时在飞的批数量（provider 层 LLM semaphore 会再行串行兜底）
+    VOICE_INSTRUCTION_BATCH_CONCURRENCY: int = 2
+
     # TTS 并发限流（全局，段级）：同时最多 N 个 TTS synthesize 调用在飞。
     # 现在已经改成 **段级** semaphore（不是"每章并发"），默认 100 段并行是
     # 相对保守的值：短对白 1s/TTS，100 并发 ≈ 100 段/秒的吞吐。
