@@ -453,6 +453,16 @@ POST /api/v3/tts/voice_design
 | 45002001 | `No readable text!` | 没有可读文本 | 检查 text |
 | 55000000 | 服务端内部 error / `connect downstream service timeout` / `synthesis processing timeout` / `client send timeout` / `resource ID is mismatched with speaker related resource` | 网关超时 / 合成超时 / 客户端空闲超时 / resourceId 与 speaker 不匹配 | 重试 / 检查服务是否开通 / 音色是否过期 / 拼写 |
 
+### 12.1.1 网关级 4xx（不在上方错误码表里，实测补充）
+
+错误码表只覆盖「HTTP 200 + code 非 0」的业务错；**鉴权 / 资源未授权是 HTTP 4xx + 响应体里另带一份 `header.code`**：
+
+| HTTP | code | 响应体（实测） | 含义 |
+|---|---|---|---|
+| 403 | 45000030 | `{"header":{"reqid":"...","code":45000030,"message":"[resource_id=volc.service_type.10029] requested resource not granted"}}` | **该资源账号未开通**。`message` 里的 `resource_id` 是服务端的规范化名：`seed-tts-1.0` ↔ `volc.service_type.10029`（语音合成大模型 1.0）。与文本、音色都无关 |
+
+排查要点：这类响应**必须把 body 读出来**再抛错 —— 只 `raise_for_status()` 会丢掉 body，日志里只剩一句 `403 Forbidden`，无法区分「Key 没权限」「资源未开通」「resource id 与音色不匹配」。本项目已在 `doubao/tts.py` 的 `_post_stream_v3` 里统一读取并按 `_v3_http_error_hint()` 翻译。
+
 ### 12.2 复刻接口（voice_clone / get_voice / upgrade_voice）
 
 | code | 含义 |

@@ -275,11 +275,13 @@
 - 现象：测试数量自相矛盾（123 / 99，实际 41 个测试文件）；跑测试命令写的 venv 路径与 `start.sh` 实际的 `$NOVEL_TTS_HOME/.venv` 不符；「CI 未接入」与仓库中存在的 CI 配置矛盾；宣称的「OpenAI 兼容多厂商」超出实现（`get_llm()` 恒返回 MiniMax）。
 - 修复方向：据实校准，或明确标注能力边界。
 
-### E-6 死代码清理
-- 位置：`multicast` 全家桶（[build.py#L703-L718](file:///workspace/backend/app/services/build.py#L703-L718)、[#L1278-L1291](file:///workspace/backend/app/services/build.py#L1278-L1291)）、`_DoubaoStubProvider` 与 `get_multicast_tts`（[factory.py#L66-L78](file:///workspace/backend/app/ai/factory.py#L66-L78)、[#L152-L160](file:///workspace/backend/app/ai/factory.py#L152-L160)）、`_tts_default_instance`（只写不读）、`_should_strict_fail`（恒 False）
+### E-6 死代码清理 ✅（2026-09-20 完成）
+- 位置：`multicast` 全家桶、`_DoubaoStubProvider` 与 `get_multicast_tts`、`_tts_default_instance`（只写不读）、`_should_strict_fail`（恒 False）
 - 现象：废弃能力仍暴露在设置白名单（`DOUBAO_SEED_AUDIO_*`、`MULTICAST_STRICT_MODE` 改之无效）；`_DoubaoStubProvider` 注释仍写「Task 3 尚未实现」。
 - 后果：误导后续维护，且 UI 上可改但无效的开关会让人误判。
 - 修复方向：清理死代码并从白名单移除废弃项。
+- 实施结果：multicast 骨架（`_should_strict_fail` / `_validate_multicast_provider` / `_multicast_synth_chapter` / `_estimate_multicast_secs` / strict 失败分支）、`get_multicast_tts` / `_multicast_instance` / `_DoubaoStubProvider` / seed_audio 限流桶、3 个失效配置键与前端多播剧入口已全部移除。
+- **未做**：`_tts_default_instance` 保留未删 —— 它是 `get_tts(None)` 的记忆化默认实例，虽当前只写不读，但删除涉及 provider 缓存语义改动，与本项「清死代码」的收益不成比例，留待有实际诉求时再处理。
 
 ---
 
@@ -337,7 +339,7 @@
 - [ ] D-3 仅补签未签发的章节 URL — [ProjectDetailPage.tsx#L1856-L1885](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L1856-L1885)
 - [ ] D-4 `VoicePicker` 视口边界钳制 — [VoicePicker.tsx#L240-L251](file:///workspace/frontend/src/components/VoicePicker.tsx#L240-L251)
 - [ ] D-5 `WaveformPlayer` src 变化复位状态 — [WaveformPlayer.tsx#L164-L167](file:///workspace/frontend/src/components/WaveformPlayer.tsx#L164-L167)
-- [ ] D-6 收紧拟声词替换规则 — [onomatopoeia.py#L48-L53](file:///workspace/backend/app/ai/providers/minimax/onomatopoeia.py#L48-L53)
+- [ ] D-6 ~~收紧拟声词替换规则~~ — **已失效**：豆包 2.0 单一化后 MiniMax TTS 被弃用，`minimax/onomatopoeia.py` 已随 provider 一并删除，无替换规则可收紧
 - [ ] D-7 静音帧精确化 + 豆包时长统一 — [mp3_util.py#L180](file:///workspace/backend/app/core/mp3_util.py#L180)
 - [ ] D-8 对白 anchor 从游标后搜索 — [chapter.py#L244-L248](file:///workspace/backend/app/services/chapter.py#L244-L248)
 
@@ -347,7 +349,7 @@
 - [ ] E-3 重新生成 `requirements.lock`
 - [ ] E-4 CI 门禁真正阻断 — [ci.yml](file:///workspace/.github/workflows/ci.yml)
 - [ ] E-5 README 据实校准 — [README.md](file:///workspace/README.md)
-- [ ] E-6 死代码清理（multicast / Stub / 无效开关）
+- [x] E-6 死代码清理（multicast / Stub / 无效开关） — 完成 2026-09-20（`_tts_default_instance` 除外，见 §6 E-6）
 
 ---
 
@@ -437,4 +439,36 @@
 
 **未做真机验证**
 C-1 / C-2 只做了类型检查与生产构建，**未在浏览器中实际点击验证**（新增豆包凭据表单、id 输入框连续输入不失焦）。
+
+### 批次 3.5 —— 豆包 TTS 2.0 单一化 + LLM 逐段语音指令（2026-09-20）
+
+> 本批不由 plan.md 的 Tier 清单驱动，而是根据实际账号能力（只开通「语音合成 2.0」99 音色 + 「声音复刻 2.0」）与用户诉求新增；其中「清理 multicast」对应本文件 §6 的 **E-6**。
+
+| 工作流 | 改动 | 测试 / 证据 |
+|---|---|---|
+| ① 弃用 MiniMax 语音合成 | `TTSRegistry` 移除 `minimax`、`_resolve_provider_name` / `get_tts` 兜底改 `doubao`；`get_tts_by_voice_id` 遇 `minimax:` 前缀**显式报迁移提示**（不静默兜底，否则 `minimax:xxx` 会被当豆包 speaker 发出去）；`TTS_PROVIDER` / `ACTIVE_TTS_PROVIDER` / `ACTIVE_TTS_MODEL` 默认改豆包；删除只服务 MiniMax 的 `TTS_API_KEY` / `TTS_BASE_URL` / `TTS_RPM_LIMIT`；删除 `providers/minimax/{tts.py,voices.json,onomatopoeia.py}`；MP3 工具（`concat_mp3_files`）迁至 `core/mp3_util.py`，静音占位采样率统一到 `DOUBAO_AUDIO_SAMPLE_RATE`；默认旁白 `minimax:male-qn-jingying` → `doubao:zh_male_qingcang_uranus_bigtts`（擎苍 2.0）；前端去掉 MiniMax 厂商 Tab 与类型 | 全量 `336 passed, 3 failed`（失败均为既有隔离缺陷）；`tsc --noEmit` ✅ |
+| ② 只保留豆包 2.0 音色 | `_BUILTIN_VOICES` 删除 1.0 区块 94 条（187 → 93，全部 `seed-tts-2.0`）；`_resolve_model_for_speaker` / `_resolve_resource_id_for_v3` 的**未知值兜底**、`list_voices` 默认 model、`build._voice_model_lookup` 全部改 2.0（对显式 1.0 入参仍如实映射，交由 `is_voice_usable_on_v3` 过滤）；远程音色同步 resource 收敛为 2.0/ICL 2.0；下线音色库「小模型免费」Tab | 全量 `329 passed, 2 failed`；`tsc --noEmit` ✅ |
+| ③ LLM 逐段语音指令 | 新增 `services/voice_instruction.py`（按章批量 6 章/次、并发 2、批级重试、防御式回填、clamp 512）；`ProjectDialogue.instruction` 新列 + 老库 ALTER；prepare 在 dialogues 与 voice_recs 之间新增 `instructions` stage（带 checkpoint）；`chapter.py` 逐段指令优先于角色级（子段共享）；`_calc_content_digest` 纳入逐段指令 | 新增 [test_voice_instruction_red.py](file:///workspace/backend/tests/test_voice_instruction_red.py) 10 用例 |
+| ④ 清理 multicast 残留（E-6） | 见 §6 E-6 | 全量 `328 passed, 2 failed`；`tsc --noEmit` ✅ |
+
+**回归结果（四轮后最终）**
+- 后端全量：`328 passed, 2 failed, 1 skipped`（跑前需 `rm -rf data/audio/_seg_cache`）
+- 2 个失败均为**既有**测试隔离缺陷（对应 E-1），四轮改动前后一致、非本批引入：
+  - `test_project_e2e.py::test_project_full_lifecycle`
+  - `test_project_prepare_voice_pool_red.py::test_prepare_passes_user_id_to_recommend`
+- 前端：`npx tsc --noEmit` ✅
+- 抖动预警：`test_review_fixes_red.py::test_retry_failed_inherits_provider_and_mode` 会因 `test_path_env_override_red.py` reload `core.config` 导致的**段缓存跨用例泄漏**而偶发失败（全量跑首次合成被缓存命中）。属 E-1 的同一根因，跑前清缓存即可复现「恰好 2 个失败」。
+
+**关键决策与依据**
+1. **MiniMax 只弃用 TTS，LLM 完整保留** —— MiniMax 同时提供 TTS 与 LLM，代码路径分离；角色识别/对白归属/音色推荐/润色仍走 `MiniMaxLLMProvider`。
+2. **1.0 音色物理删除而非隐藏** —— 账号未开通 1.0 资源，实测请求 `X-Api-Resource-Id: seed-tts-1.0` 返回 HTTP 403 + `code=45000030 "requested resource not granted"`（服务端把它解析成 `volc.service_type.10029`）；且 1.0 音色不支持语音指令。
+3. **语音指令不做「逐句都加」** —— prompt 明确允许平淡叙述型对白留空（日常应答、纯信息交代），每句硬加情绪指令反而使整体听感浮夸失真。
+4. **本轮只上语音指令，不做语音标签 CoT** —— 官方模型列表写明只有高表现力版 `seed-tts-2.0-expressive` 支持语音标签，且警告其「生成效果稳定性存在波动」；同时 HTTP 文档说 `model` 参数「仅当 speaker 为复刻音色时需指定，且指定后不支持 `context_texts`」——两处文档有张力，需真机验证后再定。
+
+**未做 / 已知缺口（如实记录）**
+- **未做真机验证**：本批全部改动只跑过单元/集成测试与类型检查，**未用真实豆包 Key 实际合成过一句**。两个必须真机确认的点：(a) 2.0 音色 + 逐段 `context_texts` 的实际听感与稳定性；(b) `model` / `use_tag_parser` 的字段语义（若要开语音标签）。
+- **存量数据迁移**：老项目的 `Build.narrator_voice_id` / `voice_assignments` 里可能是 `minimax:xxx` 或无前缀的 MiniMax 音色 id、`Build.tts_provider` 可能是 `minimax`。带前缀的会得到明确的迁移提示，**无前缀的老 id 会走到豆包侧换回一个上游 `speaker not found`**（未做「豆包音色表预检」这类额外守卫，避免误伤远程/自定义音色）。处理方式是：重新识别（会 `delete(ProjectCharacter)` 后按新推荐重写 `assigned_voice_id`）或手动改音色。
+- **逐段指令只能读不能改**：章节详情已透出（前端以「指令」标签展示），但没有「人工修正单条指令」的接口；改指令目前需重跑 prepare 或改库。
+- `models.py::TTS_RESOURCE_IDS` 仍列 1.0 资源 id（官方参考清单，仅供设置页展示、不参与合成）；选它不会生效（合成按音色表的 `model` 走）。
+
 
