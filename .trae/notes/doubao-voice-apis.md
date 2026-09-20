@@ -114,6 +114,12 @@ Body:
 > - **音频字段是 `data`，不是 `audio`** —— 文档响应示例即 `data`，本项目的 provider 曾误用 `audio`，导致成功响应也取不到音频。排查这类问题时不要凭 `audio_params` 的命名去猜响应字段。
 > - **成功码不止 `0`**：实测返回 `{"code": 20000000, "message": "OK", ...}`（HTTP 200、音频正常）。`20000000` 不在官方错误码表里，属该接口的 OK 码。文档对成功码的描述是「`code` 返回 0 表示成功」+「`message` 返回 OK 则表示合成成功」——以 `message=OK` 为准更稳。
 > - 一个响应里可能有**多个 chunk**（含只带 `code`/`message`/`usage`、没有音频的收尾 chunk），必须逐行解析后把各自的 `data` 拼接。
+> - **「成功但没合成出音频」是真实存在的失败形态**（2026-09-20 音色试听实测）：响应是
+>   `{"code": 20000000, "message": "OK", "data": ""}`，HTTP 200、无业务错误码、`data`
+>   字段存在但为空。踩中的场景是**中文文本 + 纯外语音色**：音色
+>   `en_female_stokie_uranus_bigtts`（Stokie，音色表声明语种只有「美式英语」）拿到中文
+>   试听文案时，上游就是这么回的。音色表只单向声明「中文音色亦具备英文能力」，反向没有
+>   —— 跨语种不通用。判断失败时不能只看 code/message，还要看**有没有真的收到音频**。
 
 **项目映射**：
 - `DOUBAO_TTS_BASE_URL` 当前实现的就是这个端点
@@ -456,6 +462,7 @@ POST /api/v3/tts/voice_design
 | 45000001 | `[Invalid argument] EmptyRequest` / `speaker not found` / `InvalidModel` / `InvalidDialect` | 必填字段缺失 / 音色 ID 不存在 / model 枚举错 / 方言枚举错 | 补字段、查音色库、改枚举 |
 | 45002000 | `TTS invalid speaker` | speaker 为空 | 必传 speaker ID |
 | 45002001 | `No readable text!` | 没有可读文本 | 检查 text |
+| 20000000 + `data` 为空 | `OK` | **成功码但没合成出音频**（2026-09-20 实测）。已知触发条件：文本语种与音色语种不匹配，如中文文本 + 纯外语音色（Stokie）。上游既不报错也不产音频 | 上游没有错误码可依据，只能靠客户端自己判：收到成功 chunk 但**一个音频分片都没有**时必须抛错，报错带上 `data` 形态与音色声明语种（见 §3 实测补充） |
 | 55000000 | 服务端内部 error / `connect downstream service timeout` / `synthesis processing timeout` / `client send timeout` / `resource ID is mismatched with speaker related resource` | 网关超时 / 合成超时 / 客户端空闲超时 / resourceId 与 speaker 不匹配 | 重试 / 检查服务是否开通 / 音色是否过期 / 拼写 |
 
 ### 12.1.1 网关级 4xx（不在上方错误码表里，实测补充）

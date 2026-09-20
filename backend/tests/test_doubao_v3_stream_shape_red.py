@@ -25,6 +25,9 @@
   T-S7  先收到音频分片、中途才报错 → 仍必须抛错（不得返回被截断的音频）
   T-S8  未知成功码 + message=OK → 按文档口径仍判成功
   T-S9  未知码 + 非 OK message → 判失败（放宽判定不能吞掉真错误）
+  T-S10 data 字段存在但为空 → 报错必须区分「字段为空」与「字段不存在」
+  T-S11 中文文本 + 纯外语音色 → 报错要指出语种不匹配（2026-09-20 试听实测）
+  T-S12 文本语种与音色匹配时不加语种提示（避免误导归因）
 """
 from __future__ import annotations
 
@@ -253,3 +256,68 @@ async def test_ts9_unknown_code_with_non_ok_message_raises(monkeypatch):
         await p.synthesize_to_bytes("你好", "doubao:zh_female_vv_uranus_bigtts")
 
     assert ei.value.code == 40000001
+
+
+# ---------------------------------------------------------------------
+# T-S10：data 字段存在但为空 → 报错要能区分「空」与「字段不存在」
+#
+# 2026-09-20 线上形态：字段列表里明明有 data，报错却说「既无 data 也无 audio
+# 字段」，日志自相矛盾、无法定位。空音频和字段缺失必须分开说。
+# ---------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_ts10_empty_data_field_reported_as_empty_not_missing(monkeypatch):
+    _install_fake_stream(monkeypatch, [
+        {"code": 20000000, "message": "OK", "data": ""},
+    ])
+    p = _make_provider(monkeypatch)
+
+    with pytest.raises(DoubaoTTSResponseV3Error) as ei:
+        await p.synthesize_to_bytes("你好", "doubao:zh_female_vv_uranus_bigtts")
+
+    s = str(ei.value)
+    assert "data 形态=type=str len=0" in s, f"要说明 data 存在但为空：{s}"
+    assert "JSON 行数=1" in s
+
+
+# ---------------------------------------------------------------------
+# T-S11：中文文本 + 纯外语音色 → 归因到语种不匹配
+#
+# 实测：Stokie（en_female_stokie_uranus_bigtts，音色表声明语种 ["en"]）读中文
+# 试听文案时，上游返回 code=20000000 / message=OK 且 data 为空。这类失败既没有
+# HTTP 错也没有业务错误码，报错必须自己把语种线索带出来。
+# ---------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_ts11_cjk_text_with_english_voice_hints_language_mismatch(monkeypatch):
+    _install_fake_stream(monkeypatch, [
+        {"code": 20000000, "message": "OK", "data": ""},
+    ])
+    p = _make_provider(monkeypatch)
+
+    with pytest.raises(DoubaoTTSResponseV3Error) as ei:
+        await p.synthesize_to_bytes(
+            "夜色渐深，风穿过巷口，远处传来零星的犬吠声。",
+            "doubao:en_female_stokie_uranus_bigtts",
+        )
+
+    s = str(ei.value)
+    assert "疑似语种不匹配" in s, f"应指出语种不匹配：{s}"
+    assert "en_female_stokie_uranus_bigtts" in s
+
+
+# ---------------------------------------------------------------------
+# T-S12：语种匹配时不加语种提示（空音频还有别的原因，不能一律归咎语种）
+# ---------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_ts12_matching_language_gets_no_language_hint(monkeypatch):
+    _install_fake_stream(monkeypatch, [
+        {"code": 20000000, "message": "OK", "data": ""},
+    ])
+    p = _make_provider(monkeypatch)
+
+    with pytest.raises(DoubaoTTSResponseV3Error) as ei:
+        await p.synthesize_to_bytes(
+            "The night grew deeper, and a cold wind slipped through the alley.",
+            "doubao:en_female_stokie_uranus_bigtts",
+        )
+
+    assert "疑似语种不匹配" not in str(ei.value)

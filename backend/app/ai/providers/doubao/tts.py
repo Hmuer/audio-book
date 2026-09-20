@@ -1258,8 +1258,9 @@ def _v3_chunk_is_success(obj: dict) -> bool:
     为准、code 白名单为辅**，任一命中即视为成功 —— 我们已经在「成功码只有 0」
     这个假设上错过一次，不要再赌第二个码。
 
-    误判为成功的代价可控：真正的失败响应没有 `data` 字段，随后会命中
-    「无音频分片」检查并抛出带字段名线索的错误，不会静默产出坏音频。
+    误判为成功的代价可控：真正的失败响应拿到最后也是**没有音频**（没有 `data`
+    字段，或 `data` 为空 —— 后者实测存在，见 `_v3_empty_audio_hint`），随后会命中
+    「无音频分片」检查并抛出带字段名 / 形态线索的错误，不会静默产出坏音频。
     """
     if str(obj.get("message") or "").strip().upper() == "OK":
         return True
@@ -1273,6 +1274,44 @@ def _v3_chunk_is_success(obj: dict) -> bool:
         return False
 
 
+def _text_is_mostly_cjk(text: str) -> bool:
+    """文本是否以中文（CJK 表意字）为主 —— 用于空音频的归因提示。"""
+    chars = [c for c in text if not c.isspace()]
+    if not chars:
+        return False
+    cjk = sum(1 for c in chars if "\u4e00" <= c <= "\u9fff")
+    return cjk * 2 >= len(chars)
+
+
+def _v3_empty_audio_hint(payload: dict[str, Any]) -> str:
+    """「成功码但没合成出音频」的归因提示。
+
+    实测（2026-09-20，音色试听）：把**中文文本**发给**纯外语音色**（Stokie，
+    `en_female_stokie_uranus_bigtts`，音色表声明语种 `["en"]`）时，上游返回
+    `code=20000000 / message=OK` 且 `data` 为空 —— 既不是 HTTP 失败也不是业务
+    错误码，只看「无音频分片」根本定位不到，所以这里把「音色声明的语种」与
+    「文本语种」一起带出来。音色表里中文音色注明「亦具备英文能力」，英文音色
+    没有反向声明，跨语种并不通用。
+    """
+    req = payload.get("req_params") if isinstance(payload, dict) else None
+    if not isinstance(req, dict):
+        return ""
+    text = str(req.get("text") or "")
+    speaker = _strip_voice_id_for_api_v3(str(req.get("speaker") or ""))
+    if not text or not speaker or not _text_is_mostly_cjk(text):
+        return ""
+    for v in _BUILTIN_VOICES:
+        if v["id"] != speaker:
+            continue
+        langs = [str(x).lower() for x in (v.get("languages") or [])]
+        if langs and "zh" not in langs:
+            return (
+                f"；疑似语种不匹配：文本以中文为主，而音色 {speaker} 声明的语种是 "
+                f"{langs}，纯外语音色读中文时上游会返回「成功但无音频」。"
+                "请改用支持中文的音色，或把文本换成该音色对应的语种"
+            )
+        return ""
+    return ""
 
 
 class DoubaoTTSResponseV3Error(RuntimeError):
@@ -1661,6 +1700,14 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                 # 诊断用：记下实际收到过哪些字段名。协议字段名一旦猜错，
                 # 「无音频分片」这种报错本身不提供任何线索，只能靠这里。
                 seen_keys: list[str] = []
+                # 诊断用：data/audio 字段的形态，以及首个 base64 解码失败原因。
+                # 必须能区分三种情况 —— ①没有 data/audio 字段 ②有但为空
+                # ③有内容但解不出音频。旧报错把三者混说成「既无 data 也无 audio
+                # 字段」，于是「字段明明有 data」的日志看起来自相矛盾
+                # （2026-09-20 英文音色试听即此形态）。
+                data_shape: str | None = None
+                decode_err = ""
+                json_lines = 0
                 async for line in resp.aiter_lines():
                     line = (line or "").strip()
                     if not line:
@@ -1672,9 +1719,19 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                         continue
                     if not isinstance(obj, dict):
                         continue
+                    json_lines += 1
                     for k in obj:
                         if k not in seen_keys and len(seen_keys) < 12:
                             seen_keys.append(k)
+                    if data_shape is None and ("data" in obj or "audio" in obj):
+                        # 直接取原值，不要 `or` 串：`data: ""` 会被 `or` 吃掉，
+                        # 形态就变成 NoneType，"存在但为空"与"字段不存在"又混了
+                        val = obj["data"] if "data" in obj else obj["audio"]
+                        size = (
+                            len(val) if isinstance(val, (str, bytes, list, dict))
+                            else "n/a"
+                        )
+                        data_shape = f"type={type(val).__name__} len={size}"
                     # 失败 chunk：成功判定见 _v3_chunk_is_success（message=OK 或
                     # code 命中白名单；0 与 20000000 都表示 OK）
                     if not _v3_chunk_is_success(obj):
@@ -1698,13 +1755,20 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                     if audio_b64:
                         try:
                             chunks.append(base64.b64decode(audio_b64, validate=False))
-                        except Exception:
-                            # 单段解码失败不致命，继续收后续 chunk
+                        except Exception as e:
+                            # 单段解码失败不致命，继续收后续 chunk；但要留痕，
+                            # 「字段有值但解不出音频」与「字段本身就是空的」在日志里
+                            # 必须能分开看
+                            if not decode_err:
+                                decode_err = type(e).__name__
                             continue
                 if not chunks:
                     raise DoubaoTTSResponseV3Error(
-                        "v3 TTS 响应无音频分片（成功码但既无 data 也无 audio 字段）"
-                        f"；实际收到的字段={seen_keys or '(无 JSON 行)'}",
+                        "v3 TTS 响应无音频分片（成功码但音频为空）："
+                        f"JSON 行数={json_lines} 字段={seen_keys or '(无 JSON 行)'} "
+                        f"data 形态={data_shape or '(未出现 data/audio 字段)'}"
+                        + (f" 解码失败={decode_err}" if decode_err else "")
+                        + _v3_empty_audio_hint(payload),
                         code=-1,
                         logid=logid,
                     )

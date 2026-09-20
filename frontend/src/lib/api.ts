@@ -173,6 +173,9 @@ export interface Voice {
   scene?: string[];
   /** doubao 音色字段：方言（如 sichuan） */
   dialect?: string;
+  /** doubao 音色字段：支持语种（如 ["zh"] / ["en"] / ["zh","en"]）。
+   *  试听文案要按它选语种 —— 纯外语音色读中文时上游返回「成功但无音频」。 */
+  languages?: string[];
   /** doubao/icl 音色字段：中文标签 */
   zh_tags?: string[];
   /** icl 音色字段：来源训练任务 id */

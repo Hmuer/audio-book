@@ -26,7 +26,18 @@ import {
  * 该 Tab 必然为空，保留即成死入口。
  */
 
-const PREVIEW_TEXT = '夜色渐深，风穿过巷口，远处传来零星的犬吠声。';
+const PREVIEW_TEXT_ZH = '夜色渐深，风穿过巷口，远处传来零星的犬吠声。';
+// 纯外语音色（如 Stokie / Dacey / Tim，音色表声明语种只有 en）拿到中文文本时，
+// 豆包 v3 会返回 code=20000000 / message=OK 但音频为空 → 试听直接 500。
+// 所以试听文案必须跟着音色语种走。
+const PREVIEW_TEXT_EN = 'The night grew deeper, and a cold wind slipped through the alley.';
+
+function previewTextFor(voice: Voice): string {
+  const langs = (voice.languages ?? []).map(l => String(l).toLowerCase());
+  // 语种字段缺失（老数据 / 自定义音色）按中文处理，与历史行为一致
+  if (langs.length === 0 || langs.includes('zh')) return PREVIEW_TEXT_ZH;
+  return PREVIEW_TEXT_EN;
+}
 
 function avatarBg(gender: string, id: string): string {
   const g: GenderKey = normalizeGender({ gender } as Voice);
@@ -181,7 +192,8 @@ function LibraryTab({ voices }: { voices: Voice[] }) {
     setPlayingId(null);
   };
 
-  const preview = async (voiceId: string) => {
+  const preview = async (voice: Voice) => {
+    const voiceId = voice.id;
     if (playingRef.current === voiceId) {
       stop();
       return;
@@ -190,7 +202,7 @@ function LibraryTab({ voices }: { voices: Voice[] }) {
     setErr(null);
     setLoadingId(voiceId);
     try {
-      const r = await api.preview(PREVIEW_TEXT, voiceId, 1.0);
+      const r = await api.preview(previewTextFor(voice), voiceId, 1.0);
       // /media 挂载点要求鉴权，而 <audio src> 无法携带请求头 → 先取字节转 Blob URL，
       // 否则直接塞 /media/xxx.mp3 会 401（试听全线播不出）
       const objUrl = await fetchMediaObjectUrl(r.audio_url);
@@ -380,7 +392,7 @@ function LibraryTab({ voices }: { voices: Voice[] }) {
                 </span>
               </div>
               <button
-                onClick={() => preview(v.id)}
+                onClick={() => preview(v)}
                 disabled={lv}
                 title={pv ? '停止试听' : '试听'}
                 className={`shrink-0 grid place-items-center rounded-md border transition-all
