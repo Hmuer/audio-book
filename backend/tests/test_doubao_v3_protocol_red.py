@@ -3,7 +3,8 @@
 覆盖范围（按 P1-1 checklist）：
   T-V3-1  Payload 嵌套结构（user/req_params/audio_params）正确
   T-V3-2  鉴权头：新版 X-Api-Key；旧版（纯数字）走 X-Api-App-Id + X-Api-Access-Key
-  T-V3-3  X-Api-Resource-Id 按 model 选（seed-tts-1.0 / seed-tts-2.0 / seed-icl-2.0）
+  T-V3-3  X-Api-Resource-Id 按 model 选（seed-tts-2.0 / seed-icl-2.0；
+          显式 1.0 入参仍如实映射，交由 is_voice_usable_on_v3 过滤）
   T-V3-4  HTTP chunked 响应：多段 base64 audio 拼接 + duration_ms 估算
   T-V3-5  业务错（code != 0）抛 DoubaoTTSResponseV3Error + 不重试
   T-V3-6  网络错（429 / 5xx）走重试 + 达 MAX_RETRIES 后抛错
@@ -43,7 +44,7 @@ def test_v3_payload_structure_has_nested_req_params():
     p = DoubaoTTSProviderV3()
     payload = p._build_v3_payload(
         "今天天气真好",
-        "doubao:BV001_streaming",
+        "doubao:zh_female_vv_uranus_bigtts",
         emotion="calm",
         speed=1.0,
     )
@@ -51,7 +52,7 @@ def test_v3_payload_structure_has_nested_req_params():
     assert "req_params" in payload
     rp = payload["req_params"]
     assert rp["text"] == "今天天气真好"
-    assert rp["speaker"] == "BV001_streaming"
+    assert rp["speaker"] == "zh_female_vv_uranus_bigtts"
     ap = rp["audio_params"]
     assert ap["format"] == "mp3"
     assert ap["sample_rate"] == p.DEFAULT_SAMPLE_RATE
@@ -78,8 +79,8 @@ def test_v3_payload_speed_mapping_to_speech_rate():
     assert p._map_speed_to_speech_rate(-1.0) == 0
     # clamp 极大值 → 100
     assert p._map_speed_to_speech_rate(99.0) == 100
-    # 非 emotion 默认值时塞进 audio_params
-    p2 = p._build_v3_payload("x", "doubao:BV001_streaming", emotion="happy")
+    # 非 emotion 默认值时塞进 audio_params（需音色 supports_emotion=True）
+    p2 = p._build_v3_payload("x", "doubao:zh_female_vv_uranus_bigtts", emotion="happy")
     assert p2["req_params"]["audio_params"].get("emotion") == "happy"
 
 
@@ -92,12 +93,12 @@ def test_v3_auth_headers_new_console_x_api_key():
     p = DoubaoTTSProviderV3()
     # 通过属性 setter 注入 key
     p._resolve_api_key = lambda: "abc123-real-api-key"
-    headers = p._auth_headers(speaker_id="BV001_streaming")
+    headers = p._auth_headers(speaker_id="zh_female_vv_uranus_bigtts")
     assert headers["X-Api-Key"] == "abc123-real-api-key"
     assert "X-Api-App-Id" not in headers
     assert "X-Api-Access-Key" not in headers
     assert headers["X-Api-App-Key"] == "aGjiRDfUWi"  # 官方固定值
-    assert headers["X-Api-Resource-Id"] == "seed-tts-1.0"  # BV001 默认 1.0
+    assert headers["X-Api-Resource-Id"] == "seed-tts-2.0"  # 2.0 音色
     assert "X-Api-Request-Id" in headers
     assert headers["X-Api-Request-Id"].startswith("novel-")
 
@@ -107,7 +108,7 @@ def test_v3_auth_headers_legacy_console_app_id_only():
 
     p = DoubaoTTSProviderV3()
     p._resolve_api_key = lambda: "1234567890"  # 纯数字 APP_ID
-    headers = p._auth_headers(speaker_id="BV001_streaming")
+    headers = p._auth_headers(speaker_id="zh_female_vv_uranus_bigtts")
     assert headers["X-Api-App-Id"] == "1234567890"
     assert headers["X-Api-Access-Key"] == "1234567890"  # 同 key 兜底
     assert "X-Api-Key" not in headers
@@ -119,7 +120,8 @@ def test_v3_resource_id_per_model():
         _resolve_resource_id_for_v3,
     )
 
-    # 1.0 音色（BV 系列默认）
+    # 显式 1.0 入参仍如实映射（远程/自定义音色可能声明），再由
+    # is_voice_usable_on_v3 过滤掉；不要静默改写成 2.0
     assert _resolve_resource_id_for_v3("seed-tts-1.0") == "seed-tts-1.0"
     assert _resolve_resource_id_for_v3("seed-tts-1.0-concurr") == "seed-tts-1.0"
     # 2.0 音色
@@ -127,19 +129,21 @@ def test_v3_resource_id_per_model():
     # ICL 系列
     assert _resolve_resource_id_for_v3("seed-icl-2.0") == "seed-icl-2.0"
     assert _resolve_resource_id_for_v3("seed-icl-1.0") == "seed-icl-1.0"
-    # 未知 → 兜底 1.0
-    assert _resolve_resource_id_for_v3("") == "seed-tts-1.0"
-    assert _resolve_resource_id_for_v3("garbage") == "seed-tts-1.0"
+    # 未知 → 兜底 2.0（1.0 已整表下线）
+    assert _resolve_resource_id_for_v3("") == "seed-tts-2.0"
+    assert _resolve_resource_id_for_v3("garbage") == "seed-tts-2.0"
 
     # _resolve_model_for_speaker 按 speaker 决定 model
     p = DoubaoTTSProviderV3()
-    # BV001_streaming 在 _BUILTIN_VOICES 里 model=seed-tts-1.0
-    assert p._resolve_model_for_speaker("BV001_streaming") == "seed-tts-1.0"
+    # 2.0 内置 speaker 在 _BUILTIN_VOICES 里 model=seed-tts-2.0
+    assert p._resolve_model_for_speaker("zh_female_vv_uranus_bigtts") == "seed-tts-2.0"
+    # 1.0 内置音色已删除 → 查不到，走兜底 2.0
+    assert p._resolve_model_for_speaker("BV001_streaming") == "seed-tts-2.0"
     # ICL 复刻 speaker_id
     assert p._resolve_model_for_speaker("S_abc123") == "seed-icl-2.0"
     assert p._resolve_model_for_speaker("icl_xyz") == "seed-icl-2.0"
-    # 未知 speaker → 兜底 seed-tts-1.0
-    assert p._resolve_model_for_speaker("not_a_real_voice") == "seed-tts-1.0"
+    # 未知 speaker → 兜底 seed-tts-2.0
+    assert p._resolve_model_for_speaker("not_a_real_voice") == "seed-tts-2.0"
 
 
 # ---------------------------------------------------------------------
@@ -249,7 +253,7 @@ async def test_v3_business_error_raises_and_does_not_retry(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: _FakeClientCtx())
 
     with pytest.raises(DoubaoTTSResponseV3Error) as ei:
-        await p.synthesize_to_bytes("hi", "doubao:BV001_streaming")
+        await p.synthesize_to_bytes("hi", "doubao:zh_female_vv_uranus_bigtts")
     assert ei.value.code == 401
     assert "鉴权失败" in str(ei.value)
 
@@ -313,7 +317,7 @@ async def test_a6_v3_error_midstream_must_not_return_truncated_audio(monkeypatch
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: _FakeClientCtx())
 
     with pytest.raises(DoubaoTTSResponseV3Error) as ei:
-        await p.synthesize_to_bytes("hi", "doubao:BV001_streaming")
+        await p.synthesize_to_bytes("hi", "doubao:zh_female_vv_uranus_bigtts")
     assert ei.value.code == 3001, (
         "中途出错必须抛出错误码，而不是返回已收到的音频分片"
     )
@@ -398,7 +402,7 @@ async def test_v3_network_error_5xx_retries_then_fails(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: _FakeClientCtx())
 
     with pytest.raises(RuntimeError, match="豆包 TTS v3 合成失败"):
-        await p.synthesize_to_bytes("hi", "doubao:BV001_streaming")
+        await p.synthesize_to_bytes("hi", "doubao:zh_female_vv_uranus_bigtts")
     # 5xx fastfail：MAX_5XX_RETRIES=2 → 调 2 次（首次 + 1 次重试），不是 MAX_RETRIES=5。
     assert call_count["n"] == 2, (
         f"5xx fastfail 应调 MAX_5XX_RETRIES(2) 次，实际 {call_count['n']} 次"
@@ -453,7 +457,7 @@ async def test_v3_list_voices_reuses_builtin_with_protocol_marker():
         assert v["provider"] == "doubao"
         assert v["protocol"] == "v3"
         assert v["id"].startswith("doubao:")
-    # BV001_streaming 必在
-    bv001 = next((v for v in voices if v["id"] == "doubao:BV001_streaming"), None)
-    assert bv001 is not None, "BV001_streaming 必须在 v3 列表里"
-    assert bv001["model"] == "seed-tts-1.0"
+    # Vivi 2.0 必在（内置 2.0 音色）
+    vv = next((v for v in voices if v["id"] == "doubao:zh_female_vv_uranus_bigtts"), None)
+    assert vv is not None, "zh_female_vv_uranus_bigtts 必须在 v3 列表里"
+    assert vv["model"] == "seed-tts-2.0"

@@ -1,10 +1,11 @@
 """Task 3 RED tests — DoubaoTTSProvider 核心行为。
 
 T-DV1 list_voices() 合并：
-    a) 官方内置 ≥14 条音色（豆包官方音色库 BV 系列 + 历史 zh_* 兼容 ID，
+    a) 官方内置 ≥14 条音色（豆包官方 2.0 音色库 uranus 系列，
        每条带 name/zh_tags/gender/age/scene/dialect 等属性，且 provider=doubao），
     b) 本地 voices_doubao.json（若存在）加载的自定义条目，
     c) icl: < 官方音色，ID 前缀为 "doubao:"。
+    注：1.0 小模型 BV* 音色（seed-tts-1.0）已整表删除，不再内置。
 T-DV2 synthesize_to_bytes 走 HTTP API，voice_id 必须剥离前缀（icl:* 原样保留）。
 T-DV3 指令参数：instruction_text / speaker_style / emotion / speed 正确加入请求体。
 T-DV4 重试策略：遇到 429 至少重试一次，指数退避；遇到 5xx 重试 N 次，最后抛 RuntimeError。
@@ -33,7 +34,7 @@ def test_doubao_list_voices_has_builtin_14_profiles():
 
     dp = DoubaoTTSProvider()
     voices = dp._builtin_voices_sync()
-    # 豆包官方音色库 ≥ 14 条（实际内置约 100+ 条 BV 系列 + zh_* 兼容）
+    # 豆包官方 2.0 音色库 ≥ 14 条（实际内置 90+ 条 uranus 系列）
     assert len(voices) >= 14
     # 关键字段必须齐全
     for v in voices:
@@ -49,39 +50,26 @@ def test_doubao_list_voices_has_builtin_14_profiles():
         # dialect 可以为空字符串但必须存在
         assert "dialect" in v
 
-    # 核心声线必须覆盖：基于官方音色表（97465 + 1257544）的真实 voice_type。
-    # 注意：原 v1 风格的 zh_*_xxx 自创 id 全部已移除，BVxxx_stream 全部已修正为
-    # 官方 BVxxx_streaming 拼写。
+    # 核心声线必须覆盖：基于官方 2.0 音色表（1257544）的真实 voice_type。
+    # 注意：1.0 小模型 BV*_streaming id 已整表删除，不在内置表内。
     sample_ids = [
-        # 小模型通用（官方 BV 拼写：_streaming 后缀）
-        "doubao:BV001_streaming",          # 通用女声
-        "doubao:BV002_streaming",          # 通用男声
-        "doubao:BV700_streaming",          # 灿灿（多情感 + 多语种）
-        "doubao:BV701_streaming",          # 擎苍（旁白 + 多情感）
-        # 小模型有声阅读
-        "doubao:BV102_streaming",          # 儒雅青年
-        "doubao:BV107_streaming",          # 霸气青叔
-        "doubao:BV119_streaming",          # 通用赘婿
-        # 小模型方言
-        "doubao:BV019_streaming",          # 重庆小伙（四川）
-        "doubao:BV021_streaming",          # 东北老铁（东北）
-        "doubao:BV026_streaming",          # 港剧男神（粤语）
-        # 小模型多语种
-        "doubao:BV503_streaming",          # 活力女声-Ariana（美式英语）
-        "doubao:BV040_streaming",          # 亲切女声-Anna（英式英语）
-        "doubao:BV421_streaming",          # 天才少女（8 国）
-        # 小模型特色 / 教育 / 智能助手
-        "doubao:BV034_streaming",          # 知性姐姐-双语（教育）
-        "doubao:BV007_streaming",          # 亲切女声（智能助手）
-        "doubao:BV051_streaming",          # 奶气萌娃（特色）
-        # 大模型 2.0 通用
+        # 大模型 2.0 通用 / S2S
         "doubao:zh_female_vv_uranus_bigtts",     # Vivi 2.0（S2S 多语种多方言）
-        "doubao:zh_female_cancan_uranus_bigtts", # 知性灿灿 2.0
+        "doubao:zh_female_xiaohe_uranus_bigtts", # 小何 2.0
+        "doubao:zh_male_taocheng_uranus_bigtts", # 小天 2.0
         "doubao:zh_male_qingcang_uranus_bigtts", # 擎苍 2.0
-        # 大模型 2.0 角色 / 教育 / 客服
-        "doubao:zh_female_peiqi_uranus_bigtts",   # 佩奇猪 2.0
-        "doubao:zh_female_mizai_uranus_bigtts",   # 黑猫侦探社咪仔 2.0
-        "doubao:zh_female_kefunvsheng_uranus_bigtts", # 暖阳女声 2.0
+        # 大模型 2.0 角色扮演 / 视频配音
+        "doubao:zh_female_cancan_uranus_bigtts",      # 知性灿灿 2.0
+        "doubao:zh_female_sajiaoxuemei_uranus_bigtts", # 撒娇学妹 2.0
+        "doubao:zh_female_peiqi_uranus_bigtts",       # 佩奇猪 2.0
+        "doubao:zh_male_sunwukong_uranus_bigtts",     # 猴哥 2.0
+        # 大模型 2.0 教育 / 客服 / 有声阅读
+        "doubao:zh_female_yingyujiaoxue_uranus_bigtts",  # Tina 老师 2.0（双语）
+        "doubao:zh_female_kefunvsheng_uranus_bigtts",    # 暖阳女声 2.0
+        "doubao:zh_female_xiaoxue_uranus_bigtts",        # 儿童绘本 2.0
+        # 大模型 2.0 外语
+        "doubao:en_male_tim_uranus_bigtts",      # Tim（英语）
+        "doubao:en_female_dacey_uranus_bigtts",  # Dacey（英语）
     ]
     ids = [v["id"] for v in voices]
     for sid in sample_ids:

@@ -10,7 +10,8 @@
   T-ICL-V1-2  v1 provider 遇到普通 BV/zh_ 音色：cluster 仍为 volcano_tts
   T-ICL-V1-3  v1 provider 不会自动跳过 ICL 音色（需要显式提示 / 兜底）
   T-ICL-V1-4  v3 provider 遇到 S_/icl_ 音色：X-Api-Resource-Id = seed-icl-2.0
-  T-ICL-V1-5  v3 provider 遇到普通 BV 音色：X-Api-Resource-Id = seed-tts-1.0
+  T-ICL-V1-5  v3 provider 遇到普通音色：X-Api-Resource-Id = seed-tts-2.0
+              （显式 1.0 入参仍如实映射，不静默改写）
 """
 from __future__ import annotations
 
@@ -65,7 +66,7 @@ def test_v1_normal_speaker_uses_volcano_tts_cluster():
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider
 
     p = DoubaoTTSProvider()
-    payload = p._build_payload("测试", "BV001_streaming", emotion="calm", speed=1.0)
+    payload = p._build_payload("测试", "zh_female_vv_uranus_bigtts", emotion="calm", speed=1.0)
     assert payload["app"]["cluster"] == "volcano_tts"
 
 
@@ -141,22 +142,26 @@ def test_v3_icl_speaker_uses_seed_icl_2_resource_id():
 
 
 # ---------------------------------------------------------------------
-# T-ICL-V1-5：v3 普通音色 → X-Api-Resource-Id = seed-tts-1.0 / seed-tts-2.0
+# T-ICL-V1-5：v3 普通音色 → X-Api-Resource-Id = seed-tts-2.0
 # ---------------------------------------------------------------------
-def test_v3_normal_speaker_uses_seed_tts_1_resource_id():
-    """v3 provider 收到 BVxxx_streaming 音色，resource_id 仍为 seed-tts-1.0。"""
+def test_v3_normal_speaker_uses_seed_tts_2_resource_id():
+    """v3 provider 收到 2.0 音色，resource_id 为 seed-tts-2.0。"""
     from backend.app.ai.providers.doubao.tts import _resolve_resource_id_for_v3
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProviderV3
 
     v3 = DoubaoTTSProviderV3()
-    model = v3._resolve_model_for_speaker("BV001_streaming")
-    rid = _resolve_resource_id_for_v3(model)
-    assert rid == "seed-tts-1.0"
-
-    # zh_female_vv_uranus_bigtts 在内置表里标的是 seed-tts-2.0
+    # 内置 2.0 音色 → seed-tts-2.0
     model = v3._resolve_model_for_speaker("zh_female_vv_uranus_bigtts")
     rid = _resolve_resource_id_for_v3(model)
     assert rid == "seed-tts-2.0"
+
+    # 未收录 speaker（如已删除的 1.0 BV 音色）→ 兜底 seed-tts-2.0
+    model = v3._resolve_model_for_speaker("BV001_streaming")
+    rid = _resolve_resource_id_for_v3(model)
+    assert rid == "seed-tts-2.0"
+
+    # 显式声明 1.0 的入参（远程/自定义音色）仍如实映射，交由上层过滤
+    assert _resolve_resource_id_for_v3("seed-tts-1.0") == "seed-tts-1.0"
 
 
 # ---------------------------------------------------------------------

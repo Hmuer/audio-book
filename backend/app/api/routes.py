@@ -381,7 +381,7 @@ async def api_list_voices(
     """列出可用音色（当前用户视角：含其可用 ICL 克隆音色）。
 
     - tts_provider: 限定厂商（doubao / icl；MiniMax TTS 已弃用）
-    - free_only=True: 只返回豆包小模型 (seed-tts-1.0) 且 free=True 的音色（P2-5）
+    - free_only=True: 只返回豆包 (provider=doubao) 且 free=True 的音色（P2-5）
     """
     user_id = getattr(current, "id", None)
     return await list_voices(tts_provider, icl_user_id=user_id, free_only=free_only)
@@ -397,7 +397,7 @@ async def list_voices(
     - tts_provider 未给：返回 doubao 音色（MiniMax TTS 已弃用）。
     - tts_provider ∈ {doubao, icl}：仅返回对应厂商音色。
     - icl_user_id 给出时：附带该用户已训练可用的 ICL 克隆音色（icl:<clone_id>）。
-    - free_only=True：只保留豆包小模型 (model=seed-tts-1.0) 且 free=True 的音色（P2-5）。
+    - free_only=True：只保留豆包 (provider=doubao) 且 free=True 的音色（P2-5）。
     每条音色都带有 provider 字段，前端可据此分组。
     """
     import asyncio as _as_nc
@@ -449,14 +449,14 @@ async def list_voices(
 
     final = list(merged.values())
 
-    # P2-5：free_only 过滤。只保留豆包小模型 (model=seed-tts-1.0) 且 free=True 的音色。
-    # ICL 复刻音色不在此范畴（不属于官方免费列表）。
+    # P2-5：free_only 过滤。只保留豆包 (provider=doubao) 且 free=True 的音色。
+    # 注：1.0 小模型免费白名单已随音色表下线，这里不再约束 model（远程/自定义
+    # 音色仍可能声明 free=True）；ICL 复刻音色不在此范畴。
     if free_only:
         final = [
             v for v in final
             if v.get("provider") == "doubao"
             and v.get("free") is True
-            and v.get("model") == "seed-tts-1.0"
         ]
 
     return {"voices": final, "count": len(final)}

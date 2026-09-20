@@ -193,17 +193,17 @@ async def _post_json_for_v1(
 
 
 # =====================================================================
-# 豆包官方内置音色清单（小模型 BV 系列 + 大模型 2.0 uranus 系列）。
+# 豆包官方内置音色清单（大模型 2.0 uranus 系列）。
 # 数据来源（按官方文档核对）：
-#   - 小模型音色表：https://docs.volcengine.com/docs/6561/97465?lang=zh
 #   - 大模型 2.0 音色表：https://docs.volcengine.com/docs/6561/1257544?lang=zh
 #
 # 命名空间约定（调用方通过 _strip_voice_id_for_api 剥前缀后直接传给豆包 API）：
-#   - doubao:BVxxx_streaming      → 小模型（seed-tts-1.0，volcengine 文档 97465）
-#   - doubao:BVxxx_V2_streaming   → 小模型 2.0 版（seed-tts-1.0）
-#   - doubao:BVxxx_24k_streaming  → 小模型 V5 24k 高采样率版（seed-tts-1.0）
 #   - doubao:zh_*_uranus_bigtts   → 大模型 2.0 通用 / 角色配音（seed-tts-2.0）
 #   - doubao:ICL_uranus_*_tob     → 大模型 2.0 角色 ICL 系（seed-tts-2.0）
+#
+# 说明：1.0 小模型音色（seed-tts-1.0，官方文档 97465 的 BV* 系列）已整表删除 ——
+#   该账号未开通 1.0 资源，v3 端点请求 1.0 会 403 "resource not granted"；
+#   且 1.0 音色不支持语音指令与标签。音色体系只保留 2.0 + 声音复刻（ICL 2.0）。
 #
 # 每条音色提供：
 #   - id          官方真实 voice_type（直接透传给豆包 API）
@@ -217,510 +217,17 @@ async def _post_json_for_v1(
 #   - supports_emotion    是否支持 emotion 多情感（基于官方「支持情感/风格类型」列）
 #   - supports_subtitle   是否支持 enable_subtitle 字级别时间戳（基于官方「时间戳 ✔」列）
 #   - supports_language   是否支持 language 多语种参数（基于官方「支持语种」列）
-#   - free        是否免费音色（基于 FAQ「21 款免费音色」列表）
-#   - model       推荐使用的豆包模型（"seed-tts-1.0" / "seed-tts-2.0"）
+#   - free        是否免费音色（内置 2.0 音色均为 False；远程/自定义音色可自行声明）
+#   - model       推荐使用的豆包模型（内置条目恒为 "seed-tts-2.0"；复刻音色走 "seed-icl-2.0"）
 #   - provider    固定为 "doubao"（list_voices 输出时再补）
 #
 # 维护要点：
 #   - 豆包会不定期新增音色；如有新 ID 需求，可在 voices_doubao.json 里追加覆盖
 #     （内置条目作为 id 默认存在时，自定义条目按 id 覆盖）。
-#   - 自创/猜测的 voice_type 全部已删除：BV030~BV613、zh_female_xxx、zh_male_xxx
-#     等历史命名全部移除，仅保留官方文档里真实存在的 id。
+#   - 内置表只收录官方 2.0 文档里真实存在的 *_uranus_bigtts / ICL_uranus_*_tob id；
+#     1.0 小模型 BV* 命名（*_streaming / *_V2_streaming / *_24k_streaming）已整表移除。
 # =====================================================================
 _BUILTIN_VOICES: list[dict[str, Any]] = [
-    # =================================================================
-    # 小模型音色（官方 97465 文档 · 在线音色表 · 中文）
-    # =================================================================
-    # ===== 通用场景 =====
-    {"id": "BV001_streaming", "name": "通用女声", "gender": "female", "age": "youth",
-     "scene": ["通用", "助手", "客服"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["通用", "女声", "助手"]},
-    {"id": "BV002_streaming", "name": "通用男声", "gender": "male", "age": "youth",
-     "scene": ["通用", "助手"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["通用", "男声"]},
-    {"id": "BV700_streaming", "name": "灿灿", "gender": "female", "age": "youth",
-     "scene": ["通用", "情感", "角色配音"], "dialect": "", "languages": ["zh", "en", "ja", "ptbr", "esmx", "id"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": True,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["通用", "情感", "多情感", "多语种", "灿灿"]},
-    {"id": "BV700_V2_streaming", "name": "灿灿 2.0", "gender": "female", "age": "youth",
-     "scene": ["通用", "情感", "角色配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["通用", "情感", "灿灿", "多情感"]},
-    {"id": "BV705_streaming", "name": "炀炀", "gender": "male", "age": "youth",
-     "scene": ["通用", "情感"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["通用", "情感", "男声"]},
-    {"id": "BV701_streaming", "name": "擎苍", "gender": "male", "age": "middle",
-     "scene": ["有声阅读", "旁白"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["有声书", "旁白", "男声", "多情感", "擎苍"]},
-    {"id": "BV701_V2_streaming", "name": "擎苍 2.0", "gender": "male", "age": "middle",
-     "scene": ["有声阅读", "旁白"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["有声书", "旁白", "擎苍", "多情感"]},
-    {"id": "BV001_V2_streaming", "name": "通用女声 2.0", "gender": "female", "age": "youth",
-     "scene": ["通用"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["通用", "女声"]},
-    {"id": "BV406_streaming", "name": "超自然音色-梓梓", "gender": "female", "age": "youth",
-     "scene": ["通用"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["通用", "女声", "梓梓"]},
-    {"id": "BV406_V2_streaming", "name": "超自然音色-梓梓 2.0", "gender": "female", "age": "youth",
-     "scene": ["通用"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["通用", "女声", "梓梓"]},
-    {"id": "BV407_streaming", "name": "超自然音色-燃燃", "gender": "female", "age": "youth",
-     "scene": ["通用"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["通用", "女声", "燃燃"]},
-    {"id": "BV407_V2_streaming", "name": "超自然音色-燃燃 2.0", "gender": "female", "age": "youth",
-     "scene": ["通用"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["通用", "女声", "燃燃"]},
-    # ===== 有声阅读 =====
-    {"id": "BV123_streaming", "name": "阳光青年", "gender": "male", "age": "youth",
-     "scene": ["有声阅读"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["有声书", "青年", "阳光"]},
-    {"id": "BV120_streaming", "name": "反卷青年", "gender": "male", "age": "youth",
-     "scene": ["有声阅读", "视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["有声书", "青年", "反卷"]},
-    {"id": "BV119_streaming", "name": "通用赘婿", "gender": "male", "age": "middle",
-     "scene": ["有声阅读"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["有声书", "赘婿", "角色"]},
-    {"id": "BV115_streaming", "name": "古风少御", "gender": "female", "age": "youth",
-     "scene": ["有声阅读", "古风"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["有声书", "古风", "少御"]},
-    {"id": "BV107_streaming", "name": "霸气青叔", "gender": "male", "age": "middle",
-     "scene": ["有声阅读"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["有声书", "霸气", "青叔"]},
-    {"id": "BV100_streaming", "name": "质朴青年", "gender": "male", "age": "youth",
-     "scene": ["有声阅读"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["有声书", "青年", "质朴"]},
-    {"id": "BV104_streaming", "name": "温柔淑女", "gender": "female", "age": "youth",
-     "scene": ["有声阅读"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["有声书", "温柔", "淑女"]},
-    {"id": "BV004_streaming", "name": "开朗青年", "gender": "male", "age": "youth",
-     "scene": ["有声阅读"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["有声书", "开朗", "青年"]},
-    {"id": "BV113_streaming", "name": "甜宠少御", "gender": "female", "age": "youth",
-     "scene": ["有声阅读", "情感"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["有声书", "甜宠", "少御"]},
-    {"id": "BV102_streaming", "name": "儒雅青年", "gender": "male", "age": "youth",
-     "scene": ["有声阅读"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["有声书", "儒雅", "青年"]},
-    # ===== 智能助手 =====
-    {"id": "BV405_streaming", "name": "甜美小源", "gender": "female", "age": "youth",
-     "scene": ["智能助手"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["助手", "甜美", "客服"]},
-    {"id": "BV007_streaming", "name": "亲切女声", "gender": "female", "age": "youth",
-     "scene": ["智能助手"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["助手", "亲切", "女声"]},
-    {"id": "BV009_streaming", "name": "知性女声", "gender": "female", "age": "youth",
-     "scene": ["智能助手"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["助手", "知性", "女声"]},
-    {"id": "BV419_streaming", "name": "诚诚", "gender": "male", "age": "child",
-     "scene": ["智能助手"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["助手", "童声", "男童"]},
-    {"id": "BV415_streaming", "name": "童童", "gender": "female", "age": "child",
-     "scene": ["智能助手"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["助手", "童声", "女童"]},
-    {"id": "BV008_streaming", "name": "亲切男声", "gender": "male", "age": "youth",
-     "scene": ["智能助手"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["助手", "亲切", "男声"]},
-    # ===== 视频配音 =====
-    {"id": "BV408_streaming", "name": "译制片男声", "gender": "male", "age": "middle",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "配音", "男声"]},
-    {"id": "BV426_streaming", "name": "懒小羊", "gender": "female", "age": "teen",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "配音", "卡通"]},
-    {"id": "BV428_streaming", "name": "清新文艺女声", "gender": "female", "age": "youth",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "配音", "清新"]},
-    {"id": "BV403_streaming", "name": "鸡汤女声", "gender": "female", "age": "youth",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "配音", "鸡汤"]},
-    {"id": "BV158_streaming", "name": "智慧老者", "gender": "male", "age": "senior",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "配音", "老者"]},
-    {"id": "BV157_streaming", "name": "慈爱姥姥", "gender": "female", "age": "senior",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "配音", "长辈"]},
-    {"id": "BR001_streaming", "name": "说唱小哥", "gender": "male", "age": "youth",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "配音", "说唱"]},
-    {"id": "BV410_streaming", "name": "活力解说男", "gender": "male", "age": "youth",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "配音", "解说"]},
-    {"id": "BV411_streaming", "name": "影视解说小帅", "gender": "male", "age": "youth",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "配音", "解说"]},
-    {"id": "BV437_streaming", "name": "解说小帅-多情感", "gender": "male", "age": "youth",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "配音", "解说", "多情感"]},
-    {"id": "BV412_streaming", "name": "影视解说小美", "gender": "female", "age": "youth",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "配音", "解说"]},
-    {"id": "BV159_streaming", "name": "纨绔青年", "gender": "male", "age": "youth",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "配音", "纨绔"]},
-    {"id": "BV418_streaming", "name": "直播一姐", "gender": "female", "age": "youth",
-     "scene": ["视频配音", "直播"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "直播"]},
-    {"id": "BV142_streaming", "name": "沉稳解说男", "gender": "male", "age": "middle",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "配音", "解说"]},
-    {"id": "BV143_streaming", "name": "潇洒青年", "gender": "male", "age": "youth",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "配音", "青年"]},
-    {"id": "BV056_streaming", "name": "阳光男声", "gender": "male", "age": "youth",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "男声", "阳光"]},
-    {"id": "BV005_streaming", "name": "活泼女声", "gender": "female", "age": "youth",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "女声", "活泼"]},
-    {"id": "BV064_streaming", "name": "小萝莉", "gender": "female", "age": "child",
-     "scene": ["视频配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["视频", "萝莉", "多情感"]},
-    # ===== 特色音色（卡通 / 童声） =====
-    {"id": "BV051_streaming", "name": "奶气萌娃", "gender": "female", "age": "child",
-     "scene": ["特色音色", "儿童"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["特色", "童声", "萌娃"]},
-    {"id": "BV063_streaming", "name": "动漫海绵", "gender": "neutral", "age": "child",
-     "scene": ["特色音色", "动画"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["特色", "动画", "动漫"]},
-    {"id": "BV417_streaming", "name": "动漫海星", "gender": "neutral", "age": "child",
-     "scene": ["特色音色", "动画"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["特色", "动画", "动漫"]},
-    {"id": "BV050_streaming", "name": "动漫小新", "gender": "male", "age": "child",
-     "scene": ["特色音色", "动画"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["特色", "动画", "动漫"]},
-    {"id": "BV061_streaming", "name": "天才童声", "gender": "neutral", "age": "child",
-     "scene": ["特色音色", "儿童"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["特色", "童声"]},
-    # ===== 广告配音 =====
-    {"id": "BV401_streaming", "name": "促销男声", "gender": "male", "age": "youth",
-     "scene": ["广告配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["广告", "促销", "男声"]},
-    {"id": "BV402_streaming", "name": "促销女声", "gender": "female", "age": "youth",
-     "scene": ["广告配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["广告", "促销", "女声"]},
-    {"id": "BV006_streaming", "name": "磁性男声", "gender": "male", "age": "middle",
-     "scene": ["广告配音"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["广告", "磁性", "男声"]},
-    # ===== 新闻播报 =====
-    {"id": "BV011_streaming", "name": "新闻女声", "gender": "female", "age": "middle",
-     "scene": ["新闻播报"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["新闻", "女声"]},
-    {"id": "BV012_streaming", "name": "新闻男声", "gender": "male", "age": "middle",
-     "scene": ["新闻播报"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["新闻", "男声"]},
-    # ===== 教育场景 =====
-    {"id": "BV034_streaming", "name": "知性姐姐-双语", "gender": "female", "age": "youth",
-     "scene": ["教育"], "dialect": "", "languages": ["zh", "en"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["教育", "双语"]},
-    {"id": "BV033_streaming", "name": "温柔小哥", "gender": "male", "age": "youth",
-     "scene": ["教育"], "dialect": "", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["教育", "温柔"]},
-    # =================================================================
-    # 小模型音色 · 多语种（官方 97465 文档 · 多语种章节）
-    # =================================================================
-    # ===== 美式英语 =====
-    {"id": "BV511_streaming", "name": "慵懒女声-Ava", "gender": "female", "age": "youth",
-     "scene": ["英文"], "dialect": "", "languages": ["en"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["英文", "美式", "慵懒"]},
-    {"id": "BV505_streaming", "name": "议论女声-Alicia", "gender": "female", "age": "youth",
-     "scene": ["英文"], "dialect": "", "languages": ["en"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["英文", "美式", "议论"]},
-    {"id": "BV138_streaming", "name": "情感女声-Lawrence", "gender": "female", "age": "youth",
-     "scene": ["英文", "情感"], "dialect": "", "languages": ["en"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["英文", "美式", "情感"]},
-    {"id": "BV027_streaming", "name": "美式女声-Amelia", "gender": "female", "age": "youth",
-     "scene": ["英文"], "dialect": "", "languages": ["en"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["英文", "美式"]},
-    {"id": "BV502_streaming", "name": "讲述女声-Amanda", "gender": "female", "age": "youth",
-     "scene": ["英文"], "dialect": "", "languages": ["en"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["英文", "美式", "讲述"]},
-    {"id": "BV503_streaming", "name": "活力女声-Ariana", "gender": "female", "age": "youth",
-     "scene": ["英文"], "dialect": "", "languages": ["en"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["英文", "美式", "活力"]},
-    {"id": "BV504_streaming", "name": "活力男声-Jackson", "gender": "male", "age": "youth",
-     "scene": ["英文"], "dialect": "", "languages": ["en"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["英文", "美式", "活力"]},
-    {"id": "BV421_streaming", "name": "天才少女", "gender": "female", "age": "youth",
-     "scene": ["多语种"], "dialect": "", "languages": ["zh", "en", "ja", "thth", "vivn", "ptbr", "esmx", "id"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": True,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["多语种", "少女"]},
-    {"id": "BV702_streaming", "name": "Stefan", "gender": "male", "age": "middle",
-     "scene": ["多语种"], "dialect": "", "languages": ["zh", "en", "ja", "ptbr", "esmx", "id"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": True,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["多语种", "男声"]},
-    {"id": "BV506_streaming", "name": "天真萌娃-Lily", "gender": "female", "age": "child",
-     "scene": ["英文"], "dialect": "", "languages": ["en"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["英文", "美式", "萌娃"]},
-    # ===== 英式英语 =====
-    {"id": "BV040_streaming", "name": "亲切女声-Anna", "gender": "female", "age": "youth",
-     "scene": ["英文"], "dialect": "", "languages": ["en"],
-     "supports_emotion": True, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["英文", "英式", "亲切"]},
-    # ===== 澳洲英语 =====
-    {"id": "BV516_streaming", "name": "澳洲男声-Henry", "gender": "male", "age": "middle",
-     "scene": ["英文"], "dialect": "", "languages": ["en"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["英文", "澳洲"]},
-    # ===== 日语 =====
-    {"id": "BV520_streaming", "name": "元气少女", "gender": "female", "age": "teen",
-     "scene": ["日文"], "dialect": "", "languages": ["ja"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["日文", "少女"]},
-    {"id": "BV521_streaming", "name": "萌系少女", "gender": "female", "age": "teen",
-     "scene": ["日文"], "dialect": "", "languages": ["ja"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["日文", "少女", "萌"]},
-    {"id": "BV522_streaming", "name": "气质女声", "gender": "female", "age": "youth",
-     "scene": ["日文"], "dialect": "", "languages": ["ja"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["日文", "气质"]},
-    {"id": "BV524_streaming", "name": "日语男声", "gender": "male", "age": "youth",
-     "scene": ["日文"], "dialect": "", "languages": ["ja"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["日文", "男声"]},
-    # ===== 葡萄牙语（巴西） =====
-    {"id": "BV531_streaming", "name": "活力男声Carlos", "gender": "male", "age": "youth",
-     "scene": ["葡萄牙语"], "dialect": "", "languages": ["ptbr"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["葡萄牙语", "活力"]},
-    {"id": "BV530_streaming", "name": "活力女声", "gender": "female", "age": "youth",
-     "scene": ["葡萄牙语"], "dialect": "", "languages": ["ptbr"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["葡萄牙语", "活力"]},
-    # ===== 西班牙语（墨西哥） =====
-    {"id": "BV065_streaming", "name": "气质御姐", "gender": "female", "age": "middle",
-     "scene": ["西班牙语"], "dialect": "", "languages": ["esmx"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["西班牙语", "御姐"]},
-    # =================================================================
-    # 小模型音色 · 方言（官方 97465 文档 · 方言章节）
-    # =================================================================
-    {"id": "BV021_streaming", "name": "东北老铁", "gender": "male", "age": "middle",
-     "scene": ["方言"], "dialect": "dongbei", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "东北"]},
-    {"id": "BV020_streaming", "name": "东北丫头", "gender": "female", "age": "youth",
-     "scene": ["方言"], "dialect": "dongbei", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "东北"]},
-    {"id": "BV704_streaming", "name": "方言灿灿", "gender": "female", "age": "youth",
-     "scene": ["方言"], "dialect": "", "languages": ["zh", "en", "ja", "ptbr", "esmx", "id"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": True,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "多语种", "灿灿"]},
-    {"id": "BV210_streaming", "name": "西安佟掌柜", "gender": "female", "age": "middle",
-     "scene": ["方言"], "dialect": "shaanxi", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "陕西"]},
-    {"id": "BV217_streaming", "name": "沪上阿姐", "gender": "female", "age": "middle",
-     "scene": ["方言"], "dialect": "shanghai", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "上海"]},
-    {"id": "BV213_streaming", "name": "广西表哥", "gender": "male", "age": "middle",
-     "scene": ["方言"], "dialect": "guangxi", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "广西"]},
-    {"id": "BV025_streaming", "name": "甜美台妹", "gender": "female", "age": "youth",
-     "scene": ["方言"], "dialect": "taipu", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "台湾"]},
-    {"id": "BV227_streaming", "name": "台普男声", "gender": "male", "age": "middle",
-     "scene": ["方言"], "dialect": "taipu", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "台湾"]},
-    {"id": "BV026_streaming", "name": "港剧男神", "gender": "male", "age": "middle",
-     "scene": ["方言"], "dialect": "cantonese", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "粤语"]},
-    {"id": "BV424_streaming", "name": "广东女仔", "gender": "female", "age": "youth",
-     "scene": ["方言"], "dialect": "cantonese", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "粤语"]},
-    {"id": "BV212_streaming", "name": "相声演员", "gender": "male", "age": "middle",
-     "scene": ["方言"], "dialect": "tianjin", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": False, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "天津", "相声"]},
-    {"id": "BV019_streaming", "name": "重庆小伙", "gender": "male", "age": "youth",
-     "scene": ["方言"], "dialect": "sichuan", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": True, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "重庆", "四川"]},
-    {"id": "BV221_streaming", "name": "四川甜妹儿", "gender": "female", "age": "youth",
-     "scene": ["方言"], "dialect": "sichuan", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": False, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "四川"]},
-    {"id": "BV423_streaming", "name": "重庆幺妹儿", "gender": "female", "age": "youth",
-     "scene": ["方言"], "dialect": "sichuan", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "重庆", "四川"]},
-    {"id": "BV214_streaming", "name": "乡村企业家", "gender": "male", "age": "middle",
-     "scene": ["方言"], "dialect": "henan", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": False, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "郑州", "河南"]},
-    {"id": "BV226_streaming", "name": "湖南妹坨", "gender": "female", "age": "youth",
-     "scene": ["方言"], "dialect": "hunan", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "湖南"]},
-    {"id": "BV216_streaming", "name": "长沙靓女", "gender": "female", "age": "youth",
-     "scene": ["方言"], "dialect": "changsha", "languages": ["zh"],
-     "supports_emotion": False, "supports_subtitle": True, "supports_language": False,
-     "free": False, "model": "seed-tts-1.0",
-     "zh_tags": ["方言", "长沙"]},
     # =================================================================
     # 大模型 2.0 音色（官方 1257544 文档 · 通用场景 + 角色配音 + 视频配音）
     # 仅收录"豆包语音合成模型 2.0 / S2S-O2.0 / S2S-全双工"音色（model=seed-tts-2.0）
@@ -1262,7 +769,7 @@ class DoubaoTTSProvider(BaseTTSProvider):
                           是否支持 emotion / enable_subtitle / language 三个高级参数
                           （基于官方音色表逐条核对，见 _BUILTIN_VOICES 注释）
           - free        是否免费音色（火山 FAQ「21 款免费音色」白名单）
-          - model       推荐使用的豆包模型 "seed-tts-1.0" / "seed-tts-2.0"
+          - model       推荐使用的豆包模型（内置条目恒为 "seed-tts-2.0"）
           - provider    固定为 "doubao"
         """
         out: list[dict[str, Any]] = []
@@ -1280,7 +787,7 @@ class DoubaoTTSProvider(BaseTTSProvider):
                 "supports_subtitle": bool(v.get("supports_subtitle", True)),
                 "supports_language": bool(v.get("supports_language", False)),
                 "free": bool(v.get("free", False)),
-                "model": v.get("model", "seed-tts-1.0"),
+                "model": v.get("model", "seed-tts-2.0"),
                 "provider": "doubao",
             }
             out.append(item)
@@ -1318,7 +825,7 @@ class DoubaoTTSProvider(BaseTTSProvider):
                     "supports_subtitle": bool(v.get("supports_subtitle", True)),
                     "supports_language": bool(v.get("supports_language", False)),
                     "free": bool(v.get("free", False)),
-                    "model": v.get("model", "seed-tts-1.0"),
+                    "model": v.get("model", "seed-tts-2.0"),
                     "zh_tags": v.get("zh_tags", ["远程"]),
                 }
                 # 额外字段（如 description / avatar / categories）原样保留
@@ -1394,7 +901,7 @@ class DoubaoTTSProvider(BaseTTSProvider):
         """构造豆包 TTS v1 请求体（与 T-DV3 测试对齐）。
 
         关键：cluster 按 speaker 路由
-          - 普通 TTS 音色（BVxxx_streaming / zh_xxx_uranus_bigtts）→ cluster=volcano_tts
+          - 普通 TTS 音色（zh_xxx_uranus_bigtts 等）→ cluster=volcano_tts
           - 复刻音色（S_/icl_ 前缀）→ cluster=volcano_icl
         官方文档：https://www.volcengine.com/docs/6561/1305191
         """
@@ -1683,21 +1190,21 @@ class DoubaoTTSProvider(BaseTTSProvider):
 #
 # 鉴权（新版控制台推荐）：
 #   X-Api-Key: <API Key>
-#   X-Api-Resource-Id: seed-tts-2.0  # 或 seed-tts-1.0（按 model 选）
+#   X-Api-Resource-Id: seed-tts-2.0  # 2.0 音色；声音复刻走 seed-icl-2.0
 #   X-Api-App-Key: aGjiRDfUWi        # 固定值（官方要求）
 #   X-Api-Request-Id: <uuid>
 #
 # 鉴权（旧版控制台兼容）：
 #   X-Api-App-Id: <APP ID>           # 纯数字
 #   X-Api-Access-Key: <Access Token>
-#   X-Api-Resource-Id: seed-tts-1.0
+#   X-Api-Resource-Id: seed-tts-2.0
 #
 # 请求体（v3 嵌套结构）：
 #   {
 #     "user": {"uid": "..."},
 #     "req_params": {
 #       "text": "...",
-#       "speaker": "BVxxx_streaming",  # 或 ICL speaker_id
+#       "speaker": "zh_female_vv_uranus_bigtts",  # 2.0 音色，或 ICL speaker_id
 #       "audio_params": {
 #         "format": "mp3",
 #         "sample_rate": 24000,
@@ -1766,22 +1273,25 @@ def _resolve_resource_id_for_v3(model: str) -> str:
     m = (model or "").strip().lower()
     if m in ("seed-tts-2.0",):
         return "seed-tts-2.0"
+    # 显式声明 1.0 的入参（远程同步 / 用户自定义音色可能仍带）如实映射；
+    # 调用方再按 is_voice_usable_on_v3 把它过滤掉，不要在这里悄悄改写成 2.0。
     if m in ("seed-tts-1.0", "seed-tts-1.0-concurr"):
         return "seed-tts-1.0"
     if m in ("seed-icl-2.0",):
         return "seed-icl-2.0"
     if m in ("seed-icl-1.0", "seed-icl-1.0-concurr"):
         return "seed-icl-1.0"
-    # 兜底 1.0（兼容旧音色）
-    return "seed-tts-1.0"
+    # 未知值兜底 2.0（1.0 已整表下线，账号也只有 2.0 资源）
+    return "seed-tts-2.0"
 
 
 # v3 端点（DOUBAO_TTS_USE_V3=True，当前默认路径）官方只支持这两类合成资源：
 #   seed-tts-2.0 → *_uranus_bigtts 等 2.0 官方音色
 #   seed-icl-2.0 → 声音复刻音色
-# 音色表里标 model=seed-tts-1.0 的 BV* 小模型音色，在 v3 上会被要求 1.0 资源
-# （服务端别名 volc.service_type.10029），账号未开通时直接 403 + code=45000030
-# "requested resource not granted"（实测 2026-09-20 音色 BV158_streaming）。
+# 声明 model=seed-tts-1.0 的音色（远程同步 / 用户自定义表里可能仍有 BV* 小模型）
+# 在 v3 上会被要求 1.0 资源（服务端别名 volc.service_type.10029），账号未开通时
+# 直接 403 + code=45000030 "requested resource not granted"（实测 2026-09-20
+# 音色 BV158_streaming），因此这类音色要在这里被过滤掉；内置表已不含 1.0。
 _V3_SUPPORTED_MODELS: frozenset[str] = frozenset({"seed-tts-2.0", "seed-icl-2.0"})
 
 
@@ -1897,14 +1407,16 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
         return headers
 
     def _resolve_model_for_speaker(self, speaker_id: str) -> str:
-        """根据 speaker_id 查 _BUILTIN_VOICES 返回 model；找不到则兜底 seed-tts-1.0。"""
+        """根据 speaker_id 查 _BUILTIN_VOICES 返回 model；找不到则兜底 seed-tts-2.0。"""
         # icl: 开头按 ICL 2.0 走
         if speaker_id.startswith("S_") or speaker_id.startswith("icl_"):
             return "seed-icl-2.0"
         for v in _BUILTIN_VOICES:
             if v["id"] == speaker_id:
-                return v.get("model") or "seed-tts-1.0"
-        return "seed-tts-1.0"
+                return v.get("model") or "seed-tts-2.0"
+        # 兜底 2.0：1.0 小模型音色已下线，未知 speaker 只可能是外部自定义，
+        # 按账号已开通的 2.0 资源请求更不容易直接 403。
+        return "seed-tts-2.0"
 
     # -----------------------------------------------------------------
     # 音色列表：复用 v1 内置音色（保证前后端列表稳定）
@@ -1927,7 +1439,7 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                 "supports_subtitle": bool(v.get("supports_subtitle", True)),
                 "supports_language": bool(v.get("supports_language", False)),
                 "free": bool(v.get("free", False)),
-                "model": v.get("model", "seed-tts-1.0"),
+                "model": v.get("model", "seed-tts-2.0"),
                 "protocol": "v3",  # 标记当前 provider 走 v3
             }
         # P2-1：远程音色（启动时由 doubao_list_speakers 同步写入磁盘）
@@ -1953,7 +1465,7 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                     "supports_subtitle": bool(v.get("supports_subtitle", True)),
                     "supports_language": bool(v.get("supports_language", False)),
                     "free": bool(v.get("free", False)),
-                    "model": v.get("model", "seed-tts-1.0"),
+                    "model": v.get("model", "seed-tts-2.0"),
                     "protocol": "v3",
                 }
                 for k, val in v.items():

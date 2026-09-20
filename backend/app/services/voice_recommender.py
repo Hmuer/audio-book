@@ -43,7 +43,7 @@ PROMPT_BASE = r"""
 5. 返回 reason 简要说明匹配点
 
 ⚠️ 音色列表里每个音色带有 `provider` 字段（doubao / icl）：
-- doubao:  豆包官方音色（带 model 字段，1.0 小模型 vs 2.0 大模型）
+- doubao:  豆包官方音色（带 model 字段，2.0 大模型）
 - icl:     当前用户上传训练的声音复刻音色（专属该用户）
 
 你可以跨类选择：建议优先看音色特征是否匹配角色，不局限音色来源；但请在
@@ -131,9 +131,10 @@ def _is_usable_voice(voice: dict) -> bool:
     """推荐池只保留当前豆包链路真能合成的音色。
 
     豆包走 v3（默认）时，v3 端点官方只支持 seed-tts-2.0 / seed-icl-2.0 两类资源；
-    音色表里那 94 个 model=seed-tts-1.0 的 BV* 小模型音色会被要求 1.0 资源
-    （volc.service_type.10029），账号未开通时合成必然 403 + code=45000030
-    —— 推荐给用户等于保证 Build 失败。关掉 DOUBAO_TTS_USE_V3 退回 v1 时不过滤。
+    声明 model=seed-tts-1.0 的音色（远程同步 / 用户自定义表里可能仍有 BV* 小模型）
+    会被要求 1.0 资源（volc.service_type.10029），账号未开通时合成必然 403 +
+    code=45000030 —— 推荐给用户等于保证 Build 失败。内置表已不含 1.0 音色。
+    关掉 DOUBAO_TTS_USE_V3 退回 v1 时不过滤。
     """
     try:
         from ..core.config import settings

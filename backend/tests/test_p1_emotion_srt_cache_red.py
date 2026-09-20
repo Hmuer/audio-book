@@ -39,7 +39,8 @@ def test_p1_2_e1_v1_emotion_only_in_extend_params():
 
     cfgmod.settings.DOUBAO_AK = "test-ak"
     p = DoubaoTTSProvider()
-    payload = p._build_payload("你好", "BV001_streaming", emotion="happy")
+    # 用 2.0 内置音色（supports_emotion=True）；1.0 BV* 已下线
+    payload = p._build_payload("你好", "zh_female_vv_uranus_bigtts", emotion="happy")
     # emotion 必须在 extend_params
     assert payload["extend_params"]["emotion"] == "happy"
     # P1-2 去重：body 顶层和 audio 顶层不应再有 emotion
@@ -56,12 +57,12 @@ def test_p1_2_e2_v1_unsupported_voice_demotes_emotion():
     cfgmod.settings.DOUBAO_AK = "test-ak"
     p = DoubaoTTSProvider()
 
-    # BV005_streaming（古风/磁性）supports_emotion=False（按内置表）
+    # 强制让 _voice_supports_emotion 返回 False 以便单测可控（1.0 BV* 已下线，
+    # 这里不再依赖具体音色的内置元数据）
     with pytest.MonkeyPatch.context() as mp:
-        # 强制让 _voice_supports_emotion 返回 False（即便音色实际支持）以便单测可控
         import backend.app.ai.providers.doubao.tts as tts_mod
         mp.setattr(tts_mod, "_voice_supports_emotion", lambda _s: False)
-        payload = p._build_payload("你好", "BV001_streaming", emotion="happy")
+        payload = p._build_payload("你好", "zh_female_vv_uranus_bigtts", emotion="happy")
 
     assert "emotion" not in payload["extend_params"]
 
@@ -333,8 +334,8 @@ def test_p1_7_k3_voice_model_lookup_icl_returns_seed_icl():
     assert _voice_model_lookup("S_xxxxx") == "seed-icl-2.0"
     # 内置大模型音色（实际表里的 id）
     assert _voice_model_lookup("doubao:zh_female_vv_uranus_bigtts") == "seed-tts-2.0"
-    # 兜底
-    assert _voice_model_lookup("doubao:unknown_xyz") == "seed-tts-1.0"
+    # 兜底：内置表已无 1.0 音色，未知 id 统一按 2.0 处理
+    assert _voice_model_lookup("doubao:unknown_xyz") == "seed-tts-2.0"
 
 
 def test_p1_7_k4_context_texts_hash_empty_for_blank():

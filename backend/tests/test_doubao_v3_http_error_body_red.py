@@ -113,8 +113,9 @@ async def test_b1_403_body_and_diagnostics_surface(monkeypatch):
     assert "HTTP 403" in s, f"缺少 HTTP 状态码：{s}"
     assert "[Invalid argument] speaker not found" in s, f"缺少上游响应体：{s}"
     # 诊断：实际发出的音色 + resource id
+    # （BV158_streaming 已不在内置表 → _resolve_model_for_speaker 兜底 seed-tts-2.0）
     assert "speaker=BV158_streaming" in s, f"缺少 speaker 诊断：{s}"
-    assert "X-Api-Resource-Id=seed-tts-1.0" in s, f"缺少 resource_id 诊断：{s}"
+    assert "X-Api-Resource-Id=seed-tts-2.0" in s, f"缺少 resource_id 诊断：{s}"
     # logid 仍要透传（P1-6 行为不回退）
     assert "logid=v3-403-log" in s, f"缺少 logid：{s}"
     assert getattr(err, "logid", None) == "v3-403-log"

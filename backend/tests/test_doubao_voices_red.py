@@ -1,23 +1,26 @@
 """P0-2 RED 测试：豆包官方音色表重建 + 元数据完整性。
 
 数据来源（与 _BUILTIN_VOICES 注释对齐）：
-  - 小模型音色表：https://docs.volcengine.com/docs/6561/97465?lang=zh
   - 大模型 2.0 音色表：https://docs.volcengine.com/docs/6561/1257544?lang=zh
 
-本测试覆盖 6 个关键约束：
+注：1.0 小模型音色（seed-tts-1.0 / 官方文档 97465 的 BV* 系列）已整表删除 ——
+该账号未开通 1.0 资源，且 1.0 不支持语音指令与标签。内置表只保留 2.0。
+
+本测试覆盖关键约束：
   T-VOICE-1  每条 voice 都带完整元数据（gender/age/scene/dialect/zh_tags/
              provider/languages/supports_emotion/supports_subtitle/
              supports_language/free/model）
-  T-VOICE-2  id 都带 doubao: 前缀且去掉前缀后是官方真实 voice_type
-             （无自创的 BVxxx_stream、zh_female_xxx、zh_male_xxx 等）
+  T-VOICE-2  id 都带 doubao: 前缀，且属于官方 2.0 namespace
+             （*_uranus_bigtts / ICL_uranus_*_tob），不得出现 1.0 的 *_streaming
   T-VOICE-3  id 不能重复
-  T-VOICE-4  小模型 id 拼写统一是 *_streaming（不是 *_stream）
-  T-VOICE-5  21 款免费音色白名单全部存在（FAQ 锁定列表）
+  T-VOICE-4  内置表不得再出现 1.0 小模型 *_streaming id（整表已删除）
+  T-VOICE-5  内置 2.0 音色无免费白名单（free 恒为 False）
   T-VOICE-6  多情感音色（supports_emotion=True）抽样存在
   T-VOICE-7  多语种音色（supports_language=True）抽样存在
-  T-VOICE-8  至少覆盖：通用 / 有声阅读 / 智能助手 / 视频配音 / 特色音色 /
-             广告配音 / 新闻播报 / 教育 / 多语种 / 方言 / 大模型角色
-             11 大官方场景类别
+  T-VOICE-8  覆盖官方 2.0 的场景类别
+  T-VOICE-9  大模型 2.0 音色存在且 model=seed-tts-2.0
+  T-VOICE-10 languages 字段承载中文方言码（2.0 表 dialect 字段留空）
+  T-VOICE-11 languages 字段至少覆盖 zh / en / ja / id / esmx
 """
 from __future__ import annotations
 
@@ -58,13 +61,13 @@ def test_voice_has_required_metadata_fields():
         assert isinstance(v["supports_subtitle"], bool)
         assert isinstance(v["supports_language"], bool)
         assert isinstance(v["free"], bool)
-        assert v["model"] in ("seed-tts-1.0", "seed-tts-2.0")
+        assert v["model"] == "seed-tts-2.0"
         # dialect 必须是字符串（可为空）
         assert isinstance(v["dialect"], str)
 
 
 # ---------------------------------------------------------------------
-# T-VOICE-2：id 都带 doubao: 前缀，去前缀后是官方 voice_type（无自创 id）
+# T-VOICE-2：id 都带 doubao: 前缀，去前缀后是官方 2.0 voice_type
 # ---------------------------------------------------------------------
 def test_voice_ids_match_official_volcengine_voice_types():
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider
@@ -78,21 +81,22 @@ def test_voice_ids_match_official_volcengine_voice_types():
         assert not raw.endswith("_stream"), (
             f"id {vid} 用了自创拼写 _stream（官方是 _streaming）"
         )
+        # 1.0 小模型拼写已整表下线：不得再出现 *_streaming
+        assert not raw.endswith("_streaming"), (
+            f"id {vid} 是已下线的 1.0 小模型音色"
+        )
         assert not raw.startswith("zh_female_xxx"), (
             f"id {vid} 是自创占位 zh_female_xxx"
         )
         assert not raw.startswith("zh_male_xxx"), (
             f"id {vid} 是自创占位 zh_male_xxx"
         )
-        # 官方 namespace 校验：BVxxx_streaming / zh_*_uranus_bigtts / ICL_uranus_*_tob
-        valid = (
-            raw.endswith("_streaming")
-            or raw.endswith("_uranus_bigtts")
-            or raw.startswith("ICL_uranus_")
-        )
+        # 官方 2.0 namespace 校验：zh_*_uranus_bigtts / en_*_uranus_bigtts /
+        # ICL_uranus_*_tob
+        valid = raw.endswith("_uranus_bigtts") or raw.startswith("ICL_uranus_")
         assert valid, (
-            f"id {vid} 不属于任何已知官方 namespace "
-            f"（_streaming / _uranus_bigtts / ICL_uranus_）"
+            f"id {vid} 不属于任何已知 2.0 官方 namespace "
+            f"（_uranus_bigtts / ICL_uranus_）"
         )
 
 
@@ -108,69 +112,29 @@ def test_voice_ids_are_unique():
 
 
 # ---------------------------------------------------------------------
-# T-VOICE-4：小模型 id 拼写统一是 *_streaming（不是 *_stream）
+# T-VOICE-4：内置表不得再出现 1.0 小模型 *_streaming id（整表已删除）
 # ---------------------------------------------------------------------
-def test_small_model_ids_use_streaming_suffix():
+def test_no_small_model_streaming_ids():
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider
 
     voices = DoubaoTTSProvider()._builtin_voices_sync()
-    bad = [
+    small = [
         v["id"] for v in voices
-        if v["model"] == "seed-tts-1.0" and not v["id"].endswith("_streaming")
-        and not v["id"].endswith("_uranus_bigtts")  # 防御误判
+        if v["id"].endswith("_streaming") or v["id"].endswith("_stream")
     ]
-    assert not bad, f"小模型 id 拼写错误（必须 _streaming）：{bad}"
+    assert not small, f"不应再内置 1.0 小模型音色（*_streaming）：{small}"
 
 
 # ---------------------------------------------------------------------
-# T-VOICE-5：21 款免费音色白名单全部存在（FAQ「21 款免费音色」列表）
+# T-VOICE-5：内置 2.0 音色无免费白名单（free 恒为 False）
 # ---------------------------------------------------------------------
-def test_free_voices_match_faq_whitelist():
+def test_no_builtin_free_voices():
+    """1.0「21 款免费音色」白名单已随音色表删除，内置 2.0 音色不应标 free=True。"""
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider
 
-    # 火山 FAQ「21 款免费音色」白名单
-    expected_free = {
-        # 通用 3
-        "doubao:BV700_streaming",  # 灿灿
-        "doubao:BV001_streaming",  # 通用女声
-        "doubao:BV002_streaming",  # 通用男声
-        # 有声阅读 5
-        "doubao:BV701_streaming",  # 擎苍
-        "doubao:BV119_streaming",  # 通用赘婿
-        "doubao:BV102_streaming",  # 儒雅青年
-        "doubao:BV113_streaming",  # 甜宠少御
-        "doubao:BV115_streaming",  # 古风少御
-        # 智能助手 / 视频配音 / 特色 / 教育 6
-        "doubao:BV007_streaming",  # 亲切女声
-        "doubao:BV056_streaming",  # 阳光男声
-        "doubao:BV005_streaming",  # 活泼女声
-        "doubao:BV051_streaming",  # 奶气萌娃
-        "doubao:BV034_streaming",  # 知性姐姐-双语
-        "doubao:BV033_streaming",  # 温柔小哥
-        # 方言 3
-        "doubao:BV021_streaming",  # 东北老铁
-        "doubao:BV019_streaming",  # 重庆小伙
-        "doubao:BV213_streaming",  # 广西表哥
-        # 英语 2
-        "doubao:BV503_streaming",  # 活力女声-Ariana
-        "doubao:BV504_streaming",  # 活力男声-Jackson
-        # 日语 2
-        "doubao:BV522_streaming",  # 气质女声
-        "doubao:BV524_streaming",  # 日语男声
-    }
-    # FAQ 列了 21 个，本测试覆盖 21 个全部
-    assert len(expected_free) == 21, f"白名单数量不对：{len(expected_free)}"
-
     voices = DoubaoTTSProvider()._builtin_voices_sync()
-    ids = {v["id"] for v in voices}
     free_ids = {v["id"] for v in voices if v["free"]}
-
-    missing = expected_free - ids
-    assert not missing, f"缺少免费音色：{missing}"
-
-    # 反向：free=True 的 id 必须出现在白名单里（防止把非免费误标 free）
-    extra_free = free_ids - expected_free
-    assert not extra_free, f"非白名单却被标 free：{extra_free}"
+    assert not free_ids, f"内置表不应存在免费音色：{free_ids}"
 
 
 # ---------------------------------------------------------------------
@@ -181,22 +145,18 @@ def test_emotion_supported_voices_exist():
 
     voices = DoubaoTTSProvider()._builtin_voices_sync()
     emotion_voices = [v for v in voices if v["supports_emotion"]]
-    # 至少要有 15 条（官方有情感列表里至少 20+ 条）
-    assert len(emotion_voices) >= 15, (
+    # 2.0 表绝大部分音色都标注了情感，至少要有 30 条
+    assert len(emotion_voices) >= 30, (
         f"supports_emotion=True 的音色过少：{len(emotion_voices)}"
     )
     # 关键多情感音色必须在
     ids = {v["id"] for v in emotion_voices}
     must_have = {
-        "doubao:BV700_streaming",          # 灿灿（22 种情感）
-        "doubao:BV700_V2_streaming",       # 灿灿 2.0
-        "doubao:BV701_streaming",          # 擎苍（10 种情感）
-        "doubao:BV001_streaming",          # 通用女声（12 种情感）
-        "doubao:BV123_streaming",          # 阳光青年
-        "doubao:BV119_streaming",          # 通用赘婿
-        "doubao:BV100_streaming",          # 质朴青年
-        "doubao:BV102_streaming",          # 儒雅青年
-        "doubao:zh_female_vv_uranus_bigtts",  # Vivi 2.0 大模型
+        "doubao:zh_female_vv_uranus_bigtts",     # Vivi 2.0（S2S 多语种多方言）
+        "doubao:zh_female_cancan_uranus_bigtts",  # 知性灿灿 2.0（角色扮演）
+        "doubao:zh_male_qingcang_uranus_bigtts",  # 擎苍 2.0
+        "doubao:zh_female_peiqi_uranus_bigtts",   # 佩奇猪 2.0（视频配音）
+        "doubao:zh_male_sunwukong_uranus_bigtts", # 猴哥 2.0（视频配音）
     }
     missing = must_have - ids
     assert not missing, f"缺少关键多情感音色：{missing}"
@@ -210,22 +170,21 @@ def test_language_supported_voices_exist():
 
     voices = DoubaoTTSProvider()._builtin_voices_sync()
     lang_voices = [v for v in voices if v["supports_language"]]
-    # 官方 supports_language=True 只有 5 条（灿灿 / 方言灿灿 / 天才少女 / Stefan / Vivi 2.0 / 小何 2.0 / 云舟 2.0 / 小天 2.0）
-    assert len(lang_voices) >= 5, f"supports_language=True 的音色过少：{len(lang_voices)}"
+    # 2.0 表里 supports_language=True 的是 S2S 系（Vivi / 小何 / 云舟 / 小天）共 4 条
+    assert len(lang_voices) >= 4, f"supports_language=True 的音色过少：{len(lang_voices)}"
     ids = {v["id"] for v in lang_voices}
     must_have = {
-        "doubao:BV700_streaming",          # 灿灿（en/ja/ptbr/esmx/id）
-        "doubao:BV704_streaming",          # 方言灿灿（多方言 + 多语种）
-        "doubao:BV421_streaming",          # 天才少女（8 国）
-        "doubao:BV702_streaming",          # Stefan（多国）
-        "doubao:zh_female_vv_uranus_bigtts",  # Vivi 2.0（多语种 + 多方言）
+        "doubao:zh_female_vv_uranus_bigtts",      # Vivi 2.0（多语种 + 多方言）
+        "doubao:zh_female_xiaohe_uranus_bigtts",  # 小何 2.0（多方言）
+        "doubao:zh_male_m191_uranus_bigtts",      # 云舟 2.0（多方言）
+        "doubao:zh_male_taocheng_uranus_bigtts",  # 小天 2.0（多方言）
     }
     missing = must_have - ids
     assert not missing, f"缺少关键多语种音色：{missing}"
 
 
 # ---------------------------------------------------------------------
-# T-VOICE-8：覆盖 11 大官方场景类别
+# T-VOICE-8：覆盖官方 2.0 场景类别
 # ---------------------------------------------------------------------
 def test_voices_cover_all_official_scene_categories():
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider
@@ -238,16 +197,15 @@ def test_voices_cover_all_official_scene_categories():
     required_categories = [
         "通用",
         "有声阅读",
-        "智能助手",
         "视频配音",
-        "特色音色",
-        "广告配音",
-        "新闻播报",
         "教育",
-        "英文",
-        "日文",
-        "方言",
-        "角色扮演",  # 大模型
+        "客服",
+        "角色扮演",
+        "角色",
+        "S2S",
+        "儿童",
+        "情感",
+        "外语音色",
     ]
     missing = [c for c in required_categories if c not in all_scenes]
     assert not missing, f"缺少官方场景类别：{missing}"
@@ -272,25 +230,24 @@ def test_large_model_v2_voices_exist():
 
 
 # ---------------------------------------------------------------------
-# T-VOICE-10：方言字段覆盖官方 8 大方言
+# T-VOICE-10：中文方言码由 languages 字段承载（2.0 表 dialect 字段留空）
 # ---------------------------------------------------------------------
-def test_dialect_field_covers_official_dialects():
+def test_languages_field_covers_chinese_dialects():
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider
 
     voices = DoubaoTTSProvider()._builtin_voices_sync()
-    dialects: set[str] = set()
+    # 2.0 表不单独给 dialect 字段，方言信息写在 languages 里
+    langs: set[str] = set()
     for v in voices:
-        if v["dialect"]:
-            dialects.add(v["dialect"])
+        langs.update(v["languages"])
 
-    # 官方方言至少覆盖 7 种
-    expected = ["dongbei", "cantonese", "sichuan", "shaanxi", "shanghai", "taipu"]
-    missing = [d for d in expected if d not in dialects]
-    assert not missing, f"缺少方言：{missing}（当前：{sorted(dialects)}）"
+    expected = ["dongbei", "cantonese", "sichuan", "shaanxi", "shanghai", "beijing"]
+    missing = [d for d in expected if d not in langs]
+    assert not missing, f"缺少方言码：{missing}（当前：{sorted(langs)}）"
 
 
 # ---------------------------------------------------------------------
-# T-VOICE-11：languages 字段至少覆盖 zh / en / ja / ptbr / esmx / id
+# T-VOICE-11：languages 字段至少覆盖 zh / en / ja / id / esmx
 # ---------------------------------------------------------------------
 def test_languages_field_covers_multiple_official_languages():
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider
@@ -300,6 +257,6 @@ def test_languages_field_covers_multiple_official_languages():
     for v in voices:
         langs.update(v["languages"])
 
-    required = {"zh", "en", "ja", "ptbr", "esmx", "id"}
+    required = {"zh", "en", "ja", "id", "esmx"}
     missing = required - langs
     assert not missing, f"缺少语种：{missing}（当前：{sorted(langs)}）"

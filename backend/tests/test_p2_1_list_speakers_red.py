@@ -87,7 +87,7 @@ def test_p2_1_ls4_speaker_to_builtin_entry_basic():
         "Emotions": [{"Value": "happy", "Label": "开心"}],
         "ResourceID": "seed-tts-2.0",
     }
-    entry = _speaker_to_builtin_entry(raw, default_resource="seed-tts-1.0")
+    entry = _speaker_to_builtin_entry(raw, default_resource="seed-tts-2.0")
     assert entry["id"] == "zh_female_cute_uranus_bigtts"
     assert entry["name"] == "甜美女声"
     assert entry["gender"] == "female"
@@ -111,7 +111,7 @@ def test_p2_1_ls4_speaker_to_builtin_entry_no_emotion():
         "Languages": [{"Language": "zh"}],
         "ResourceID": "seed-tts-1.0",
     }
-    entry = _speaker_to_builtin_entry(raw, default_resource="seed-tts-1.0")
+    entry = _speaker_to_builtin_entry(raw, default_resource="seed-tts-2.0")
     assert entry["supports_emotion"] is False
     assert entry["free"] is False  # 远程表不带 free 字段，按 False
     assert entry["languages"] == ["zh"]
@@ -129,7 +129,7 @@ def test_p2_1_ls4_speaker_fallback_unknown_gender_age():
         "Languages": [],
         "ResourceID": "seed-tts-1.0",
     }
-    entry = _speaker_to_builtin_entry(raw, default_resource="seed-tts-1.0")
+    entry = _speaker_to_builtin_entry(raw, default_resource="seed-tts-2.0")
     assert entry["gender"] == "neutral"
     assert entry["age"] == "youth"
     assert entry["languages"] == ["zh"]  # 无语言时兜底中文
@@ -232,16 +232,16 @@ async def test_p2_1_ls7_list_voices_three_layer_merge(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cfgmod.settings, "DATA_DIR", tmp_path)
 
-    # 远程音色覆盖了内置的一个 id
+    # 远程音色覆盖了内置的一个 id（用真实的内置 2.0 id）
     mod.save_remote_voices([
-        {"id": "BV001_streaming", "name": "远程版通用女声", "model": "seed-tts-2.0"},
+        {"id": "zh_female_vv_uranus_bigtts", "name": "远程版 Vivi", "model": "seed-tts-2.0"},
         {"id": "BV999_streaming", "name": "仅远程", "model": "seed-tts-1.0"},
     ])
     # 自定义覆盖了远程的一个 id
     custom = tmp_path / "voices_doubao.json"
     custom.write_text(
         json.dumps([
-            {"id": "BV001_streaming", "name": "用户自定义版", "zh_tags": ["自定义"]},
+            {"id": "zh_female_vv_uranus_bigtts", "name": "用户自定义版", "zh_tags": ["自定义"]},
         ], ensure_ascii=False),
         encoding="utf-8",
     )
@@ -250,12 +250,12 @@ async def test_p2_1_ls7_list_voices_three_layer_merge(tmp_path, monkeypatch):
     voices = await v3.list_voices()
     by_id = {v["id"]: v for v in voices}
 
-    # 自定义顶：BV001 → 用户自定义版
-    assert by_id["doubao:BV001_streaming"]["name"] == "用户自定义版"
-    # 远程：BV999（仅远程有）
+    # 自定义顶：zh_female_vv → 用户自定义版
+    assert by_id["doubao:zh_female_vv_uranus_bigtts"]["name"] == "用户自定义版"
+    # 远程：BV999（仅远程有，远程表可声明 1.0）
     assert "doubao:BV999_streaming" in by_id
-    # 内置：BV002 等其他内置仍存在
-    assert "doubao:BV002_streaming" in by_id
+    # 内置：其他 2.0 内置仍存在
+    assert "doubao:zh_male_qingcang_uranus_bigtts" in by_id
 
 
 # ---------------------------------------------------------------------
@@ -344,7 +344,7 @@ async def test_p2_1_ls3_fetch_remote_voices_paginates(monkeypatch):
         raise AssertionError(f"不应再翻页：page={page}")
 
     monkeypatch.setattr(mod, "_fetch_one_page", _fake_one_page)
-    voices = await mod.fetch_remote_voices(resource_ids=("seed-tts-1.0",))
+    voices = await mod.fetch_remote_voices(resource_ids=("seed-tts-2.0",))
     assert page_calls == [1, 2, 3]
     assert len(voices) == 70
     # 第三页数量不足时停止

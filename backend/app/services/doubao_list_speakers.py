@@ -1,7 +1,7 @@
 """P2-1：豆包 ListSpeakers 官方接口客户端。
 
 对接 [ListSpeakers - 大模型音色列表(新接口)](https://www.volcengine.com/docs/6561/2160690?lang=zh)，
-按 ResourceID 分别拉取 seed-tts-1.0 / seed-tts-2.0 / seed-icl-2.0 的全部官方音色，
+按 ResourceID 分别拉取 seed-tts-2.0 / seed-icl-2.0 的全部官方音色，
 转成与 `_BUILTIN_VOICES` 兼容的 dict，写到 `data/voices_doubao_remote.json`。
 
 鉴权：
@@ -39,8 +39,10 @@ _LIST_SPEAKERS_REGION = "cn-north-1"
 _LIST_SPEAKERS_VERSION = "2025-05-20"
 _LIST_SPEAKERS_ACTION = "ListSpeakers"
 
-# 我们要拉取的三个 model（与 provider 的 ResourceID 一致）
-_RESOURCE_IDS: tuple[str, ...] = ("seed-tts-1.0", "seed-tts-2.0", "seed-icl-2.0")
+# 我们要拉取的 model（与 provider 的 ResourceID 一致）。
+# 不再拉取 seed-tts-1.0：1.0 小模型音色已整表下线，且当前账号未开通该资源
+# （v3 请求会 403 resource not granted）。
+_RESOURCE_IDS: tuple[str, ...] = ("seed-tts-2.0", "seed-icl-2.0")
 
 # 单页最大 30（官方示例值；Limit 字段必须 string，与示例对齐）
 _PAGE_SIZE = "30"
@@ -151,7 +153,9 @@ _GENDER_MAP = {"男": "male", "女": "female"}
 _AGE_MAP = {"儿童": "child", "少年": "teen", "青年": "youth", "中年": "middle", "老年": "senior"}
 
 
-def _speaker_to_builtin_entry(speaker: dict[str, Any], default_resource: str) -> dict[str, Any]:
+def _speaker_to_builtin_entry(
+    speaker: dict[str, Any], default_resource: str = "seed-tts-2.0"
+) -> dict[str, Any]:
     """把 ListSpeakers 返回的单条 Speaker 转成内置 _BUILTIN_VOICES 同结构的 dict。"""
     voice_type = str(speaker.get("VoiceType") or "").strip()
     name = str(speaker.get("Name") or voice_type or "未命名")
@@ -187,7 +191,7 @@ def _speaker_to_builtin_entry(speaker: dict[str, Any], default_resource: str) ->
         "supports_subtitle": True,
         "supports_language": len(languages) > 1,
         # free 字段官方 ListSpeakers 不返回，保守按 False 标注
-        # （运营场景：依赖内置白名单 `free=True` 标的 21 款；远程表里 free 留给"促销期"标注）
+        # （1.0 免费白名单已随小模型音色整表下线；远程表里 free 留给"促销期"标注）
         "free": False,
         "model": model,
         "zh_tags": scene or ["远程"],

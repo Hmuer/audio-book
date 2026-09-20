@@ -505,10 +505,12 @@ def _seg_cache_key(
 
 
 def _voice_model_lookup(voice_id: str) -> str:
-    """P1-7：根据 voice_id 反查豆包模型名（seed-tts-1.0 / seed-tts-2.0 / seed-icl-2.0）。
+    """P1-7：根据 voice_id 反查豆包模型名（seed-tts-2.0 / seed-icl-2.0）。
 
     优先复用 tts.py 内置的 `_voice_supports_emotion` 体系：找不到则用启发式
-    （icl_/S_ 前缀 → seed-icl-2.0；其他 → seed-tts-1.0）。供缓存 key 区分用。
+    （icl_/S_ 前缀 → seed-icl-2.0；其他 → seed-tts-2.0）。供缓存 key 区分用。
+    兜底用 2.0 而不是 1.0：内置表已无 1.0 音色（1.0 资源账号也未开通），
+    继续兜底 1.0 只会让缓存键里留一个永远不会被真实使用的模型名。
     """
     if not voice_id:
         return ""
@@ -525,11 +527,11 @@ def _voice_model_lookup(voice_id: str) -> str:
         from backend.app.ai.providers.doubao.tts import _BUILTIN_VOICES
         for v in _BUILTIN_VOICES:
             if v["id"] == bare:
-                return str(v.get("model") or "seed-tts-1.0")
+                return str(v.get("model") or "seed-tts-2.0")
     except Exception:
         pass
-    # 3. 兜底：默认小模型
-    return "seed-tts-1.0"
+    # 3. 兜底：默认 2.0
+    return "seed-tts-2.0"
 
 
 def _context_texts_hash(instruction: str) -> str:
