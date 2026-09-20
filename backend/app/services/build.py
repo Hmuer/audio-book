@@ -2295,6 +2295,9 @@ class BuildEstimateResp(BaseModel):
     est_llm_calls: int             # prepare 阶段 LLM 调用估算（已 prepare 过则为 0）
     prepared: bool                 # 项目是否已 prepare（决定 est_llm_calls 是否有意义）
     has_dialogues: bool            # 是否已有对白归属数据
+    tts_chars: int                 # 计费字符数：实际下发的 TTS 文本字数（含标点、含标题）
+    price_per_char_cny: float      # 单价（元/字），由后端下发，避免前端写死
+    est_tts_cost_cny: float        # 预估合成费用（元）= tts_chars × 单价
 
 
 async def estimate_project_build(project_id: str, speed: float = 1.0) -> BuildEstimateResp:
@@ -2302,6 +2305,11 @@ async def estimate_project_build(project_id: str, speed: float = 1.0) -> BuildEs
 
     中文 TTS 语速经验值：约 4.2 字/秒（1.0x），MP3 128kbps ≈ 16KB/s。
     缓存命中会显著减少真实调用量，这里给的是"冷缓存上限"。
+
+    费用预估：豆包字符版按「文本字符数（含标点）」计费，单价见
+    `settings.DOUBAO_TTS_PRICE_PER_CHAR`（默认 0.0003 元/字）。计费基数取
+    **实际下发给 TTS 的段文本**之和（正文旁白 + 对白 + 标题），与逐段请求一一对应；
+    语音指令（context_texts）官方明确不计费，故不计入。
     """
     from ..core.config import settings as _settings
 
@@ -2327,13 +2335,23 @@ async def estimate_project_build(project_id: str, speed: float = 1.0) -> BuildEs
 
     total_chars = sum(len(ch.text) for ch in chapters)
     seg_count = 0
+    # 计费字符数 = 非静音段文本之和（标题段也算，它同样要发给 TTS）
+    tts_chars = 0
     for ch in chapters:
         segs, _ = _build_segments_for_chapter(
             ch, dialogues_by_chapter.get(ch.idx, []),
             narrator_voice_id="est", voice_assignments={},
             segment_overrides=None, start_idx=0,
         )
-        seg_count += sum(1 for sg in segs if sg.kind != "silence")
+        for sg in segs:
+            if sg.kind == "silence":
+                continue
+            seg_count += 1
+            tts_chars += len(sg.text or "")
+
+    price_per_char = float(
+        getattr(_settings, "DOUBAO_TTS_PRICE_PER_CHAR", 0.0003) or 0.0003
+    )
 
     sp = max(0.5, min(2.0, float(speed or 1.0)))
     chars_per_sec = 4.2 * sp
@@ -2367,6 +2385,9 @@ async def estimate_project_build(project_id: str, speed: float = 1.0) -> BuildEs
         est_llm_calls=est_llm_calls,
         prepared=prepared,
         has_dialogues=len(all_dialogues) > 0,
+        tts_chars=tts_chars,
+        price_per_char_cny=price_per_char,
+        est_tts_cost_cny=round(tts_chars * price_per_char, 2),
     )
 
 

@@ -115,6 +115,14 @@ class Settings(BaseSettings):
     # 设为空串 "" 则完全不下发该字段（等价于旧行为）。
     DOUBAO_TTS_MODEL: str = "seed-tts-2.0-expressive"
 
+    # ===== 合成费用预估 =====
+    # 豆包语音合成（字符版）按「文本字符数（含标点）」计费，官方价 0.0003 元/字。
+    # 只用于 /estimate 的**预估展示**，不参与任何计费口径计算（真实用量由上游 sidecar
+    # 的 usage.text_words 决定）。语音指令 context_texts 的文字官方明确**不计费**，
+    # 因此预估基数只取实际下发给 TTS 的正文/对白/标题文本。
+    # 价格调整时改这里即可（前端展示的单位价也走接口返回，不写死）。
+    DOUBAO_TTS_PRICE_PER_CHAR: float = 0.0003
+
     # ===== P1-4: 合成期采样率/响度统一（所有段在合成时统一 sample_rate/loudness） =====
     # 默认 24000Hz 与豆包 v3 audio_params 默认值一致；m4b 后处理保留 loudnorm 兜底
     DOUBAO_AUDIO_SAMPLE_RATE: int = 24000

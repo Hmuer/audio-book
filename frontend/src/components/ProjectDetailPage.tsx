@@ -2271,6 +2271,17 @@ function CreateBuildModal({
               <span className="chip-soft">≈{estimate.est_tts_segments} 段 TTS 调用</span>
               <span className="chip-soft">≈{estimate.est_audio_minutes} 分钟音频</span>
               <span className="chip-soft">≈{estimate.est_zip_mb} MB</span>
+              <span
+                className="chip-soft"
+                title={
+                  `按豆包语音合成 ${estimate.price_per_char_cny} 元/字估算：`
+                  + `计费字数 ${estimate.tts_chars.toLocaleString()} 字`
+                  + '（实际下发给 TTS 的正文/对白/标题，含标点；语音指令文字不计费）。'
+                  + '缓存命中的段落不再重复调用，实际费用会更低。'
+                }
+              >
+                ≈¥{estimate.est_tts_cost_cny.toFixed(2)} 合成费用
+              </span>
               {estimate.prepared
                 ? <span className="chip-soft">已识别（无需再调 LLM）</span>
                 : <span className="chip-soft">需先识别 ≈{estimate.est_llm_calls} 次 LLM</span>}

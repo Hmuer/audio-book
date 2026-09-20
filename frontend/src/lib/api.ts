@@ -789,6 +789,12 @@ export interface BuildEstimateResp {
   est_llm_calls: number;
   prepared: boolean;
   has_dialogues: boolean;
+  /** 计费字符数：实际下发给 TTS 的文本字数（含标点、含标题；不含语音指令文字） */
+  tts_chars: number;
+  /** 单价（元/字），后端下发，避免前端写死 */
+  price_per_char_cny: number;
+  /** 预估合成费用（元）= tts_chars × 单价 */
+  est_tts_cost_cny: number;
 }
 
 // 项目累计供应商用量（GET /projects/{id}/usage）
