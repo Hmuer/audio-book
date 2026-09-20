@@ -488,17 +488,21 @@ def _seg_cache_key(
     *, emotion: str = "", instruction: str = "",
     model: str = "", context_texts_hash: str = "",
     sample_rate: int | str = "",
+    tts_model: str = "",
 ) -> str:
-    """段级缓存键。emotion/instruction/model/context_texts/sample_rate 参与哈希：
+    """段级缓存键。emotion/instruction/model/context_texts/sample_rate/tts_model 参与哈希：
     不同情感 / 不同 model / 不同上下文音频 / 不同采样率一般不同，必须参与键。
     全部为空时与旧版键完全一致，历史缓存仍可命中。
-    sample_rate 仅在非空时参与键（P1-4 settings 改了采样率后必须失效）。"""
+    sample_rate 仅在非空时参与键（P1-4 settings 改了采样率后必须失效）。
+    tts_model 是 `req_params.model`（standard / expressive）—— 它决定语音指令是否生效，
+    切了它必须失效，否则改完设置重建仍会命中旧的 standard 无情绪音频。"""
     style_part = ""
-    if emotion or instruction or model or context_texts_hash or sample_rate:
+    if emotion or instruction or model or context_texts_hash or sample_rate or tts_model:
         # P1-7：model + context_texts_hash 参与哈希（v3 切 model / 切 instruction_text 后必须失效）
         # P1-4：sample_rate 参与哈希（settings 改采样率后必须失效）
         style_part = (
             f"|e:{emotion}|i:{instruction}|m:{model}|c:{context_texts_hash}|sr:{sample_rate}"
+            f"|tm:{tts_model}"
         )
     raw = f"v1|{voice_id}|{speed:.2f}|{text}{style_part}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -534,6 +538,18 @@ def _voice_model_lookup(voice_id: str) -> str:
     return "seed-tts-2.0"
 
 
+def _tts_model_param() -> str:
+    """`req_params.model`（settings.DOUBAO_TTS_MODEL）。
+
+    它决定「语音指令 / 语音标签」是否生效（standard 不支持、expressive 支持，
+    见 config.py 里 DOUBAO_TTS_MODEL 的注释），因此属于**会改变产出**的合成配置：
+    必须参与段缓存键与 build 的 config_digest，否则用户改完设置重建，会命中
+    「旧 model + 无情绪」的历史缓存 / 历史成功 build，听不出任何变化。
+    空串 = 不下发该字段（旧行为）。
+    """
+    return str(getattr(settings, "DOUBAO_TTS_MODEL", "") or "").strip()
+
+
 def _context_texts_hash(instruction: str) -> str:
     """P1-7：context_texts 字符串哈希（前 16 hex），参与缓存键区分。
     空 instruction → 返回空字符串（与旧缓存兼容）。"""
@@ -556,6 +572,7 @@ async def tts_segment_cache_get(
     *, emotion: str = "", instruction: str = "",
     model: str = "", context_texts_hash: str = "",
     sample_rate: int | str = "",
+    tts_model: str = "",
 ) -> tuple[bytes, int] | None:
     """返回 (mp3_bytes, duration_ms)，未命中返回 None。先查内存，再查磁盘。
     P1-7：model + context_texts_hash 参与键计算；P1-4：sample_rate 参与键计算。
@@ -567,7 +584,7 @@ async def tts_segment_cache_get(
     key = _seg_cache_key(
         voice_id, speed, text, emotion=emotion, instruction=instruction,
         model=model, context_texts_hash=context_texts_hash,
-        sample_rate=sample_rate,
+        sample_rate=sample_rate, tts_model=tts_model,
     )
     async with _tts_seg_mem_lock:
         hit = _tts_seg_mem_cache.get(key)
@@ -599,13 +616,14 @@ async def tts_segment_cache_put(
     *, emotion: str = "", instruction: str = "",
     model: str = "", context_texts_hash: str = "",
     sample_rate: int | str = "",
+    tts_model: str = "",
 ) -> None:
     """写 TTS 段缓存：内存 + 磁盘双写。
     P1-7：model + context_texts_hash 参与键；P1-4：sample_rate 参与键。"""
     key = _seg_cache_key(
         voice_id, speed, text, emotion=emotion, instruction=instruction,
         model=model, context_texts_hash=context_texts_hash,
-        sample_rate=sample_rate,
+        sample_rate=sample_rate, tts_model=tts_model,
     )
     async with _tts_seg_mem_lock:
         _tts_seg_mem_cache[key] = (mp3_bytes, int(dur_ms))
@@ -649,6 +667,7 @@ def _calc_config_digest(
     narrator_instruction: str = "",
     voice_styles: dict[str, dict[str, str]] | None = None,
     content_digest: str = "",
+    tts_model: str = "",
 ) -> str:
     sorted_va = dict(sorted((voice_assignments or {}).items()))
     sorted_styles = dict(sorted((voice_styles or {}).items()))
@@ -667,6 +686,10 @@ def _calc_config_digest(
             # 用户润色正文、重新识别对白、增删发音规则后，只要音色语速不变，
             # digest 不变 → 直接命中历史成功 build，新内容永远不会被合成。
             "content": content_digest or "",
+            # req_params.model（standard / expressive）决定语音指令是否真的生效，
+            # 属于会影响产出的合成配置：不纳入 digest 的话，切了 model 重新合成会
+            # 命中历史成功 build 直接复用旧产物，用户听不出任何变化。
+            "tts_model": tts_model or "",
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -1064,6 +1087,7 @@ async def _start_build_impl(
             narrator_instruction=narrator_instruction,
             voice_styles=voice_styles,
             content_digest=content_digest,
+            tts_model=_tts_model_param(),
         )
 
         stmt_active = select(Build).where(
@@ -1890,13 +1914,16 @@ async def _run_build_inner(
                 # P1-4：sample_rate 参与缓存键（settings 改采样率后必须失效）
                 seg_model = _voice_model_lookup(vid)
                 seg_ctx_hash = _context_texts_hash(seg_ins)
+                # req_params.model（standard / expressive）：决定指令是否真的生效，
+                # 必须进缓存键，否则切完设置还会命中旧的「无情绪」音频
+                seg_tts_model = _tts_model_param()
                 seg_sample_rate = int(
                     getattr(settings, "DOUBAO_AUDIO_SAMPLE_RATE", 24000) or 24000
                 )
                 cached = await tts_segment_cache_get(
                     vid, speed, s.text, emotion=seg_emo, instruction=seg_ins,
                     model=seg_model, context_texts_hash=seg_ctx_hash,
-                    sample_rate=seg_sample_rate,
+                    sample_rate=seg_sample_rate, tts_model=seg_tts_model,
                 )
                 if cached is not None:
                     mp3_b, dur_ms = cached
@@ -1916,7 +1943,7 @@ async def _run_build_inner(
                     vid, speed, s.text, data, dur,
                     emotion=seg_emo, instruction=seg_ins,
                     model=seg_model, context_texts_hash=seg_ctx_hash,
-                    sample_rate=seg_sample_rate,
+                    sample_rate=seg_sample_rate, tts_model=seg_tts_model,
                 )
                 return s, data, dur
 

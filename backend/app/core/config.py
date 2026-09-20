@@ -102,6 +102,19 @@ class Settings(BaseSettings):
     # v3 端点覆写（生产/测试可指代理/沙箱）
     DOUBAO_TTS_V3_BASE_URL: str = ""
 
+    # ===== v3 `req_params.model`：决定「语音指令 / 语音标签」是否生效 =====
+    # ⚠️ 这是「逐段语音指令（context_texts）」能不能起作用的总闸门。
+    # 官方《模型列表》写明：豆包语音合成大模型 2.0 有两个版本，能力不同：
+    #   - seed-tts-2.0-standard（接口默认）：延时更优、表现稳定，
+    #     **不支持语音指令 QA 和语音标签 CoT**；
+    #   - seed-tts-2.0-expressive：表现力较强，**支持语音指令 QA 和语音标签 CoT**，
+    #     但官方提示「生成效果稳定性存在波动，可能需多次尝试以获得理想结果」。
+    # 本项目此前从不传 model → 一律落在 standard → 逐段指令发出去也被**静默忽略**
+    # （2026-09-20 用户反馈「指令不生效」的根因）。故默认切 expressive。
+    # 想回到更稳但无情绪控制的行为：设为 "seed-tts-2.0-standard"；
+    # 设为空串 "" 则完全不下发该字段（等价于旧行为）。
+    DOUBAO_TTS_MODEL: str = "seed-tts-2.0-expressive"
+
     # ===== P1-4: 合成期采样率/响度统一（所有段在合成时统一 sample_rate/loudness） =====
     # 默认 24000Hz 与豆包 v3 audio_params 默认值一致；m4b 后处理保留 loudnorm 兜底
     DOUBAO_AUDIO_SAMPLE_RATE: int = 24000

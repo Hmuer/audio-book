@@ -1624,6 +1624,15 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
         payload_extras: dict[str, Any] = {}
         if speaker_style:
             payload_extras["speaker_style"] = speaker_style
+        # ⚠️ model 是「语音指令 / 语音标签」的总开关（2026-09-20 用户反馈「指令不生效」的根因）：
+        # 官方《模型列表》写明 2.0 分两版 —— seed-tts-2.0-standard（接口默认）**不支持
+        # 语音指令 QA 和语音标签 CoT**，只有 seed-tts-2.0-expressive 支持。本项目此前
+        # 从不传 model，于是指令发出去也被上游**静默忽略**，听感与不加指令完全一样。
+        # 复刻音色不下发：官方 HTTP 文档写明「model 仅当 speaker 为复刻音色时需指定，
+        # 且指定后不支持 context_texts」——复刻场景保住 context_texts 更有价值。
+        tts_model = str(getattr(settings, "DOUBAO_TTS_MODEL", "") or "").strip()
+        if tts_model and not is_clone_speaker:
+            payload_extras["model"] = tts_model
         if instruction_text and not is_clone_speaker:
             payload_extras["context_texts"] = [str(instruction_text)]
         elif instruction_text:
