@@ -23,6 +23,8 @@
   T-S5  真正的业务错误码（45000001）仍抛错，且 code 透传
   T-S6  成功码但无任何音频字段 → 报错里带出实际收到的字段名（便于定位）
   T-S7  先收到音频分片、中途才报错 → 仍必须抛错（不得返回被截断的音频）
+  T-S8  未知成功码 + message=OK → 按文档口径仍判成功
+  T-S9  未知码 + 非 OK message → 判失败（放宽判定不能吞掉真错误）
 """
 from __future__ import annotations
 
@@ -217,3 +219,37 @@ async def test_ts7_error_after_audio_must_not_return_truncated(monkeypatch):
         await p.synthesize_to_bytes("你好", "doubao:zh_female_vv_uranus_bigtts")
 
     assert ei.value.code == 55000000
+
+
+# ---------------------------------------------------------------------
+# T-S8：未知成功码 + message=OK → 按文档口径仍判成功
+#
+# 文档写的是「message 返回 OK 则表示语音合成成功」。我们已经在「成功码只有 0」
+# 上错过一次，不要再赌第二个码，所以以 message 为主判定、code 白名单为辅。
+# ---------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_ts8_message_ok_is_success_for_unknown_code(monkeypatch):
+    _install_fake_stream(monkeypatch, [
+        {"code": 20000009, "message": "OK", "data": _b64(_AUDIO)},
+    ])
+    p = _make_provider(monkeypatch)
+
+    data, _dur = await p.synthesize_to_bytes("你好", "doubao:zh_female_vv_uranus_bigtts")
+
+    assert data == _AUDIO
+
+
+# ---------------------------------------------------------------------
+# T-S9：未知码 + 非 OK message → 判失败（放宽判定不能把真错误吞掉）
+# ---------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_ts9_unknown_code_with_non_ok_message_raises(monkeypatch):
+    _install_fake_stream(monkeypatch, [
+        {"code": 40000001, "message": "some upstream failure"},
+    ])
+    p = _make_provider(monkeypatch)
+
+    with pytest.raises(DoubaoTTSResponseV3Error) as ei:
+        await p.synthesize_to_bytes("你好", "doubao:zh_female_vv_uranus_bigtts")
+
+    assert ei.value.code == 40000001

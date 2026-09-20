@@ -1249,6 +1249,31 @@ _V3_RETRYABLE_NETWORK = True  # 网络错 / 5xx / 429 重试
 _V3_SUCCESS_CODES: frozenset[int] = frozenset({0, 20000000})
 
 
+def _v3_chunk_is_success(obj: dict) -> bool:
+    """判断一个流式 chunk 是否为成功响应。
+
+    文档《单向流式语音合成HTTP》对成功条件有两处表述：「`code` 返回 0 则表示
+    语音合成成功」与「`message` 返回 OK 则表示语音合成成功」；实测又出现
+    `code=20000000` + `message=OK`（见 `_V3_SUCCESS_CODES`）。因此**以 message
+    为准、code 白名单为辅**，任一命中即视为成功 —— 我们已经在「成功码只有 0」
+    这个假设上错过一次，不要再赌第二个码。
+
+    误判为成功的代价可控：真正的失败响应没有 `data` 字段，随后会命中
+    「无音频分片」检查并抛出带字段名线索的错误，不会静默产出坏音频。
+    """
+    if str(obj.get("message") or "").strip().upper() == "OK":
+        return True
+    code_val = obj.get("code")
+    if code_val is None:
+        # 既没有 message 也没有 code：无法判定为失败，交给后续「无音频分片」兜住
+        return True
+    try:
+        return int(code_val) in _V3_SUCCESS_CODES
+    except (TypeError, ValueError):
+        return False
+
+
+
 
 class DoubaoTTSResponseV3Error(RuntimeError):
     """v3 协议错误：HTTP 失败 + 业务码非 0 都会抛此。"""
@@ -1633,11 +1658,8 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                     )
                 resp.raise_for_status()
                 chunks: list[bytes] = []
-                saw_error = False
-                err_msg = ""
-                err_code = -1
                 # 诊断用：记下实际收到过哪些字段名。协议字段名一旦猜错，
-                # 「响应无 audio chunk」这种报错本身不提供任何线索，只能靠这里。
+                # 「无音频分片」这种报错本身不提供任何线索，只能靠这里。
                 seen_keys: list[str] = []
                 async for line in resp.aiter_lines():
                     line = (line or "").strip()
@@ -1653,13 +1675,22 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                     for k in obj:
                         if k not in seen_keys and len(seen_keys) < 12:
                             seen_keys.append(k)
-                    # 失败 chunk：成功码见 _V3_SUCCESS_CODES（0 与 20000000 都表示 OK）
-                    code_val = obj.get("code")
-                    if code_val is not None and int(code_val) not in _V3_SUCCESS_CODES:
-                        saw_error = True
-                        err_code = int(code_val)
+                    # 失败 chunk：成功判定见 _v3_chunk_is_success（message=OK 或
+                    # code 命中白名单；0 与 20000000 都表示 OK）
+                    if not _v3_chunk_is_success(obj):
+                        # 上游返回失败 chunk：**即使已经收到若干音频分片也必须抛错**。
+                        # 旧实现是「只在 chunks 为空时才抛」，于是「先收到 N 个音频分片、
+                        # 中途才报错」会把**被截断的 MP3** 当成功返回 —— 上层据此写盘、
+                        # 记账、算时长，用户听到半句且字幕/进度全部错位（静默数据错误）。
+                        err_code = int(obj.get("code") or -1)
                         err_msg = str(obj.get("message") or "")
-                        continue
+                        if chunks:
+                            err_msg = f"{err_msg}（已收到 {len(chunks)} 个音频分片，仍判定失败）"
+                        raise DoubaoTTSResponseV3Error(
+                            f"v3 TTS 业务错：code={err_code} msg={err_msg}",
+                            code=err_code,
+                            logid=logid,
+                        )
                     # 音频字段：官方文档《单向流式语音合成HTTP》响应示例为 `data`
                     # （"data": "<base64 encoded audio chunk>"）。`audio` 是历史实现
                     # 猜错的名字，保留兜底以兼容可能存在的其它版本。
@@ -1670,17 +1701,6 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                         except Exception:
                             # 单段解码失败不致命，继续收后续 chunk
                             continue
-                if saw_error:
-                    # 上游中途返回错误 chunk：**即使已经收到若干音频分片也必须抛错**。
-                    # 旧实现是 `saw_error and not chunks`，于是「先收到 N 个音频分片、
-                    # 中途才报错」会把**被截断的 MP3** 当成功返回 —— 上层据此写盘、
-                    # 记账、算时长，用户听到半句且字幕/进度全部错位（静默数据错误）。
-                    raise DoubaoTTSResponseV3Error(
-                        f"v3 TTS 业务错：code={err_code} msg={err_msg}"
-                        + (f"（已收到 {len(chunks)} 个音频分片，仍判定失败）" if chunks else ""),
-                        code=err_code,
-                        logid=logid,
-                    )
                 if not chunks:
                     raise DoubaoTTSResponseV3Error(
                         "v3 TTS 响应无音频分片（成功码但既无 data 也无 audio 字段）"
