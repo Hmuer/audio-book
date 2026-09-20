@@ -117,11 +117,37 @@ async def _aggregate_voice_pool(user_id: int | None = None) -> list[dict]:
             # 后到的同 id（理论上不应该出现）覆盖前者；保留 provider 信息
             merged[vid] = v
     pool = list(merged.values())
+    before = len(pool)
+    pool = [v for v in pool if _is_usable_voice(v)]
+    if len(pool) != before:
+        logger.info(
+            f"[voice_recommender] 剔除 v3 走不通的豆包 1.0 音色 "
+            f"{before - len(pool)} 个（剩余 {len(pool)}）"
+        )
     logger.info(
         f"[voice_recommender] 聚合音色池 user_id={user_id} count={len(pool)} "
         f"providers={sorted({v.get('provider', '?') for v in pool})}"
     )
     return pool
+
+
+def _is_usable_voice(voice: dict) -> bool:
+    """推荐池只保留当前豆包链路真能合成的音色。
+
+    豆包走 v3（默认）时，v3 端点官方只支持 seed-tts-2.0 / seed-icl-2.0 两类资源；
+    音色表里那 94 个 model=seed-tts-1.0 的 BV* 小模型音色会被要求 1.0 资源
+    （volc.service_type.10029），账号未开通时合成必然 403 + code=45000030
+    —— 推荐给用户等于保证 Build 失败。关掉 DOUBAO_TTS_USE_V3 退回 v1 时不过滤。
+    """
+    try:
+        from ..core.config import settings
+        if not bool(getattr(settings, "DOUBAO_TTS_USE_V3", True)):
+            return True
+    except Exception:
+        # 读不到配置时不筛（宁可多给候选，也不要因配置异常清空音色池）
+        return True
+    from ..ai.providers.doubao.tts import is_voice_usable_on_v3
+    return is_voice_usable_on_v3(voice)
 
 
 # ----------------------------------------------------------------------

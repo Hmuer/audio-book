@@ -1776,6 +1776,31 @@ def _resolve_resource_id_for_v3(model: str) -> str:
     return "seed-tts-1.0"
 
 
+# v3 端点（DOUBAO_TTS_USE_V3=True，当前默认路径）官方只支持这两类合成资源：
+#   seed-tts-2.0 → *_uranus_bigtts 等 2.0 官方音色
+#   seed-icl-2.0 → 声音复刻音色
+# 音色表里标 model=seed-tts-1.0 的 BV* 小模型音色，在 v3 上会被要求 1.0 资源
+# （服务端别名 volc.service_type.10029），账号未开通时直接 403 + code=45000030
+# "requested resource not granted"（实测 2026-09-20 音色 BV158_streaming）。
+_V3_SUPPORTED_MODELS: frozenset[str] = frozenset({"seed-tts-2.0", "seed-icl-2.0"})
+
+
+def is_voice_usable_on_v3(voice: dict[str, Any]) -> bool:
+    """判断音色是否落在 v3 端点支持的资源上（供音色推荐筛选用）。
+
+    只对 `provider="doubao"` 生效；`icl:` 前缀与缺失 `model` 元数据的一律放行
+    —— 宁可不筛，也不要误伤复刻音色和用户自定义音色。
+    """
+    if (voice.get("provider") or "") != "doubao":
+        return True
+    if str(voice.get("id") or "").startswith("icl:"):
+        return True
+    model = str(voice.get("model") or "").strip().lower()
+    if not model:
+        return True
+    return model in _V3_SUPPORTED_MODELS
+
+
 def _v3_http_error_hint(status_code: int, body: str) -> str:
     """把网关级 4xx 的裸响应翻译成可操作提示。
 

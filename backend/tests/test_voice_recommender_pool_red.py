@@ -108,8 +108,11 @@ async def test_aggregate_voice_pool_includes_all_providers(patch_factory):
     assert "minimax:male-qn-qingse" in ids
     assert "doubao:zh_female_vv_uranus_bigtts" in ids
     assert "icl:clone_abc" in ids
-    # 共 6 个（2 + 3 + 1）
-    assert len(pool) == 6
+    # BV120 是 model=seed-tts-1.0 的小模型音色，v3 端点不支持该资源
+    # （实测 403 + code=45000030），推荐池里必须已经剔除
+    assert "doubao:BV120_streaming" not in ids
+    # 共 5 个（2 minimax + 2 doubao + 1 icl；BV120 被过滤）
+    assert len(pool) == 5
     # 每项带 provider 字段
     providers = {v.get("provider") for v in pool}
     assert providers == {"minimax", "doubao", "icl"}
@@ -194,7 +197,7 @@ async def test_recommend_prompt_contains_all_three_providers(patch_factory):
     m = re.search(r"【音色列表】\s*(\[.*?\])\s*$", prompt, re.DOTALL)
     assert m, "prompt 末尾应有【音色列表】JSON 块"
     voices_block = json.loads(m.group(1))
-    assert isinstance(voices_block, list) and len(voices_block) >= 6
+    assert isinstance(voices_block, list) and len(voices_block) >= 5
     # 每条音色 dict 含 provider 字段
     for v in voices_block:
         assert "id" in v and "provider" in v, f"音色 {v} 缺少 id/provider"
