@@ -2043,10 +2043,19 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("POST", url, headers=headers, json=payload) as resp:
                 logid = resp.headers.get("X-Tt-Logid") or resp.headers.get("x-tt-logid")
-                if resp.status_code == 429 or 500 <= resp.status_code < 600:
-                    # 让上层走重试：抛 httpx.HTTPStatusError
-                    await resp.aread()
-                    resp.raise_for_status()
+                if resp.status_code >= 400:
+                    # 非 2xx 必须先把 body 读出来：上游会把真正原因放在 body 里
+                    # （形如 {"code":45000001,"message":"[Invalid argument] speaker not found"}），
+                    # 而 `raise_for_status()` 只带状态码 —— 光看 "403 Forbidden" 无法区分
+                    # 「Key 没有该资源权限」和「X-Api-Resource-Id 与音色不匹配」，
+                    # 排查时会完全卡住（旧实现在 4xx 直接 raise，body 被丢弃）。
+                    raw = await resp.aread()
+                    body = raw.decode("utf-8", "replace").strip()
+                    raise httpx.HTTPStatusError(
+                        f"HTTP {resp.status_code}: {body[:500] or '(empty body)'}",
+                        request=getattr(resp, "request", None),
+                        response=resp,
+                    )
                 resp.raise_for_status()
                 chunks: list[bytes] = []
                 saw_error = False
@@ -2118,6 +2127,10 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
         )
         speaker_for_api = _strip_voice_id_for_api_v3(voice_id)
         headers = self._auth_headers(speaker_id=speaker_for_api)
+        # 诊断用：401/403 这类网关级拒绝（Key 无该资源权限、resource id 与音色
+        # 不匹配、服务未开通）光看状态码无法定位，必须把「实际发出的音色 + 实际
+        # 发出的 X-Api-Resource-Id」一起带进日志和异常消息。
+        resource_id = headers.get("X-Api-Resource-Id", "")
 
         last_exc: Exception | None = None
         for attempt in range(1, self.MAX_RETRIES + 1):
@@ -2170,6 +2183,7 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                 if attempt >= self.MAX_RETRIES or not is_retryable:
                     logger.warning(
                         f"[DoubaoTTS-v3] 放弃重试（attempt={attempt}/{self.MAX_RETRIES}）："
+                        f"speaker={speaker_for_api} resource_id={resource_id} "
                         f"{type(e).__name__}: {e}"
                     )
                     break
@@ -2185,7 +2199,10 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
         assert last_exc is not None
         # P1-6：final 错也带 logid（如能从 last_exc 继承）
         logid_final = getattr(last_exc, "logid", None)
-        msg = f"豆包 TTS v3 合成失败：{type(last_exc).__name__}: {last_exc}"
+        msg = (
+            f"豆包 TTS v3 合成失败：speaker={speaker_for_api} "
+            f"X-Api-Resource-Id={resource_id}：{type(last_exc).__name__}: {last_exc}"
+        )
         if logid_final:
             msg = f"{msg} logid={logid_final}"
         err = RuntimeError(msg)

@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+.venv/
 backend/.venv/
 backend/build/
 backend/dist/
