@@ -13,6 +13,8 @@
   T-B1 403 带 JSON body：body 文本 + speaker + resource_id 都进入最终异常
   T-B2 4xx 空 body → 占位 "(empty body)"，message 不留空白
   T-B3 403 属网关级拒绝：不重试（只发 1 次请求）
+  T-B4 45000030「requested resource not granted」→ 翻译成可操作提示
+  T-B5 其它 401/403 → 兜底提示（不猜具体 code）
 """
 from __future__ import annotations
 
@@ -149,3 +151,44 @@ async def test_b3_403_is_not_retried(monkeypatch):
         await p.synthesize_to_bytes("你好", "doubao:BV001_streaming")
 
     assert counter["n"] == 1, f"403 不应重试，实际请求 {counter['n']} 次"
+
+
+# ---------------------------------------------------------------------
+# T-B4：45000030「requested resource not granted」→ 翻译成可操作提示
+#
+# 实测响应体（2026-09-20，音色 BV158_streaming / resource_id=seed-tts-1.0）：
+#   {"header":{"reqid":"...","code":45000030,
+#    "message":"[resource_id=volc.service_type.10029] requested resource not granted"}}
+# 这是「账号没开通该资源」，跟文本/音色无关，裸 403 无法自解释。
+# ---------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_b4_resource_not_granted_gets_actionable_hint(monkeypatch):
+    body = (
+        b'{"header":{"reqid":"novel-x","code":45000030,'
+        b'"message":"[resource_id=volc.service_type.10029] '
+        b'requested resource not granted"}}'
+    )
+    _install_fake_client(monkeypatch, status_code=403, body=body)
+    p = _make_provider(monkeypatch)
+
+    with pytest.raises(RuntimeError) as ei:
+        await p.synthesize_to_bytes("你好", "doubao:BV158_streaming")
+
+    s = str(ei.value)
+    assert "requested resource not granted" in s  # 原始响应体仍在
+    assert "账号未开通" in s, f"应给出可操作提示：{s}"
+    assert "seed-tts-2.0" in s, f"应指出替代方案：{s}"
+
+
+# ---------------------------------------------------------------------
+# T-B5：其它 401/403 也给一句兜底提示（不猜具体 code）
+# ---------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_b5_generic_403_gets_fallback_hint(monkeypatch):
+    _install_fake_client(monkeypatch, status_code=403, body=b"forbidden")
+    p = _make_provider(monkeypatch)
+
+    with pytest.raises(RuntimeError) as ei:
+        await p.synthesize_to_bytes("你好", "doubao:BV001_streaming")
+
+    assert "鉴权/资源未授权" in str(ei.value)

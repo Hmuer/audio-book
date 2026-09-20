@@ -1776,6 +1776,28 @@ def _resolve_resource_id_for_v3(model: str) -> str:
     return "seed-tts-1.0"
 
 
+def _v3_http_error_hint(status_code: int, body: str) -> str:
+    """把网关级 4xx 的裸响应翻译成可操作提示。
+
+    这些码不在官方错误码表里（表里只覆盖 HTTP 200 + code 非 0 的业务错），
+    实测 403 会回 `{"header":{"code":45000030,"message":"[resource_id=...]
+    requested resource not granted"}}` —— 意思是「该资源账号没开通」，
+    跟音色/文本都无关。不翻译的话，用户只能看到一句 403 Forbidden。
+    """
+    if "requested resource not granted" in body:
+        return (
+            "→ 该 X-Api-Resource-Id 对应的资源账号未开通（seed-tts-1.0 即 "
+            "volc.service_type.10029）。请到火山引擎控制台开通对应资源，"
+            "或改用 2.0 音色（*_uranus_bigtts，对应 seed-tts-2.0）"
+        )
+    if status_code in (401, 403):
+        return (
+            "→ 鉴权/资源未授权：确认 API Key 属于该项目，且 "
+            "X-Api-Resource-Id 已在控制台开通"
+        )
+    return ""
+
+
 class DoubaoTTSProviderV3(BaseTTSProvider):
     """豆包 TTS v3 单向流式 HTTP Provider。
 
@@ -2051,8 +2073,12 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                     # 排查时会完全卡住（旧实现在 4xx 直接 raise，body 被丢弃）。
                     raw = await resp.aread()
                     body = raw.decode("utf-8", "replace").strip()
+                    message = f"HTTP {resp.status_code}: {body[:500] or '(empty body)'}"
+                    hint = _v3_http_error_hint(resp.status_code, body)
+                    if hint:
+                        message = f"{message} {hint}"
                     raise httpx.HTTPStatusError(
-                        f"HTTP {resp.status_code}: {body[:500] or '(empty body)'}",
+                        message,
                         request=getattr(resp, "request", None),
                         response=resp,
                     )
