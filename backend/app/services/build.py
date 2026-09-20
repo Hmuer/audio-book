@@ -216,6 +216,111 @@ async def _ensure_default_narrator(narrator_voice_id: str | None) -> str:
     raise RuntimeError("音色库为空，无法合成")
 
 
+# ---------------------------------------------------------------------
+# 未归属对白（无名说话人）的兜底音色
+#
+# 背景（2026-09-20 反馈）：像
+#   「哈哈，知道吗，那个叫林轩的废物，得到了两瓶废丹。」
+#   「……废物配废丹，岂不是正好？」另一人毫不顾忌的嘲笑道
+# 这类对白在原文里**没有明确的角色归属**（"有人"/"另一人"/路人的议论）。
+# 对白归属阶段会给出一个不在角色表里的 speaker（或空 speaker），于是
+# `voice_assignments.get(speaker, narrator_voice_id)` 直接回退到**旁白音色** ——
+# 听感上变成旁白在自言自语，完全没有"有人在说话"的层次。
+#
+# 处理：为每个未知 speaker 稳定地兜一个**非旁白**音色，写进本次 Build 的
+# voice_assignments 快照（chapter.py 只认这张表，不必认识音色池）。
+# ---------------------------------------------------------------------
+
+# 兜底音色只从内置音色的「通用」场景里挑：避免给路边议论的路人配上
+# 「猴哥 2.0」「佩奇猪 2.0」这类辨识度极高、明显不符合语境的音色。
+# 注意官方音色表里该 scene 的字面值就是「通用」（不是「通用场景」）。
+_UNKNOWN_SPEAKER_VOICE_SCENE = "通用"
+
+
+def _unknown_speaker_voice_candidates(narrator_voice_id: str) -> list[str]:
+    """兜底对白音色候选：内置「通用」场景音色（排序后 id，排除旁白音色）。
+
+    - 排序是为了**稳定**：候选顺序固定，同一个说话人每次都会拿到同一个音色。
+    - 只保留声明了中文（`zh`）能力的音色：纯外语音色（如
+      `en_female_stokie_uranus_bigtts`）读中文会命中上游「成功码但音频为空」，
+      中文正文配上它们等于把对白变成静音。
+    """
+    try:
+        from ..ai.providers.doubao.tts import _BUILTIN_VOICES
+    except Exception:  # pragma: no cover - 极少见的导入失败
+        return []
+
+    def _usable(v: dict[str, Any]) -> bool:
+        langs = [str(x).lower() for x in (v.get("languages") or [])]
+        return not langs or "zh" in langs
+
+    general = [
+        f"doubao:{v['id']}" for v in _BUILTIN_VOICES
+        if _UNKNOWN_SPEAKER_VOICE_SCENE in (v.get("scene") or []) and _usable(v)
+    ]
+    pool = general or [
+        f"doubao:{v['id']}" for v in _BUILTIN_VOICES if _usable(v)
+    ]
+    return sorted(vid for vid in pool if vid != narrator_voice_id)
+
+
+def _fallback_voice_for_unknown_speaker(speaker: str, narrator_voice_id: str) -> str:
+    """给「没有角色归属的说话人」稳定地挑一个非旁白音色。
+
+    用 speaker 名字的哈希取模：同一个名字永远拿到同一个音色（否则同一段对白在不同
+    build 里换嗓子，缓存全失效且听感漂移）；不同的名字大概率拿到不同音色 ——
+    一章里同时出现「有人」「另一人」时不会撞成同一个人。
+    """
+    cands = _unknown_speaker_voice_candidates(narrator_voice_id)
+    if not cands:
+        return ""
+    h = int(hashlib.sha256((speaker or "").encode("utf-8")).hexdigest()[:8], 16)
+    return cands[h % len(cands)]
+
+
+async def _with_unknown_speaker_voices(
+    session: Any,
+    project_id: str,
+    voice_assignments: dict[str, str],
+    narrator_voice_id: str,
+) -> dict[str, str]:
+    """把「未归属对白」的说话人补进 voice_assignments（不覆盖已有分配）。
+
+    - 已有角色分配一律不动；
+    - 项目**完全没有**任何角色分配时不动（那时连主角都没有音色，逐句兜底只会
+      让全书对白变成同一个路人音色，还不如维持原样让用户先去做识别）；
+    - 返回新 dict，调用方需用返回值覆盖原变量。
+    """
+    if not voice_assignments:
+        return voice_assignments
+    stmt = select(ProjectDialogue.speaker).where(
+        ProjectDialogue.project_id == project_id
+    ).distinct()
+    raw_speakers = list((await session.execute(stmt)).scalars().all())
+
+    out = dict(voice_assignments)
+    unknown: set[str] = set()
+    for raw in raw_speakers:
+        spk = (raw or "").strip()
+        if spk not in out:
+            unknown.add(spk)
+    if not unknown:
+        return out
+
+    filled: dict[str, str] = {}
+    for spk in sorted(unknown):
+        vid = _fallback_voice_for_unknown_speaker(spk or "未知说话人", narrator_voice_id)
+        if vid:
+            out[spk] = vid
+            filled[spk or "(空)"] = vid
+    if filled:
+        logger.info(
+            f"[build_start] project_id={project_id[:8]}... 未归属对白兜底音色 "
+            f"{len(filled)} 个（非旁白）：{filled}"
+        )
+    return out
+
+
 # 进程级运行锁：按 build_id（而非 project_id）维度持有，避免
 # 「cancel → retry → 同 project 立即重入」时的误判/竞态：
 # - cancel 仅修改 Build.status='cancelled'，不抢锁；
@@ -1077,6 +1182,13 @@ async def _start_build_impl(
         if not chapters:
             raise RuntimeError("项目没有章节，无法启动 build")
 
+        # 未归属对白兜底音色（见 _with_unknown_speaker_voices）。必须放在 digest 计算
+        # **之前**：它改变了实际使用的音色映射，digest 不跟着变的话，用户重新合成会命中
+        # 历史成功 build 的旧产物（匿名对白仍由旁白念）而完全听不出变化。
+        voice_assignments = await _with_unknown_speaker_voices(
+            session, project_id, voice_assignments, narrator_voice_id
+        )
+
         # A-7：把正文/对白/发音规则的内容哈希纳入 digest（放在读书 chapters 之后，
         # 需要 session 查对白与发音规则）。
         content_digest = await _calc_content_digest(session, project_id, chapters)
@@ -1355,6 +1467,12 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
             voice_assignments = json.loads(source_build.voice_assignments_json or "{}")
         except Exception:
             voice_assignments = {}
+        # 未归属对白兜底音色：新建 build 时已写进快照，但**本次改动之前**生成的
+        # source_build 快照里没有 → 这里补一次，否则「重试失败章」出来的匿名对白
+        # 仍会是旁白音色。
+        voice_assignments = await _with_unknown_speaker_voices(
+            session, project_id, voice_assignments, narrator_voice_id
+        )
 
         failed_ch_idxs: list[int] = []
         fc = _parse_failed_chapters_json(source_build.failed_chapters_json)

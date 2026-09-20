@@ -519,4 +519,46 @@ TM-4 复刻音色不下发 model / TM-5 缓存键与 digest 随 tts_model 变 / 
 - **语音标签（CoT）仍未实现** —— 上一轮用户选的是「先只上语音指令」。且官方标注其为「抢鲜体验」，预置音色里只有少数支持（可爱女生/调皮公主/爽朗少年/天才同桌）或**声音复刻 2.0** 音色；预置音色走 `{{"additions":{"context_texts":[...]}}}` 内联标签（`}}` 前必须留空格），复刻音色走 `<cot text="...">文本</cot>`。要做需单独一批。
 - **复刻音色仍丢弃逐段指令**（`is_clone_speaker` 分支只打 warning）。官方产品动态称「豆包声音复刻模型 2.0 支持…结合语音指令标签」，与 HTTP 文档的 model/context_texts 互斥说明存在张力，未真机验证前不擅自改动。
 
+#### 批次 3.5 补丁 3 —— 未归属对白退化成旁白音色（2026-09-20）
+
+用户反馈：原文里「有人」「另一人」这类**没有明确角色归属**的对白（路边议论、群杂），
+全篇都用**旁白音色**念出来 —— 听感上是旁白在自言自语，完全没有「有人在说话」的层次。
+需求原文：「对白没有明确的角色归属，全文中对于这种没有归属的对白，自动分配和旁白不同的音色。」
+
+**根因**：这类 speaker（「有人」「另一人」，或空 speaker）不在 `ProjectCharacter` 表里，
+于是 `voice_assignments` 也没有它 → [`chapter.py`](file:///workspace/backend/app/services/chapter.py) 的
+`voice_assignments.get(speaker, narrator_voice_id)` 按默认值**直接退回旁白音色**。
+
+**改动**（[`build.py`](file:///workspace/backend/app/services/build.py)）：
+
+| 函数 | 作用 |
+|---|---|
+| `_unknown_speaker_voice_candidates(narrator)` | 候选池 = 内置音色里 `scene` 含「通用」的条目，**排除旁白音色**；额外要求音色声明了 `zh` 能力 |
+| `_fallback_voice_for_unknown_speaker(speaker, narrator)` | `sha256(speaker) % len(池)` → **同名稳定、异名大概率不同** |
+| `_with_unknown_speaker_voices(session, pid, va, narrator)` | 查 `ProjectDialogue.speaker` 去重，把不在 `va` 里的补上（不覆盖已有分配） |
+
+调用点两处：`start_build`（**必须放在 `_calc_config_digest` 之前** —— 兜底音色改变了实际使用的
+音色映射，digest 不跟着变的话用户重新合成会命中历史成功 build 的旧产物，仍然听不出变化）、
+`retry_failed_build`（老快照里没有兜底音色，重试失败章要补一次）。
+
+**两个「不动」**：① 项目完全没有角色分配时不动 —— 连主角都没音色，逐句兜底只会让全书对白
+变成同一个路人音色，不如先做识别；② 没有对白记录时映射原样返回。
+
+**踩到的坑（自查发现，已修）**：初版常量写成 `"通用场景"`，而官方音色表里该 scene 的**字面值是
+「通用」**（实测分布 `{'通用': 57, 'S2S': 4, '角色扮演': 20, ...}`，含「通用场景」的 0 条）→
+候选池退化成**全部 92 条内置音色**，把 3 条纯外语音色（`en_male_tim_uranus_bigtts` /
+`en_female_dacey_uranus_bigtts` / `en_female_stokie_uranus_bigtts`，`languages` 仅 `["en"]`）
+也选了进来 —— 中文正文配它们正好命中上一条补丁刚修的「成功码但音频为空」，等于把对白变成静音。
+
+验证：新增 [test_unknown_speaker_voice_red.py](file:///workspace/backend/tests/test_unknown_speaker_voice_red.py) 6 用例
+（US-1 候选池口径：非空 / 全中文可用 / 不含旁白音色 / 纯外语音色不入池；US-2 同名稳定且永不为旁白；
+US-3 不同临时说话人不撞成同一人；US-4 未知 speaker 被补且已有分配不被覆盖；US-5 两种「不动」；
+US-6 端到端 `start_build` 落库快照里带上了兜底音色），全绿。全量后端
+`358 passed, 3 failed, 1 skipped`；去掉本改动重跑同一套为 `352 passed, 3 failed, 1 skipped`
+（**失败数与基线完全一致，本改动零新增失败**）。3 个失败均为 E-1 类的跨用例隔离/缓存泄漏抖动
+（`test_project_e2e.py::test_project_full_lifecycle`、
+`test_project_prepare_voice_pool_red.py::test_prepare_passes_user_id_to_recommend`、
+`test_review_fixes_red.py::test_retry_failed_inherits_provider_and_mode`），单跑全绿。
+
+
 
