@@ -124,7 +124,11 @@ async def test_v1_icl_synthesize_sends_volcano_icl_cluster(monkeypatch):
 # T-ICL-V1-4：v3 复刻音色 → X-Api-Resource-Id = seed-icl-2.0
 # ---------------------------------------------------------------------
 def test_v3_icl_speaker_uses_seed_icl_2_resource_id():
-    """v3 provider 收到 S_/icl_ 音色，应自动设置 X-Api-Resource-Id=seed-icl-2.0。"""
+    """v3 provider 收到复刻音色，应自动设置 X-Api-Resource-Id=seed-icl-2.0。
+
+    三种合法形态都要认：S_（官方预付费槽位）、icl_（本项目历史自造）、
+    iclvoice（现行后付费自定义代号，见 icl.py::_generate_custom_speaker_id）。
+    """
     from backend.app.ai.providers.doubao.tts import (
         _resolve_resource_id_for_v3,
         _strip_voice_id_for_api_v3,
@@ -132,7 +136,13 @@ def test_v3_icl_speaker_uses_seed_icl_2_resource_id():
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProviderV3
 
     v3 = DoubaoTTSProviderV3()
-    for raw in ("S_abc123", "icl_abc123def", "icl:icl_abc123def", "doubao:S_abc123"):
+    for raw in (
+        "S_abc123",
+        "icl_abc123def",
+        "iclvoice9f2c4a1b",
+        "icl:iclvoice9f2c4a1b",
+        "doubao:S_abc123",
+    ):
         bare = _strip_voice_id_for_api_v3(raw)
         model = v3._resolve_model_for_speaker(bare)
         rid = _resolve_resource_id_for_v3(model)
@@ -162,6 +172,28 @@ def test_v3_normal_speaker_uses_seed_tts_2_resource_id():
 
     # 显式声明 1.0 的入参（远程/自定义音色）仍如实映射，交由上层过滤
     assert _resolve_resource_id_for_v3("seed-tts-1.0") == "seed-tts-1.0"
+
+
+# ---------------------------------------------------------------------
+# T-ICL-V1-7：复刻音色判定的唯一实现 + 段缓存键的模型反查
+# ---------------------------------------------------------------------
+def test_is_cloned_speaker_id_covers_all_prefix_forms():
+    """三条路径（cluster / resource-id / 缓存键）必须共用同一份判定。"""
+    from backend.app.ai.providers.doubao.icl import is_cloned_speaker_id
+
+    for yes in ("S_abc", "icl_abc", "iclvoice9f2c", "icl:iclvoice9f2c", "doubao:S_abc"):
+        assert is_cloned_speaker_id(yes), f"{yes!r} 应判定为复刻音色"
+    for no in ("", "zh_female_vv_uranus_bigtts", "doubao:zh_female_vv_uranus_bigtts", "BV001_streaming"):
+        assert not is_cloned_speaker_id(no), f"{no!r} 不应判定为复刻音色"
+
+
+def test_cache_model_lookup_recognizes_new_custom_prefix():
+    """build 的段缓存键模型反查：iclvoice 前缀也必须走 seed-icl-2.0。"""
+    from backend.app.services.build import _voice_model_lookup
+
+    for vid in ("iclvoice9f2c4a1b", "icl:iclvoice9f2c4a1b", "S_abc", "icl_abc"):
+        assert _voice_model_lookup(vid) == "seed-icl-2.0", vid
+    assert _voice_model_lookup("doubao:zh_female_vv_uranus_bigtts") == "seed-tts-2.0"
 
 
 # ---------------------------------------------------------------------

@@ -70,10 +70,12 @@ async def test_icl_create_reqid_unique(monkeypatch):
     await client.create_training("声线A", fake_mp3)
     await client.create_training("声线B", fake_mp3)
 
-    reqids = [p["speaker_id"] for p in captured]
+    reqids = [p["custom_speaker_id"] for p in captured]
     assert len(reqids) == 2 and reqids[0] != reqids[1], (
-        f"ICL create speaker_id 必须每次唯一，实际 {reqids}"
+        f"ICL create custom_speaker_id 必须每次唯一，实际 {reqids}"
     )
+    # speaker_id 是固定字面值（V3 后付费音色协议），唯一性由 custom_speaker_id 承担
+    assert {p["speaker_id"] for p in captured} == {"custom_speaker_id"}
 
 
 # ---------------------------------------------------------------------

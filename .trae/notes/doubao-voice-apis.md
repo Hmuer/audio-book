@@ -334,36 +334,52 @@ Byte 8..  : payload size + payload
 
 ## 8. 音色训练 HTTP — 声音复刻入口
 
-文档：[6561/2534906](https://docs.volcengine.com/docs/6561/2534906?lang=zh)
+文档：[6561/2534906](https://docs.volcengine.com/docs/6561/2534906?lang=zh)（V3 现行）
++ [6561/2227958](https://www.volcengine.com/docs/6561/2227958?lang=zh)（历史声音复刻接口）
 
 ```http
 POST https://openspeech.bytedance.com/api/v3/tts/voice_clone
 Headers: §1（Resource-Id 不需要，训练接口是独立端点）
-Body:
+Body（后付费音色，本项目采用）:
 {
-  "speaker_id": "可选；不传则服务端自动生成",
+  "speaker_id": "custom_speaker_id",   // 必须为固定字面值
+  "custom_speaker_id": "iclvoice<hex>",// 客户自定义音色代号（见 §8.2 命名规范）
   "audio": {
-    "data": "<base64>",        // 二进制音频的 base64
-    "format": "wav"            // wav/mp3/ogg/m4a/aac/pcm；pcm 仅 24k 单声道
+    "data": "<base64>",                // 二进制音频的 base64
+    "format": "wav"                    // wav/mp3/ogg/m4a/aac/pcm；pcm、m4a 必传
   },
-  "text": "参考文本",          // 服务对比 WER，差异大返回 45001109
-  "language": 0,               // cn=0 默认；en=1；日=2... 详见 §8.1
-  "extra_params": {
-    "demo_text": "hello this is a test",  // 4~300 字，与 language 一致
-    "enable_audio_denoise": false,        // 噪声大才开
-    "disable_volume_normalization": false // 音量归一化开关
+  "text": "参考文本",                   // 服务对比 WER，差异大返回 45001109
+  "language": 0,                       // cn=0 默认；en=1；日=2... 详见 §8.1
+  "extra_params": {                    // ⚠️ demo_text 在这一层，**不是顶层**
+    "demo_text": "hello this is a test",   // 4~300 字，与 language 一致
+    "enable_audio_denoise": false,
+    "disable_volume_normalization": false
   }
 }
 ```
 
+**预付费音色**：`speaker_id` 直接填控制台购买音色槽位后拿到的 `S_xxx`，不传 `custom_speaker_id`。
+
+> ⚠️ **请求体没有 `model_type`**（2026-09-21 实测踩坑 + 文档核对）。`model_type` 是
+> **V1** 训练接口（`POST /api/v1/mega_tts/audio/upload`）的整型字段（1/2/3/4/5）；
+> V3 请求参数表里没有它。V3 一次训练出的音色对声音复刻 1.0 / 2.0 **同时可用**：
+> 用哪一版合成由**合成时**的 `X-Api-Resource-Id` 决定，训练实际产出的算法版本只体现在
+> **响应** `speaker_status[].model_type`（4 = ICL V2 / 5 = ICL V3）。
+> 把 `model_type` 当 body 字段下发，上游直接返回 **HTTP 500**。
+
 **限制**：单文件 ≤ 10MB。
 
 **响应关键字段**：
-- `speaker_id`：服务端生成的 `S_xxxxxx` ID，**保留下来给后续查询 / 合成用**
+- `speaker_id`：服务端生成的音色 ID（**顶层**，不在 `data` 里），保留下来给后续查询 / 合成用
 - `status`：`1=Training / 2=Success / 3=Failed / 4=Active` — 2 或 4 都可立即合成
 - `speaker_status[].demo_audio`：试听音频，**1 小时有效**，要存就下载下来
 - `speaker_status[].model_type`：`5` = 复刻 2.0
 - `available_training_times`：剩余训练次数
+
+**失败通道（重要）**：官方文档写明「训练失败时候 HTTP 返回**非 200**，`code` 字段返回详细错误码」。
+所以复刻接口的错误码是走 **HTTP 4xx/5xx + body 里的 code/message**，而不是像 TTS 那样
+HTTP 200 + 业务码。客户端**必须先读 body 再抛**，否则日志里只剩一句
+`500 Internal Server Error`（本项目历史日志正是如此，完全无法定位）。参见 §12.2。
 
 **项目映射**：`backend/app/services/icl.py` 的训练轮询即对应本接口的 `status=1 → 2` 等待循环。
 
@@ -398,18 +414,32 @@ Body:
 - 8~256 字符，仅 `[a-zA-Z0-9_-]`
 - 必须英文字母开头，首末位不能 `-` 或 `_`
 - 同 accountID 不能重名
+- **不能用官方保留前缀**：防冲突正则 `^((?i:S_|ICL_|MIX_|DiT_|BV)|[a-z]{2}_|...)` 里
+  `ICL_` 是**大小写不敏感**的保留前缀 → `icl_xxx` 这种写法会被直接拦下
 - 不能与官方精品音色冲突（防冲突正则）：`^((?i:S_|ICL_|MIX_|DiT_|BV)|[a-z]{2}_|(?i:(wvae|moon|mercury|venus|earth|mars|jupiter|saturn|uranus|neptune|pluto|umm)_)).*|.*_(?i:bigtts|bigtts_cc|tob|cs_tob|streaming)$|^[^a-zA-Z]|.*[-_]$|^.{0,7}$|^.{257,}$|.*[^a-zA-Z0-9_-].*`
-- **首次调用合成视为"转正"扣音色槽位费**，务必先试听满意再合成
+- **首次调用合成视为"转正"扣音色槽位费**，务必先试听满意再合成；试听音色若 7 天内未正式合成会被系统删除
+- 本项目生成的代号：`iclvoice<uuid hex>`（前缀刻意**不带下划线**，见上一条），
+  判定函数 `icl.py::is_cloned_speaker_id`（合成路由 / 缓存键共用）
 
 ---
 
 ## 9. 音色查询 / 升级 HTTP
 
 **查询** [6561/2535742](https://docs.volcengine.com/docs/6561/2535742?lang=zh)：
+查询定位音色有**两种互斥形态**，取决于音色是预付费还是后付费：
+
 ```http
 POST /api/v3/tts/get_voice
-{ "speaker_id": "S_xxx", "custom_speaker_id": "可选" }
+# 预付费音色（控制台音色槽位）
+{ "speaker_id": "S_xxx" }
+
+# 后付费音色（自定义代号）—— 必须成对，speaker_id 是固定字面值
+{ "speaker_id": "custom_speaker_id", "custom_speaker_id": "iclvoice<hex>" }
 ```
+
+> 历史实现把自定义代号直接塞进 `speaker_id`（`{"speaker_id": "icl_xxx"}`），上游按预付费
+> 槽位去查必然失败。判定/构造统一走 `icl.py::_speaker_lookup_payload`。
+
 返回同 §8（少 `audio`）。
 
 **升级** [6561/2535751](https://docs.volcengine.com/docs/6561/2535751?lang=zh)：
@@ -499,6 +529,11 @@ POST /api/v3/tts/voice_design
 排查要点：这类响应**必须把 body 读出来**再抛错 —— 只 `raise_for_status()` 会丢掉 body，日志里只剩一句 `403 Forbidden`，无法区分「Key 没权限」「资源未开通」「resource id 与音色不匹配」。本项目已在 `doubao/tts.py` 的 `_post_stream_v3` 里统一读取并按 `_v3_http_error_hint()` 翻译。
 
 ### 12.2 复刻接口（voice_clone / get_voice / upgrade_voice）
+
+⚠️ **与合成接口不同，复刻接口的错误码走「HTTP 非 200 + body」**：官方文档写明
+「训练失败时候 HTTP 返回非 200，`code` 字段返回详细错误码」。所以这里看到的
+`500` / `4xx` 都是**业务错误**，**必须把 body 读出来**再抛（本项目在
+`icl.py::_http_post_json` 已统一处理，并按 `_icl_http_error_hint()` 翻译）。
 
 | code | 含义 |
 |---|---|

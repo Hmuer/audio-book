@@ -8,8 +8,10 @@
   T-IC3-V1  默认端点是 v3 协议（voice_clone_url + get_voice_url 都含 /v3/）
   T-IC3-V2  _auth_headers 用 X-Api-Key（新版控制台），非纯数字 key 不走旧版鉴权
   T-IC3-V3  _auth_headers 收到纯数字 key 时走 X-Api-App-Key + X-Api-Access-Key（旧版）
-  T-IC3-V4  create_training 的 payload 严格匹配官方 schema（speaker_id / audio.data base64 /
-             audio.format / language / model_type）
+  T-IC3-V4  create_training 的 payload 严格匹配官方 V3 schema（speaker_id 固定字面值
+             "custom_speaker_id" + 合规的 custom_speaker_id / audio.data base64 /
+             audio.format / language；**不含** model_type，demo_text 在 extra_params）
+  T-IC3-V4b demo_text 必须放进 extra_params（顶层不是官方字段）
   T-IC3-V5  create_training 业务码非 0 抛 RuntimeError
   T-IC3-V6  query_training 状态 0/1/2/3/4 全部映射到 progress / cloned_voice_id / error
   T-IC3-V7  query_training NotFound (status=0) 不抛错
@@ -96,7 +98,7 @@ def test_auth_headers_use_legacy_keys_for_pure_digit_app_id(monkeypatch):
 
 
 # ---------------------------------------------------------------------
-# T-IC3-V4：create_training payload 严格匹配官方 schema
+# T-IC3-V4：create_training payload 严格匹配官方 V3 schema
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_create_training_payload_matches_v3_schema(monkeypatch):
@@ -106,16 +108,27 @@ async def test_create_training_payload_matches_v3_schema(monkeypatch):
     async def _fake_post(url, payload, **_kwargs):
         captured["url"] = url
         captured["payload"] = payload
-        return {"code": 0, "data": {"speaker_id": payload["speaker_id"]}}
+        return {"code": 0, "speaker_id": payload["custom_speaker_id"]}
 
     client._http_post_json = _fake_post  # type: ignore[method-assign]
     sid = await client.create_training("我的声线", FAKE_MP3, audio_format="mp3")
 
-    assert sid == captured["payload"]["speaker_id"]
     p = captured["payload"]
+    # speaker_id 是固定字面值（后付费音色），真实代号在 custom_speaker_id
+    assert p["speaker_id"] == "custom_speaker_id"
+    assert sid == p["custom_speaker_id"]
 
-    # 官方文档要求的必填字段
-    assert p["speaker_id"].startswith("icl_")
+    # 自定义代号必须躲开官方防冲突正则（历史 "icl_xxx" 就是被它拦下的）
+    from backend.app.ai.providers.doubao.icl import (
+        _OFFICIAL_SPEAKER_ID_FORBIDDEN_RE,
+    )
+    cid = p["custom_speaker_id"]
+    assert len(cid) >= 8
+    assert cid[0].isalpha()
+    assert not _OFFICIAL_SPEAKER_ID_FORBIDDEN_RE.search(cid), (
+        f"自定义音色代号命中官方防冲突正则：{cid!r}"
+    )
+
     assert isinstance(p["audio"], dict)
     assert p["audio"]["format"] == "mp3"
     # audio.data 是 base64 字符串
@@ -123,14 +136,40 @@ async def test_create_training_payload_matches_v3_schema(monkeypatch):
     assert len(decoded) == len(FAKE_MP3)
     # language 必传（建议设置）
     assert "language" in p
-    # model_type 必传（区分 ICL 1.0 / 2.0 / DiT）
-    assert p["model_type"] in ("ICL1.0", "ICL2.0", "DiT")
+
+    # V3 没有 model_type 字段（它是 V1 训练接口的整型字段，下发会被上游拒）
+    assert "model_type" not in p
+    # demo_text 属于 extra_params，不能放顶层
+    assert "demo_text" not in p
 
     # voice_name 仅业务方本地记录，不应下发到豆包
     assert "voice_name" not in p
     # 历史字段 audio_b64 / reqid 等不应再出现
     assert "audio_b64" not in p
     assert "reqid" not in p
+
+
+# ---------------------------------------------------------------------
+# T-IC3-V4b：demo_text 必须放进 extra_params
+# ---------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_create_training_puts_demo_text_in_extra_params(monkeypatch):
+    client = _setup_client(monkeypatch)
+    captured: dict = {}
+
+    async def _fake_post(url, payload, **_kwargs):
+        captured["payload"] = payload
+        return {"code": 0, "speaker_id": payload["custom_speaker_id"]}
+
+    client._http_post_json = _fake_post  # type: ignore[method-assign]
+    await client.create_training(
+        "我的声线", FAKE_MP3, audio_format="m4a", demo_text="你好，这是一段试听文本。"
+    )
+
+    p = captured["payload"]
+    assert p["audio"]["format"] == "m4a"
+    assert p["extra_params"]["demo_text"] == "你好，这是一段试听文本。"
+    assert "demo_text" not in p
 
 
 # ---------------------------------------------------------------------

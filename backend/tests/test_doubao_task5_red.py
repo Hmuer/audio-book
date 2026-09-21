@@ -45,15 +45,18 @@ async def test_icl_client_create_training_payload_and_taskid():
     assert task_id == "icl_88"
     assert "voice_clone" in captured["url"] or "icl" in captured["url"].lower()
     p = captured["payload"]
-    # v3 接口规范：speaker_id 由我们生成、audio.data 是 base64 音频、audio.format 必传
-    assert p["speaker_id"].startswith("icl_") and len(p["speaker_id"]) > 10
+    # v3 接口规范：speaker_id 固定字面值（后付费音色），真实代号在 custom_speaker_id；
+    # audio.data 是 base64 音频、audio.format 必传
+    assert p["speaker_id"] == "custom_speaker_id"
+    assert p["custom_speaker_id"].startswith("iclvoice")
+    assert len(p["custom_speaker_id"]) > 10
     assert p["audio"]["format"] == "mp3"
     # audio.data 是合法 base64 字符串，解码后长度 = 原音频长度
     import base64 as _b64
     decoded = _b64.b64decode(p["audio"]["data"], validate=False)
     assert len(decoded) == len(FAKE_MP3)
-    # model_type 必传（ICL2.0 推荐）
-    assert p.get("model_type") in ("ICL1.0", "ICL2.0", "DiT")
+    # V3 请求体里没有 model_type（它是 V1 训练接口的整型字段）
+    assert "model_type" not in p
 
 
 @pytest.mark.asyncio

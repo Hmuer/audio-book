@@ -560,5 +560,67 @@ US-6 端到端 `start_build` 落库快照里带上了兜底音色），全绿。
 `test_project_prepare_voice_pool_red.py::test_prepare_passes_user_id_to_recommend`、
 `test_review_fixes_red.py::test_retry_failed_inherits_provider_and_mode`），单跑全绿。
 
+#### 批次 3.5 补丁 4 —— 声音复刻（ICL）请求体不符合 V3 协议 + 错误体被丢弃（2026-09-21）
+
+用户反馈：声音复刻上传参考音频后任务立刻失败。
+```
+[icl_worker] FAIL HTTPStatusError: Server error '500 Internal Server Error'
+  for url 'https://openspeech.bytedance.com/api/v3/tts/voice_clone'
+```
+
+**两个问题叠在一起：**
+
+**① 报错信息什么也没说。** [`icl.py::_http_post_json`](file:///workspace/backend/app/ai/providers/doubao/icl.py)
+直接 `resp.raise_for_status()`，而官方文档写明**复刻接口的失败通道就是「HTTP 非 200 +
+body 里的 code/message」**（「训练失败时候 HTTP 返回非 200，code 字段返回详细错误码」）——
+body 被丢掉后日志里只剩一句 `500 Internal Server Error`。这与批次 3.5 补丁在 TTS 侧修的
+403 是**同一类缺陷**，只是换了个接口。
+
+**② 请求体本来就不可能成功。** 按官方文档（6561/2534906 + 2227958）逐字段核对：
+
+| 字段 | 历史实现 | 官方 V3 要求 |
+|---|---|---|
+| `model_type` | 下发 `"ICL2.0"` | **V3 请求参数表里没有这个字段**。它是 **V1** 训练接口（/api/v1/mega_tts/audio/upload）的整型字段（1/2/3/4/5）。V3 一次训练的音色对 1.0/2.0 **同时可用**，「用哪一版合成」由**合成时**的 `X-Api-Resource-Id` 决定；算法版本只体现在**响应** `speaker_status[].model_type`（4=ICL V2 / 5=ICL V3） |
+| `speaker_id` | 自己生成的 `"icl_<hex>"` | 必须要么是控制台购买音色槽位得到的 `S_xxx`（预付费），要么是固定字面值 `"custom_speaker_id"`（后付费，真实代号写在 `custom_speaker_id`） |
+| 自定义代号 | `icl_<hex>` | **非法**：官方防冲突正则 `^((?i:S_\|ICL_\|MIX_\|DiT_\|BV)\|...)` 里 `ICL_` 是大小写不敏感保留前缀 |
+| `demo_text` | 顶层 | 属于 `extra_params` |
+| 查音色 | `{"speaker_id": "<自定义代号>"}` | 后付费必须成对 `{"speaker_id":"custom_speaker_id","custom_speaker_id":"<代号>"}` |
+
+**改动：**
+
+| 文件 | 改动 |
+|---|---|
+| `icl.py` | `_http_post_json` 在 `status_code >= 400` 时先读 body，抛新增的 `DoubaoICLHTTPError`（带 `status_code` / `code` / `logid` / `body`）；新增 `_icl_http_error_hint()` 把 45001001/45001102/45001107/45001109/45001114/45001122/45001123/4500xxxx 与 403/5xx 翻译成可执行提示 |
+| `icl.py` | 新增 `_OFFICIAL_SPEAKER_ID_FORBIDDEN_RE`（官方防冲突正则）、`_generate_custom_speaker_id()`（`iclvoice<hex>`，前缀刻意不带下划线）、`_speaker_lookup_payload()`（预付费/后付费两种定位形态） |
+| `icl.py` | `create_training`：`speaker_id="custom_speaker_id"` + `custom_speaker_id=<生成>`；**去掉 `model_type`**；`demo_text` 移入 `extra_params`；服务端返回的 `speaker_id` 优先（顶层，不在 `data` 里），兜底用自己生成的代号（**绝不**回退成字面量 `custom_speaker_id`） |
+| `icl.py` | `query_training` 改用 `_speaker_lookup_payload`；错误信息也附提示 |
+| `icl.py` | 新增 `is_cloned_speaker_id()` —— **复刻音色判定的唯一实现**（`S_` / `icl_` / `iclvoice`，含 `icl:`、`doubao:` 命名空间剥离） |
+| `tts.py` | 新增 `_is_icl_cloned_speaker()`（函数内延迟 import，避免 tts↔icl 模块级成环），替换原先散在 3 处的 `startswith("icl_")/startswith("S_")`：`_voice_supports_emotion`、v1 `_build_payload` 的 cluster 路由、v3 `_resolve_model_for_speaker` 的 `X-Api-Resource-Id` 路由、`is_clone_speaker` |
+| `build.py` | `_voice_model_lookup`（段缓存键的模型反查）改用同一个判定 |
+| `models.py` | `TRAIN_MODEL_TYPES` 的注释更正：该字段**不下发上游**（只在参数校验收口），V3 无算法选择能力 |
+
+> ⚠️ `tts.py` 的 `_resolve_model_for_speaker` 只认 `S_`/`icl_` 前缀——如果不同步改成
+> `iclvoice`，新的复刻音色会被当成普通音色路由到 `seed-tts-2.0`，上游会回
+> `resource ID is mismatched with speaker related resource`（55000000）。这是本次一并修的关键联动点。
+
+**验证：** 新增 [test_icl_voice_clone_http_error_red.py](file:///workspace/backend/tests/test_icl_voice_clone_http_error_red.py) 6 用例
+（IH-1 HTTP 500+顶层 code/message 透出 / IH-2 网关级 4xx 的 `header.code` / IH-3 非 JSON body 原样带出 /
+IH-4 两种定位形态 / IH-5 随机 300 次生成的代号都不命中官方正则（并断言历史 `icl_xxx` 命中）/
+IH-6 create_training 撞 500 时能看到业务码）；更新 T-IC3-V4（+V4b）、T-MT-3/T-MT-7、
+T-ICL-V1-4（+V1-7）、T-D5、T-RF1-ICL 等原先编码了错误契约的断言。
+
+全量后端 `367 passed, 3 failed, 1 skipped`（3 个失败与基线同，均 E-1 类抖动，单跑全绿）。
+
+**未做 / 待确认：**
+- **后付费 vs 预付费**：本改动按**后付费**（自定义音色代号）实现 —— 项目里从来没有任何「音色槽位
+  id（S_xxx）」配置项，历史实现一直是动态生成 id，语义上只能是后付费。若账号是**预付费**
+  （控制台购买槽位），需要新增一个「音色槽位 id」配置并把 `speaker_id` 填成 `S_xxx`。
+- **必须先开通后付费音色服务**：控制台需开通「豆包声音复刻模型 2.0 + 后付费音色服务」，
+  否则会拿到 403 / 45000030（现在报错里会直接写明）。
+- **前端的「训练模型算法」下拉已失效**：V3 不接受 `model_type`，该下拉不再影响训练（值也不落库）。
+  本次保留（避免 UI 级联改动），建议后续直接删掉。
+- **仍未真机验证**：本改动只跑了单元/集成测试，没有真实 Key 合成过一次；下次复刻请留意日志里是否
+  出现 `code=...` 与提示语。
+
 
 

@@ -53,12 +53,18 @@ class ModelOptionDict(TypedDict):
 
 
 # ----------------------------------------------------------------------
-# 训练 model_type：3 选 1
+# 训练 model_type：3 选 1（**仅用于前端选择记录，不下发上游**）
 # ----------------------------------------------------------------------
-# 官方训练接口文档（/api/v3/tts/voice_clone body.model_type）：
-# - ICL2.0：默认推荐，2.0 复刻算法
-# - ICL1.0：旧版，1.0 复刻算法（音色合成时配 seed-icl-1.0 / seed-icl-1.0-concurr）
-# - DiT：dit 算法（model_type=2 标准版 / model_type=3 还原版，合成走 seed-tts-2.0）
+# ⚠️ 2026-09-21 更正：`model_type` 是 **V1 训练接口**
+#    （POST /api/v1/mega_tts/audio/upload）的整型字段（1/2/3/4/5），
+#    **V3 接口 /api/v3/tts/voice_clone 的请求参数表里没有它** —— 之前把它当
+#    body 字段下发，上游直接返回 HTTP 500。
+#    V3 一次训练出的音色对声音复刻 1.0 / 2.0 **同时可用**：
+#      - "用哪一版合成" 由**合成时**的 X-Api-Resource-Id 决定
+#        （seed-icl-1.0 / seed-icl-1.0-concurr / seed-icl-2.0）；
+#      - 训练实际产出的算法版本只体现在**响应** speaker_status[].model_type
+#        （4 = ICL V2 / 5 = ICL V3）。
+#    所以下面这三个选项**不会**改变训练请求，仅作历史界面选项保留。
 
 TRAIN_MODEL_TYPES: tuple[ModelOption, ...] = (
     ModelOption(

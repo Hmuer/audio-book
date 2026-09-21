@@ -617,23 +617,32 @@ def _voice_model_lookup(voice_id: str) -> str:
     """P1-7：根据 voice_id 反查豆包模型名（seed-tts-2.0 / seed-icl-2.0）。
 
     优先复用 tts.py 内置的 `_voice_supports_emotion` 体系：找不到则用启发式
-    （icl_/S_ 前缀 → seed-icl-2.0；其他 → seed-tts-2.0）。供缓存 key 区分用。
+    （ICL 复刻音色前缀 S_ / icl_ / iclvoice → seed-icl-2.0；其他 → seed-tts-2.0）。
+    供缓存 key 区分用。
     兜底用 2.0 而不是 1.0：内置表已无 1.0 音色（1.0 资源账号也未开通），
     继续兜底 1.0 只会让缓存键里留一个永远不会被真实使用的模型名。
     """
     if not voice_id:
         return ""
-    # 1. ICL 复刻
-    bare = voice_id
-    if bare.startswith("icl:"):
-        bare = bare[4:]
-    if bare.startswith("doubao:"):
-        bare = bare[7:]
-    if bare.startswith("icl_") or bare.startswith("S_"):
-        return "seed-icl-2.0"
+    # 1. ICL 复刻（判定与合成路由共用 icl.py 的同一份实现，避免前缀漂移）
+    try:
+        from backend.app.ai.providers.doubao.icl import is_cloned_speaker_id
+        if is_cloned_speaker_id(voice_id):
+            return "seed-icl-2.0"
+    except Exception:  # pragma: no cover - 导入失败时退回前缀启发式
+        bare = voice_id
+        if bare.startswith("icl:"):
+            bare = bare[4:]
+        if bare.startswith("doubao:"):
+            bare = bare[7:]
+        if bare.startswith(("S_", "icl_", "iclvoice")):
+            return "seed-icl-2.0"
     # 2. 内置音色表
     try:
         from backend.app.ai.providers.doubao.tts import _BUILTIN_VOICES
+        bare = voice_id
+        if bare.startswith("doubao:"):
+            bare = bare[7:]
         for v in _BUILTIN_VOICES:
             if v["id"] == bare:
                 return str(v.get("model") or "seed-tts-2.0")

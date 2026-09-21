@@ -704,16 +704,32 @@ _BUILTIN_VOICES: list[dict[str, Any]] = [
 ]
 
 
+def _is_icl_cloned_speaker(speaker_for_api: str) -> bool:
+    """是否 ICL 声音复刻音色 —— 决定 cluster（v1）/ X-Api-Resource-Id（v3）走复刻通道。
+
+    判定收在 `icl.py::is_cloned_speaker_id`（那里也是音色代号的生成处），这里函数内
+    延迟 import：tts 与 icl 都挂在 ai.factory 下，模块级互相 import 会成环。
+    """
+    sid = str(speaker_for_api or "")
+    if not sid:
+        return False
+    try:
+        from .icl import is_cloned_speaker_id
+        return is_cloned_speaker_id(sid)
+    except Exception:  # pragma: no cover - 极端情况下退回保守判定
+        return sid.startswith("S_") or sid.startswith("icl_")
+
+
 def _voice_supports_emotion(speaker_for_api: str) -> bool:
     """P1-2：模块级 helper — 查 _BUILTIN_VOICES 元数据返回当前音色是否支持 emotion。
 
     v1 / v3 两条 provider 路径都要用，所以提到模块级避免重复定义。
-    ICL 复刻音色（speaker 以 `icl_`/`S_` 开头）走 ICL 2.0 协议，按文档不接收 emotion；
-    元数据里找不到也兜底 False（默认"未支持"更安全，避免下发失败）。
+    ICL 复刻音色（speaker 以 `S_`/`icl_`/`iclvoice` 开头）走 ICL 2.0 协议，按文档不接收
+    emotion；元数据里找不到也兜底 False（默认"未支持"更安全，避免下发失败）。
     """
     if not speaker_for_api:
         return False
-    if speaker_for_api.startswith("icl_") or speaker_for_api.startswith("S_"):
+    if _is_icl_cloned_speaker(speaker_for_api):
         return False
     for v in _BUILTIN_VOICES:
         if v["id"] == speaker_for_api:
@@ -902,13 +918,13 @@ class DoubaoTTSProvider(BaseTTSProvider):
 
         关键：cluster 按 speaker 路由
           - 普通 TTS 音色（zh_xxx_uranus_bigtts 等）→ cluster=volcano_tts
-          - 复刻音色（S_/icl_ 前缀）→ cluster=volcano_icl
+          - 复刻音色（S_ / icl_ / iclvoice 前缀）→ cluster=volcano_icl
         官方文档：https://www.volcengine.com/docs/6561/1305191
         """
         speaker_for_api = self._strip_voice_id_for_api(voice_id)
         speed_ratio = self._clamp_speed(speed)
         # 复刻音色必须用 volcano_icl cluster，否则官方按标准 TTS 路由找不到 speaker
-        if speaker_for_api.startswith("S_") or speaker_for_api.startswith("icl_"):
+        if _is_icl_cloned_speaker(speaker_for_api):
             cluster = "volcano_icl"
         else:
             cluster = "volcano_tts"
@@ -1485,7 +1501,7 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
     def _resolve_model_for_speaker(self, speaker_id: str) -> str:
         """根据 speaker_id 查 _BUILTIN_VOICES 返回 model；找不到则兜底 seed-tts-2.0。"""
         # icl: 开头按 ICL 2.0 走
-        if speaker_id.startswith("S_") or speaker_id.startswith("icl_"):
+        if _is_icl_cloned_speaker(speaker_id):
             return "seed-icl-2.0"
         for v in _BUILTIN_VOICES:
             if v["id"] == speaker_id:
@@ -1616,11 +1632,8 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
             else:
                 audio_params["emotion"] = emotion
         # P1-5：instruction_text 按官方 v3 文档放入 req_params.context_texts；
-        # 复刻音色（speaker 以 icl_/S_ 开头）忽略并 warning。
-        is_clone_speaker = (
-            speaker_for_api.startswith("icl_")
-            or speaker_for_api.startswith("S_")
-        )
+        # 复刻音色（speaker 以 S_ / icl_ / iclvoice 开头）忽略并 warning。
+        is_clone_speaker = _is_icl_cloned_speaker(speaker_for_api)
         payload_extras: dict[str, Any] = {}
         if speaker_style:
             payload_extras["speaker_style"] = speaker_style

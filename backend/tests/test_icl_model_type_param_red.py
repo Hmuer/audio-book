@@ -1,13 +1,18 @@
 """T-MODEL-TYPE：ICL 训练 model_type 透传测试。
 
+⚠️ 2026-09-21 更正：`model_type` 是 **V1** 训练接口的字段，V3
+（/api/v3/tts/voice_clone）请求体里没有它，下发会被上游拒（HTTP 500）。
+现在 `model_type` 只做**参数校验 + 记录**，不再进 payload；字节序测试相应改为
+断言「不在 payload 里」。算法版本由合成时的 X-Api-Resource-Id 决定。
+
 覆盖：
   T-MT-1  HTTP /api/icl/voices 接收 model_type Form 字段
   T-MT-2  start_icl_training 把 model_type 传给 worker → client.create_training
-  T-MT-3  create_training 不传 model_type 时回退 ICL2.0
+  T-MT-3  create_training 不传 model_type 时回退 ICL2.0（且不下发）
   T-MT-4  create_training 传非法 model_type 抛 ValueError
   T-MT-5  start_icl_training 早期校验：非法 model_type 在数据库写入前抛错
   T-MT-6  HTTP /api/icl/voices 传非法 model_type 返回 400
-  T-MT-7  payload 里 model_type 与传入值一致（不是默认 ICL2.0）
+  T-MT-7  payload 里**不含** model_type（任意合法取值都不下发）
 """
 from __future__ import annotations
 
@@ -32,7 +37,7 @@ def _setup_icl_client(monkeypatch, api_key: str = "test-api-key-xyz"):
 
 
 # ---------------------------------------------------------------------
-# T-MT-3：create_training 不传 model_type 时回退 ICL2.0
+# T-MT-3：create_training 不传 model_type 时回退 ICL2.0（且不下发）
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_create_training_defaults_to_icl2_0(monkeypatch):
@@ -42,39 +47,34 @@ async def test_create_training_defaults_to_icl2_0(monkeypatch):
 
     async def _fake_post(url, payload, **_kwargs):
         captured["payload"] = payload
-        return {"code": 0, "speaker_id": payload["speaker_id"]}
+        return {"code": 0, "speaker_id": payload["custom_speaker_id"]}
 
     client._http_post_json = _fake_post  # type: ignore[method-assign]
     await client.create_training("我的声线", FAKE_MP3)
-    assert captured["payload"]["model_type"] == "ICL2.0"
+    # 校验仍然走白名单（默认 ICL2.0），但该值不下发
+    assert "model_type" not in captured["payload"]
 
 
 # ---------------------------------------------------------------------
-# T-MT-7：payload 里 model_type 与传入值一致
+# T-MT-7：payload 里不含 model_type（任意合法取值都不下发）
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_create_training_passes_through_model_type(monkeypatch):
+async def test_create_training_never_sends_model_type(monkeypatch):
     client = _setup_icl_client(monkeypatch)
 
     captured: dict = {}
 
     async def _fake_post(url, payload, **_kwargs):
         captured["payload"] = payload
-        return {"code": 0, "speaker_id": payload["speaker_id"]}
+        return {"code": 0, "speaker_id": payload["custom_speaker_id"]}
 
     client._http_post_json = _fake_post  # type: ignore[method-assign]
 
-    # ICL1.0
-    await client.create_training("音色A", FAKE_MP3, model_type="ICL1.0")
-    assert captured["payload"]["model_type"] == "ICL1.0"
-
-    # DiT
-    await client.create_training("音色B", FAKE_MP3, model_type="DiT")
-    assert captured["payload"]["model_type"] == "DiT"
-
-    # 显式 None 也走默认
-    await client.create_training("音色C", FAKE_MP3, model_type=None)
-    assert captured["payload"]["model_type"] == "ICL2.0"
+    for mt in ("ICL1.0", "ICL2.0", "DiT", None):
+        await client.create_training("音色", FAKE_MP3, model_type=mt)
+        assert "model_type" not in captured["payload"], (
+            f"model_type={mt!r} 不应进 V3 训练请求体（V3 无此字段）"
+        )
 
 
 # ---------------------------------------------------------------------
