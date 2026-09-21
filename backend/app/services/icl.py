@@ -226,7 +226,9 @@ async def _icl_training_worker(
                 t = await s.get(IclTrainingTask, task_id)
                 if t:
                     t.status = 3
-                    t.error_msg = f"{type(e).__name__}: {e}"[:500]
+                    # 上限放宽到 2000：复刻接口的报错会带「code + 原文 + 控制台排查清单」
+                    # （见 icl.py::_icl_http_error_hint），截到 500 会把提示后半段切掉。
+                    t.error_msg = f"{type(e).__name__}: {e}"[:2000]
                     await s.commit()
         except Exception:
             logger.exception(f"[icl_worker] task={task_id[:12]}... 终态写库失败")

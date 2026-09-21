@@ -442,12 +442,41 @@ POST /api/v3/tts/get_voice
 
 返回同 §8（少 `audio`）。
 
-**升级** [6561/2535751](https://docs.volcengine.com/docs/6561/2535751?lang=zh)：
+**升级** [6561/2535751](https://www.volcengine.com/docs/6561/2535751?lang=zh)：
 ```http
 POST /api/v3/tts/upgrade_voice
 { "speaker_id": "S_xxx" }
 ```
 返回里 `speaker_status` 会出现 2 个：`model_type=1`（V1 旧）+ `model_type=5`（V3 新）。
+
+### 9.1 列出「我账号下已有哪些复刻音色」——音色管理 HTTP（控制面）
+
+文档：[6561/2235883](https://www.volcengine.com/docs/6561/2235883?lang=zh)
+
+> 这是控制台文档里说的「**批量查询接口**」（获取声音 ID 的官方途径之一），
+> 与上面的 `/api/v3/tts/*` 数据面接口**不是一套鉴权**：它走火山引擎 AK/SK 签名
+> （`open.volcengineapi.com`，`Service=speech_saas_prod`、`Region=cn-north-1`、
+> `Version=2023-11-07`），签名实现见本项目
+> [`doubao_list_speakers.py`](file:///workspace/backend/app/services/doubao_list_speakers.py)（同款 HMAC-SHA256）。
+
+```http
+POST https://open.volcengineapi.com/?Action=BatchListMegaTTSTrainStatus&Version=2023-11-07
+Body: {
+  "AppID": "<你的 AppID>",
+  "SpeakerIDs": [],        // 可选；传空 = 返回该 AppID 下全部音色
+  "State": "Success",      // 可选：Unknown/Training/Success/Active/Expired/Reclaimed
+  "PageNumber": 1, "PageSize": 10
+}
+```
+返回 `Result.Statuses[]` 每条含：`SpeakerID`（`S_xxx`）、`State`、`Version`（已训练次数）、
+`AvailableTrainingTimes`（剩余训练次数）、`ExpireTime`、`Alias`（与控制台同步的别名）、
+`OrderTime`、`InstanceNO`、`ModelTypeDetails[]`（`ModelType` / `IclSpeakerId` / `ResourceID`）。
+
+**用途**：控制台/页面上做的复刻音色不会自动出现在本平台（平台的 `icl:` 音色只来自本地
+`icl_training_tasks` 表）。想「同步已有复刻音色」或「查看剩余音色槽位/训练次数」，
+就调这个接口。注意它只列**已购买的音色槽位（预付费）**；后付费自定义代号的音色不在其中。
+
+> 已下线的 `ListMegaTTSTrainStatus` 用 `BatchListMegaTTSTrainStatus` 替代（官方文档明确）。
 
 ---
 
@@ -557,6 +586,32 @@ POST /api/v3/tts/voice_design
 | 45001127 | prompt 音频审核拒绝 |
 | 45001128 | prompt 音频文本审核拒绝 |
 | 55001301~07 | DB / TOS / 克隆下游失败 — 通常服务端异常，可重试 |
+
+#### 12.2.1 403 / `45000030 requested resource not granted`（2026-09-21 真机实测）
+
+```json
+// HTTP 403
+{"code":45000030,"message":"[resource_id=volc.megatts.timbre] requested resource not granted"}
+```
+
+- **与请求体无关**，是控制台侧的资源开通问题。官方 FAQ（6561/111522）原话：
+  「请求的服务未开通，请确认是否已经在控制台上开通服务」。
+- `resource_id=` 后面是网关**归一化**后的资源名（不是我们传的 `X-Api-Resource-Id`）。
+  已知对照：`seed-tts-1.0` ↔ `volc.service_type.10029`；音色训练/音色资源 ↔
+  `volc.megatts.timbre`。
+- **开通项不止一个**（最容易误判的地方）：
+  - 官方《声音复刻下单及使用指南》原话：「后付费音色需要开通**声音复刻模型2.0服务**，
+    **并单独开通后付费音色服务**」；
+  - 旧版控制台版本原话：「后付费音色需要开通勾选声音复刻模型2.0**和音色服务**，
+    并**手动开通后付费音色服务**」。
+  - 即：`声音复刻2.0` ≠ `音色服务` ≠ `后付费音色服务`，要分别开通。
+- **资源按项目隔离**：新版控制台文档明确「服务类型、资源包、并发、音色等可按需下单，
+  下单前请务必在**对应的项目**下下单，以免下错资源」；「对于非 default 项目，可以根据
+  需要选择开通模型」。**API Key 所属项目必须与开通服务的项目一致**。
+- **鉴权方式也会影响**：`X-Api-App-Key`（旧版 AppID）按 AppID 校验资源，
+  `X-Api-Key`（新版）按 API Key 所属项目校验 —— 用错控制台版本就查不到已开通的资源。
+  本项目已在报错里附带「本次实际鉴权方式 + 凭据来源 + key 末 4 位」
+  （`icl.py::_auth_mode_desc()`，不打印密钥明文）。
 
 ### 12.3 音频生成 HTTP 特殊
 

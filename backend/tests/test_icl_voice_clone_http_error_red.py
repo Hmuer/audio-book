@@ -28,6 +28,9 @@
   IH-4  查音色定位参数：预付费 S_xxx / 后付费成对
   IH-5  生成的音色代号必须躲开官方防冲突正则（随机 300 次）
   IH-6  create_training 撞上 HTTP 500 时，抛出的异常里能看到业务码（不再只剩 500）
+  IH-7  45000030「resource not granted」要给出控制台开通清单 + 本次实际鉴权方式
+        （这个报错跟请求体无关，最容易误判成代码 bug）
+  IH-8  鉴权方式描述能区分新版 X-Api-Key / 旧版 X-Api-App-Key，且不泄露完整密钥
 """
 from __future__ import annotations
 
@@ -213,3 +216,56 @@ async def test_ih6_create_training_500_reports_business_code(monkeypatch):
     msg = str(ei.value)
     assert "45001001" in msg and "invalid param" in msg
     assert "logid-lower" in msg
+
+
+# ---------------------------------------------------------------------
+# IH-7：45000030 → 控制台开通清单（真机 403 的处置指引）
+# ---------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_ih7_resource_not_granted_hint_is_actionable(monkeypatch):
+    from backend.app.ai.providers.doubao.icl import DoubaoICLHTTPError
+
+    client = _setup_client(monkeypatch)
+    _patch_httpx(
+        monkeypatch,
+        _FakeResponse(
+            403,
+            b'{"code":45000030,"message":"[resource_id=volc.megatts.timbre] '
+            b'requested resource not granted"}',
+            {"X-Tt-Logid": "logid-real-1"},
+        ),
+    )
+
+    with pytest.raises(DoubaoICLHTTPError) as ei:
+        await client.create_training("张祥祥", FAKE_MP3, audio_format="m4a")
+
+    msg = str(ei.value)
+    # 网关归一化出来的 resource_id 要带出来（用户拿它能直接找技术支持）
+    assert "volc.megatts.timbre" in msg
+    # 必须点明「后付费音色服务」是单独一项（用户「已开通声音复刻2.0」仍会踩的坑）
+    assert "后付费音色服务" in msg
+    # 项目隔离
+    assert "项目" in msg
+    # 本次实际鉴权方式
+    assert "鉴权=" in msg
+    assert ei.value.code == 45000030
+    assert ei.value.status_code == 403
+
+
+# ---------------------------------------------------------------------
+# IH-8：鉴权方式描述
+# ---------------------------------------------------------------------
+def test_ih8_auth_mode_desc_distinguishes_console_versions(monkeypatch):
+    monkeypatch.setenv("MEGACORE_ACCESS_KEY_FROM_ENV", "")
+    # 新版控制台：非纯数字 key → X-Api-Key
+    new_client = _setup_client(monkeypatch, api_key="abcdefg-1234-5678")
+    desc = new_client._auth_mode_desc()
+    assert "X-Api-Key" in desc and "旧版" not in desc
+    assert "5678" in desc, "应保留末 4 位便于比对"
+    assert "abcdefg" not in desc, "不能把密钥明文写进日志/报错"
+
+    # 旧版控制台：纯数字 AppID → X-Api-App-Key
+    old_client = _setup_client(monkeypatch, api_key="1234567890")
+    old_desc = old_client._auth_mode_desc()
+    assert "X-Api-App-Key" in old_desc and "旧版" in old_desc
+    assert "1234567890" not in old_desc

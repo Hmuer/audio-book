@@ -213,28 +213,52 @@ _ICL_ERROR_HINTS: dict[int, str] = {
     45001126: "demo 文本长度错误：官方要求 4~300 字，且语种要与 language 一致",
     45001127: "参考音频审核拒绝，换一段素材",
     45001128: "参考音频文本审核拒绝，换一段素材",
-    45000030: "账号未开通该资源，请在控制台开通对应服务",
 }
 
 
 def _icl_http_error_hint(
-    status_code: int, code: int | str | None, message: str
+    status_code: int,
+    code: int | str | None,
+    message: str,
+    *,
+    auth_desc: str = "",
 ) -> str:
     """把 HTTP 状态码 + body 业务码翻译成一句可执行的排查提示。"""
     try:
         icode = int(code) if code is not None else None
     except (TypeError, ValueError):
         icode = None
+
+    # 45000030 / 403 requested resource not granted：**与请求体无关**，是控制台开通问题。
+    # 单独给长提示 —— 这里最容易误判成「代码 bug」，而实际是少开通了一项。
+    if icode == 45000030 or (
+        status_code == 403 and "not granted" in (message or "").lower()
+    ):
+        m = re.search(r"resource_id=([A-Za-z0-9_.\-]+)", message or "")
+        rid = f"（resource_id={m.group(1)}）" if m else ""
+        return (
+            f"该资源未开通{rid}，与请求体无关，请按下面逐项核对："
+            "① 新版控制台【开通管理】里开通「豆包声音复刻模型 2.0」；"
+            "② 后付费音色还必须**单独开通「后付费音色服务」**"
+            "（官方原话：「后付费音色需要开通声音复刻模型2.0服务，并单独开通后付费音色服务」）；"
+            "③ 服务 / 资源包 / 音色槽位都**按项目隔离**，"
+            "API Key 所属项目必须与开通服务的项目是同一个"
+            "（官方：「下单前请务必在对应的项目下下单，以免下错资源」）；"
+            f"④ 本次实际鉴权方式：{auth_desc or '未知'} —— "
+            "若这里是『旧版 X-Api-App-Key』而你在新版控制台开通的服务，"
+            "说明填进「API Key」的是纯数字的 AppID，请改填新版控制台的 API Key"
+        )
+
     if icode is not None and icode in _ICL_ERROR_HINTS:
         return _ICL_ERROR_HINTS[icode]
-    if status_code == 403:
-        return (
-            "账号未开通对应服务：后付费音色需在控制台开通「豆包声音复刻模型 2.0 + "
-            "后付费音色服务」，预付费音色需先购买音色槽位"
-        )
     low = (message or "").lower()
     if "not found" in low and "speaker" in low:
         return _ICL_ERROR_HINTS[45001107]
+    if status_code == 403:
+        return (
+            "账号未开通对应服务：后付费音色需在控制台开通「豆包声音复刻模型 2.0」"
+            "并单独开通「后付费音色服务」；预付费音色需先购买音色槽位"
+        )
     if 500 <= status_code < 600 and icode is None:
         return (
             "上游 5xx 且 body 里没有业务码：多半是服务端瞬时异常，可重试；"
@@ -292,6 +316,36 @@ class DoubaoICLClient:
                 "启用并填入 API Key 后保存，或设置 DOUBAO_ICL_API_KEY / DOUBAO_AK 环境变量。"
             )
         return ak.strip()
+
+    def _auth_mode_desc(self) -> str:
+        """本次会走哪种鉴权 + 凭据来源（**不含密钥明文**，只留末 4 位）。
+
+        为什么需要：`requested resource not granted` 这类报错跟请求体无关，
+        但**跟用哪种鉴权有关** —— 旧版（X-Api-App-Key=纯数字 AppID）按 AppID 校验
+        资源，新版（X-Api-Key）按 API Key 所属项目校验；两者开通的集合不一样。
+        把实际走的那条路写进报错，用户才能一眼看出是不是填错了 key 类型。
+        """
+        try:
+            from backend.app.core.config import doubao_field
+            icl_key = (doubao_field("icl_api_key") or "").strip()
+            gen_key = (doubao_field("api_key") or "").strip()
+            if icl_key:
+                source = "icl_api_key"
+            elif gen_key:
+                source = "api_key"
+            else:
+                source = "env(DOUBAO_ICL_API_KEY / DOUBAO_AK / MEGACORE_ACCESS_KEY_FROM_ENV)"
+            ak = self._resolve_api_key()
+        except Exception as e:  # pragma: no cover - 凭据缺失时由 _auth_headers 抛
+            return f"凭据解析失败（{type(e).__name__}）"
+
+        ak_value = ak.split()[-1] if " " in ak else ak
+        masked = f"…{ak_value[-4:]}" if len(ak_value) >= 4 else "(过短)"
+        if ak_value.lstrip("-").isdigit():
+            mode = "X-Api-App-Key + X-Api-Access-Key（旧版控制台：key 是纯数字 AppID）"
+        else:
+            mode = "X-Api-Key（新版控制台）"
+        return f"{mode}，凭据来源={source}，key={masked}"
 
     def _auth_headers(self, *, prefix: str = "icl") -> dict[str, str]:
         """构造鉴权头。新版控制台：X-Api-Key；旧版控制台：X-Api-App-Key + X-Api-Access-Key。
@@ -539,9 +593,8 @@ class DoubaoICLClient:
                 data["_logid"] = logid
             return data
 
-    @staticmethod
-    def _http_error(url: str, resp: Any, *, logid: str | None = None) -> DoubaoICLHTTPError:
-        """把 HTTP 非 2xx 响应变成带 body / logid / 排查提示的异常。"""
+    def _http_error(self, url: str, resp: Any, *, logid: str | None = None) -> DoubaoICLHTTPError:
+        """把 HTTP 非 2xx 响应变成带 body / logid / 鉴权方式 / 排查提示的异常。"""
         import json as _json
 
         raw = ""
@@ -567,6 +620,7 @@ class DoubaoICLClient:
                     code = str(src["code"])
             message = str(src.get("message") or "")
 
+        auth_desc = self._auth_mode_desc()
         parts = [f"豆包 ICL 接口返回 HTTP {resp.status_code} url={url}"]
         if code is not None:
             parts.append(f"code={code}")
@@ -574,7 +628,10 @@ class DoubaoICLClient:
             parts.append(f"msg={message}")
         if logid:
             parts.append(f"logid={logid}")
-        hint = _icl_http_error_hint(resp.status_code, code, message)
+        parts.append(f"鉴权={auth_desc}")
+        hint = _icl_http_error_hint(
+            resp.status_code, code, message, auth_desc=auth_desc
+        )
         if hint:
             parts.append(f"提示：{hint}")
         if raw and not message:
