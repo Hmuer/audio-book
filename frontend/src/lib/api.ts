@@ -199,6 +199,15 @@ export interface IclTask {
   updated_at: string | null;
 }
 
+/** POST /api/icl/sync 返回：从豆包控制台同步进来的复刻音色统计 */
+export interface IclSyncResp {
+  total: number;
+  created: number;
+  updated: number;
+  usable: number;
+  items: { speaker_id: string; name: string; state: string; status: number }[];
+}
+
 export interface Character {
   name: string;
   gender: string;
@@ -295,6 +304,8 @@ export const api = {
   // 删除训练任务（含参考音频）
   iclDeleteTask: (taskId: string) =>
     _fetch<{ ok: boolean; task_id: string }>(`/api/icl/voices/${taskId}`, { method: 'DELETE' }),
+  // 同步豆包控制台已有的复刻音色（只读、幂等）
+  iclSyncVoices: () => _fetch<IclSyncResp>('/api/icl/sync', { method: 'POST' }),
 
   // ---------- Project 制（项目工作台：唯一入口） ----------
 

@@ -442,6 +442,8 @@ function IclTab() {
   const [creating, setCreating] = useState(false);
   const [createErr, setCreateErr] = useState<string | null>(null);
   const [okTip, setOkTip] = useState<string | null>(null);
+  // 从豆包控制台同步已有复刻音色（BatchListMegaTTSTrainStatus）
+  const [syncing, setSyncing] = useState(false);
   // 训练模型算法下拉（ICL2.0 / ICL1.0 / DiT）
   const [trainModelType, setTrainModelType] = useState<string>('ICL2.0');
   const [trainOptions, setTrainOptions] = useState<{ id: string; label: string; description: string }[] | null>(null);
@@ -535,6 +537,25 @@ function IclTab() {
       setCreateErr(String((e as Error)?.message || e));
     } finally {
       setCreating(false);
+    }
+  };
+
+  // 同步豆包控制台已有的复刻音色（只读、幂等）：解决「控制台做的音色平台看不到」
+  const syncFromConsole = async () => {
+    setCreateErr(null);
+    setOkTip(null);
+    setSyncing(true);
+    try {
+      const r = await api.iclSyncVoices();
+      setOkTip(
+        `同步完成：控制台返回 ${r.total} 个音色，其中可用 ${r.usable} 个` +
+        `（新增 ${r.created} / 更新 ${r.updated}）`
+      );
+      await refresh();
+    } catch (e) {
+      setCreateErr(String((e as Error)?.message || e));
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -640,9 +661,19 @@ function IclTab() {
       <div className="glass-panel p-5 sm:p-6 space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-base font-semibold text-ink-800">我的复刻音色</h3>
-          <button className="btn-ghost !py-1 !px-2.5 text-xs" onClick={refresh}>
-            刷新
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="btn-ghost !py-1 !px-2.5 text-xs"
+              onClick={syncFromConsole}
+              disabled={syncing}
+              title="从豆包控制台拉取已购买/已训练的复刻音色（只读同步，不会改动上游音色）。需要设置页填好「豆包 APP_ID」与「豆包 SK」。"
+            >
+              {syncing ? '同步中…' : '同步控制台音色'}
+            </button>
+            <button className="btn-ghost !py-1 !px-2.5 text-xs" onClick={refresh}>
+              刷新
+            </button>
+          </div>
         </div>
 
         {loadErr && (

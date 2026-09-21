@@ -60,6 +60,8 @@
 from __future__ import annotations
 
 import base64
+import datetime as _dt
+import hashlib
 import logging
 import os
 import re
@@ -265,6 +267,21 @@ def _icl_http_error_hint(
             "持续失败请带 logid 找火山技术支持"
         )
     return ""
+
+
+# ---------------------------------------------------------------------
+# 控制面：音色管理（列出账号下已有的复刻音色 / 音色槽位）
+# ---------------------------------------------------------------------
+# 与数据面 `/api/v3/tts/*` **不是一套鉴权**：这里走火山引擎 AK/SK 签名
+# （open.volcengineapi.com）。签名实现直接复用 services/doubao_list_speakers.py
+# 里那份（同款 HMAC-SHA256），不复制第二份密码学代码。
+# 文档：6561/2235883（音色管理 HTTP）
+_TRAIN_STATUS_HOST = "open.volcengineapi.com"
+_TRAIN_STATUS_PATH = "/"
+_TRAIN_STATUS_SERVICE = "speech_saas_prod"
+_TRAIN_STATUS_REGION = "cn-north-1"
+_TRAIN_STATUS_VERSION = "2023-11-07"
+_TRAIN_STATUS_ACTION = "BatchListMegaTTSTrainStatus"
 
 
 class DoubaoICLClient:
@@ -544,6 +561,152 @@ class DoubaoICLClient:
             "model_type": first_ss.get("model_type"),
             "demo_audio": first_ss.get("demo_audio"),
         }
+
+    # ---------------------------------------------------------------
+    # 控制面：列出账号下已有的复刻音色（音色管理 HTTP）
+    # ---------------------------------------------------------------
+    async def batch_list_train_status(
+        self,
+        app_id: str,
+        *,
+        page_size: int = 100,
+        max_pages: int = 20,
+    ) -> list[dict[str, Any]]:
+        """列出该 AppID 下已购买/训练过的音色槽位。
+
+        文档：6561/2235883 `BatchListMegaTTSTrainStatus`（控制台文档里说的
+        「批量查询接口」）。返回的每条含 `SpeakerID`（S_xxx）/ `State` /
+        `Alias` / `AvailableTrainingTimes` / `ExpireTime` / `ModelTypeDetails`。
+
+        鉴权：火山引擎 AK/SK 签名（**不是** 数据面的 X-Api-Key）。
+
+        Raises:
+            ValueError: 未配置 APP_ID / AK / SK
+            DoubaoICLHTTPError: 控制面返回非 2xx（或 ResponseMetadata.Error）
+        """
+        import json as _json
+
+        import httpx
+
+        from backend.app.core.config import doubao_field
+        # 复用 ListSpeakers 那份签名实现（同一套公有云签名规范）
+        from backend.app.services.doubao_list_speakers import _build_authorization
+
+        appid = str(app_id or "").strip()
+        if not appid:
+            raise ValueError(
+                "缺少豆包 APP_ID：音色管理接口要求 AppID。请在"
+                "「设置 → 模型厂商 → 火山引擎豆包语音」填写「豆包 APP_ID」（纯数字）后保存。"
+            )
+        ak = (doubao_field("api_key") or "").strip()
+        sk = (doubao_field("secret") or "").strip()
+        if not ak or not sk:
+            raise ValueError(
+                "缺少 SK：音色管理接口走火山引擎 AK/SK 签名（与合成用的 API Key 不是一套）。"
+                "请在设置页填写「豆包 SK（Secret Key）」后保存。"
+            )
+
+        query = f"Action={_TRAIN_STATUS_ACTION}&Version={_TRAIN_STATUS_VERSION}"
+        url = f"https://{_TRAIN_STATUS_HOST}{_TRAIN_STATUS_PATH}?{query}"
+        page_size = max(1, min(int(page_size), 100))
+        out: list[dict[str, Any]] = []
+        logid: str | None = None
+        timeout = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            for page in range(1, max(1, max_pages) + 1):
+                body_obj: dict[str, Any] = {
+                    "AppID": appid,
+                    "PageNumber": page,
+                    "PageSize": page_size,
+                }
+                body = _json.dumps(body_obj, ensure_ascii=False, separators=(",", ":"))
+                x_date = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
+                auth = _build_authorization(
+                    ak=ak, sk=sk,
+                    host=_TRAIN_STATUS_HOST, path=_TRAIN_STATUS_PATH,
+                    region=_TRAIN_STATUS_REGION, service=_TRAIN_STATUS_SERVICE,
+                    body=body, query=query,
+                    x_date=x_date, x_content_sha256=sha,
+                )
+                headers = {
+                    "Host": _TRAIN_STATUS_HOST,
+                    "Content-Type": "application/json; charset=UTF-8",
+                    "X-Date": x_date,
+                    "X-Content-Sha256": sha,
+                    "Authorization": auth,
+                }
+                resp = await client.post(url, content=body, headers=headers)
+                logid = resp.headers.get("X-Tt-Logid") or resp.headers.get("x-tt-logid")
+                if resp.status_code >= 400:
+                    raise self._control_plane_error(url, resp, logid=logid)
+                parsed = _json.loads(resp.content.decode("utf-8"))
+                err = ((parsed.get("ResponseMetadata") or {}).get("Error")) or {}
+                if err:
+                    raise DoubaoICLHTTPError(
+                        f"豆包音色管理接口返回错误：Code={err.get('Code')} "
+                        f"Message={err.get('Message')}"
+                        + (f" logid={logid}" if logid else ""),
+                        status_code=resp.status_code,
+                        code=err.get("Code"),
+                        logid=logid,
+                        body=str(parsed)[:1000],
+                    )
+                result = parsed.get("Result") or {}
+                statuses = [s for s in (result.get("Statuses") or []) if isinstance(s, dict)]
+                out.extend(statuses)
+                # 官方分页：本页不足一页即到底（不用 NextToken，避免两种分页语义混用）
+                if len(statuses) < page_size:
+                    break
+
+        logger.info(
+            f"[icl_client] batch_list_train_status OK app_id={appid[:4]}... "
+            f"count={len(out)} logid={logid or '-'}"
+        )
+        return out
+
+    def _control_plane_error(
+        self, url: str, resp: Any, *, logid: str | None = None
+    ) -> DoubaoICLHTTPError:
+        """控制面（open.volcengineapi.com）非 2xx：错误结构在 ResponseMetadata.Error。"""
+        import json as _json
+
+        raw = ""
+        try:
+            raw = resp.content.decode("utf-8", errors="replace")
+        except Exception:  # pragma: no cover
+            raw = ""
+        code = message = ""
+        try:
+            parsed = _json.loads(raw)
+            err = (parsed.get("ResponseMetadata") or {}).get("Error") or {}
+            code = str(err.get("Code") or "")
+            message = str(err.get("Message") or "")
+        except Exception:
+            pass
+        parts = [f"豆包音色管理接口返回 HTTP {resp.status_code} url={url}"]
+        if code:
+            parts.append(f"Code={code}")
+        if message:
+            parts.append(f"Message={message}")
+        if logid:
+            parts.append(f"logid={logid}")
+        if "AccessDenied" in code or resp.status_code in (401, 403):
+            parts.append(
+                "提示：这是火山引擎 AK/SK 签名鉴权失败（与合成的 API Key 不是一套）。"
+                "请确认设置页的「API Key / SK」填的是火山引擎控制台【访问控制-API 访问密钥】"
+                "里的 Access Key ID / Secret Access Key，且账号有语音服务的控制面权限"
+            )
+        if not message and raw:
+            parts.append(f"body={raw[:300]}")
+        return DoubaoICLHTTPError(
+            " ".join(parts),
+            status_code=resp.status_code,
+            code=code or None,
+            logid=logid,
+            body=raw[:1000],
+        )
 
     # ---------------------------------------------------------------
     # HTTP 内部方法（测试可 monkeypatch）

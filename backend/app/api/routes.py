@@ -584,6 +584,35 @@ async def api_icl_delete_voice(
         raise HTTPException(500, f"删除失败: {type(e).__name__}: {e}")
 
 
+@router.post("/icl/sync")
+async def api_icl_sync_voices(
+    current: User = Depends(get_current_user),
+):
+    """把豆包控制台已有的复刻音色同步进平台（只读、幂等）。
+
+    平台的 `icl:` 音色只来自本地训练表，控制台/页面上做的复刻音色不会自动出现；
+    这里调「音色管理 HTTP」（BatchListMegaTTSTrainStatus，AK/SK 签名，与合成用的
+    API Key 不是一套）把已购买的音色槽位拉进来。
+    """
+    t0 = _time.perf_counter()
+    try:
+        from ..services.icl import sync_icl_voices_from_console
+        resp = await sync_icl_voices_from_console(current.id)
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.info(
+            f"[HTTP] 200 /api/icl/sync user={current.username} "
+            f"total={resp['total']} created={resp['created']} usable={resp['usable']} "
+            f"total_ms={elapsed_ms}"
+        )
+        return resp
+    except ValueError as e:
+        # 配置缺失（APP_ID / SK）—— 明确告诉用户去哪补
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error(f"[HTTP] 502 /api/icl/sync -> {type(e).__name__}: {e}", exc_info=True)
+        raise _http_exc_with_logid(502, f"同步失败: {type(e).__name__}: {e}", e)
+
+
 # ---------- Chapter & Book 路由已移除（项目制统一入口：/api/projects/*）----------
 # 已删除：
 #   POST /api/chapter/prepare        → 旧单章模式（移除）

@@ -672,5 +672,45 @@ API Key 所属项目必须与开通服务的项目一致。
   有了 §9.1 的批量查询接口，还可以做成「自动挑一个剩余训练次数的槽位」。
 - 前端「训练模型算法」下拉去除（该字段不下发上游，已失效）。
 
+#### 批次 3.5 补丁 5 —— 同步控制台已有的复刻音色（2026-09-21 同日）
+
+承接上一条：用户选择「先做从 §9.1 接口同步已有音色」。背景是平台里的 `icl:` 音色
+**只来自本地 `icl_training_tasks` 表**，在豆包控制台/页面做的复刻音色不会自动出现
+（`icl_voices_for_user()` 只查本地库；`ListSpeakers` 拉的是官方精品音色库，不含个人复刻）。
+
+**做法**：调**控制面**「音色管理 HTTP」`BatchListMegaTTSTrainStatus`（6561/2235883，
+即控制台文档说的「批量查询接口」），把账号下已购买的音色槽位拉进来，按
+`cloned_voice_id = SpeakerID` **幂等 upsert** 成本地 `IclTrainingTask` 行。
+
+> 关键设计：**不新增表、不新增字段，也不写 `voices_doubao.json`**。复用现有任务行后，
+> 同步来的音色自动出现在三个地方 —— ①「声音复刻」列表 ②`/api/voices` 音色库
+> （`icl_voices_for_user` 过滤 `status ∈ {2,4}`）③角色推荐候选池；合成时
+> `icl:S_xxx` 经 `is_cloned_speaker_id()` 路由到 `seed-icl-2.0`。零 DB 迁移（`init_db` 只有 `create_all`）。
+
+| 文件 | 改动 |
+|---|---|
+| `icl.py` | 新增控制面常量（host/service/region/version 2023-11-07/Action）+ `batch_list_train_status()`：AK/SK 签名**复用** `doubao_list_speakers.py::_build_authorization`（不复制密码学代码）；分页用 `PageNumber` 递增 + 「本页不足一页即停」（不与 `NextToken` 混用）；新增 `_control_plane_error()` 解析 `ResponseMetadata.Error`（Code/Message），401/403 时提示「这是 AK/SK 签名，与合成的 API Key 不是一套」 |
+| `services/icl.py` | 新增 `sync_icl_voices_from_console(user_id)`：`State → status` 映射（Success/Active→4、Training→1、Unknown→0、Expired/Reclaimed→3 并写可读 error_msg）；按 `cloned_voice_id` upsert，**不覆盖本地已有的参考音频等字段**，只更新状态/别名 |
+| `routes.py` | 新增 `POST /api/icl/sync`（配置缺失 400 / 上游失败 502 + logid） |
+| 前端 | `api.ts` 加 `iclSyncVoices()` + `IclSyncResp`；`VoiceLibraryPage` 在「我的复刻音色」标题旁加「同步控制台音色」按钮（`title` 里写明需要 APP_ID + SK），成功提示 `控制台返回 N 个音色，其中可用 M 个（新增 x / 更新 y）` |
+
+**前置条件（用户侧）**：设置页需填 **豆包 APP_ID（纯数字）** 与 **豆包 SK**，且 AK/SK 要是
+火山引擎控制台【访问控制-API 访问密钥】里的 Access Key ID / Secret Access Key；
+签名不对会得到 `AccessDenied`，报错里会直接说明。
+
+验证：新增 [test_icl_console_sync_red.py](file:///workspace/backend/tests/test_icl_console_sync_red.py) 6 用例
+（CS-1 State 映射 + 同步后能被 `icl_voices_for_user` 看见 / CS-2 幂等且不覆盖本地参考音频 /
+CS-3 缺 APP_ID·SK 的提示 / CS-4 分页与请求形状（Action·Version 在 query、AppID 在 body、
+AK/SK 签名在 header）/ CS-5 控制面错误（401 AccessDenied 与 200+ResponseMetadata.Error）/
+CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
+全量后端 `375 passed, 3 failed, 1 skipped`（3 个失败与基线同，均 E-1 类抖动，单跑全绿）。
+
+**已知限制（如实记录）**：
+- **只覆盖预付费音色槽位**：接口只列已购买槽位，后付费自定义代号的音色不在其中
+  （那种要继续用 `/api/icl/voices` 训练出来的本地记录，或走 `voices_doubao.json` 手工登记）。
+- **同步是「拉进来」，不是「双向」**：平台内删除同步来的任务行，只是删本地记录，
+  不会动豆包侧音色；下次同步会重新出现。反过来改别名也会被下次同步覆盖。
+- **依赖 AppID**：`AppID` 是该接口的必填参数；未配置时直接 400 并提示去设置页补。
+
 
 

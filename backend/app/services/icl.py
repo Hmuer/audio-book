@@ -360,3 +360,124 @@ async def icl_voices_for_user(user_id: int) -> list[dict[str, Any]]:
             }
             for r in rows
         ]
+
+
+# =====================================================================
+# 同步控制台已有的复刻音色（音色管理 HTTP · BatchListMegaTTSTrainStatus）
+# =====================================================================
+
+# 官方 `State` 枚举 → 本地 IclTrainingTask.status
+#   官方：Unknown / Training / Success / Active / Expired / Reclaimed
+#   本地：0 排队 / 1 训练中 / 2 成功 / 3 失败 / 4 可用
+_CONSOLE_STATE_TO_STATUS: dict[str, int] = {
+    "success": 4,
+    "active": 4,
+    "training": 1,
+    "unknown": 0,
+    "expired": 3,
+    "reclaimed": 3,
+}
+_CONSOLE_STATE_ERROR: dict[str, str] = {
+    "expired": "音色已过期（可在控制台续费后重新同步）",
+    "reclaimed": "音色已被回收",
+}
+
+
+async def sync_icl_voices_from_console(user_id: int) -> dict[str, Any]:
+    """把控制台里已有的复刻音色同步进本平台（**只读、幂等**）。
+
+    为什么需要：平台里的 `icl:` 音色只来自本地 `icl_training_tasks` 表，
+    在豆包控制台/页面上做的复刻音色不会自动出现（见 notes §9.1）。
+
+    做法：拉取 `BatchListMegaTTSTrainStatus`（按 AppID 列出已购买的音色槽位），
+    每个 `SpeakerID` 落成一条 `IclTrainingTask`（`cloned_voice_id = S_xxx`），
+    于是它会自然出现在三个地方：声音复刻列表、`/api/voices` 音色库、
+    角色推荐候选池；合成时 `icl:S_xxx` 会路由到 `seed-icl-2.0`。
+
+    - **幂等**：按 `cloned_voice_id` upsert，重复同步不会产生重复行；
+    - **不覆盖已有训练任务**：同名只更新 状态/别名；
+    - **不写豆包侧**：纯读取，不会创建/删除/改名任何上游音色。
+
+    Args:
+        user_id: 音色归属（单用户部署下即当前登录用户）。
+
+    Returns:
+        {"total": 上游返回条数, "created": 新建数, "updated": 更新数,
+         "usable": 可用数, "items": [{speaker_id, name, state, status}...]}
+
+    Raises:
+        ValueError: 未配置 APP_ID / AK / SK（提示去设置页补）
+        DoubaoICLHTTPError: 控制面调用失败
+    """
+    from ..core.config import doubao_field
+
+    app_id = (doubao_field("app_id") or "").strip()
+    client = get_icl_client()
+    rows = await client.batch_list_train_status(app_id)
+
+    factory = get_session_factory()
+    created = updated = 0
+    items: list[dict[str, Any]] = []
+    async with factory() as s:
+        for r in rows:
+            sid = str(r.get("SpeakerID") or "").strip()
+            if not sid:
+                continue
+            state = str(r.get("State") or "").strip()
+            status = _CONSOLE_STATE_TO_STATUS.get(state.lower(), 0)
+            alias = str(r.get("Alias") or "").strip()
+            name = alias or sid
+            err = _CONSOLE_STATE_ERROR.get(state.lower())
+
+            stmt = (
+                select(IclTrainingTask)
+                .where(
+                    IclTrainingTask.user_id == user_id,
+                    IclTrainingTask.cloned_voice_id == sid,
+                )
+                .limit(1)
+            )
+            existing = (await s.execute(stmt)).scalar_one_or_none()
+            if existing:
+                existing.status = status
+                if status in _USABLE_STATUSES:
+                    existing.progress = 100
+                if alias:
+                    existing.voice_name = alias[:128]
+                if err:
+                    existing.error_msg = err
+                updated += 1
+            else:
+                s.add(IclTrainingTask(
+                    task_id=f"icl_sync_{uuid.uuid4().hex}",
+                    user_id=user_id,
+                    voice_name=name[:128],
+                    reference_audio_path="",
+                    reference_audio_size_bytes=0,
+                    status=status,
+                    progress=100 if status in _USABLE_STATUSES else 0,
+                    doubao_task_id=None,
+                    cloned_voice_id=sid,
+                    error_msg=err,
+                ))
+                created += 1
+            items.append({
+                "speaker_id": sid,
+                "name": name,
+                "state": state,
+                "status": status,
+            })
+        await s.commit()
+
+    usable = sum(1 for i in items if i["status"] in _USABLE_STATUSES)
+    logger.info(
+        f"[icl_sync] user={user_id} 控制台音色同步完成 total={len(items)} "
+        f"created={created} updated={updated} usable={usable}"
+    )
+    return {
+        "total": len(items),
+        "created": created,
+        "updated": updated,
+        "usable": usable,
+        "items": items,
+    }

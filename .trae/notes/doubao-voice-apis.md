@@ -476,6 +476,25 @@ Body: {
 `icl_training_tasks` 表）。想「同步已有复刻音色」或「查看剩余音色槽位/训练次数」，
 就调这个接口。注意它只列**已购买的音色槽位（预付费）**；后付费自定义代号的音色不在其中。
 
+**本项目实现**（2026-09-21）：
+- 客户端：`icl.py::DoubaoICLClient.batch_list_train_status(app_id, page_size, max_pages)`
+  —— 复用 `doubao_list_speakers.py` 那份签名实现；分页用 `PageNumber` 递增、
+  「本页不足一页即停」（不混用 `NextToken` 语义）；错误走 `_control_plane_error()`。
+- 服务：`services/icl.py::sync_icl_voices_from_console(user_id)` —— 按
+  `cloned_voice_id = SpeakerID` **幂等 upsert** 成 `IclTrainingTask`，于是音色会出现在
+  声音复刻列表 / `/api/voices` 音色库 / 角色推荐候选池；`State` 映射见下。
+- 接口：`POST /api/icl/sync`（配置缺失回 400、上游失败回 502 并带 logid）。
+- 前置：设置页要填 **豆包 APP_ID（纯数字）+ 豆包 SK**（控制面走 AK/SK 签名，
+  与合成用的 API Key 不是一套）。
+
+| 官方 `State` | 本地 `status` | 说明 |
+|---|---|---|
+| `Success` / `Active` | 4 | 可用，会出现在音色库 |
+| `Training` | 1 | 训练中 |
+| `Unknown` | 0 | 排队 / 未知 |
+| `Expired` | 3 | 已过期（error_msg 提示可续费） |
+| `Reclaimed` | 3 | 已回收 |
+
 > 已下线的 `ListMegaTTSTrainStatus` 用 `BatchListMegaTTSTrainStatus` 替代（官方文档明确）。
 
 ---
