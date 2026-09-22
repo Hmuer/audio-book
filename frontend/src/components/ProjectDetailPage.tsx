@@ -1131,17 +1131,19 @@ function ChaptersTab({
                           })
                           .catch(e => console.error('sign download url:', e));
                       }}
+                      extraActions={
+                        <button
+                          type="button"
+                          onClick={() => downloadChapterLrc(project.project_id, lastBuild!.build_id, c.idx)}
+                          className="shrink-0 h-8 px-2.5 rounded-md border border-ink-300/70 bg-ink-200
+                            text-ink-600 hover:text-brand-300 hover:bg-brand-500/10 hover:border-brand-500/30
+                            transition-all font-medium text-[11.5px]"
+                          title="下载本章 LRC 歌词（时间轴与本章 MP3 对齐）"
+                        >
+                          LRC
+                        </button>
+                      }
                     />
-                    <div className="mt-2 flex items-center gap-2">
-                      <button
-                        type="button"
-                        className="btn-ghost !py-1.5 !px-3 text-xs"
-                        onClick={() => downloadChapterLrc(project.project_id, lastBuild!.build_id, c.idx)}
-                        title="下载本章 LRC 歌词（时间轴与本章 MP3 对齐）"
-                      >
-                        下载 LRC
-                      </button>
-                    </div>
                   </div>
                 )}
 
@@ -2029,15 +2031,13 @@ function BuildDetailContent({
                       })
                       .catch(e => console.error('sign download url:', e));
                   }}
-                />
-              )}
-              {a.status === 'done' && (
-                <div className="mt-2 flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="btn-ghost !py-1.5 !px-3 text-xs"
-                    onClick={() => {
-                      try {
+                  extraActions={
+                    <button
+                      type="button"
+                      className="shrink-0 h-8 px-2.5 rounded-md border border-ink-300/70 bg-ink-200
+                        text-ink-600 hover:text-brand-300 hover:bg-brand-500/10 hover:border-brand-500/30
+                        transition-all font-medium text-[11.5px]"
+                      onClick={() => {
                         api.buildChapterLrc(projectId, detail.build_id, a.chapter_idx)
                           .then(({ filename, content }) => {
                             const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -2047,16 +2047,15 @@ function BuildDetailContent({
                             x.download = filename;
                             x.click();
                             URL.revokeObjectURL(url);
-                          });
-                      } catch (e: any) {
-                        alert(`歌词生成失败: ${e?.message || e}`);
-                      }
-                    }}
-                    title="下载本章 LRC 歌词（时间轴与本章 MP3 对齐）"
-                  >
-                    下载 LRC
-                  </button>
-                </div>
+                          })
+                          .catch(e => alert(`歌词生成失败: ${e?.message || e}`));
+                      }}
+                      title="下载本章 LRC 歌词（时间轴与本章 MP3 对齐）"
+                    >
+                      LRC
+                    </button>
+                  }
+                />
               )}
             </div>
           );

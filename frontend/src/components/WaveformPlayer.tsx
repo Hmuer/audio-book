@@ -539,6 +539,9 @@ export default function WaveformPlayer({
               </svg>
             </button>
           )}
+
+          {/* 附加操作（下载 LRC 等），与下载按钮同排 */}
+          {extraActions}
         </div>
       </div>
 
