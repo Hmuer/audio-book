@@ -25,6 +25,7 @@ export default function WaveformPlayer({
   onNeedNewSrc,
   compact = false,
   autoPlay = false,
+  extraActions,
 }: {
   src: string | null;
   onDownload?: () => void;
@@ -36,6 +37,8 @@ export default function WaveformPlayer({
   onNeedNewSrc?: () => void | Promise<void>;
   compact?: boolean;
   autoPlay?: boolean;
+  /** 渲染在「下载」按钮右侧的一小组操作（如 下载 LRC），与控制按钮同一行显示。 */
+  extraActions?: React.ReactNode;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
