@@ -485,10 +485,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ force_restart_failed_only: true }),
     }),
-  // 整包 ZIP 下载 URL（P1 #6：使用一次性签名 token，而非完整登录 JWT）
-  buildDownloadAll: async (projectId: string, buildId: string): Promise<string> => {
+  // ZIP 分片下载 URL（F-7：分片打包后用 shard 指定第几片；P1 #6 一次性签名 token）
+  buildDownloadAll: async (projectId: string, buildId: string, shard = 0): Promise<string> => {
     const info = await _fetch<{ url: string }>(
-      `/api/media/sign?build_id=${encodeURIComponent(buildId)}&kind=all_zip`
+      `/api/media/sign?build_id=${encodeURIComponent(buildId)}&kind=all_zip&idx=${shard}`
     );
     return info.url;
   },
@@ -755,6 +755,17 @@ export interface BuildListItem {
   tts_chars?: number;
 }
 
+// ZIP 分片（F-7：章节数超过分片阈值时会有多片，每片自包含）
+export interface ZipShard {
+  idx: number;
+  filename: string;
+  url: string;
+  /** 1-based，便于直接显示「第001-050章」 */
+  start_chapter: number;
+  end_chapter: number;
+  size_kb: number | null;
+}
+
 // build 详情
 export interface BuildDetailResp {
   build_id: string;
@@ -766,6 +777,8 @@ export interface BuildDetailResp {
   narrator_voice_id: string | null;
   speed: number | null;
   zip_url: string | null;
+  /** F-7：ZIP 分片清单（单包时长度为 1；老数据可能为空 → 按 zip_url 兜底） */
+  zip_shards?: ZipShard[];
   total_size_kb: number | null;
   total_duration_sec: number | null;
   started_at: string | null;

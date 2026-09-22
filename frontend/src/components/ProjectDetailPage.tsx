@@ -1919,7 +1919,9 @@ function BuildDetailContent({
 }) {
   // P1 #6：每个 BuildArtifact 的签名音频 URL（一次性 token，5 分钟过期）
   const [signedUrls, setSignedUrls] = useState<Record<number, string>>({});
-  const [zipUrl, setZipUrl] = useState<string | null>(null);
+  // F-7：ZIP 可能是多分片，按分片下标存放签名 URL
+  const [zipUrls, setZipUrls] = useState<Record<number, string>>({});
+  const zipShards = detail.zip_shards ?? [];
 
   useEffect(() => {
     let cancelled = false;
@@ -1938,19 +1940,25 @@ function BuildDetailContent({
       }
       if (!cancelled) setSignedUrls(prev => ({ ...prev, ...updates }));
 
-      // 整包 ZIP
-      if (detail.zip_url) {
-        try {
-          const u = await api.buildDownloadAll(projectId, detail.build_id);
-          if (!cancelled) setZipUrl(u);
-        } catch (e) {
-          console.warn('sign zip url failed', e);
+      // F-7：ZIP 分片（单包时数组长度为 1）——逐个签发下载 URL
+      const shards = detail.zip_shards ?? [];
+      if (shards.length > 0) {
+        const zUpdates: Record<number, string> = {};
+        for (const s of shards) {
+          try {
+            zUpdates[s.idx] = await api.buildDownloadAll(projectId, detail.build_id, s.idx);
+          } catch (e) {
+            console.warn('sign zip url failed', s.idx, e);
+          }
+        }
+        if (!cancelled && Object.keys(zUpdates).length) {
+          setZipUrls(prev => ({ ...prev, ...zUpdates }));
         }
       }
     };
     signAll();
     return () => { cancelled = true; };
-  }, [detail.build_id, projectId, (detail.artifacts ?? []).length]);
+  }, [detail.build_id, projectId, (detail.artifacts ?? []).length, (detail.zip_shards ?? []).length]);
 
   return (
     <div className="space-y-3">
@@ -1963,17 +1971,46 @@ function BuildDetailContent({
             TTS {detail.tts_calls} 次 / {detail.tts_chars?.toLocaleString()} 字
           </span>
         )}
-        {detail.zip_url && (detail.status === 'success' || detail.status === 'partial_success' || detail.status === 'done') && zipUrl && (
+        {zipShards.length === 1 && zipUrls[0] && (
           <a
             className="btn-primary !py-1.5 !px-3 text-xs ml-auto"
-            href={zipUrl}
+            href={zipUrls[0]}
             download
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="mr-1"><rect x="2" y="7" width="13" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V18a2 2 0 0 1-2 2"/></svg>
             下载全部 ZIP
           </a>
         )}
+        {zipShards.length > 1 && (
+          <span className="chip-soft ml-auto" title="为控制单包体积与下载可靠性，已按章节区间分卷打包">
+            ZIP 共 {zipShards.length} 卷
+          </span>
+        )}
       </div>
+
+      {/* F-7：分片 ZIP 下载列表（章节数超过分片阈值时才有多个） */}
+      {zipShards.length > 1 && (
+        <div className="rounded-lg border border-ink-300/70 bg-ink-200 p-3 space-y-2">
+          <div className="text-xs text-ink-600">
+            分卷下载（每卷自包含，可单独解压）：
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {zipShards.map(s => (
+              <a
+                key={s.idx}
+                className="btn-ghost !py-1.5 !px-3 text-xs tabular-nums"
+                href={zipUrls[s.idx] ?? undefined}
+                download
+                aria-disabled={!zipUrls[s.idx]}
+                title={zipUrls[s.idx] ? `下载 ${s.filename}` : '正在签发下载地址…'}
+              >
+                第{String(s.start_chapter).padStart(3, '0')}-{String(s.end_chapter).padStart(3, '0')}章
+                {s.size_kb ? <span className="text-ink-500 ml-1">{formatSize(s.size_kb * 1024)}</span> : null}
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
 
       {detail.progress_msg && (
         <div className="text-xs text-ink-500 rounded-md bg-ink-200 px-3 py-2 border border-ink-300/70">

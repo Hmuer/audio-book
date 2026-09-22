@@ -905,9 +905,9 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 - [x] F-2 `project_dialogues` 加 `(project_id, chapter_idx)` 索引 — [models.py#L237-L254](file:///workspace/backend/app/db/models.py#L237-L254) — 完成 2026-09-22
 - [x] F-3 角色识别切片改为「按完整章节装桶」+ 重置旧 checkpoint — [project.py#L886-L889](file:///workspace/backend/app/services/project.py#L886-L889) — 完成 2026-09-22
 
-#### 批次 7 —— 可用性与体验
-- [ ] F-5 批量签发 + 虚拟滚动 — [ProjectDetailPage.tsx#L1009-L1018](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L1009-L1018)
-- [ ] F-7 ZIP 改为「每 50 章一个独立 ZIP」（含前端分片下载列表、Build 多产物字段、delete_build 覆盖） — [build.py#L74-L100](file:///workspace/backend/app/services/build.py#L74-L100)
+#### 批次 7 —— 可用性与体验（进行中）
+- [ ] F-5 批量签发 + 虚拟滚动 — [ProjectDetailPage.tsx#L1009-L1018](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L1009-L1018) — **待做（下一步）**
+- [x] F-7 ZIP 改为「每 50 章一个独立 ZIP」（含前端分片下载列表、Build 多产物字段、delete_build 覆盖） — [build.py#L74-L165](file:///workspace/backend/app/services/build.py#L74-L165) — 完成 2026-09-22
 
 #### 批次 8 —— 对象存储（腾讯云 COS）
 - [ ] G-1 `StorageBackend` 抽象（local | s3，默认 local）
@@ -947,6 +947,33 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 **发现但未处理（留待确认）**
 - `project.py::_split_50k_and_run_chars_serial` 是**死代码**（全仓库仅定义、无调用点），且它实现的正是被 F-3 废止的「按字符偏移硬切」。本批只在 docstring 上加了「已废弃、勿复用」标注，**未删除**（删除属 E-6 类清理，不在本批范围）。建议后续删除或改造为调用 `_bucket_chapters_by_chars`。
 - 本批只解决「打包/识别的算法复杂度」，**不改变量级瓶颈**：5000 章的 prepare 仍受 `LLM_MAX_CONCURRENCY=1` 串行限制（F-8），合成仍受 `DOUBAO_TTS_RPM_LIMIT=60` 限制（F-6），前端仍会逐章签发（F-5）。
+
+#### 批次 7 之 F-7（2026-09-22）
+
+| 项 | 改动 | 测试 / 证据 |
+|---|---|---|
+| 配置 | `ZIP_SHARD_CHAPTERS`（默认 50，<=0 表示不分片）新增于 [config.py](file:///workspace/backend/app/core/config.py#L256-L260)，并入设置白名单「合成质量」分组（[routes.py](file:///workspace/backend/app/api/routes.py#L1919)） | — |
+| DB | `Build.zip_filenames_json`（TEXT，`[{"filename","start","end","size_bytes"}]`），`zip_filename` 保留为**第一个分片**以兼容旧代码路径；老库经 `_BUILD_NEW_COLUMNS` 自动 ADD COLUMN | 见下 T-ZS4 的老库兜底用例 |
+| 打包 | [build.py](file:///workspace/backend/app/services/build.py)：`_build_book_zip` 增加 `start/end`（只打包该区间，**章节序号仍按全书统一编号**，任一卷可独立解压）；新增 `_zip_shard_size` / `_zip_shard_ranges` / `_zip_shard_filename` / `_parse_zip_shards`；`_finalize` 逐片打包并累计清单 | T-ZS1 区间切分（整除/余数/不分片/空书）；T-ZS2 命名（全量覆盖沿用 `_all.zip`，分片带 `ch0001-0050`）；T-ZS3 **分片 ZIP 只含本区间内容**且序号为 003/004/005 |
+| 下载 | `/media/sign?kind=all_zip&idx=N` 用 `idx` 选分片（复用既有 `chapter_idx` 字段，未新增 kind）；`/media/stream` 按分片解析并把下载名带上章节区间（`…_第051-060章.zip`）；`/download-all?shard=N` 同步支持 | T-ZS6 分别取 idx=0/1 并断言 stream 返回的是对应分片的字节；T-ZS7 `?shard=1` 返回第 1 片且文件名含区间 |
+| 清理 | `delete_build` 删除**全部分片**；`delete_project` 把所有 build 的 `zip_filename` + `zip_filenames_json` 里的文件名合并去重后一起删 | T-ZS4 兜底：老库（只有 `zip_filename`）也能被 `_parse_zip_shards` 覆盖到 |
+| 前端 | [api.ts](file:///workspace/frontend/src/lib/api.ts)：新增 `ZipShard` 类型、`BuildDetailResp.zip_shards`、`buildDownloadAll(..., shard=0)`；[ProjectDetailPage.tsx](file:///workspace/frontend/src/components/ProjectDetailPage.tsx)：单包时保持原「下载全部 ZIP」按钮，多片时改为「ZIP 共 N 卷」+ 逐卷下载列表（带章节区间与体积） | `npx tsc --noEmit` ✅ |
+
+**兼容性说明**
+- 老 build 的 `zip_filenames_json` 为 NULL → `_parse_zip_shards` 用 `zip_filename` 合成「单条覆盖全书」→ 前端 `zip_shards` 长度为 1 → 仍显示原按钮，行为与改造前完全一致。
+- 章节数 ≤ 阈值时文件名仍是 `build_<id>_all.zip`，历史链接/脚本不受影响。
+- 已生成的旧单包不会自动拆分（无需迁移）。
+
+**回归结果**
+- 新增 [test_zip_shard_red.py](file:///workspace/backend/tests/test_zip_shard_red.py)（9 用例）全绿
+- 全量后端：`403 passed, 4 failed, 1 skipped`；4 项失败与基线**完全一致**（`test_b5_retry_reused_chapter_has_own_file` / `test_project_e2e` / `test_project_prepare_voice_pool_red` / `test_review_fixes_red`），均属既有 E-1 类跨用例污染，**非本批引入**
+- 前端 `npx tsc --noEmit` exit=0
+
+**踩坑记录（对后续批次有用）**
+- 本批的 F-7 路由用例在**单跑时通过、全量跑时 404**。根因是 E-1：`test_path_env_override_red.py` 会 `importlib.reload(core.config)`，而 `routes.py` 在更早 import 时已绑定**旧的 `settings` 对象**，于是 conftest 打在「新对象」上的 `AUDIO_DIR` 对路由不可见。修法沿用仓库既有约定（见 `test_voice_instruction_red.py` / `test_tts_model_switch_red.py` 的注释）：**patch 路由模块自己绑定的那个 `settings`**。
+
+**未做**
+- F-5（批量签发 + 虚拟滚动）尚未开始，留作下一步。
 
 
 

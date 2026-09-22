@@ -76,6 +76,7 @@ from ..services.build import (
     cancel_build,
     retry_failed_build,
     _ensure_project_not_running,
+    _parse_zip_shards,
     BuildResp,
     BuildDetailResp,
     BuildListItem,
@@ -1240,7 +1241,7 @@ async def api_media_sign(
     """签发媒体签名 token（短时 + 资源绑定；TTL 内可重复使用，见 B-6）。
 
     - kind=chapter_mp3   必须带 idx（章节号）
-    - kind=all_zip       整包 ZIP
+    - kind=all_zip       idx 可选 = ZIP 分片下标（F-7 分片打包；不传 = 第 0 片）
     - ttl_seconds        1~600（默认 300 = 5 分钟）
     """
     if kind == "chapter_mp3":
@@ -1298,6 +1299,9 @@ async def api_media_stream(
         b = await s.get(Build, build_id)
         if not b:
             raise HTTPException(404, "build 不存在")
+        # F-7：all_zip 分片的章节区间与总片数（仅分片打包时填充）
+        zip_range: tuple[int, int] | None = None
+        zip_shard_total = 0
         if kind == "chapter_mp3":
             art = (
                 await s.execute(
@@ -1312,10 +1316,16 @@ async def api_media_stream(
             audio_filename = art.audio_filename
             art_title = art.title
         elif kind == "all_zip":
-            if not b.zip_filename:
+            # F-7：idx 表示分片下标（不传 = 第 0 片，兼容老链接）
+            shards = _parse_zip_shards(b)
+            if not shards:
                 raise HTTPException(400, "整包 ZIP 尚未生成")
-            audio_filename = b.zip_filename
+            si = 0 if idx is None else max(0, min(int(idx), len(shards) - 1))
+            shard = shards[si]
+            audio_filename = shard["filename"]
             art_title = "all"
+            zip_range = (int(shard["start"]) + 1, int(shard["end"]) + 1)
+            zip_shard_total = len(shards)
         else:
             raise HTTPException(400, f"unknown kind {kind!r}")
 
@@ -1344,7 +1354,14 @@ async def api_media_stream(
             from ..db.models import Project
             proj = await s2.get(Project, b.project_id)
         book_title = proj.book_title if proj else None
-        download_name = _safe_download_name_build(book_title, build_id, ".zip")
+        if zip_range and zip_shard_total > 1:
+            # 分片包：文件名带上章节区间，避免用户拿到一堆同名 zip
+            download_name = (
+                _safe_download_name_build(book_title, build_id, "")
+                + f"_第{zip_range[0]:03d}-{zip_range[1]:03d}章.zip"
+            )
+        else:
+            download_name = _safe_download_name_build(book_title, build_id, ".zip")
         return FileResponse(
             path=str(fpath),
             media_type="application/zip",
@@ -1593,18 +1610,27 @@ async def api_build_download_all(
     project_id: str,
     build_id: str,
     request: Request,
+    shard: int = 0,
     current: User = Depends(get_current_user),
 ):
-    """一键全部下载：返回打包好的 ZIP（中文文件名）。P1 #5：读权限校验。"""
+    """下载打包好的 ZIP（中文文件名）。F-7 起为分片打包，用 shard 指定第几片。
+
+    保留该路由主要为脚本/直链场景；前端走 /media/sign + /media/stream。
+    """
     factory = get_session_factory()
     async with factory() as s:
         await get_project_for_user(s, project_id, current)
         b = await s.get(Build, build_id)
         if not b or b.project_id != project_id:
             raise HTTPException(404, "build 不存在")
-        if not b.zip_filename:
+        shards = _parse_zip_shards(b)
+        if not shards:
             raise HTTPException(400, "整包 ZIP 尚未生成，请先等合成完成")
-        zip_filename = b.zip_filename
+        si = max(0, min(int(shard), len(shards) - 1))
+        picked = shards[si]
+        zip_filename = picked["filename"]
+        zip_range = (int(picked["start"]) + 1, int(picked["end"]) + 1)
+        shard_total = len(shards)
         book_title = None
         proj = await s.get(Project, project_id)
         if proj:
@@ -1614,7 +1640,13 @@ async def api_build_download_all(
     zip_path = audio_dir / zip_filename
     if not zip_path.is_file():
         raise HTTPException(404, "ZIP 文件不存在")
-    download_name = _safe_download_name_build(book_title, build_id, ".zip")
+    if shard_total > 1:
+        download_name = (
+            _safe_download_name_build(book_title, build_id, "")
+            + f"_第{zip_range[0]:03d}-{zip_range[1]:03d}章.zip"
+        )
+    else:
+        download_name = _safe_download_name_build(book_title, build_id, ".zip")
     ascii_name = urllib.parse.quote(download_name.encode("utf-8"), safe="")
     headers = {
         "Content-Disposition": f"attachment; filename*=UTF-8''{ascii_name}"
@@ -1885,6 +1917,7 @@ _EDITABLE_SETTINGS = {
     # 合成质量
     "TTS_MAX_SEGMENT_CHARS": ("int", "合成质量", "单段最大字符数（超长自动按句读切分）"),
     "POLISH_ENABLED": ("bool", "合成质量", "prepare 时用 LLM 润色纠错（每章一次调用，增加费用）"),
+    "ZIP_SHARD_CHAPTERS": ("int", "合成质量", "每个 ZIP 分片包含的章节数（默认 50；<=0 表示不分片）"),
     # 日志
     "LOG_LEVEL": ("str", "日志配置", "日志级别"),
     "LOG_FILE": ("str", "日志配置", "日志文件路径"),

@@ -79,15 +79,27 @@ def _build_book_zip(
     chapter_outputs: list[tuple[str | None, int | None]],
     chapter_titles: list[str],
     chapter_lrcs: list[str] | None = None,
+    start: int = 0,
+    end: int | None = None,
 ) -> None:
     """
-    把全部章节 MP3 打包到 ZIP。失败章的占位音频也会被打进 ZIP，避免缺文件。
+    把 [start, end]（0-based，闭区间）范围内的章节 MP3 打包到 ZIP。
+
+    失败章的占位音频也会被打进 ZIP，避免缺文件。
     每章再写一份同名 .lrc 歌词（chapter_lrcs 与 MP3 按位置对齐；缺则略过）。
-    ZIP 内部命名：《书名》/第001章 标题.mp3/.lrc
+
+    F-7：支持分片 —— 每个分片是**自包含**的 ZIP（内部仍是《书名》/第NNN章.mp3+.lrc），
+    章节序号按全书统一编号，因此任意一卷都能单独解压使用。
     """
+    total = len(chapter_outputs)
+    if total == 0:
+        return
+    first = max(0, int(start))
+    last = total - 1 if end is None else min(int(end), total - 1)
     book_dir = _sanitize_zip_entry(job_title or job_id, f"小说_{job_id[:8]}")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
-        for i, (path, _dur) in enumerate(chapter_outputs):
+        for i in range(first, last + 1):
+            path, _dur = chapter_outputs[i]
             raw_title = chapter_titles[i] if i < len(chapter_titles) else ""
             clean_title = _sanitize_zip_entry(strip_chapter_prefix(raw_title), f"章节{i+1}")
             base = f"第{i+1:03d}章_{clean_title}"
@@ -98,6 +110,66 @@ def _build_book_zip(
                 zf.writestr(entry_name, make_silent_mp3(100, sample_rate=settings.DOUBAO_AUDIO_SAMPLE_RATE))
             if chapter_lrcs and i < len(chapter_lrcs) and (chapter_lrcs[i] or "").strip():
                 zf.writestr(f"{book_dir}/{base}.lrc", chapter_lrcs[i])
+
+
+def _zip_shard_size() -> int:
+    """每个 ZIP 分片的章节数；<=0 表示不分片（退回单包）。"""
+    try:
+        return int(getattr(settings, "ZIP_SHARD_CHAPTERS", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _zip_shard_ranges(total: int, shard_size: int) -> list[tuple[int, int]]:
+    """把 [0, total) 切成若干 (start, end) 闭区间；shard_size<=0 → 单包。"""
+    if total <= 0:
+        return []
+    if shard_size <= 0:
+        return [(0, total - 1)]
+    return [
+        (s, min(s + shard_size - 1, total - 1))
+        for s in range(0, total, shard_size)
+    ]
+
+
+def _zip_shard_filename(build_id: str, start: int, end: int, total: int) -> str:
+    """分片 ZIP 文件名。覆盖全部章节时沿用历史命名，避免旧路径/旧库对不上。"""
+    if start <= 0 and end >= total - 1:
+        return _zip_filename(build_id)
+    return f"build_{build_id}_ch{start + 1:04d}-{end + 1:04d}.zip"
+
+
+def _parse_zip_shards(b: Build) -> list[dict]:
+    """解析 Build 的 ZIP 分片清单。
+
+    返回 [{"filename","start","end","size_bytes"}...]（start/end 为 0-based 闭区间）。
+    老库没有 zip_filenames_json → 由单个 zip_filename 合成一条，行为与改造前一致。
+    """
+    total = int(b.total_chapters or 0)
+    last = max(total - 1, 0)
+    raw = getattr(b, "zip_filenames_json", None)
+    if raw:
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = None
+        if isinstance(data, list):
+            out: list[dict] = []
+            for d in data:
+                if not isinstance(d, dict) or not d.get("filename"):
+                    continue
+                e = d.get("end")
+                out.append({
+                    "filename": str(d["filename"]),
+                    "start": int(d.get("start") or 0),
+                    "end": last if e is None else int(e),
+                    "size_bytes": d.get("size_bytes"),
+                })
+            if out:
+                return out
+    if b.zip_filename:
+        return [{"filename": b.zip_filename, "start": 0, "end": last, "size_bytes": None}]
+    return []
 
 
 # =====================================================================
@@ -130,6 +202,17 @@ class BuildArtifactResp(BaseModel):
     error_msg: str | None
 
 
+class ZipShardResp(BaseModel):
+    """ZIP 分片（F-7）。每片自包含，可单独解压。"""
+    idx: int
+    filename: str
+    url: str
+    # 1-based，便于前端直接显示「第001-050章」
+    start_chapter: int
+    end_chapter: int
+    size_kb: int | None
+
+
 class BuildDetailResp(BaseModel):
     """Build 详情（含 artifacts）。"""
     build_id: str
@@ -142,7 +225,10 @@ class BuildDetailResp(BaseModel):
     speed: float
     mode: str = "classic"
     tts_provider: str = "doubao"
+    # 兼容字段：指向第一个分片（老前端/老链接仍可用）
     zip_url: str | None
+    # F-7：全部分片清单（单包时长度为 1）
+    zip_shards: list[ZipShardResp] = []
     total_size_kb: int | None
     total_duration_sec: float | None
     started_at: str | None
@@ -399,6 +485,7 @@ async def _apply_terminal_status(
     failed_chapters: list[int],
     tts_calls: int,
     tts_chars: int,
+    zip_shards: list[dict] | None = None,
 ) -> bool:
     """B-3：仅当 Build 仍为 running 时写终态（条件更新），返回是否真的写回。
 
@@ -417,6 +504,9 @@ async def _apply_terminal_status(
                 status=final_status,
                 progress_msg=progress_msg,
                 zip_filename=zip_filename,
+                zip_filenames_json=(
+                    json.dumps(zip_shards, ensure_ascii=False) if zip_shards else None
+                ),
                 total_size_bytes=total_size_bytes,
                 total_duration_ms=total_duration_ms,
                 completed_at=datetime.now(UTC).replace(tzinfo=None),
@@ -902,6 +992,18 @@ def _build_to_resp(b: Build) -> BuildResp:
 
 def _build_to_detail(b: Build, artifacts: list[BuildArtifact]) -> BuildDetailResp:
     total_kb = (b.total_size_bytes // 1024) if b.total_size_bytes else None
+    shards = _parse_zip_shards(b)
+    zip_shards = [
+        ZipShardResp(
+            idx=i,
+            filename=s["filename"],
+            url=f"/media/{s['filename']}",
+            start_chapter=int(s["start"]) + 1,
+            end_chapter=int(s["end"]) + 1,
+            size_kb=(int(s["size_bytes"]) // 1024) if s.get("size_bytes") else None,
+        )
+        for i, s in enumerate(shards)
+    ]
     return BuildDetailResp(
         build_id=b.build_id,
         project_id=b.project_id,
@@ -914,6 +1016,7 @@ def _build_to_detail(b: Build, artifacts: list[BuildArtifact]) -> BuildDetailRes
         mode=b.mode or "classic",
         tts_provider=b.tts_provider or "doubao",
         zip_url=f"/media/{b.zip_filename}" if b.zip_filename else None,
+        zip_shards=zip_shards,
         total_size_kb=total_kb,
         total_duration_sec=round((b.total_duration_ms or 0) / 1000.0, 2),
         started_at=b.started_at.isoformat() if b.started_at else None,
@@ -2233,8 +2336,6 @@ async def _run_build_inner(
                 pass
         total_ms += _d or 0
 
-    zip_fname = _zip_filename(build_id)
-    zip_path = str(audio_dir / zip_fname)
     # 打包前为每章生成 LRC 歌词（与 MP3 按位置对齐，供 ZIP 内同名 .lrc）。失败章 skip。
     # 注意 1：此刻 build 终态尚未写回（status 仍是 running），必须 require_final=False。
     # 注意 2：必须走批量入口 —— 逐章调用会退化成 O(N²)（每章都重新解析整本
@@ -2249,14 +2350,54 @@ async def _run_build_inner(
         )
         lrc_by_chapter = {}
     chapter_lrcs: list[str] = [lrc_by_chapter.get(c.idx, "") for c in chapters]
-    _build_book_zip(
-        zip_path,
-        job_id=build_id,
-        job_title=job_title,
-        chapter_outputs=chapter_outputs,
-        chapter_titles=[c.title for c in chapters],
-        chapter_lrcs=chapter_lrcs,
-    )
+
+    # F-7：按 ZIP_SHARD_CHAPTERS 分片打包。每片自包含（内部章节序号保持全书统一编号），
+    # 避免数千章时产出数十 GB 单包（本地峰值磁盘翻倍、浏览器也无法可靠下载）。
+    try:
+        shard_size = _zip_shard_size()
+    except Exception:
+        shard_size = 0
+    shard_ranges = _zip_shard_ranges(total, shard_size)
+    zip_shards: list[dict] = []
+    chapter_titles = [c.title for c in chapters]
+    for _s, _e in shard_ranges:
+        shard_name = _zip_shard_filename(build_id, _s, _e, total)
+        shard_path = str(audio_dir / shard_name)
+        try:
+            _build_book_zip(
+                shard_path,
+                job_id=build_id,
+                job_title=job_title,
+                chapter_outputs=chapter_outputs,
+                chapter_titles=chapter_titles,
+                chapter_lrcs=chapter_lrcs,
+                start=_s,
+                end=_e,
+            )
+        except Exception as e:
+            logger.error(
+                f"[build_worker] build_id={build_id[:8]}... 打包分片失败 "
+                f"ch{_s + 1}-{_e + 1}: {type(e).__name__}: {e}",
+                exc_info=True,
+            )
+            raise
+        try:
+            _size = os.path.getsize(shard_path)
+        except OSError:
+            _size = None
+        zip_shards.append({
+            "filename": shard_name,
+            "start": _s,
+            "end": _e,
+            "size_bytes": _size,
+        })
+    # zip_filename 保留为首个分片（旧代码路径 / 媒体签名兜底都依赖它）
+    zip_fname = zip_shards[0]["filename"] if zip_shards else _zip_filename(build_id)
+    if len(zip_shards) > 1:
+        logger.info(
+            f"[build_worker] build_id={build_id[:8]}... 已生成 {len(zip_shards)} 个 ZIP 分片"
+            f"（每片 {shard_size} 章）"
+        )
 
     if failed_count == 0:
         final_status = "success"
@@ -2274,6 +2415,7 @@ async def _run_build_inner(
     _progress_msg = (
         f"全部完成 {completed}/{total} 章"
         + (f"（{failed_count} 章失败已用静音占位）" if failed_count else "")
+        + (f"，共 {len(zip_shards)} 个 ZIP 分片" if len(zip_shards) > 1 else "")
     )
     terminal_applied = await _apply_terminal_status(
         build_id,
@@ -2286,6 +2428,7 @@ async def _run_build_inner(
         # TTS 用量：真实供应商调用（缓存命中不计次）
         tts_calls=tts_calls_used,
         tts_chars=tts_chars_used,
+        zip_shards=zip_shards,
     )
 
     # B-8：无论终态是否写回，已真实消耗的 TTS 用量都要入账（打包期间被取消同理）。
@@ -2381,7 +2524,8 @@ async def delete_build(project_id: str, build_id: str) -> None:
             BuildArtifact.build_id == build_id
         )
         art_filenames = [r for r in (await session.execute(stmt_art)).scalars().all() if r]
-        zip_fname = b.zip_filename
+        # F-7：删除该 build 的**全部分片**（含旧的单包场景 —— _parse_zip_shards 会兜底）
+        zip_fnames = [s["filename"] for s in _parse_zip_shards(b)]
 
         await session.delete(b)
         await session.commit()
@@ -2401,7 +2545,7 @@ async def delete_build(project_id: str, build_id: str) -> None:
                 sidecar.unlink()
         except OSError as e:
             logger.warning(f"[build_delete] 删时间轴文件失败: {sidecar.name} -> {e}")
-    if zip_fname:
+    for zip_fname in zip_fnames:
         try:
             fpath = audio_dir / zip_fname
             if fpath.is_file():

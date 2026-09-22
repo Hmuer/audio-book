@@ -98,6 +98,8 @@ _BUILD_NEW_COLUMNS = {
     "voice_styles_json": "TEXT",
     "tts_calls": "INTEGER DEFAULT 0",
     "tts_chars": "INTEGER DEFAULT 0",
+    # F-7：ZIP 分片清单（JSON）；NULL = 老库单包
+    "zip_filenames_json": "TEXT",
 }
 # 角色：情感/语气字段（旧库补列）
 _PROJECT_CHARACTERS_NEW_COLUMNS = {

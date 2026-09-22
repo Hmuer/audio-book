@@ -181,6 +181,10 @@ class Build(Base):
 
     # 产出
     zip_filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # F-7：ZIP 分片清单（JSON 数组，每项 {"filename","start","end","size_bytes"}，
+    # start/end 为 0-based 章节下标）。zip_filename 保留为「第一个分片」，
+    # 以便旧代码路径（媒体签名 / 删除 / 历史复用）无需改动。NULL → 视为单包（老库）。
+    zip_filenames_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     total_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 

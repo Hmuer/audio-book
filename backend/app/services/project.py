@@ -2079,8 +2079,22 @@ async def delete_project(project_id: str) -> None:
         )
         art_filenames = [r for r in (await session.execute(stmt_art)).scalars().all() if r]
 
-        stmt_zip = select(Build.zip_filename).where(Build.project_id == project_id)
-        zip_filenames = [r for r in (await session.execute(stmt_zip)).scalars().all() if r]
+        # F-7：ZIP 可能是分片的，必须把全部分片名都收集起来（zip_filename 只是第 0 片）
+        stmt_zip = select(Build.zip_filename, Build.zip_filenames_json).where(
+            Build.project_id == project_id
+        )
+        zip_names: set[str] = set()
+        for _single, _shards_json in (await session.execute(stmt_zip)).all():
+            if _single:
+                zip_names.add(_single)
+            if _shards_json:
+                try:
+                    for _d in json.loads(_shards_json) or []:
+                        if isinstance(_d, dict) and _d.get("filename"):
+                            zip_names.add(str(_d["filename"]))
+                except Exception:
+                    pass
+        zip_filenames = sorted(zip_names)
 
         source_path = p.source_file_path
 

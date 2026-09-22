@@ -252,6 +252,12 @@ class Settings(BaseSettings):
     # 在 设置页「合成质量」中开启。
     POLISH_ENABLED: bool = False
 
+    # 每个 ZIP 分片包含的章节数（F-7）。
+    # 动机：整包 ZIP 在数千章规模下会到数十 GB，本地峰值磁盘翻倍、浏览器也基本
+    # 无法可靠下载（无分片/断点续传）。改为「每 N 章一个自包含 ZIP」：
+    # 5000 章 × 50 = 100 卷、单卷约数百 MB。设为 0 或负数表示不分片（退回单包）。
+    ZIP_SHARD_CHAPTERS: int = 50
+
 
     # Build running 超时（小时）：如果 start_build 命中的 running build
     # started_at 距离现在超过该值，认为是被 kill 的孤儿，直接改 status 回 queued
