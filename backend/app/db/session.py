@@ -109,6 +109,18 @@ _PROJECT_DIALOGUES_NEW_COLUMNS = {
     "instruction": "VARCHAR(512) DEFAULT ''",
 }
 
+# 需要在旧库上补建的索引（SQLAlchemy 的 create_all 只对「新建的表」建索引，
+# 已存在的表不会补建 → 必须显式 CREATE INDEX IF NOT EXISTS）。
+# 命名与 models.py 的 Index(...) 保持一致，便于对照。
+_NEW_INDEXES: tuple[tuple[str, str, str], ...] = (
+    (
+        "ix_project_dialogues_project_chapter",
+        "project_dialogues",
+        "CREATE INDEX IF NOT EXISTS ix_project_dialogues_project_chapter "
+        "ON project_dialogues (project_id, chapter_idx)",
+    ),
+)
+
 
 def _migrate_existing_sync(conn) -> None:
     """检测旧 schema 的 jobs/projects/builds 表，自动 ALTER TABLE 补齐缺失字段。"""
@@ -144,6 +156,12 @@ def _migrate_existing_sync(conn) -> None:
         for col, ddl in _PROJECT_DIALOGUES_NEW_COLUMNS.items():
             if col not in existing_cols:
                 conn.execute(text(f"ALTER TABLE project_dialogues ADD COLUMN {col} {ddl}"))
+
+    # F-2：补建缺失索引。CREATE INDEX IF NOT EXISTS 本身幂等，重复启动无副作用；
+    # 仍先确认表存在，避免在极老/残缺库上报错中断整个迁移。
+    for _name, table, ddl in _NEW_INDEXES:
+        if table in tables:
+            conn.execute(text(ddl))
 
 
 async def init_db() -> None:

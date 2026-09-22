@@ -900,10 +900,10 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 
 > 完成一项把 `[ ]` 改为 `[x]`，并填写完成日期。
 
-#### 批次 6 —— 规模化止血（P0）
-- [ ] F-1 打包 LRC 去掉 O(N²)（一次加载 + 按章复用） — [build.py#L2242-L2249](file:///workspace/backend/app/services/build.py#L2242-L2249) / [subtitles.py#L142-L156](file:///workspace/backend/app/services/subtitles.py#L142-L156)
-- [ ] F-2 `project_dialogues` 加 `(project_id, chapter_idx)` 索引 — [models.py#L237-L254](file:///workspace/backend/app/db/models.py#L237-L254)
-- [ ] F-3 角色识别切片改为「按完整章节装桶」+ 重置旧 checkpoint — [project.py#L886-L889](file:///workspace/backend/app/services/project.py#L886-L889)
+#### 批次 6 —— 规模化止血（P0）✅ 完成 2026-09-22
+- [x] F-1 打包 LRC 去掉 O(N²)（一次加载 + 按章复用） — [build.py#L2242-L2249](file:///workspace/backend/app/services/build.py#L2242-L2249) / [subtitles.py#L237-L266](file:///workspace/backend/app/services/subtitles.py#L237-L266) — 完成 2026-09-22
+- [x] F-2 `project_dialogues` 加 `(project_id, chapter_idx)` 索引 — [models.py#L237-L254](file:///workspace/backend/app/db/models.py#L237-L254) — 完成 2026-09-22
+- [x] F-3 角色识别切片改为「按完整章节装桶」+ 重置旧 checkpoint — [project.py#L886-L889](file:///workspace/backend/app/services/project.py#L886-L889) — 完成 2026-09-22
 
 #### 批次 7 —— 可用性与体验
 - [ ] F-5 批量签发 + 虚拟滚动 — [ProjectDetailPage.tsx#L1009-L1018](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L1009-L1018)
@@ -920,6 +920,33 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 - [ ] F-4 拆分 `chapters_json`（单章/列表不再解析全书）
 - [ ] F-6 合成改跨章流水线（贴近 RPM 上限）
 - [ ] F-8 重估 `LLM_MAX_CONCURRENCY` 让批并发生效
+
+---
+
+### 11.6 实施记录
+
+#### 批次 6（2026-09-22）
+
+| 项 | 改动 | 测试 / 证据 |
+|---|---|---|
+| F-1 | [subtitles.py](file:///workspace/backend/app/services/subtitles.py)：把逐章渲染逻辑抽成 `_render_lrc(segs)`；新增**批量入口** `generate_chapters_lrc(build_id)`（只调一次 `_collect_build_segments`，再按 `chapter_idx` 分组渲染）；`_collect_build_segments` 在给定 `ch_idx` 时给对白查询加 `WHERE chapter_idx=?`（单章歌词不再拉全项目对白）。[build.py](file:///workspace/backend/app/services/build.py#L2236-L2253) 的 `_finalize` 改为调用批量入口，并把异常从「逐章静默忽略」改为**整体告警 + ZIP 不含 .lrc**（原来每章各自 try/except，失败完全无感） | 新增 [test_scale_batch6_red.py](file:///workspace/backend/tests/test_scale_batch6_red.py) 的 F-1 三项：批量入口 `_collect_build_segments` **只被调用 1 次**（旧实现是 N 次）、无内容章不出现在结果里、单章接口仍透传 `ch_idx` |
+| F-2 | [models.py](file:///workspace/backend/app/db/models.py#L237-L254)：`ProjectDialogue` 加 `Index("ix_project_dialogues_project_chapter", "project_id", "chapter_idx")`。[session.py](file:///workspace/backend/app/db/session.py)：新增 `_NEW_INDEXES` 并在 `_migrate_existing_sync` 里用 `CREATE INDEX IF NOT EXISTS` 补建 —— **`create_all` 不会给已存在的表补索引**，不补的话老库永远享受不到 | F-2 三项：模型确实声明该复合索引、迁移 DDL 幂等且指向该表、**老库场景**（跑完 init_db 后 DROP 掉索引再跑一次）索引被重新补建 |
+| F-3 | [project.py](file:///workspace/backend/app/services/project.py)：新增纯函数 `_bucket_chapters_by_chars(chapters, max_chars)` —— 按**完整章节**贪心装桶，单章超限时独占一桶（绝不切章）；桶文本用 `\n` 连接，`start/end` 与 `full_text = "\n".join(...)` 的区间对齐。`char_current_slice` 的 `start/end` 改为取桶的真实区间（旧代码按 `slice_idx * char_slice_size` 推算，装桶后桶长不等会算错），并补 `chapters_n` / `chapter_range` 便于排查。新增 `_CHAR_SLICE_MODE="chapter"` 与 `_char_checkpoint_incompatible(prog)`：**旧口径 checkpoint 一律重置**，防止续跑把「没跑过的桶」当「已跑过的片」跳过而静默漏识 | F-3 七项：不切章（桶内等于原文、每章只属一桶、不重不漏）、不超限且贪心装满、超限章独占一桶且原文不变、`start/end` 与 full_text 区间一致、空章节列表返回空、旧 checkpoint 判为不兼容（三种旧形态）、新口径与全新项目判为兼容 |
+
+**同批顺带修正（同一函数内的既有缺陷）**
+- [subtitles.py](file:///workspace/backend/app/services/subtitles.py#L184-L193)：跳过失败章的判据原来只查 `audio_filename`/`duration_ms`，但失败章也有占位 MP3（`duration_ms=1000`）→ **注释写着「失败章跳过」而代码并不跳过**。结果是给 1 秒静音占位音频用估算回退编出一整篇时间轴全错的 LRC 并打进 ZIP。现改为按 `art.status == "done"` 判定。
+
+**回归结果**
+- 新增 [test_scale_batch6_red.py](file:///workspace/backend/tests/test_scale_batch6_red.py)（14 用例）全绿；连同既有歌词用例 `20 passed`
+- 全量后端：`396 passed, 2 failed, 1 skipped`（改前基线为 `380 passed, 4 failed`）—— **失败数下降**，且出现的失败项在基线上同样出现，属既有的跨用例隔离抖动（E-1），非本批引入
+- `import backend.app.main` ✅；本批未改前端，故未跑 `tsc`
+
+**基线取证（确认无新增失败）**
+用 `git stash` 把本批 5 个后端文件还原后跑全量：`4 failed`，其中**包含**本次全量跑出的 `test_batch2_lifecycle_red.py::test_b5_retry_reused_chapter_has_own_file` 与 `test_project_e2e.py::test_project_full_lifecycle`（另两项为 `test_project_prepare_voice_pool_red` / `test_review_fixes_red`）。两者单独跑均通过 → 顺序相关的用例污染，非本批引入。
+
+**发现但未处理（留待确认）**
+- `project.py::_split_50k_and_run_chars_serial` 是**死代码**（全仓库仅定义、无调用点），且它实现的正是被 F-3 废止的「按字符偏移硬切」。本批只在 docstring 上加了「已废弃、勿复用」标注，**未删除**（删除属 E-6 类清理，不在本批范围）。建议后续删除或改造为调用 `_bucket_chapters_by_chars`。
+- 本批只解决「打包/识别的算法复杂度」，**不改变量级瓶颈**：5000 章的 prepare 仍受 `LLM_MAX_CONCURRENCY=1` 串行限制（F-8），合成仍受 `DOUBAO_TTS_RPM_LIMIT=60` 限制（F-6），前端仍会逐章签发（F-5）。
 
 
 

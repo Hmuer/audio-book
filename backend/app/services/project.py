@@ -13,6 +13,7 @@ import os
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from pydantic import BaseModel
 from sqlalchemy import select, delete
@@ -30,6 +31,7 @@ from ..db.models import (
 )
 from ..db.session import get_session_factory
 from .book_split import ChapterSplitError, split_book_chapters
+from .chapter import Chapter
 from .epub_reader import read_epub as _read_epub
 from .character import (
     Character,
@@ -679,6 +681,81 @@ async def _mark_project_failed(project_id: str) -> None:
         )
 
 
+# F-3：角色识别的切片口径标记。旧实现是按「字符偏移硬切」，会把一章拦腰截断；
+# 现改为「按完整章节装桶」。两者片号含义不同，checkpoint 不兼容（见 _do_prepare_project_async）。
+_CHAR_SLICE_MODE = "chapter"
+
+
+class _CharBucket(NamedTuple):
+    """角色识别的一「桶」：由**完整章节**拼成，绝不把一章切到两桶。"""
+
+    text: str
+    # full_text（= "\\n".join(章节正文)）上的字符区间 [start, end)
+    start: int
+    end: int
+    chapter_idxs: list[int]
+
+
+def _char_checkpoint_incompatible(prog: dict) -> bool:
+    """角色识别 checkpoint 是否来自旧的「字符偏移切片」口径（不可复用）。
+
+    片号在两种口径下含义不同：旧口径第 N 片是「全文第 N×50k 个字符起的一段」，
+    新口径第 N 桶是「第 N 组装满的完整章节」。若沿用旧片号，续跑会把没跑过的桶
+    当成已跑过的片跳过 → 静默漏掉角色识别。因此必须能判定并重置。
+    """
+    if prog.get("char_slice_mode") == _CHAR_SLICE_MODE:
+        return False
+    # 只有确实存在旧 checkpoint 时才算不兼容；全新项目（无任何 checkpoint）不受影响
+    return bool(prog.get("char_slice_completed") or prog.get("char_extract_raw_list"))
+
+
+def _bucket_chapters_by_chars(
+    chapters: list[Chapter], max_chars: int
+) -> list[_CharBucket]:
+    """把章节按「完整章节」装桶，每桶字符数不超过 max_chars。
+
+    为什么不能按字符偏移硬切：切片会落在某一章中间，同一章的前后半段分散到相邻两桶，
+    角色识别看到的是残缺上下文，「一章」这个语义单元也被破坏。需求原文：
+    「分批次不能只按字数，因为不能把章节拆分开，比如限制了一次 50K 字，那就只取这个
+    字数范围内的完整章节内容。」
+
+    规则：
+    - 依次把**完整**章节累加进当前桶，直到「再加入下一章会超限」就封桶（尽量装满）；
+    - 单章本身 > max_chars 时独占一桶（**绝不切章**）；
+    - 桶文本用 "\\n" 连接，与 full_text 的 join 方式一致；start/end 即 full_text 上的
+      字符区间，使进度显示（char_current_slice.start/end）语义保持不变。
+    """
+    max_chars = max(1, int(max_chars))
+    buckets_idx: list[list[int]] = []
+    cur: list[int] = []
+    cur_len = 0
+    for i, ch in enumerate(chapters):
+        n = len(ch.text or "")
+        add = n if not cur else n + 1  # +1 为 join 的换行符
+        if cur and cur_len + add > max_chars:
+            buckets_idx.append(cur)
+            cur = []
+            cur_len = 0
+            add = n
+        cur.append(i)
+        cur_len += add
+    if cur:
+        buckets_idx.append(cur)
+
+    out: list[_CharBucket] = []
+    offset = 0
+    for idxs in buckets_idx:
+        text = "\n".join(chapters[i].text or "" for i in idxs)
+        out.append(_CharBucket(
+            text=text,
+            start=offset,
+            end=offset + len(text),
+            chapter_idxs=[chapters[i].idx for i in idxs],
+        ))
+        offset += len(text) + 1  # 跳过分隔用的换行符，与 full_text 对齐
+    return out
+
+
 async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
     """
     prepare 真正执行逻辑（HTTP 后台任务模式下被 _run_prepare_project_in_background 调用；
@@ -882,11 +959,25 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
 
         prog = await _read_progress()
 
-        # 4b. 角色识别（50k 切片，逐片 checkpoint + 单切片级异常不崩整体）
+        # 4b. 角色识别（按「完整章节」装桶，逐桶 checkpoint + 单桶级异常不崩整体）
         char_slice_size = max(10000, int(settings.LLM_CHAR_EXTRACT_SLICE_SIZE) or 50000)
+
+        # F-3：切片口径已由「字符偏移硬切」改为「按完整章节装桶」。旧库的 checkpoint
+        # 记的是偏移片的序号，两者含义完全不同 —— 不重置的话，续跑会把「没跑过的桶」
+        # 当成「已跑过的片」直接跳过，静默漏掉角色识别。仅在确实存在旧 checkpoint 时重置。
+        char_slice_mode = prog.get("char_slice_mode")
+        if _char_checkpoint_incompatible(prog):
+            logger.warning(
+                f"[project_prepare] project_id={project_id[:8]}... 角色识别 checkpoint "
+                f"口径不兼容（slice_mode={char_slice_mode!r}，当前={_CHAR_SLICE_MODE!r}）"
+                f" → 重置该阶段，从头识别"
+            )
+            prog = {}
+        prog["char_slice_mode"] = _CHAR_SLICE_MODE
+
+        char_buckets = _bucket_chapters_by_chars(chapters, char_slice_size)
         char_slices: list[tuple[int, str]] = [
-            (i, full_text[i : i + char_slice_size])
-            for i in range(0, len(full_text), char_slice_size)
+            (i, b.text) for i, b in enumerate(char_buckets)
         ]
         completed_slice_idxs: set[int] = set(prog.get("char_slice_completed", []))
         failed_slice_idxs: dict[str, dict] = dict(prog.get("char_failed_slices", {}) or {})
@@ -934,11 +1025,19 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 )
                 continue
             prog["stage"] = "characters"
+            _bucket = char_buckets[slice_idx]
             prog["char_current_slice"] = {
                 "idx": slice_idx,
-                "start": slice_idx * char_slice_size,
-                "end": slice_idx * char_slice_size + len(slice_text),
+                # F-3：按章装桶后桶长不等，start/end 必须取桶自身记录的真实区间，
+                # 不能再按 slice_idx * char_slice_size 推算
+                "start": _bucket.start,
+                "end": _bucket.end,
                 "slice_len": len(slice_text),
+                "chapters_n": len(_bucket.chapter_idxs),
+                "chapter_range": [
+                    _bucket.chapter_idxs[0],
+                    _bucket.chapter_idxs[-1],
+                ] if _bucket.chapter_idxs else [],
             }
             await _write_progress(prog)
 
@@ -1707,6 +1806,11 @@ def ensure_prepare_watchdog_started() -> None:
 
 async def _split_50k_and_run_chars_serial(text: str, coro_fn) -> list[Character]:
     """
+    ⚠️ 已废弃 / 当前无任何调用点（dead code，2026-09-22 核查）。
+    它按「字符偏移硬切」，会把一章拦腰截断；F-3 起角色识别改为
+    `_bucket_chapters_by_chars`（按完整章节装桶）。**不要复用本函数**，
+    保留仅为避免在本批次内做无关删除。
+
     整本小说角色识别：**全量逐 50k 切片串行跑，不截断、不抽样。**
 
     无论小说多长（10 万字 / 200 万字 / 1000 万字）都完整跑完：

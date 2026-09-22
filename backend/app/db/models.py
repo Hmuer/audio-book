@@ -1,6 +1,6 @@
 from datetime import datetime, UTC
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy import ForeignKey, Integer, String, Text, Float, DateTime, Boolean
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, Float, DateTime, Boolean
 
 
 def _utcnow() -> datetime:
@@ -237,6 +237,12 @@ class ProjectCharacter(Base):
 class ProjectDialogue(Base):
     """项目级对白归属。"""
     __tablename__ = "project_dialogues"
+    # F-2：所有查询都是 WHERE project_id=? [AND chapter_idx=?]（章节详情、歌词生成、
+    # 未知说话人音色兜底…）。没有索引时是整表扫描，10 万行级下每次查询都要秒级；
+    # 而且在「按章生成歌词」这类循环调用里会被放大成平方级开销。
+    __table_args__ = (
+        Index("ix_project_dialogues_project_chapter", "project_id", "chapter_idx"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     project_id: Mapped[str] = mapped_column(String(64), ForeignKey("projects.project_id", ondelete="CASCADE"))

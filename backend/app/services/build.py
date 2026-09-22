@@ -2236,17 +2236,19 @@ async def _run_build_inner(
     zip_fname = _zip_filename(build_id)
     zip_path = str(audio_dir / zip_fname)
     # 打包前为每章生成 LRC 歌词（与 MP3 按位置对齐，供 ZIP 内同名 .lrc）。失败章 skip。
-    # 注意：此刻 build 终态尚未写回（status 仍是 running），必须 require_final=False。
-    from ..services.subtitles import generate_chapter_lrc
-    chapter_lrcs: list[str] = []
-    for c in chapters:
-        try:
-            _f, content = await generate_chapter_lrc(
-                build_id, c.idx, title=c.title, require_final=False
-            )
-            chapter_lrcs.append(content)
-        except Exception:
-            chapter_lrcs.append("")
+    # 注意 1：此刻 build 终态尚未写回（status 仍是 running），必须 require_final=False。
+    # 注意 2：必须走批量入口 —— 逐章调用会退化成 O(N²)（每章都重新解析整本
+    #         chapters_json + 全项目对白），大书（数千章）下打包无法完成。见 plan.md F-1。
+    from ..services.subtitles import generate_chapters_lrc
+    try:
+        lrc_by_chapter = await generate_chapters_lrc(build_id, require_final=False)
+    except Exception as e:
+        logger.warning(
+            f"[build_worker] build_id={build_id[:8]}... 生成章节 LRC 失败，"
+            f"ZIP 将不含 .lrc: {type(e).__name__}: {e}"
+        )
+        lrc_by_chapter = {}
+    chapter_lrcs: list[str] = [lrc_by_chapter.get(c.idx, "") for c in chapters]
     _build_book_zip(
         zip_path,
         job_id=build_id,

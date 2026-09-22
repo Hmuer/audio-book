@@ -153,6 +153,9 @@ async def _collect_build_segments(
             for c in chapters_dicts
         ]
         stmt_d = select(ProjectDialogue).where(ProjectDialogue.project_id == b.project_id)
+        if ch_idx is not None:
+            # 只要单章时按章过滤：避免为「看一章歌词」拉取全项目对白（F-1）
+            stmt_d = stmt_d.where(ProjectDialogue.chapter_idx == ch_idx)
         all_dialogues = list((await s.execute(stmt_d)).scalars().all())
         stmt_a = (
             select(BuildArtifact)
@@ -180,7 +183,12 @@ async def _collect_build_segments(
             continue
         art = art_by_idx.get(ch.idx)
         if not art or not art.audio_filename or art.duration_ms is None:
-            # 失败章（1s 静音占位）没有意义歌词，跳过
+            # 缺产物，跳过
+            continue
+        if (art.status or "") != "done":
+            # 失败章：音频是 1s 静音占位（且没有 timings sidecar），没有任何有意义的
+            # 歌词 —— 若继续走下面的估算回退，会为占位音频编出一整篇时间轴全错的 LRC
+            # 并被打进 ZIP。与本节注释声明的意图保持一致：跳过。
             continue
         ch_dur = int(art.duration_ms or 0)
         sidecar = _load_sidecar(build_id, ch.idx)
@@ -230,6 +238,52 @@ def _dialogue_text_set(segs: list[dict]) -> set[str]:
     return out
 
 
+def _render_lrc(segs: list[dict], *, with_speaker: bool) -> str:
+    """把同一个章节的 cue 段渲染为 LRC 文本（章内相对时间）。"""
+    body: list[str] = []
+    last_text = ""
+    dialogue_texts = _dialogue_text_set(segs)
+    for e in segs:
+        is_dialogue = (e.get("kind") or "") == "dialogue"
+        for ms, text in _iter_cue_lines(e, with_speaker=with_speaker):
+            # 旁白切片里混入的对白原文（锚点没盖住引号）已由 dialogue 行呈现，去重
+            if not is_dialogue and text in dialogue_texts:
+                continue
+            # 相邻重复行去重
+            if text == last_text:
+                continue
+            body.append(f"{_fmt_lrc_ts(ms)}{text}")
+            last_text = text
+    return "\n".join(body)
+
+
+async def generate_chapters_lrc(
+    build_id: str,
+    *,
+    require_final: bool = True,
+    with_speaker: bool = True,
+) -> dict[int, str]:
+    """一次性为 build 的全部章节生成 LRC。返回 {chapter_idx: content}。
+
+    为什么要有批量入口：`_collect_build_segments` 每次都要解析整本
+    `Project.chapters_json` 并拉取对白。逐章调用会退化成 O(N²) ——
+    5000 章时是「5000 次解析全书 PDF 规模的 JSON」，打包阶段将无法完成。
+    批量入口只加载一次，再按 chapter_idx 分组渲染。
+
+    失败/无音频的章不会出现在返回值里（调用方按缺失处理）。
+    """
+    segs = await _collect_build_segments(build_id, require_final=require_final)
+    by_chapter: dict[int, list[dict]] = {}
+    for e in segs:
+        by_chapter.setdefault(e["chapter_idx"], []).append(e)
+    out: dict[int, str] = {}
+    for ch_idx, items in by_chapter.items():
+        content = _render_lrc(items, with_speaker=with_speaker)
+        if content:
+            out[ch_idx] = content
+    return out
+
+
 async def generate_chapter_lrc(
     build_id: str,
     ch_idx: int,
@@ -249,21 +303,7 @@ async def generate_chapter_lrc(
     if not segs:
         raise ValueError(f"章节 {ch_idx} 没有可用的章节音频…无法生成歌词")
 
-    body: list[str] = []
-    last_text = ""
-    dialogue_texts = _dialogue_text_set(segs)
-    for e in segs:
-        is_dialogue = (e.get("kind") or "") == "dialogue"
-        for ms, text in _iter_cue_lines(e, with_speaker=with_speaker):
-            # 旁白切片里混入的对白原文（锚点没盖住引号）已由 dialogue 行呈现，去重
-            if not is_dialogue and text in dialogue_texts:
-                continue
-            # 相邻重复行去重
-            if text == last_text:
-                continue
-            body.append(f"{_fmt_lrc_ts(ms)}{text}")
-            last_text = text
-    content = "\n".join(body)
+    content = _render_lrc(segs, with_speaker=with_speaker)
 
     clean_title = (title or "").strip()
     fname = f"{clean_title or f'第{ch_idx + 1:03d}章'}.lrc"
