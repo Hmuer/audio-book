@@ -1904,11 +1904,6 @@ function BuildDetailContent({
   // P1 #6：每个 BuildArtifact 的签名音频 URL（一次性 token，5 分钟过期）
   const [signedUrls, setSignedUrls] = useState<Record<number, string>>({});
   const [zipUrl, setZipUrl] = useState<string | null>(null);
-  // M4B 打包状态机：none → running → ready/failed（ffmpeg 转码后台任务）
-  const [m4bState, setM4bState] = useState<string>('none');
-  const [m4bUrl, setM4bUrl] = useState<string | null>(null);
-  const [m4bErr, setM4bErr] = useState<string | null>(null);
-  const [m4bBusy, setM4bBusy] = useState(false);
   const isDoneBuild = detail.status === 'success' || detail.status === 'partial_success';
 
   useEffect(() => {
@@ -1941,45 +1936,6 @@ function BuildDetailContent({
     signAll();
     return () => { cancelled = true; };
   }, [detail.build_id, projectId, (detail.artifacts ?? []).length]);
-
-  // M4B 状态查询 + running 时轮询
-  useEffect(() => {
-    if (!isDoneBuild) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setInterval> | null = null;
-    const check = async () => {
-      try {
-        const st = await api.buildM4bStatus(projectId, detail.build_id);
-        if (cancelled) return;
-        setM4bState(st.state);
-        setM4bErr(st.error || null);
-        if (st.state === 'ready') {
-          setM4bUrl(await api.buildM4bDownload(projectId, detail.build_id));
-          if (timer) { clearInterval(timer); timer = null; }
-        }
-      } catch { /* 静默 */ }
-    };
-    check();
-    if (m4bState === 'running' || m4bBusy) {
-      timer = setInterval(check, 3000);
-    }
-    return () => { cancelled = true; if (timer) clearInterval(timer); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, detail.build_id, isDoneBuild, m4bState, m4bBusy]);
-
-  const onStartM4b = async () => {
-    setM4bBusy(true);
-    setM4bErr(null);
-    try {
-      const st = await api.buildM4bStart(projectId, detail.build_id);
-      setM4bState(st.state);
-    } catch (e: any) {
-      setM4bErr(String(e?.message || e));
-      setM4bState('failed');
-    } finally {
-      setM4bBusy(false);
-    }
-  };
 
   const downloadSubtitles = async (fmt: 'srt' | 'lrc') => {
     try {
@@ -2019,37 +1975,16 @@ function BuildDetailContent({
         )}
       </div>
 
-      {/* 有声书成品区：M4B（带章节元数据）+ 字幕，仅完成态展示 */}
+      {/* 有声书成品区：字幕（仅完成态展示） */}
       {isDoneBuild && (
         <div className="rounded-lg border border-ink-300/70 bg-ink-100 px-4 py-3 flex items-center gap-2 flex-wrap">
           <span className="text-xs text-ink-600 mr-1">有声书成品：</span>
-          {m4bState === 'ready' && m4bUrl ? (
-            <a className="btn-primary !py-1.5 !px-3 text-xs" href={m4bUrl} download>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="mr-1"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-              下载 M4B（含章节）
-            </a>
-          ) : m4bState === 'running' ? (
-            <span className="chip-soft">
-              <span className="inline-block w-3 h-3 border-2 border-brand-500 border-t-transparent rounded-full animate-spin mr-1.5 align-middle" />
-              M4B 转码中…（整本书约需 1~5 分钟）
-            </span>
-          ) : (
-            <button className="btn-ghost !py-1.5 !px-3 text-xs" onClick={onStartM4b} disabled={m4bBusy} title="用 ffmpeg 把全部章节 MP3 合成单个 .m4b（AAC，含章节元数据，Apple Books / 播客客户端可直接显示章节）">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="mr-1"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-              打包 M4B
-            </button>
-          )}
           <button className="btn-ghost !py-1.5 !px-3 text-xs" onClick={() => downloadSubtitles('srt')} title="整本书 SRT 字幕（对白带说话人前缀，与音频时间轴对齐）">
             字幕 SRT
           </button>
           <button className="btn-ghost !py-1.5 !px-3 text-xs" onClick={() => downloadSubtitles('lrc')} title="整本书 LRC 歌词（支持滚动歌词的播放器）">
             歌词 LRC
           </button>
-          {m4bState === 'failed' && m4bErr && (
-            <span className="text-[11px] text-red-300/90 truncate max-w-full" title={m4bErr}>
-              M4B 失败：{m4bErr.split('\n')[0]}
-            </span>
-          )}
         </div>
       )}
 

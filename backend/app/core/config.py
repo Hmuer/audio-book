@@ -124,7 +124,7 @@ class Settings(BaseSettings):
     DOUBAO_TTS_PRICE_PER_CHAR: float = 0.0003
 
     # ===== P1-4: 合成期采样率/响度统一（所有段在合成时统一 sample_rate/loudness） =====
-    # 默认 24000Hz 与豆包 v3 audio_params 默认值一致；m4b 后处理保留 loudnorm 兜底
+    # 默认 24000Hz 与豆包 v3 audio_params 默认值一致
     DOUBAO_AUDIO_SAMPLE_RATE: int = 24000
     # loudness_rate [-50, 100]，0=原响度；与 v3 audio_params.loudness_rate 字段对齐
     DOUBAO_AUDIO_LOUDNESS_RATE: int = 0

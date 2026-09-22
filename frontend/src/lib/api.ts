@@ -415,23 +415,6 @@ export const api = {
   // 项目累计供应商用量（LLM prepare + TTS build）
   projectUsage: (projectId: string) =>
     _fetch<ProjectUsageResp>(`/api/projects/${projectId}/usage`),
-  // M4B 打包：启动后台转码 / 查询状态
-  buildM4bStart: (projectId: string, buildId: string) =>
-    _fetch<{ state: string; filename?: string; url?: string }>(
-      `/api/projects/${projectId}/builds/${buildId}/m4b`,
-      { method: 'POST' }
-    ),
-  buildM4bStatus: (projectId: string, buildId: string) =>
-    _fetch<{ state: string; filename?: string; url?: string; error?: string }>(
-      `/api/projects/${projectId}/builds/${buildId}/m4b`
-    ),
-  // M4B 下载 URL（一次性签名 token）
-  buildM4bDownload: async (projectId: string, buildId: string): Promise<string> => {
-    const info = await _fetch<{ url: string }>(
-      `/api/media/sign?build_id=${encodeURIComponent(buildId)}&kind=book_m4b`
-    );
-    return info.url;
-  },
   // 字幕下载（文本不大，直接带 JWT 拉取内容后前端触发保存）
   buildSubtitles: async (
     projectId: string,

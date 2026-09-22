@@ -373,7 +373,7 @@ class MediaSignToken(Base):
 
     jti: Mapped[str] = mapped_column(String(64), primary_key=True)
     build_id: Mapped[str] = mapped_column(String(64), index=True)
-    kind: Mapped[str] = mapped_column(String(16))   # chapter_mp3 | all_zip | book_m4b
+    kind: Mapped[str] = mapped_column(String(16))   # chapter_mp3 | all_zip
     chapter_idx: Mapped[int | None] = mapped_column(Integer, nullable=True)
     user_id: Mapped[int] = mapped_column(Integer, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)

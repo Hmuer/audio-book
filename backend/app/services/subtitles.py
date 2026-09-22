@@ -7,7 +7,7 @@
    按字符占比把 BuildArtifact.duration_ms 分摊到各段（估算，误差秒级）
 
 输出：
-- SRT：整本书连续时间轴（与 ZIP/M4B 的章节顺序一致），对白行带说话人前缀
+- SRT：整本书连续时间轴（与 ZIP 的章节顺序一致），对白行带说话人前缀
 - LRC：同样连续时间轴，对白行带说话人前缀；SRT 用于播放器字幕，LRC 用于歌词滚动
 """
 from __future__ import annotations
@@ -210,7 +210,7 @@ async def generate_subtitles(
     if not segs:
         raise ValueError("没有可用的章节音频，无法生成字幕")
 
-    # 章间偏移：按 artifact duration_ms 累加（与音频/ZIP/M4B 同口径）
+    # 章间偏移：按 artifact duration_ms 累加（与音频/ZIP 同口径）
     factory = get_session_factory()
     async with factory() as s:
         stmt_a = (

@@ -712,5 +712,34 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
   不会动豆包侧音色；下次同步会重新出现。反过来改别名也会被下次同步覆盖。
 - **依赖 AppID**：`AppID` 是该接口的必填参数；未配置时直接 400 并提示去设置页补。
 
+#### 功能下线 —— 移除 M4B 有声书打包（2026-09-21）
+
+用户决定**废弃打包 M4B 功能**，故整体移除（不是隐藏入口，是删代码）。
+
+**被移除的能力**：把一次 Build 的全部章节 MP3 用 ffmpeg 转成单个带章节元数据的 `.m4b`
+（AAC + loudnorm 响度归一），含后台任务、状态轮询、签名下载。
+
+| 文件 | 改动 |
+|---|---|
+| `services/m4b.py` | **整个文件删除**（约 249 行：ffmpeg 转码、FFMETADATA1 章节元数据、`start_m4b_task` / `get_m4b_status`、JobTask 编排） |
+| `api/routes.py` | 删除 `POST/GET /projects/{id}/builds/{id}/m4b` 两个端点；`GET /media/sign` 去掉 `kind=book_m4b` 合法值；`/media/stream` 去掉 `book_m4b` 分支（含 `audio/mp4` FileResponse 与 `.m4b` 下载名）；区块注释改回「合成前预估 / 用量 / 字幕」 |
+| `services/media_sign.py` | `MediaKind` Literal 去掉 `"book_m4b"` |
+| `services/build.py` | 去掉 `from .m4b import m4b_filename`；`delete_build` 去掉 M4B 产物清理 |
+| `main.py` | 静态媒体归属校验的 `build_*` 文件名正则去掉 `book\.m4b` 分支 |
+| `db/models.py` | `JobTask.kind` 注释改为 `chapter_mp3 \| all_zip` |
+| 前端 `lib/api.ts` | 删除 `buildM4bStart` / `buildM4bStatus` / `buildM4bDownload` |
+| 前端 `ProjectDetailPage.tsx` | 删除 M4B 状态机（4 个 state）、状态轮询 useEffect、`onStartM4b`，以及「有声书成品」区里的打包/下载/转码中/失败 UI；该区块现在只剩字幕 SRT / 歌词 LRC |
+| 注释清理 | `config.py`（sample_rate 注释里的 m4b 兜底）、`subtitles.py`（2 处「与 ZIP/M4B 同口径」→「与 ZIP 同口径」）、`mp3_util.py`（时长漂移举例去掉「M4B 章节标记」） |
+
+**副作用（正向）**：
+- **系统依赖少一个**：全仓库再无 `ffmpeg` 调用（`grep -i ffmpeg` 只剩 README 里「将来可选」的一句与一个浏览器 MediaError 文案），部署不再需要装 ffmpeg。
+- `JobTask` 与媒体签名 token 各少一种 kind，`job_tasks.py` 无需改动（未知 kind 本来就只走孤儿兜底）。
+
+**兼容性说明**：
+- 老 Build 里已生成的 `build_*_book.m4b` 文件不会被主动删除（也没必要），只是平台不再提供入口与下载路由。
+- 5 分钟 TTL 的旧媒体签名 token 若 kind=`book_m4b`，`/media/stream` 会回 400 `unknown kind`（token 本就短时，忽略）。
+- 前端 `tsc --noEmit` ✅；后端全量 `377 passed, 1 failed, 1 skipped`，唯一失败是既有 E-1 类抖动
+  （`test_project_e2e.py::test_project_full_lifecycle`，单跑通过）。原本没有任何测试引用 M4B，故无需删用例。
+
 
 

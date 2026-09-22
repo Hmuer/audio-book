@@ -1241,7 +1241,6 @@ async def api_media_sign(
 
     - kind=chapter_mp3   必须带 idx（章节号）
     - kind=all_zip       整包 ZIP
-    - kind=book_m4b      整本书 M4B（带章节元数据）
     - ttl_seconds        1~600（默认 300 = 5 分钟）
     """
     if kind == "chapter_mp3":
@@ -1250,8 +1249,6 @@ async def api_media_sign(
         kind_norm = "chapter_mp3"
     elif kind == "all_zip":
         kind_norm = "all_zip"
-    elif kind == "book_m4b":
-        kind_norm = "book_m4b"
     else:
         raise HTTPException(400, f"不支持的 kind: {kind!r}")
     ttl = max(1, min(int(ttl_seconds), 600))
@@ -1319,12 +1316,6 @@ async def api_media_stream(
                 raise HTTPException(400, "整包 ZIP 尚未生成")
             audio_filename = b.zip_filename
             art_title = "all"
-        elif kind == "book_m4b":
-            m4b_fname = f"build_{build_id}_book.m4b"
-            if not (Path(settings.AUDIO_DIR) / m4b_fname).is_file():
-                raise HTTPException(400, "M4B 尚未生成，请先在构建详情中打包")
-            audio_filename = m4b_fname
-            art_title = "book"
         else:
             raise HTTPException(400, f"unknown kind {kind!r}")
 
@@ -1345,22 +1336,6 @@ async def api_media_stream(
                 "Cache-Control": "private, max-age=300",
             },
             filename=fname,
-        )
-    elif kind == "book_m4b":
-        proj = None
-        async with factory() as s2:
-            from ..db.models import Project
-            proj = await s2.get(Project, b.project_id)
-        book_title = proj.book_title if proj else None
-        download_name = _safe_download_name_build(book_title, build_id, ".m4b")
-        return FileResponse(
-            path=str(fpath),
-            media_type="audio/mp4",
-            headers={
-                "Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(download_name.encode('utf-8'), safe='')}",
-                "Cache-Control": "private, max-age=300",
-            },
-            filename=download_name,
         )
     else:  # all_zip
         # 取 book_title 拼中文文件名
@@ -1704,7 +1679,7 @@ async def api_build_download_all(
     )
 
 
-# ---------- 合成前预估 / 用量 / M4B / 字幕 ----------
+# ---------- 合成前预估 / 用量 / 字幕 ----------
 
 @router.get("/projects/{project_id}/estimate")
 async def api_project_estimate(
@@ -1754,60 +1729,6 @@ async def api_project_usage(
             exc_info=True,
         )
         raise HTTPException(500, f"用量查询失败: {type(e).__name__}: {e}")
-
-
-@router.post("/projects/{project_id}/builds/{build_id}/m4b")
-async def api_build_m4b_start(
-    project_id: str,
-    build_id: str,
-    request: Request,
-    current: User = Depends(get_current_user),
-):
-    """启动 M4B 打包后台任务（ffmpeg 转码，幂等：已生成直接返回 ready）。P1 #5：读权限校验（打包不动源音频）。"""
-    factory = get_session_factory()
-    async with factory() as s:
-        await get_project_for_user(s, project_id, current)
-        b = await s.get(Build, build_id)
-        if not b or b.project_id != project_id:
-            raise HTTPException(404, "build 不存在")
-    from ..services.m4b import start_m4b_task
-    try:
-        return await start_m4b_task(build_id)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except RuntimeError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        logger.error(
-            f"[HTTP] 500 m4b start build_id={build_id[:8]}... -> {type(e).__name__}: {e}",
-            exc_info=True,
-        )
-        raise HTTPException(500, f"M4B 打包启动失败: {type(e).__name__}: {e}")
-
-
-@router.get("/projects/{project_id}/builds/{build_id}/m4b")
-async def api_build_m4b_status(
-    project_id: str,
-    build_id: str,
-    request: Request,
-    current: User = Depends(get_current_user),
-):
-    """查询 M4B 打包状态：none/running/ready/failed。P1 #5：读权限校验。"""
-    factory = get_session_factory()
-    async with factory() as s:
-        await get_project_for_user(s, project_id, current)
-        b = await s.get(Build, build_id)
-        if not b or b.project_id != project_id:
-            raise HTTPException(404, "build 不存在")
-    from ..services.m4b import get_m4b_status
-    try:
-        return await get_m4b_status(build_id)
-    except Exception as e:
-        logger.error(
-            f"[HTTP] 500 m4b status build_id={build_id[:8]}... -> {type(e).__name__}: {e}",
-            exc_info=True,
-        )
-        raise HTTPException(500, f"M4B 状态查询失败: {type(e).__name__}: {e}")
 
 
 @router.get("/projects/{project_id}/builds/{build_id}/subtitles")

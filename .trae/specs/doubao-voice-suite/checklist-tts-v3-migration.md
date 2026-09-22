@@ -178,6 +178,7 @@
   - v1 路径保持原行为不动（v1 协议语义不同，sample_rate 由 reqid 维度固定）
   - **P1-4 联动 P1-7**：`sample_rate` 同步参与段缓存键（settings 改了采样率 → 旧缓存自动失效，避免采样率不一致时返回错乱的 bytes）
   - m4b.py 后处理 loudnorm 保留作为兜底（未动）
+    - ⚠️ **2026-09-21 更新**：M4B 打包功能已整体下线，`services/m4b.py` 已删除，ffmpeg 依赖随之移除。
 - 测试：`backend/tests/test_p1_emotion_srt_cache_red.py::test_p1_4_sample_rate_and_loudness_from_settings`（monkeypatch 改 settings 后断言 audio_params 反映新值）+ `test_p1_7_k5_cache_key_changes_with_sample_rate`（缓存键区分 + 向后兼容）
 - 完成日期：2026-09-10
 - Commit：3ac871c（首次） + eb89d7c（缓存键联动修复）

@@ -49,7 +49,6 @@ from ..core.mp3_util import (
 )
 from .chapter import Chapter, _Segment, _build_segments_for_chapter
 from .book_split import strip_chapter_prefix
-from .m4b import m4b_filename
 from .project import (
     PronunciationRule as _PronunciationRule,
     apply_pronunciation_rules,
@@ -2390,14 +2389,6 @@ async def delete_build(project_id: str, build_id: str) -> None:
                 fpath.unlink()
         except OSError as e:
             logger.warning(f"[build_delete] 删 ZIP 失败: {zip_fname} -> {e}")
-    # M4B 产物一并清理
-    m4b_fname = m4b_filename(build_id)
-    try:
-        fpath = audio_dir / m4b_fname
-        if fpath.is_file():
-            fpath.unlink()
-    except OSError as e:
-        logger.warning(f"[build_delete] 删 M4B 失败: {m4b_fname} -> {e}")
 
     logger.info(
         f"[build_delete] build_id={build_id[:8]}... "

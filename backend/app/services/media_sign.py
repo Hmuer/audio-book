@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # 媒体签名 token 默认寿命（5 分钟 —— 足够浏览器发起请求 + 拖动 <audio> 进度）
 DEFAULT_TTL_SECONDS = 300
 
-MediaKind = Literal["chapter_mp3", "all_zip", "book_m4b"]
+MediaKind = Literal["chapter_mp3", "all_zip"]
 
 
 def _now() -> datetime:
