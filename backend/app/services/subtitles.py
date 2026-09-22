@@ -81,19 +81,23 @@ def _estimate_chapter_segments(
     return entries
 
 
-async def _collect_build_segments(build_id: str, *, ch_idx: int | None = None) -> list[dict]:
+async def _collect_build_segments(
+    build_id: str, *, ch_idx: int | None = None, require_final: bool = True
+) -> list[dict]:
     """收集整本书的全部 cue 段。
 
     返回：[{"chapter_idx","title","kind","speaker","text","start_ms","dur_ms","estimated"}...]
     start_ms 为"章内相对时间"；章间偏移由调用方按 artifact duration 累加。
     ch_idx 非空时只收集该章（减少无谓计算）。
+    require_final 为 True 时要求 build 已成功/部分成功（对外 API 的兜底校验）。
+    Build worker 在 _finalize 打包 ZIP 时终态尚未写回，需传 require_final=False。
     """
     factory = get_session_factory()
     async with factory() as s:
         b = await s.get(Build, build_id)
         if not b:
             raise ValueError(f"Build 不存在: {build_id}")
-        if b.status not in ("success", "partial_success"):
+        if require_final and b.status not in ("success", "partial_success"):
             raise ValueError(f"Build 尚未完成（status={b.status}），无法生成歌词")
         proj = await s.get(Project, b.project_id)
         chapters_dicts = json.loads(proj.chapters_json or "[]") if proj else []
@@ -168,12 +172,16 @@ async def generate_chapter_lrc(
     *,
     title: str | None = None,
     with_speaker: bool = True,
+    require_final: bool = True,
 ) -> tuple[str, str]:
     """生成单章 LRC 歌词。返回 (download_filename, content_text)。
 
     时间轴用章内相对时间（与章节 MP3 对齐），不做整本书章间偏移。
+    require_final：对外 API 兜底校验 build 是否终态（worker 打包 ZIP 时传 False）。
     """
-    segs = await _collect_build_segments(build_id, ch_idx=ch_idx)
+    segs = await _collect_build_segments(
+        build_id, ch_idx=ch_idx, require_final=require_final
+    )
     if not segs:
         raise ValueError(f"章节 {ch_idx} 没有可用的章节音频…无法生成歌词")
 

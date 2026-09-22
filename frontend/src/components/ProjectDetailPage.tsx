@@ -2031,6 +2031,33 @@ function BuildDetailContent({
                   }}
                 />
               )}
+              {a.status === 'done' && (
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="btn-ghost !py-1.5 !px-3 text-xs"
+                    onClick={() => {
+                      try {
+                        api.buildChapterLrc(projectId, detail.build_id, a.chapter_idx)
+                          .then(({ filename, content }) => {
+                            const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+                            const url = URL.createObjectURL(blob);
+                            const x = document.createElement('a');
+                            x.href = url;
+                            x.download = filename;
+                            x.click();
+                            URL.revokeObjectURL(url);
+                          });
+                      } catch (e: any) {
+                        alert(`歌词生成失败: ${e?.message || e}`);
+                      }
+                    }}
+                    title="下载本章 LRC 歌词（时间轴与本章 MP3 对齐）"
+                  >
+                    下载 LRC
+                  </button>
+                </div>
+              )}
             </div>
           );
         })}
