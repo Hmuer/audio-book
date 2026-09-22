@@ -415,11 +415,11 @@ export const api = {
   // 项目累计供应商用量（LLM prepare + TTS build）
   projectUsage: (projectId: string) =>
     _fetch<ProjectUsageResp>(`/api/projects/${projectId}/usage`),
-  // 字幕下载（文本不大，直接带 JWT 拉取内容后前端触发保存）
+  // 歌词下载（文本不大，直接带 JWT 拉取内容后前端触发保存）
   buildSubtitles: async (
     projectId: string,
     buildId: string,
-    format: 'srt' | 'lrc'
+    format: 'lrc'
   ): Promise<{ filename: string; content: string }> => {
     const token = getToken();
     const r = await fetch(

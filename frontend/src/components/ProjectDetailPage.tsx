@@ -1913,9 +1913,9 @@ function BuildDetailContent({
     return () => { cancelled = true; };
   }, [detail.build_id, projectId, (detail.artifacts ?? []).length]);
 
-  const downloadSubtitles = async (fmt: 'srt' | 'lrc') => {
+  const downloadSubtitles = async () => {
     try {
-      const { filename, content } = await api.buildSubtitles(projectId, detail.build_id, fmt);
+      const { filename, content } = await api.buildSubtitles(projectId, detail.build_id, 'lrc');
       const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1924,7 +1924,7 @@ function BuildDetailContent({
       a.click();
       URL.revokeObjectURL(url);
     } catch (e: any) {
-      alert(`字幕生成失败: ${e?.message || e}`);
+      alert(`歌词生成失败: ${e?.message || e}`);
     }
   };
 
@@ -1951,14 +1951,11 @@ function BuildDetailContent({
         )}
       </div>
 
-      {/* 有声书成品区：字幕（仅完成态展示） */}
+      {/* 有声书成品区：歌词（仅完成态展示） */}
       {isDoneBuild && (
         <div className="rounded-lg border border-ink-300/70 bg-ink-100 px-4 py-3 flex items-center gap-2 flex-wrap">
           <span className="text-xs text-ink-600 mr-1">有声书成品：</span>
-          <button className="btn-ghost !py-1.5 !px-3 text-xs" onClick={() => downloadSubtitles('srt')} title="整本书 SRT 字幕（对白带说话人前缀，与音频时间轴对齐）">
-            字幕 SRT
-          </button>
-          <button className="btn-ghost !py-1.5 !px-3 text-xs" onClick={() => downloadSubtitles('lrc')} title="整本书 LRC 歌词（支持滚动歌词的播放器）">
+          <button className="btn-ghost !py-1.5 !px-3 text-xs" onClick={downloadSubtitles} title="整本书 LRC 歌词（支持滚动歌词的播放器）">
             歌词 LRC
           </button>
         </div>

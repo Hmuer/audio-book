@@ -1,5 +1,5 @@
 """
-字幕生成：把一次 Build 的章节音频 + 段级时间轴导出为 SRT / LRC。
+歌词生成：把一次 Build 的章节音频 + 段级时间轴导出为 LRC。
 
 时间轴数据源（按优先级）：
 1. 章节时间轴 sidecar JSON（build_<bid>_ch<N>_timings.json，合成时写入，逐段真实时长）
@@ -7,8 +7,7 @@
    按字符占比把 BuildArtifact.duration_ms 分摊到各段（估算，误差秒级）
 
 输出：
-- SRT：整本书连续时间轴（与 ZIP 的章节顺序一致），对白行带说话人前缀
-- LRC：同样连续时间轴，对白行带说话人前缀；SRT 用于播放器字幕，LRC 用于歌词滚动
+- LRC：整本书连续时间轴，对白行带说话人前缀；用于歌词滚动
 """
 from __future__ import annotations
 
@@ -25,15 +24,6 @@ from .build import _timings_filename
 from .chapter import Chapter, _build_segments_for_chapter
 
 logger = logging.getLogger(__name__)
-
-
-def _fmt_srt_ts(ms: int) -> str:
-    """SRT 时间戳：HH:MM:SS,mmm"""
-    ms = max(int(ms), 0)
-    h, rem = divmod(ms, 3600_000)
-    m, rem = divmod(rem, 60_000)
-    s, milli = divmod(rem, 1000)
-    return f"{h:02d}:{m:02d}:{s:02d},{milli:03d}"
 
 
 def _fmt_lrc_ts(ms: int) -> str:
@@ -91,19 +81,6 @@ def _estimate_chapter_segments(
     return entries
 
 
-def _normalize_text_for_cue(text: str) -> str:
-    """SRT 单条 cue 不宜过长：按句子边界粗切超长段（>120 字符）。"""
-    t = (text or "").strip()
-    if len(t) <= 120:
-        return t
-    # 在标点后断句，尽量均衡
-    import re
-    parts = [p for p in re.split(r"(?<=[。！？；!?;…])", t) if p.strip()]
-    if len(parts) <= 1:
-        return t
-    return "\n".join(parts)
-
-
 async def _collect_build_segments(build_id: str) -> list[dict]:
     """收集整本书的全部 cue 段。
 
@@ -116,7 +93,7 @@ async def _collect_build_segments(build_id: str) -> list[dict]:
         if not b:
             raise ValueError(f"Build 不存在: {build_id}")
         if b.status not in ("success", "partial_success"):
-            raise ValueError(f"Build 尚未完成（status={b.status}），无法生成字幕")
+            raise ValueError(f"Build 尚未完成（status={b.status}），无法生成歌词")
         proj = await s.get(Project, b.project_id)
         chapters_dicts = json.loads(proj.chapters_json or "[]") if proj else []
         chapters = [
@@ -149,7 +126,7 @@ async def _collect_build_segments(build_id: str) -> list[dict]:
     for ch in chapters:
         art = art_by_idx.get(ch.idx)
         if not art or not art.audio_filename or art.duration_ms is None:
-            # 失败章（1s 静音占位）没有意义字幕，跳过
+            # 失败章（1s 静音占位）没有意义歌词，跳过
             continue
         ch_dur = int(art.duration_ms or 0)
         sidecar = _load_sidecar(build_id, ch.idx)
@@ -185,19 +162,11 @@ async def _collect_build_segments(build_id: str) -> list[dict]:
 async def generate_subtitles(
     project_id: str,
     build_id: str,
-    fmt: str = "srt",
+    fmt: str = "lrc",
     *,
     with_speaker: bool = True,
 ) -> tuple[str, str]:
-    """生成整本书字幕。返回 (download_filename, content_text)。
-
-    - fmt='srt'：整本书连续时间轴；章与章的偏移按 artifact.duration_ms 累加
-    - fmt='lrc'：同上，格式为 LRC
-    """
-    fmt = (fmt or "srt").lower()
-    if fmt not in ("srt", "lrc"):
-        raise ValueError(f"不支持的字幕格式: {fmt}")
-
+    """生成整本书 LRC 歌词。返回 (download_filename, content_text)。"""
     factory = get_session_factory()
     async with factory() as s:
         b = await s.get(Build, build_id)
@@ -208,7 +177,7 @@ async def generate_subtitles(
 
     segs = await _collect_build_segments(build_id)
     if not segs:
-        raise ValueError("没有可用的章节音频，无法生成字幕")
+        raise ValueError("没有可用的章节音频，无法生成歌词")
 
     # 章间偏移：按 artifact duration_ms 累加（与音频/ZIP 同口径）
     factory = get_session_factory()
@@ -225,39 +194,20 @@ async def generate_subtitles(
         ch_offset[a.chapter_idx] = cursor
         cursor += int(a.duration_ms or 0)
 
-    if fmt == "srt":
-        lines: list[str] = []
-        idx = 1
-        for e in segs:
-            text = _normalize_text_for_cue(
-                _cue_text(e["kind"], e["speaker"], e["text"], with_speaker=with_speaker)
-            )
-            if not text:
-                continue
-            start = ch_offset.get(e["chapter_idx"], 0) + e["start_ms"]
-            end = start + max(e["dur_ms"], 800)  # 最短可读 0.8s
-            lines.append(str(idx))
-            lines.append(f"{_fmt_srt_ts(start)} --> {_fmt_srt_ts(end)}")
-            lines.append(text)
-            lines.append("")
-            idx += 1
-        content = "\n".join(lines)
-        fname = f"{_safe_fname(book_title)}.srt"
-    else:  # lrc
-        header = [
-            f"[ti:{book_title[:120]}]",
-            "[re:AI 有声小说生成器]",
-            "",
-        ]
-        body = []
-        for e in segs:
-            text = _cue_text(e["kind"], e["speaker"], e["text"], with_speaker=with_speaker)
-            if not text:
-                continue
-            start = ch_offset.get(e["chapter_idx"], 0) + e["start_ms"]
-            body.append(f"{_fmt_lrc_ts(start)}{text}")
-        content = "\n".join(header + body)
-        fname = f"{_safe_fname(book_title)}.lrc"
+    header = [
+        f"[ti:{book_title[:120]}]",
+        "[re:AI 有声小说生成器]",
+        "",
+    ]
+    body = []
+    for e in segs:
+        text = _cue_text(e["kind"], e["speaker"], e["text"], with_speaker=with_speaker)
+        if not text:
+            continue
+        start = ch_offset.get(e["chapter_idx"], 0) + e["start_ms"]
+        body.append(f"{_fmt_lrc_ts(start)}{text}")
+    content = "\n".join(header + body)
+    fname = f"{_safe_fname(book_title)}.lrc"
 
     return fname, content
 
