@@ -741,5 +741,186 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 - 前端 `tsc --noEmit` ✅；后端全量 `377 passed, 1 failed, 1 skipped`，唯一失败是既有 E-1 类抖动
   （`test_project_e2e.py::test_project_full_lifecycle`，单跑通过）。原本没有任何测试引用 M4B，故无需删用例。
 
+---
+
+## 11. 规模化评估与修复计划（1000~5000 章）· 2026-09-22
+
+> 触发：用户询问「当前功能是否适用于 1000~5000 章的有声小说」。
+> **结论**：1000 章**勉强可跑**（prepare 数小时、合成数小时、前端明显卡顿、磁盘 ~10GB）；5000 章**当前不适用**（1 个必修缺陷 + 3 个架构级瓶颈）。
+> 量级假设：网文平均 2500 字/章 → **1000 章 ≈ 250 万字 / 7.5MB**；**5000 章 ≈ 1250 万字 / 37.5MB**。
+
+### 11.0 评估依据（均为读码实测配置，非估算）
+
+| 项 | 实测值 | 位置 |
+|---|---|---|
+| 上传上限 | `MAX_SIZE = 50MB` | [routes.py#L874](file:///workspace/backend/app/api/routes.py#L874) |
+| LLM 并发 | `LLM_MAX_CONCURRENCY = 1`（**全局串行**） | [config.py#L195](file:///workspace/backend/app/core/config.py#L195) |
+| 角色识别切片 | `LLM_CHAR_EXTRACT_SLICE_SIZE = 50000` 字/片，**按字符偏移切，会切断章** | [project.py#L886-L889](file:///workspace/backend/app/services/project.py#L886-L889) |
+| 对白归属批 | 14 章/批（**已按章切**），并发 2 | [config.py#L211-L216](file:///workspace/backend/app/core/config.py#L211-L216) |
+| 语音指令批 | 6 章/批（**已按章切**），并发 2 | [config.py#L228-L230](file:///workspace/backend/app/core/config.py#L228-L230) |
+| 润色 | 1 章/次调用（仅 `POLISH_ENABLED` 时） | [project.py#L772-L790](file:///workspace/backend/app/services/project.py#L772-L790) |
+| TTS RPM | `DOUBAO_TTS_RPM_LIMIT = 60` → **最小间隔 1 秒/请求** | [config.py#L133](file:///workspace/backend/app/core/config.py#L133) |
+| TTS 并发 | 段级 semaphore 200（**实际被 RPM 桶压到 1/s**） | [config.py#L236](file:///workspace/backend/app/core/config.py#L236) |
+| 段长 | `TTS_MAX_SEGMENT_CHARS = 600` | [config.py#L248](file:///workspace/backend/app/core/config.py#L248) |
+| 合成粒度 | **按章串行**（章内段级并发） | [build.py#L1870](file:///workspace/backend/app/services/build.py#L1870) |
+| 段缓存 | 内存 LRU 20000 条；磁盘上限 20GB / TTL 30 天 | [config.py#L237-L243](file:///workspace/backend/app/core/config.py#L237-L243) |
+
+**规模换算**
+
+| 规模 | LLM 调用（串行，不含润色） | 含润色 | TTS 段数 | RPM 地板 | 音频时长 | 磁盘(128kbps) |
+|---|---|---|---|---|---|---|
+| 1000 章 | 50+72+167+1 = **290 次** | **1290 次** | ≈4,200 | ≈70 分钟 | ≈154 小时 | ≈9 GB |
+| 5000 章 | 250+358+834+1 = **1443 次** | **6443 次** | ≈20,800 | **≈5.8 小时** | ≈772 小时 | **≈45 GB** |
+
+按每次 40~60s 估：1000 章 prepare ≈ **5 小时**；5000 章 ≈ **24 小时**；开润色后 5000 章 ≈ **2~3 天**（且全程串行，中断只能靠 checkpoint 续跑）。
+
+---
+
+### 11.1 Tier F —— 规模化（P0/P1 必做）
+
+#### F-1 打包阶段 LRC 生成是 O(N²) ✅（2026-09-22 引入，必修）
+- 位置：[build.py#L2242-L2249](file:///workspace/backend/app/services/build.py#L2242-L2249) 逐章调 `generate_chapter_lrc`；每次调用在 [subtitles.py#L142-L156](file:///workspace/backend/app/services/subtitles.py#L142-L156) 重新 `json.loads(chapters_json)` + `select(ProjectDialogue).where(project_id=...)`。
+- 后果：5000 章 = **≈187GB 的 JSON 解析 + ≈7.5 亿行扫描**，打包从分钟级退化到不可完成。单章 LRC 接口同因（每次请求解析全书 + 全表扫描）。
+- 修复方向：循环外一次性加载 `chapters_json` 与按章分组的 dialogues，`_collect_build_segments` 改为接收已加载数据（或新增批量入口 `generate_chapter_lrc_bulk`）。
+- 验收：打包阶段 DB 查询次数与章节数**线性**相关（5000 章时查询数 ≤ 个位数量级），而非平方。
+
+#### F-2 `project_dialogues` 无任何索引 ✅
+- 位置：[models.py#L237-L254](file:///workspace/backend/app/db/models.py#L237-L254)（`project_id` / `chapter_idx` 均无 `index=True`）。
+- 后果：全部查询都是 `WHERE project_id=? [AND chapter_idx=?]` → **全表扫描**；10~30 万行时每次查询都是秒级。
+- 修复方向：加复合索引 `(project_id, chapter_idx)`；`init_db` 侧补 `CREATE INDEX IF NOT EXISTS`（老库无迁移机制）。
+- 验收：查询计划走索引；章节详情接口 P95 明显下降。
+
+#### F-3 批处理必须按「完整章节」对齐，不可按字数硬切 ✅（**用户补充 1**）
+- 位置：[project.py#L886-L889](file:///workspace/backend/app/services/project.py#L886-L889) 用 `full_text[i : i+slice_size]` 切字符，会把一章拦腰截断。
+- 需求原文：「分批次不能只按字数，因为不能把章节拆分开，比如限制了一次 50K 字，那就只取这个字数范围内的完整章节内容。」
+- 修复方向：改为**按章累积装桶** —— 依次累加完整章节文本，直到「再加下一章会超过 `slice_size`」即封桶；单章本身 > `slice_size` 时**独占一桶**（绝不切章）。
+- 对白归属（14 章/批）与语音指令（6 章/批）**已经是按章切批**，无需改动。
+- ⚠️ **必须同时处理 checkpoint 失效**：`char_slice_completed` / `char_failed_slices` 以**切片序号**为键（[project.py#L891-L892](file:///workspace/backend/app/services/project.py#L891-L892)）。切分规则一变，旧序号全部错位 → 续跑会把「没跑的片」当成「已跑的片」跳过。须在切分口径变化时**清空该 checkpoint**（或改用「章节区间」作键）。
+- 验收：断言任一桶内只含完整章节（首/尾不得是半章）；断言桶容量 ≤ 限制且尽量装满；断言旧 checkpoint 在新口径下被重置。
+
+#### F-4 `chapters_json` 单列存全书正文，且每个请求全量反序列化
+- 位置：写入 [project.py#L1334](file:///workspace/backend/app/services/project.py#L1334)/[#L1400](file:///workspace/backend/app/services/project.py#L1400)；读取 [project.py#L1770](file:///workspace/backend/app/services/project.py#L1770)（详情页）、[#L2021](file:///workspace/backend/app/services/project.py#L2021)（章节列表）、[#L2046](file:///workspace/backend/app/services/project.py#L2046)（**看单章也要解析全书**）。
+- 说明：API 只回 `text_len`、不返回正文（这点是对的），但解析成本仍是 O(全书)。
+- 修复方向（择一）：① 新增 `ProjectChapter` 表（一行一章，`text` 独立列），`chapters_json` 降级为兼容快照；② 至少把「章节列表/单章详情」改为不解析全文（列表用 `chapter_count` + 轻量摘要；单章用正则定位 or 拆表）。
+- 验收：章节列表接口不解析全书；单章详情的内存峰值与总字数无关。
+
+#### F-5 前端逐章串行签发 + 无虚拟滚动 ⚠️（用户已感知到「批量签发慢」）
+- 位置：[ProjectDetailPage.tsx#L1009-L1018](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L1009-L1018)（章节列表）、[#L1919-L1937](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L1919-L1937)（构建详情）。
+- 后果：5000 章 = **5000 次串行 HTTP**（每次还带一次 DB 查询），耗时 100~250 秒；且**超过签名 URL 的 5 分钟 TTL** → 先签的还没播就过期，滚动时大面积 401 再逐个重签。列表一次渲染 5000 个节点（每个含播放器组件）。
+- 修复方向：后端新增**批量签发**接口（一次 N 章）；前端改虚拟滚动（或仅签当前可见 ± 少量预取）；`onNeedNewSrc` 已有重签兜底。
+- 验收：进入页面 1 次请求完成签发；DOM 节点数与可视区相关而非章节总数。
+
+#### F-6 合成按章串行，RPM 桶利用率被章内并发度限制
+- 位置：[build.py#L1870](file:///workspace/backend/app/services/build.py#L1870)；章内 `gather` 全部段（[build.py#L2080-L2081](file:///workspace/backend/app/services/build.py#L2080-L2081)）。
+- 现象：章内并发 ≈ 段数（2500 字/600 ≈ 4~5 段），下一章要等上一章全部落盘 + DB 提交；RPM 桶（1/s）在「章内段已并发完、等落盘」的间隙空转。
+- 修复方向：改为「跨章流水线」——维护一个全局段级任务队列（受 RPM 桶与 TTS semaphore 双重约束），章内/章间统一调度，落盘与合成解耦。
+- 验收：TTS 请求发出速率稳定贴近 RPM 上限（不再出现周期性空档）。
+- 备注：此项是**吞吐优化**，RPM=60 的硬地板（5000 章 ≥5.8 小时）无法靠代码绕开，只能调大配额。
+
+#### F-7 整包 ZIP 在目标规模下不可用 → **改为每 50 章一个独立 ZIP**（决策 5）
+- 位置：[build.py#L74-L100](file:///workspace/backend/app/services/build.py#L74-L100)（`ZIP_STORED` 不压缩全量打包）。
+- 原问题：5000 章产出 **≈45GB 单个 .zip**；打包期间本地需同时保住「全量 MP3 + 全量 ZIP」→ 峰值 **≈90GB**；浏览器侧 45GB 单文件基本无法可靠下载（无分片/断点续传）。
+- **已定方案**：按 `ZIP_SHARD_CHAPTERS`（默认 **50**）切片，每片一个**自包含** ZIP（内部仍是《书名》/第NNN章_标题.mp3 + 同名 .lrc），命名建议 `第001-050章.zip`。5000 章 → 100 个 ZIP，单卷 ≈450MB。
+- 连带收益：打包可在**每片章节凑齐后立即执行并上传**，不再需要等全书完成；峰值本地磁盘降到「全量 MP3 + 单卷 ZIP」。
+- 连带约束：
+  - 前端「下载全部」要改为**分片列表**（逐个可下），而不是单个链接；`Build` 需能记录多个 zip 产物（现为单一 `zip_filename` 字段）。
+  - `delete_build` 的清理逻辑要覆盖整批分片。
+  - **F-1 的 O(N²) 仍必须先修**：分片只降低单次打包体积，不改变「每章 LRC 都要重新解析全书 + 全表扫描」的成本。
+- 验收：单卷 ≤1GB；任一卷可独立解压使用；下载入口按卷列出。
+
+#### F-8 LLM 全串行是 prepare 时长的根因（设计取舍，需重新评估）
+- 位置：`LLM_MAX_CONCURRENCY = 1`（[config.py#L195](file:///workspace/backend/app/core/config.py#L195)），使 `DIALOGUE_BATCH_CONCURRENCY=2` / `VOICE_INSTRUCTION_BATCH_CONCURRENCY=2` **形同虚设**。
+- 背景：该默认值是为「按量套餐 RPM 严格」准备的（[config.py#L193](file:///workspace/backend/app/core/config.py#L193)）。
+- 建议：按套餐实际情况调高（如 2~4），并让批并发真正生效；同时给 prepare 增加「预计耗时」提示，避免用户误判卡死。
+- 备注：不做也没错，但 5000 章下 24 小时~数天的 prepare 需要明确告知用户。
+
+---
+
+### 11.2 Tier G —— 对象存储（**用户补充 2**）
+
+> 需求原文：「存储的问题很好解决，支持对象存储即可，在设置中添加对象存储配置，生成的文件（MP3、LRC、ZIP等业务数据）都存储在对象存储中，页面点击下载时，直接从对象存储下载（对象存储权限是：公有读私有写）。」
+
+#### G-1 新增存储抽象层（`StorageBackend`）
+- 现状：产物路径散落在 `settings.AUDIO_DIR` 直接拼盘（`audio_dir / fname`、`p.is_file()`、`os.path.getsize`、`FileResponse(path=...)`），[build.py](file:///workspace/backend/app/services/build.py)、[subtitles.py](file:///workspace/backend/app/services/subtitles.py)、[preview.py](file:///workspace/backend/app/services/preview.py)、[media_sign.py](file:///workspace/backend/app/services/media_sign.py)、[routes.py](file:///workspace/backend/app/api/routes.py) 均直接操作本地文件。
+- 设计：抽出 `put_bytes / put_file / open_stream / exists / size / delete / url_for(key)` 接口，两个实现 `LocalStorage`（现有行为，保留为默认）与 `S3Storage`。**默认仍 local**，避免破坏单机部署。
+- 注意：`concat_mp3_files`、`mp3_duration_ms`、ffmpeg 前的分片截取（preview）都需要**本地可读**，因此合成期必须保留本地暂存目录，对象存储是「产物归档 + 分发」，不是「实时随机读写后端」。这是本项最容易踩空的地方。
+
+#### G-2 设置页对象存储配置
+- 字段（建议）：`STORAGE_BACKEND`(local|s3)、`S3_ENDPOINT`、`S3_REGION`、`S3_BUCKET`、`S3_ACCESS_KEY`、`S3_SECRET_KEY`、`S3_PREFIX`（key 前缀/目录）、`S3_PUBLIC_BASE_URL`（下载域名）、`S3_PATH_STYLE`(默认 false) 以及 `ZIP_SHARD_CHAPTERS`（默认 50，归「合成质量」或独立组）。
+- 腾讯云 COS 取值参考（决策 3）：`S3_ENDPOINT=https://cos.<region>.myqcloud.com`；`S3_REGION` 填地域（如 `ap-guangzhou`）；`S3_PATH_STYLE=false`；`S3_PUBLIC_BASE_URL` 可用 COS 默认访问域名（`https://<bucket>.cos.<region>.myqcloud.com`）或绑定的 CDN/自定义域名。桶权限需设为**公有读私有写**。
+- 落地：加入 [routes.py#L1846](file:///workspace/backend/app/api/routes.py#L1846) `_EDITABLE_SETTINGS` 白名单的新分组「对象存储」，前端 `groupOrder` / `GROUP_META` 同步补组（参照 C-1 的做法）；密钥类字段复用 C-2 的 `SecretInput` 脱敏占位。
+
+#### G-3 产物上传（仅交付物：MP3 / LRC / 分片 ZIP）· 决策 4
+- 归档范围已定为**仅交付物**：章节 MP3、每章 LRC、分片 ZIP。**不上传**段级缓存、timings sidecar、preview 片段、导入的源 TXT、ICL 参考音频（后者含隐私/版权内容，且公有读桶会使其可被任意人获取）。
+- 时机：① 章节 MP3 合成落盘后上传；② 该章 LRC 生成后上传；③ 每凑满 `ZIP_SHARD_CHAPTERS`（默认 50）章即打一卷并上传（配合 F-7）。
+- key 规划（建议）：
+  - 章节：`{S3_PREFIX}/{project_id}/{build_id}/ch{idx:04d}.mp3` 与 `ch{idx:04d}.lrc`
+  - 分片 ZIP：`{S3_PREFIX}/{project_id}/{build_id}/第{start:03d}-{end:03d}章.zip`
+- 实现提示：COS 的 S3 兼容接口可用 `put_object` / `upload_file`（大文件自动分片）；`S3_PUBLIC_BASE_URL` 用于拼公有读下载链接。
+- ⚠️ **公有读意味着「URL 即权限」**：现有 `/media/*` 有归属校验（[main.py](file:///workspace/backend/app/main.py) 静态媒体归属校验）、`/media/sign` 有一次 token —— 换成公有读对象存储后，任何拿到 URL 的人都能下载。key 里的 `build_id` 是 uuid4 hex（不可猜测），据此可接受；「不做访问控制」按产品决策记录。
+- ⚠️ **删除语义要同步**：`delete_build` 目前按 `audio_filename` 删本地文件（含 B-5 的「各 build 自有文件」不变式）；改为对象存储后需按 key 前缀（`.../{build_id}/`）批量删除，并注意对象存储的最终一致性（删除后短时间内可能仍可访问）。
+
+#### G-4 下载直连对象存储
+- 现状：单章/ZIP 走 `/api/media/sign` 签发一次性 URL → `/media/stream` 由**后端 FileResponse 转发**（消耗服务器带宽）。
+- 改造后：`sign` 直接返回 `{S3_PUBLIC_BASE_URL}/{key}`（对象存储/CDN 出流量），后端不再转发字节 —— 这同时**顺带缓解 F-7 的下载体验**（CDN + Range/断点续传），也解除 `/media/stream` 的带宽瓶颈。
+- 兼容：`local` 后端保持现有签名转发路径不变（两条路并存，用 `STORAGE_BACKEND` 分流）。
+
+#### G-5 本地副本清理 · 决策 6（上传成功后清本地）
+- **已定方案**：合成期保留本地暂存（`concat_mp3_files` / `mp3_duration_ms` / preview 截取都需要本地可读），**该章上传成功后即可清理本地 MP3 与 LRC**；分片 ZIP 在打包并上传成功后删除本地 ZIP。
+- 需要处理的容错路径（否则会踩坏现有能力）：
+  - **`retry_failed_build` 的章节复用**（B-5「各 build 自有文件」不变式）：复用的是**本地文件**。改为「上传即清」后，复用必须改为**回源下载对象**再另存，否则重试会因源文件已删而退化。
+  - **`config_digest` 复用历史成功 build**：复用时不重新合成，但用户仍要能下载 → 下载链路必须能直接由对象存储提供（G-4），不能假设本地有文件。
+  - **`delete_build`**：本地文件可能已不存在，删除要以对象存储为主、本地为容错（缺失不报错）。
+  - **`/api/media/sign` + `/media/stream` 的本地兜底**：`local` 后端行为不变；`s3` 后端下若本地已清，签名接口需回落到直连对象存储 URL（即 G-4 成为**必需**而非可选）。
+- 遗留：`data/audio/` 中历史产物的一次性上云迁移脚本，以及回滚路径（把 `STORAGE_BACKEND` 切回 `local` 时不得因对象已清而丢交付物）。
+
+---
+
+### 11.3 已确认的执行决策（2026-09-22）
+
+| # | 决策点 | 结论 | 影响 |
+|---|---|---|---|
+| 决策 3 | 对象存储服务商 | **腾讯云 COS** | 用 COS S3 兼容协议接入（`endpoint` 形如 `https://cos.<region>.myqcloud.com`，`S3_PATH_STYLE=false`）；下载域名可用 COS 默认域名或绑定 CDN/自定义域名填入 `S3_PUBLIC_BASE_URL` |
+| 决策 4 | 归档范围 | **仅交付物**（章节 MP3 / 每章 LRC / ZIP） | 段级缓存、timings sidecar、preview、源 TXT、ICL 参考音频**均不上传**；key 规划只需覆盖三类交付物 |
+| 决策 5 | 整包 ZIP 去留 | **每 50 章一个独立 ZIP**（每卷自包含可单独解压） | 5000 章 → 100 个 ZIP，单卷 ≈450MB；峰值本地磁盘从 ≈90GB 降到 ≈「全量 MP3 + 单卷 ZIP」；卷大小做成可配置项（默认 50） |
+| 决策 6 | 本地副本清理 | **上传成功后清本地** | 磁盘占用可控；代价是「重新打包/重试复用」需回源下载对象（需确认 G-5 的容错路径） |
+
+---
+
+### 11.4 建议执行批次
+
+| 批次 | 内容 | 说明 |
+|---|---|---|
+| **批次 6** | F-1、F-2、F-3 | 三项都是小改动、风险低，直接决定 1000+ 章能否交付；F-3 含 checkpoint 重置 |
+| **批次 7** | F-5、F-7 | 前端体验 + 打包可用性；F-7 已定「每 50 章一卷」（决策 5） |
+| **批次 8** | G-1 ~ G-5 | 对象存储（腾讯云 COS，决策 3~6 已定） |
+| **批次 9** | F-4、F-6、F-8 | 结构性优化：拆 `chapters_json`、合成流水线、LLM 并发 |
+
+### 11.5 跟踪清单
+
+> 完成一项把 `[ ]` 改为 `[x]`，并填写完成日期。
+
+#### 批次 6 —— 规模化止血（P0）
+- [ ] F-1 打包 LRC 去掉 O(N²)（一次加载 + 按章复用） — [build.py#L2242-L2249](file:///workspace/backend/app/services/build.py#L2242-L2249) / [subtitles.py#L142-L156](file:///workspace/backend/app/services/subtitles.py#L142-L156)
+- [ ] F-2 `project_dialogues` 加 `(project_id, chapter_idx)` 索引 — [models.py#L237-L254](file:///workspace/backend/app/db/models.py#L237-L254)
+- [ ] F-3 角色识别切片改为「按完整章节装桶」+ 重置旧 checkpoint — [project.py#L886-L889](file:///workspace/backend/app/services/project.py#L886-L889)
+
+#### 批次 7 —— 可用性与体验
+- [ ] F-5 批量签发 + 虚拟滚动 — [ProjectDetailPage.tsx#L1009-L1018](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L1009-L1018)
+- [ ] F-7 ZIP 改为「每 50 章一个独立 ZIP」（含前端分片下载列表、Build 多产物字段、delete_build 覆盖） — [build.py#L74-L100](file:///workspace/backend/app/services/build.py#L74-L100)
+
+#### 批次 8 —— 对象存储（腾讯云 COS）
+- [ ] G-1 `StorageBackend` 抽象（local | s3，默认 local）
+- [ ] G-2 设置页「对象存储」配置分组（COS 取值 + `ZIP_SHARD_CHAPTERS`）
+- [ ] G-3 产物上传（章节 MP3 / 每章 LRC / 分片 ZIP）
+- [ ] G-4 下载直连对象存储（`sign` 返回公有 URL）
+- [ ] G-5 本地副本清理（含 retry 复用回源、digest 复用可下载、delete_build 容错）
+
+#### 批次 9 —— 结构性优化
+- [ ] F-4 拆分 `chapters_json`（单章/列表不再解析全书）
+- [ ] F-6 合成改跨章流水线（贴近 RPM 上限）
+- [ ] F-8 重估 `LLM_MAX_CONCURRENCY` 让批并发生效
+
+
 
 
