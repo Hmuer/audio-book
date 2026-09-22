@@ -525,18 +525,12 @@ export default function WaveformPlayer({
             <button
               type="button"
               onClick={onDownload}
-              className="shrink-0 grid place-items-center rounded-md
-                w-8 h-8
-                text-ink-600 hover:text-brand-300
-                hover:bg-brand-500/10 border border-ink-300/70 hover:border-brand-500/30
-                transition-all"
+              className="shrink-0 h-8 px-2.5 rounded-md border border-ink-300/70 bg-ink-200
+                text-ink-600 hover:text-brand-300 hover:bg-brand-500/10 hover:border-brand-500/30
+                transition-all font-medium text-[11.5px]"
               title="下载 MP3"
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 3v12"/>
-                <path d="m7 10 5 5 5-5"/>
-                <path d="M5 21h14"/>
-              </svg>
+              MP3
             </button>
           )}
 
