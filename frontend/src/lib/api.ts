@@ -415,15 +415,15 @@ export const api = {
   // 项目累计供应商用量（LLM prepare + TTS build）
   projectUsage: (projectId: string) =>
     _fetch<ProjectUsageResp>(`/api/projects/${projectId}/usage`),
-  // 歌词下载（文本不大，直接带 JWT 拉取内容后前端触发保存）
-  buildSubtitles: async (
+  // 单章 LRC 歌词下载（文本不大，直接带 JWT 拉取内容后前端触发保存）
+  buildChapterLrc: async (
     projectId: string,
     buildId: string,
-    format: 'lrc'
+    idx: number
   ): Promise<{ filename: string; content: string }> => {
     const token = getToken();
     const r = await fetch(
-      `/api/projects/${projectId}/builds/${buildId}/subtitles?format=${format}`,
+      `/api/projects/${projectId}/builds/${buildId}/chapters/${idx}/lrc`,
       {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       }
@@ -443,7 +443,7 @@ export const api = {
     }
     const dispo = r.headers.get('Content-Disposition') || '';
     const m = /filename\*=UTF-8''([^;]+)/.exec(dispo);
-    const filename = m ? decodeURIComponent(m[1]) : `subtitles.${format}`;
+    const filename = m ? decodeURIComponent(m[1]) : `第${idx + 1}章.lrc`;
     return { filename, content: await r.text() };
   },
   // 创建 build 任务

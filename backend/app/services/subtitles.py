@@ -81,11 +81,12 @@ def _estimate_chapter_segments(
     return entries
 
 
-async def _collect_build_segments(build_id: str) -> list[dict]:
+async def _collect_build_segments(build_id: str, *, ch_idx: int | None = None) -> list[dict]:
     """收集整本书的全部 cue 段。
 
     返回：[{"chapter_idx","title","kind","speaker","text","start_ms","dur_ms","estimated"}...]
     start_ms 为"章内相对时间"；章间偏移由调用方按 artifact duration 累加。
+    ch_idx 非空时只收集该章（减少无谓计算）。
     """
     factory = get_session_factory()
     async with factory() as s:
@@ -124,6 +125,8 @@ async def _collect_build_segments(build_id: str) -> list[dict]:
 
     out: list[dict] = []
     for ch in chapters:
+        if ch_idx is not None and ch.idx != ch_idx:
+            continue
         art = art_by_idx.get(ch.idx)
         if not art or not art.audio_filename or art.duration_ms is None:
             # 失败章（1s 静音占位）没有意义歌词，跳过
@@ -159,60 +162,31 @@ async def _collect_build_segments(build_id: str) -> list[dict]:
     return out
 
 
-async def generate_subtitles(
-    project_id: str,
+async def generate_chapter_lrc(
     build_id: str,
-    fmt: str = "lrc",
+    ch_idx: int,
     *,
+    title: str | None = None,
     with_speaker: bool = True,
 ) -> tuple[str, str]:
-    """生成整本书 LRC 歌词。返回 (download_filename, content_text)。"""
-    factory = get_session_factory()
-    async with factory() as s:
-        b = await s.get(Build, build_id)
-        if not b or b.project_id != project_id:
-            raise ValueError("build 不存在或不属于该项目")
-        proj = await s.get(Project, project_id)
-        book_title = (proj.book_title if proj else None) or "有声书"
+    """生成单章 LRC 歌词。返回 (download_filename, content_text)。
 
-    segs = await _collect_build_segments(build_id)
+    时间轴用章内相对时间（与章节 MP3 对齐），不做整本书章间偏移。
+    """
+    segs = await _collect_build_segments(build_id, ch_idx=ch_idx)
     if not segs:
-        raise ValueError("没有可用的章节音频，无法生成歌词")
+        raise ValueError(f"章节 {ch_idx} 没有可用的章节音频…无法生成歌词")
 
-    # 章间偏移：按 artifact duration_ms 累加（与音频/ZIP 同口径）
-    factory = get_session_factory()
-    async with factory() as s:
-        stmt_a = (
-            select(BuildArtifact)
-            .where(BuildArtifact.build_id == build_id)
-            .order_by(BuildArtifact.chapter_idx)
-        )
-        artifacts = list((await s.execute(stmt_a)).scalars().all())
-    ch_offset: dict[int, int] = {}
-    cursor = 0
-    for a in artifacts:
-        ch_offset[a.chapter_idx] = cursor
-        cursor += int(a.duration_ms or 0)
-
-    header = [
-        f"[ti:{book_title[:120]}]",
-        "[re:AI 有声小说生成器]",
-        "",
-    ]
-    body = []
+    body: list[str] = []
     for e in segs:
         text = _cue_text(e["kind"], e["speaker"], e["text"], with_speaker=with_speaker)
         if not text:
             continue
-        start = ch_offset.get(e["chapter_idx"], 0) + e["start_ms"]
-        body.append(f"{_fmt_lrc_ts(start)}{text}")
-    content = "\n".join(header + body)
-    fname = f"{_safe_fname(book_title)}.lrc"
+        body.append(f"{_fmt_lrc_ts(e['start_ms'])}{text}")
+    content = "\n".join(body)
 
+    clean_title = (title or "").strip()
+    fname = f"{clean_title or f'第{ch_idx + 1:03d}章'}.lrc"
     return fname, content
 
 
-def _safe_fname(base: str) -> str:
-    for ch in '\\/:*?"<>|\r\n\t':
-        base = base.replace(ch, "_")
-    return (base.strip() or "subtitles")[:100]

@@ -1679,29 +1679,44 @@ async def api_project_usage(
         raise HTTPException(500, f"用量查询失败: {type(e).__name__}: {e}")
 
 
-@router.get("/projects/{project_id}/builds/{build_id}/subtitles")
-async def api_build_subtitles(
+@router.get("/projects/{project_id}/builds/{build_id}/chapters/{idx}/lrc")
+async def api_build_chapter_lrc(
     project_id: str,
     build_id: str,
+    idx: int,
     request: Request,
-    format: str = "lrc",
     with_speaker: bool = True,
     current: User = Depends(get_current_user),
 ):
-    """下载整本书 LRC 歌词（与章节音频时间轴对齐）。P1 #5：读权限校验。"""
+    """下载单章 LRC 歌词（时间轴为该章内相对时间，与章节 MP3 对齐）。
+    不再提供整本 LRC —— 每章 LRC 由「下载全部 ZIP」和本接口按章下发。P1 #5：读权限校验。"""
     factory = get_session_factory()
     async with factory() as s:
         await get_project_for_user(s, project_id, current)
-    from ..services.subtitles import generate_subtitles
+        b = await s.get(Build, build_id)
+        if not b or b.project_id != project_id:
+            raise HTTPException(404, "build 不存在")
+        art = (
+            await s.execute(
+                select(BuildArtifact).where(
+                    BuildArtifact.build_id == build_id,
+                    BuildArtifact.chapter_idx == idx,
+                )
+            )
+        ).scalar_one_or_none()
+        if not art or art.status != "done":
+            raise HTTPException(404, f"章节 {idx} 尚未完成合成")
+        art_title = art.title or ""
+    from ..services.subtitles import generate_chapter_lrc
     try:
-        fname, content = await generate_subtitles(
-            project_id, build_id, format, with_speaker=with_speaker,
+        fname, content = await generate_chapter_lrc(
+            build_id, idx, title=art_title, with_speaker=with_speaker,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
         logger.error(
-            f"[HTTP] 500 subtitles build_id={build_id[:8]}... -> {type(e).__name__}: {e}",
+            f"[HTTP] 500 lrc build_id={build_id[:8]}... ch{idx} -> {type(e).__name__}: {e}",
             exc_info=True,
         )
         raise HTTPException(500, f"歌词生成失败: {type(e).__name__}: {e}")

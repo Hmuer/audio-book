@@ -78,10 +78,12 @@ def _build_book_zip(
     job_title: str | None,
     chapter_outputs: list[tuple[str | None, int | None]],
     chapter_titles: list[str],
+    chapter_lrcs: list[str] | None = None,
 ) -> None:
     """
-    把所有章节 MP3 打包到 ZIP。失败章的占位音频也会被打进 ZIP，避免缺文件。
-    ZIP 内部命名：《书名》/第001章 标题.mp3
+    把全部章节 MP3 打包到 ZIP。失败章的占位音频也会被打进 ZIP，避免缺文件。
+    每章再写一份同名 .lrc 歌词（chapter_lrcs 与 MP3 按位置对齐；缺则略过）。
+    ZIP 内部命名：《书名》/第001章 标题.mp3/.lrc
     """
     book_dir = _sanitize_zip_entry(job_title or job_id, f"小说_{job_id[:8]}")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
@@ -94,6 +96,8 @@ def _build_book_zip(
                 zf.write(path, arcname=entry_name)
             else:
                 zf.writestr(entry_name, make_silent_mp3(100, sample_rate=settings.DOUBAO_AUDIO_SAMPLE_RATE))
+            if chapter_lrcs and i < len(chapter_lrcs) and (chapter_lrcs[i] or "").strip():
+                zf.writestr(f"{book_dir}/{base}.lrc", chapter_lrcs[i])
 
 
 # =====================================================================
@@ -2231,12 +2235,22 @@ async def _run_build_inner(
 
     zip_fname = _zip_filename(build_id)
     zip_path = str(audio_dir / zip_fname)
+    # 打包前为每章生成 LRC 歌词（与 MP3 按位置对齐，供 ZIP 内同名 .lrc）。失败章 skip。
+    from ..services.subtitles import generate_chapter_lrc
+    chapter_lrcs: list[str] = []
+    for c in chapters:
+        try:
+            _f, content = await generate_chapter_lrc(build_id, c.idx, title=c.title)
+            chapter_lrcs.append(content)
+        except Exception:
+            chapter_lrcs.append("")
     _build_book_zip(
         zip_path,
         job_id=build_id,
         job_title=job_title,
         chapter_outputs=chapter_outputs,
         chapter_titles=[c.title for c in chapters],
+        chapter_lrcs=chapter_lrcs,
     )
 
     if failed_count == 0:

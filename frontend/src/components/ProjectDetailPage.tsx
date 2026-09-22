@@ -970,6 +970,22 @@ function ChaptersTab({
     return () => { cancelled = true; };
   }, [expandedIdx, project.project_id]);
 
+  // 单章 LRC 歌词下载
+  const downloadChapterLrc = async (pid: string, bid: string, idx: number) => {
+    try {
+      const { filename, content } = await api.buildChapterLrc(pid, bid, idx);
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      alert(`歌词生成失败: ${e?.message || e}`);
+    }
+  };
+
   // P1 #6：展开任意章节 / 进入项目时，为每个 chapter 批量签发一次性音频 URL。
   // 签名 TTL 5 分钟：过期后 audio tag 会拿到 401，由 WaveformPlayer 的
   // onNeedNewSrc 回调触发单章重签并自动续播（见各处 <WaveformPlayer> 传参）。
@@ -1116,6 +1132,16 @@ function ChaptersTab({
                           .catch(e => console.error('sign download url:', e));
                       }}
                     />
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="btn-ghost !py-1.5 !px-3 text-xs"
+                        onClick={() => downloadChapterLrc(project.project_id, lastBuild!.build_id, c.idx)}
+                        title="下载本章 LRC 歌词（时间轴与本章 MP3 对齐）"
+                      >
+                        下载 LRC
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -1880,7 +1906,6 @@ function BuildDetailContent({
   // P1 #6：每个 BuildArtifact 的签名音频 URL（一次性 token，5 分钟过期）
   const [signedUrls, setSignedUrls] = useState<Record<number, string>>({});
   const [zipUrl, setZipUrl] = useState<string | null>(null);
-  const isDoneBuild = detail.status === 'success' || detail.status === 'partial_success';
 
   useEffect(() => {
     let cancelled = false;
@@ -1913,21 +1938,6 @@ function BuildDetailContent({
     return () => { cancelled = true; };
   }, [detail.build_id, projectId, (detail.artifacts ?? []).length]);
 
-  const downloadSubtitles = async () => {
-    try {
-      const { filename, content } = await api.buildSubtitles(projectId, detail.build_id, 'lrc');
-      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e: any) {
-      alert(`歌词生成失败: ${e?.message || e}`);
-    }
-  };
-
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3 flex-wrap text-xs text-ink-500">
@@ -1950,16 +1960,6 @@ function BuildDetailContent({
           </a>
         )}
       </div>
-
-      {/* 有声书成品区：歌词（仅完成态展示） */}
-      {isDoneBuild && (
-        <div className="rounded-lg border border-ink-300/70 bg-ink-100 px-4 py-3 flex items-center gap-2 flex-wrap">
-          <span className="text-xs text-ink-600 mr-1">有声书成品：</span>
-          <button className="btn-ghost !py-1.5 !px-3 text-xs" onClick={downloadSubtitles} title="整本书 LRC 歌词（支持滚动歌词的播放器）">
-            歌词 LRC
-          </button>
-        </div>
-      )}
 
       {detail.progress_msg && (
         <div className="text-xs text-ink-500 rounded-md bg-ink-200 px-3 py-2 border border-ink-300/70">
