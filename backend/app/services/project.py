@@ -770,25 +770,39 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 polished_map = {}
 
             changed_n = 0
+            reused_n = 0
+            rejected_n = 0
+            failed_n = 0
+            failed_chapters: list[int] = []
             for ch in chapters:
                 if str(ch.idx) in polished_map:
                     ch.text = polished_map[str(ch.idx)]
+                    reused_n += 1
                     continue
                 try:
                     result = await polish_with_llm(ch.text)
                     track_llm(calls=1, chars=len(ch.text), detail="polish")
                     polished = (result.polished_text or "").strip()
                     # 合理性校验：LLM 自评通过 + 长度不出现异常缩水/膨胀
-                    if (
+                    if not polished:
+                        # 空响应：视为被拒（保留原文）
+                        rejected_n += 1
+                    elif polished == ch.text:
+                        # 原文无需修改（正常结果，不算失败）
+                        pass
+                    elif (
                         result.is_reasonable
-                        and polished
                         and 0.5 <= len(polished) / max(len(ch.text), 1) <= 1.5
-                        and polished != ch.text
                     ):
                         ch.text = polished
                         polished_map[str(ch.idx)] = polished
                         changed_n += 1
+                    else:
+                        # 自评不合理（过度修改）或长度异常 → 保留原文
+                        rejected_n += 1
                 except Exception as e:
+                    failed_n += 1
+                    failed_chapters.append(ch.idx + 1)
                     logger.warning(
                         f"[project_prepare] project_id={project_id[:8]}... "
                         f"polish ch {ch.idx + 1} 失败，保留原文: {type(e).__name__}: {e}"
@@ -803,11 +817,40 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 except OSError:
                     pass
 
-            logger.info(
-                f"[project_prepare] project_id={project_id[:8]}... "
-                f"polish done: {changed_n}/{len(chapters)} 章有修改 "
-                f"ms={int((_time.perf_counter()-polish_t0)*1000)}"
+            # 未润色章数必须显式透出：3 次重试全失败时该章会静默保留原文，
+            # 用户以为开了纠错却拿到未纠错文本 —— 不写日志/进度就完全不可见。
+            polish_elapsed_ms = int((_time.perf_counter() - polish_t0) * 1000)
+            polish_summary = (
+                f"[project_prepare] project_id={project_id[:8]}... polish done: "
+                f"changed={changed_n} reused={reused_n} rejected={rejected_n} "
+                f"failed={failed_n} / total={len(chapters)} ms={polish_elapsed_ms}"
             )
+            if failed_n:
+                logger.warning(
+                    f"{polish_summary}（{failed_n} 章未润色、已保留原文，章号={failed_chapters}）"
+                )
+            else:
+                logger.info(polish_summary)
+            try:
+                async with factory() as s:
+                    p_prog = await s.get(Project, project_id)
+                    if p_prog:
+                        prog_p = _parse_progress(p_prog)
+                        prog_p.update({
+                            "polish_total": len(chapters),
+                            "polish_changed_n": changed_n,
+                            "polish_reused_n": reused_n,
+                            "polish_rejected_n": rejected_n,
+                            "polish_failed_n": failed_n,
+                            "updated_at": _fmt_time_now(),
+                        })
+                        p_prog.progress_json = json.dumps(prog_p, ensure_ascii=False)
+                        await s.commit()
+            except Exception as e:
+                logger.warning(
+                    f"[project_prepare] 写 polish 进度失败（不影响识别）: "
+                    f"{type(e).__name__}: {e}"
+                )
 
         # 4. 全书角色识别（50k 切片串行 + checkpoint：逐片写入 progress_json，
         #    重跑 prepare_project 时跳过已完成切片）
@@ -1446,6 +1489,12 @@ _PREPARE_PROGRESS_PUBLIC_KEYS: tuple[str, ...] = (
     "dialogue_total_dialogues",
     "voice_recs_done",
     "voice_recs_count",
+    # 润色纠错（POLISH_ENABLED）：把"未润色章数"透出，避免失败静默
+    "polish_total",
+    "polish_changed_n",
+    "polish_reused_n",
+    "polish_rejected_n",
+    "polish_failed_n",
 )
 
 

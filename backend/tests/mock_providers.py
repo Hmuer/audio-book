@@ -47,7 +47,6 @@ class MockLLMProvider(BaseLLMProvider):
                 modified = raw.replace("『", "「").replace("』", "」")
                 return output_schema.model_validate({
                     "polished_text": modified,
-                    "diff": [{"type": "replace", "old": "『", "new": "「", "position": 0}],
                     "is_reasonable": False,
                     "reason": "擅自修改引号风格，属于过度修改。",
                 })
@@ -55,14 +54,12 @@ class MockLLMProvider(BaseLLMProvider):
                 # 原封不动回退，模拟没有错字
                 return output_schema.model_validate({
                     "polished_text": _extract_raw_from_prompt(prompt),
-                    "diff": [],
                     "is_reasonable": True,
                     "reason": "无需修改",
                 })
             raw = _extract_raw_from_prompt(prompt)
             return output_schema.model_validate({
                 "polished_text": raw,
-                "diff": [],
                 "is_reasonable": True,
                 "reason": "无需修改",
             })

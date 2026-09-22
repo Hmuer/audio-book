@@ -476,7 +476,11 @@ function OverviewTab({
 
   const failedCharSlicesN = prog?.char_failed_slices_n ?? 0;
   const failedDialogueBatchesN = prog?.dialogue_failed_batch_count ?? 0;
-  const hasPartialFailures = failedCharSlicesN > 0 || failedDialogueBatchesN > 0;
+  // 润色纠错：3 次重试仍失败 → 该章静默保留原文，必须让用户看见
+  const polishFailedN = prog?.polish_failed_n ?? 0;
+  const polishTotalN = prog?.polish_total ?? 0;
+  const hasPartialFailures =
+    failedCharSlicesN > 0 || failedDialogueBatchesN > 0 || polishFailedN > 0;
 
   // 后端 tags 是逗号分隔字符串，展示前拆成数组（不能直接 .map）
   const tagList = splitTags(project.tags);
@@ -643,6 +647,12 @@ function OverviewTab({
               {failedCharSlicesN > 0 && <span className="ml-2">角色切片失败 {failedCharSlicesN} 个</span>}
               {failedCharSlicesN > 0 && failedDialogueBatchesN > 0 && '，'}
               {failedDialogueBatchesN > 0 && <span className="ml-2">对白批失败 {failedDialogueBatchesN} 个</span>}
+              {(failedCharSlicesN > 0 || failedDialogueBatchesN > 0) && polishFailedN > 0 && '，'}
+              {polishFailedN > 0 && (
+                <span className="ml-2">
+                  润色纠错失败 {polishFailedN}/{polishTotalN} 章（已保留原文）
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -680,6 +690,8 @@ function OverviewTab({
                 {failedCharSlicesN > 0 && <>角色识别失败切片 {failedCharSlicesN} 个</>}
                 {failedCharSlicesN > 0 && failedDialogueBatchesN > 0 && '，'}
                 {failedDialogueBatchesN > 0 && <>对白归属失败批 {failedDialogueBatchesN} 个</>}
+                {(failedCharSlicesN > 0 || failedDialogueBatchesN > 0) && polishFailedN > 0 && '，'}
+                {polishFailedN > 0 && <>润色纠错失败 {polishFailedN}/{polishTotalN} 章</>}
               </span>
             </div>
             <button className="btn-ghost text-xs !py-1.5" onClick={handlePrepare}>

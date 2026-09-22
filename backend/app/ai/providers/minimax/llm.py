@@ -83,6 +83,9 @@ class MiniMaxLLMProvider(BaseLLMProvider):
         )
         schema_name = output_schema.__name__
         schema_dict = output_schema.model_json_schema()
+        # schema 是否期望"对象"顶层：决定 JSON 兜底提取时优先选 { } 而不是 [ ]
+        expect_object = schema_dict.get("type") == "object"
+        required_keys = tuple(schema_dict.get("required") or ())
         prompt_chars = len(prompt) + len(sys_prompt)
 
         total_start = _time.perf_counter()
@@ -96,11 +99,19 @@ class MiniMaxLLMProvider(BaseLLMProvider):
         # thinking 循环检测：M2.x 的 thinking 可能陷入重复循环耗尽 max_tokens，
         # 导致 content 为空。检测到后重试时切换到 M3（可真正关闭 thinking）。
         thinking_loop_detected = False
+        # 重试时的"格式纠正"提示：schema 校验失败 ≠ 模型不会做题，而是输出形状错了
+        # （实测 M3 会把内层数组当整个答案返回）。只在原 prompt 后追加说明，不改动原 prompt。
+        attempt_hint = ""
         for attempt in range(1, max_retries + 1):
             t0 = _time.perf_counter()
             req_id: Optional[str] = None
             http_status: Optional[int] = None
             is_rate_limited = False
+            # 失败诊断用（FAIL 日志需要看到"响应是否被截断/token 用量/原始片段"）
+            finish_reason: Optional[str] = None
+            completion_tokens: Optional[int] = None
+            resp_chars = 0
+            fail_preview = ""
             # 检测到 thinking 循环时，重试切换到 M3（可真正关闭 thinking，不会循环）
             use_model = self.model_pro if thinking_loop_detected else model
             use_reasoning_split = not thinking_loop_detected
@@ -121,7 +132,7 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                                 "max_tokens": max_tokens,
                                 "messages": [
                                     {"role": "system", "content": sys_prompt},
-                                    {"role": "user", "content": prompt},
+                                    {"role": "user", "content": prompt + attempt_hint},
                                 ],
                                 "response_format": {
                                     "type": "json_schema",
@@ -175,6 +186,7 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                     raw_content = msg_obj.get("content", "") or ""
                     content = raw_content
                     resp_chars = len(content)
+                    fail_preview = content[:200]
                     if not content.strip():
                         # thinking 循环检测：finish_reason='length' + content 空 +
                         # reasoning_content 有内容 → M2.x thinking 陷入重复循环耗尽 token
@@ -237,11 +249,25 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                             stripped = stripped[4:]
                         stripped = stripped.strip()
 
-                    def _extract_json_blob(s: str) -> str | None:
-                        """用平衡花括号/方括号扫描，找第一个**合法可解析**的 JSON 对象或数组。
+                    def _extract_json_blob(
+                        s: str,
+                        *,
+                        prefer_object: bool = False,
+                        required_keys: tuple[str, ...] = (),
+                    ) -> str | None:
+                        r"""用平衡花括号/方括号扫描，找第一个**合法可解析**的 JSON 对象或数组。
                         比起 r'\{.*\}' 这种贪婪匹配，能避免 thinking 残留里包含
                         单个 { 或 "xxx": "{" 这种导致的误匹配；同时会在多个平衡候选中
                         逐个尝试 json.loads，跳过那些括号平衡但内容非法（缺逗号、引号）的片段。
+
+                        prefer_object=True（schema 期望 dict）时改变候选优先级：
+                          1) 含全部 required_keys 的对象
+                          2) 任意对象
+                          3) 兜底：数组 / 其它
+                        动机：模型偶尔把某个**内层数组**当成整个答案返回；或响应不完整时
+                        外层对象括号不平衡、扫描只能捞到内层数组。此时按"起点最早"返回会把
+                        数组交给 model_validate，报出误导性的 Pydantic 校验错（看起来像代码问题，
+                        实际是响应形状问题）。优先取对象可直接救回这类响应。
                         """
                         n = len(s)
                         candidates: list[tuple[int, int, str]] = []  # (start, end, first_char)
@@ -282,27 +308,68 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                             return None
                         # 起点升序，同起点按长度升序（越短越可能是完整 JSON）
                         candidates.sort(key=lambda t: (t[0], t[1] - t[0]))
-                        # 逐个尝试，返回第一个真正能 parse 的 blob
+                        # 逐个尝试 json.loads，保留"可解析"的候选（顺序不变）
+                        parsed_cands: list[tuple[int, int, str, Any]] = []
                         for start, end, _ in candidates:
                             blob = s[start : end + 1]
                             try:
-                                json.loads(blob)  # 仅验证可解析性
-                                return blob
+                                obj = json.loads(blob)  # 仅验证可解析性
                             except (json.JSONDecodeError, ValueError):
                                 continue
-                        return None
+                            parsed_cands.append((start, end, blob, obj))
+                        if not parsed_cands:
+                            return None
+                        if prefer_object:
+                            objs = [c for c in parsed_cands if isinstance(c[3], dict)]
+                            if required_keys:
+                                full = [
+                                    c for c in objs
+                                    if all(k in c[3] for k in required_keys)
+                                ]
+                                if full:
+                                    return full[0][2]
+                            if objs:
+                                return objs[0][2]
+                        return parsed_cands[0][2]
 
                     # 4) 尝试解析 JSON
+                    parsed: Any = None
+                    parse_err: Exception | None = None
                     try:
                         parsed = json.loads(stripped)
-                    except json.JSONDecodeError:
-                        # 5) fallback：用平衡括号扫描提取真实 JSON 块
+                    except json.JSONDecodeError as _je:
+                        parse_err = _je
+
+                    # 4b) schema 期望对象、但拿到的是数组/标量（模型把内层数组当答案，
+                    #     或响应不完整后被兜底捞到内层数组）→ 重新扫描，优先取"含全部
+                    #     必填字段的对象"，避免把形状错误拖到 model_validate 才暴露。
+                    if expect_object and not isinstance(parsed, dict):
+                        _blob = _extract_json_blob(
+                            stripped,
+                            prefer_object=True,
+                            required_keys=required_keys,
+                        )
+                        if _blob is not None:
+                            try:
+                                _cand = json.loads(_blob)
+                            except json.JSONDecodeError:
+                                _cand = None
+                            if isinstance(_cand, dict):
+                                parsed = _cand
+                                parse_err = None
+
+                    # 5) fallback：用平衡括号扫描提取真实 JSON 块
+                    if parsed is None:
                         blob = _extract_json_blob(stripped)
                         if blob is None:
                             logger.error(
                                 f"[LLM] JSON parse failed, raw content (first 1000 chars): {raw_content[:1000]}"
                             )
-                            raise
+                            if parse_err is not None:
+                                raise parse_err
+                            raise ValueError(
+                                f"LLM 响应中未找到可解析的 JSON: {stripped[:300]}"
+                            )
                         try:
                             parsed = json.loads(blob)
                         except json.JSONDecodeError:
@@ -334,10 +401,28 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                 msg = (
                     f"[LLM] FAIL model={use_model} schema={schema_name} attempt={attempt}/{max_retries} "
                     f"req_id={req_id} status={http_status} this_ms={int(elapsed*1000)} "
+                    f"finish_reason={finish_reason} tok_c={completion_tokens} resp_chars={resp_chars} "
                     f"{type(e).__name__}: {e}"
                 )
                 logger.log(lvl, msg, exc_info=is_last)
                 if attempt < max_retries:
+                    # 形状类失败（不是模型不会做题，而是输出形状不对）→ 下次重试追加纠偏说明，
+                    # 而不是只把 temperature +0.1 后原样重发（那是碰运气）。
+                    if isinstance(e, ValidationError):
+                        attempt_hint = (
+                            "\n\n【格式纠正】上一次的返回不符合要求：它必须是**一个**以 { 开始、"
+                            f"以 }} 结束的完整 JSON 对象（schema={schema_name}），必须包含字段："
+                            f"{', '.join(required_keys) or '（见 schema）'}。"
+                            "不要返回数组，不要只返回某个字段的内容，"
+                            "不要输出解释文字、markdown 或代码块。"
+                        )
+                    elif isinstance(e, json.JSONDecodeError):
+                        attempt_hint = (
+                            "\n\n【格式纠正】上一次的返回不是合法 JSON。请只输出**一个**完整 JSON "
+                            f"对象（以 {{ 开始、以 }} 结束），必须包含字段："
+                            f"{', '.join(required_keys) or '（见 schema）'}，"
+                            "不要输出解释文字、markdown 或代码块。"
+                        )
                     if is_rate_limited:
                         # 429 速率限制：指数退避（2s / 4s / 8s ...）
                         # 比固定 1s 更稳，给供应商 RPM 窗口恢复时间

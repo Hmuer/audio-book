@@ -1,4 +1,3 @@
-from typing import Literal
 from pydantic import BaseModel
 
 from ..ai.factory import get_llm
@@ -10,13 +9,14 @@ FEW_SHOT = r"""
 2. 不要改写原意、不要润色文笔、不要增删情节
 3. 不要擅自更改引号风格（『』、「」、"" 都是合法的）、不要省略号乱删
 4. 修正后自我评估：本次改动是否"合理且必要"，如果你只是改了文风、改了引号风格等则必须 is_reasonable=false
+5. 只输出**一个** JSON 对象（以 { 开始、以 } 结束），且只包含 polished_text / is_reasonable / reason 三个字段。
+   不要输出数组，不要只输出某个字段的内容，不要输出任何解释文字或 markdown 代码块。
 
 【示例 1】
 输入："林若雪走在回家的路上，心理想着明天的考试。"
 输出：
 {
   "polished_text": "林若雪走在回家的路上，心里想着明天的考试。",
-  "diff": [{"type": "replace", "old": "心理", "new": "心里", "position": 12}],
   "is_reasonable": true,
   "reason": "「心理」应为「心里」，属于常见错别字，修正合理。"
 }
@@ -26,7 +26,6 @@ FEW_SHOT = r"""
 输出：
 {
   "polished_text": "他推开门，走进了教室。",
-  "diff": [{"type": "replace", "old": "教师", "new": "教室", "position": 9}],
   "is_reasonable": true,
   "reason": "「教师」与上下文「走进」搭配不当，应为「教室」。"
 }
@@ -37,7 +36,6 @@ FEW_SHOT = r"""
 输出：
 {
   "polished_text": "他沉默了许久，终于开口说道：『我……我不知道。』",
-  "diff": [],
   "is_reasonable": true,
   "reason": "原文无语病，无需修改。"
 }
@@ -47,25 +45,23 @@ FEW_SHOT = r"""
 输出：
 {
   "polished_text": "夕阳西下，断肠人在天涯。",
-  "diff": [],
   "is_reasonable": true,
   "reason": "原文无语病，无需修改。"
 }
 """
 
 
-class DiffItem(BaseModel):
-    type: Literal["replace", "insert", "delete"]
-    old: str
-    new: str
-    position: int
-
-
 class PolishResult(BaseModel):
+    """润色结果。
+
+    字段设计说明：早期版本还有 diff: list[DiffItem]，但下游从未消费它；
+    它既是 required、形状又是数组，模型偶尔会把「这个数组」当成整个答案返回
+    （顶层回数组 → Pydantic 校验失败 → 白跑一次重试、白烧 token）。故移除。
+    reason 保留用于排查（is_reasonable=false 时说明理由），给默认值以降低校验失败面。
+    """
     polished_text: str
-    diff: list[DiffItem]
     is_reasonable: bool
-    reason: str
+    reason: str = ""
 
 
 async def polish_with_llm(raw_text: str) -> PolishResult:

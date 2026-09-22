@@ -625,6 +625,13 @@ export interface PrepareProgress {
   // 音色推荐进度
   voice_recs_done?: boolean;
   voice_recs_count?: number;
+  /** 润色纠错（POLISH_ENABLED）：本次 prepare 的润色统计（未润色章数 > 0 时需提示用户） */
+  polish_total?: number;
+  polish_changed_n?: number;
+  polish_reused_n?: number;
+  polish_rejected_n?: number;
+  /** 3 次重试仍失败、该章保留原文的章数 */
+  polish_failed_n?: number;
 }
 
 // prepare 触发立即返回（HTTP 202 Accepted）
