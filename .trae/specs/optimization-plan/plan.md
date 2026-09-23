@@ -909,12 +909,12 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 - [x] F-5 分批渲染 + 批量签发（**未做真虚拟滚动**，取舍见 §11.6） — [ProjectDetailPage.tsx](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L999-L1029) / [routes.py](file:///workspace/backend/app/api/routes.py#L1275-L1327) — 完成 2026-09-22
 - [x] F-7 ZIP 改为「每 50 章一个独立 ZIP」（含前端分片下载列表、Build 多产物字段、delete_build 覆盖） — [build.py#L74-L165](file:///workspace/backend/app/services/build.py#L74-L165) — 完成 2026-09-22
 
-#### 批次 8 —— 对象存储（腾讯云 COS）
-- [ ] G-1 `StorageBackend` 抽象（local | s3，默认 local）
-- [ ] G-2 设置页「对象存储」配置分组（COS 取值 + `ZIP_SHARD_CHAPTERS`）
-- [ ] G-3 产物上传（章节 MP3 / 每章 LRC / 分片 ZIP）
-- [ ] G-4 下载直连对象存储（`sign` 返回公有 URL）
-- [ ] G-5 本地副本清理（含 retry 复用回源、digest 复用可下载、delete_build 容错）
+#### 批次 8 —— 对象存储（腾讯云 COS）✅ 完成 2026-09-22
+- [x] G-1 `StorageBackend` 抽象（local | s3，默认 local） — [storage.py](file:///workspace/backend/app/services/storage.py) — 完成 2026-09-22
+- [x] G-2 设置页「对象存储」配置分组（COS 取值 + `ZIP_SHARD_CHAPTERS`） — [routes.py](file:///workspace/backend/app/api/routes.py#L2033-L2042) / [SettingsPage.tsx](file:///workspace/frontend/src/components/SettingsPage.tsx#L15) — 完成 2026-09-22
+- [x] G-3 产物归档（章节 MP3 / 每章 LRC / 分片 ZIP） — [build.py](file:///workspace/backend/app/services/build.py#L117-L133) — 完成 2026-09-22
+- [x] G-4 下载直连对象存储（`sign` 返回公有直链） — [routes.py](file:///workspace/backend/app/api/routes.py#L1264-L1293) — 完成 2026-09-22
+- [x] G-5 本地副本清理（含 retry 复用回源、delete_build 覆盖对象） — 完成 2026-09-22
 
 #### 批次 9 —— 结构性优化
 - [ ] F-4 拆分 `chapters_json`（单章/列表不再解析全书）
@@ -999,6 +999,36 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 - 前端 `tsc --noEmit` exit=0
 
 **环境备注（沙箱）**：本轮开始前测试依赖与 `node_modules` 均被重置；已重装 `requirements*.txt` 与前端依赖。`npm install` 默认跳过 devDependencies（`NODE_ENV=production` 环境），导致 `tsc` 被解析到全局新版并报 `baseUrl has been removed`；需 `NODE_ENV=development npm install --include=dev` 才能拿到 `package.json` 锁定的 typescript 5.5.3。
+
+#### 批次 8（2026-09-22）
+
+| 项 | 改动 | 测试 / 证据 |
+|---|---|---|
+| 依赖 | [requirements.txt](file:///workspace/backend/requirements.txt) 新增 `boto3>=1.34`。**选 boto3 而不是手写 SigV4**：签名/重试/分片上传都是成熟实现；自研密码学代码在没有真实 COS 环境可验证的情况下风险过高 | — |
+| G-1 | 新增 [storage.py](file:///workspace/backend/app/services/storage.py)：`StorageBackend`（`archive` / `put_bytes` / `fetch_to` / `delete_key` / `url`）+ `LocalStorage`（全 no-op、`url()` 返回 None）+ `S3Storage`（COS 走 S3 协议，boto3 调用全部 `asyncio.to_thread` 避免阻塞事件循环）。`get_storage()` 按**配置指纹**缓存，改设置自动重建（沿用 `factory.py` 的 TTS 缓存做法）。key = `{prefix}/{project_id}/{build_id}/{filename}`，与本地文件名一一对应 | T-OS1 key 组装（空前缀/带前缀/斜杠归一）；T-OS2 local 后端全 no-op；T-OS3 公网前缀推导（CDN 优先 / COS 虚拟主机 / path-style）；T-OS4 缺配置时列出缺哪些键；T-OS5 配置变化重建实例；T-OS6 **归档失败返回 False 不抛** |
+| G-2 | 设置白名单新增「对象存储」分组 10 项（[routes.py](file:///workspace/backend/app/api/routes.py#L2033-L2042)）；前端 `groupOrder` + `GROUP_META` 同步补组 | `tsc --noEmit` ✅ |
+| G-3 | [build.py](file:///workspace/backend/app/services/build.py)：章节 MP3（成功章 + 失败章占位）在落盘后归档；每章 LRC 用 `put_bytes` 归档；每个 ZIP 分片打包后归档。归档失败只告警 —— **归档属「分发」环节，不能让整次合成失败** | 由 T-OS6 覆盖失败路径；归档调用点经静态审阅 |
+| G-4 | `/media/sign`：对象存储（公有读）时返回**直链**且不落 token（`direct: true`、`token: null`）；local 时保持原 token 行为不变。`/media/stream`、单章 `/chapters/{idx}/download`、`/download-all` 在「本地文件不存在」时改为 307 重定向到公有直链（因为本地缺失是**正常状态**，不是 404） | T-OS7 远程后端返回直链（单章 + 分片 ZIP）；T-OS7b **local 后端仍返回 token**（保证默认行为不回退） |
+| G-5 | 清理时机集中在 `_finalize`：**所有产物归档成功之后**才删本地 MP3/分片 ZIP；`STORAGE_CLEANUP_LOCAL=false` 可关闭。retry 复用章在本地缺失时先 `fetch_to` 回源再走既有「另存为自身命名」逻辑。`delete_build` 额外删除对象（含每章 LRC），`delete_project` 合并去重后统一删 | T-OS8 回归见下 |
+
+**顺带修掉一个 F-7 引入的 bug（重要）**
+`delete_build` 末尾的日志引用了循环变量 `zip_fname`（F-7 把 `zip_fname` 改名为 `zip_fnames` 时漏改）。由于 Python 的循环变量会泄漏到函数作用域，**有分片时不报错但日志语义错误**（打印最后一个分片名当「有无 zip」），**没有 ZIP 的 build 则直接 NameError** → 删除失败返回 500（尽管文件已删）。已改为 `len(zip_fnames)` 并用 `_zf` 作为循环变量；新增 T-OS8（在没有产物的 build 上调用 `delete_build` 不得抛）。
+
+**关键设计取舍**
+- **本地暂存不能在归档后立刻删**：`_finalize` 打包 ZIP 要读**本地** MP3，若提前删掉，`_build_book_zip` 会把它当成失败章写入**静音占位** —— 交付物被静默损坏。所以清理只在「ZIP 也归档成功」之后统一执行。
+- **timings sidecar 不归档、且不随清理删除**：它是 KB 级的内部中间产物（决策 4 只归档交付物），但删了会让「retry 复用的章」和「单章 LRC 实时生成」退化成按字符估算的时间轴。保留成本极低（5000 章约数 MB），收益是歌词质量与重试可用性。
+- **公有读 = URL 即权限**：`/media/*` 原有的归属校验与一次性 token 只对 local 后端有效；切到 s3 后拿到 URL 即可下载。key 里的 `build_id` 是 uuid4 hex（不可猜测），按产品决策接受（另见 G-3 的隐私提示：源 TXT / ICL 参考音频**不上传**）。
+
+**回归结果**
+- 新增 [test_object_storage_red.py](file:///workspace/backend/tests/test_object_storage_red.py)（9 用例）全绿
+- 全量后端：`418 passed, 3 failed, 1 skipped`；3 项失败均在既有抖动集合内（`test_project_e2e` / `test_project_prepare_voice_pool_red` / `test_review_fixes_red`），**非本批引入**
+- 前端 `tsc --noEmit` exit=0
+
+**未做 / 待确认（如实记录）**
+- **未做真机联调**：没有真实 COS 桶与密钥，本批只验证了「契约 + 本地后端 + 直链拼装 + 失败降级」，**没有真实上传过一次**。首次接入请在设置页填好 COS 配置后，用一本小书跑一次合成并核对：对象是否按 key 落桶、`/media/sign` 返回的直链能否直接播放/下载、本地副本是否被清理。
+- `requirements.lock` 未同步更新 `boto3`（**关联 E-3**：该 lock 本身已过期，需按流程重生成）。
+- 未做历史数据上云迁移脚本（老 build 的产物仍在本地盘；`STORAGE_BACKEND` 切回 local 时本地文件仍在，不影响回滚）。
+- 段级缓存、timings sidecar、章节预告片按决策 4 有意不归档。
 
 
 

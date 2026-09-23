@@ -13,6 +13,7 @@ const GROUP_META: Record<string, { icon: IconName; desc: string }> = {
   '限流配置': { icon: 'gauge', desc: '并发度、RPM 限流、批处理参数' },
   '缓存配置': { icon: 'database', desc: 'TTS 段缓存 LRU / 磁盘过期策略' },
   '章节切分': { icon: 'scissors', desc: '章节识别正则匹配（可在线增删改，保存后即时生效）' },
+  '对象存储': { icon: 'layers', desc: '腾讯云 COS：交付物归档与公有读直链下载' },
   '日志配置': { icon: 'file-text', desc: '日志级别与文件路径' },
   '认证配置': { icon: 'lock', desc: 'JWT 过期时间' },
   '系统': { icon: 'cog', desc: '运行环境与服务参数（只读）' },
@@ -111,7 +112,7 @@ export default function SettingsPage() {
   // 注：后端 `_EDITABLE_SETTINGS` 的「模型配置」组由单独的「模型厂商」标签页
   // （ProviderModelsEditor）承载（含 PROVIDERS_CONFIG / ACTIVE_* 与遗留扁平凭据），
   // 这里只展示豆包运行参数、合成质量等高级配置。
-  const groupOrder = ['豆包配置', '合成质量', '超时配置', '限流配置', '缓存配置', '章节切分', '日志配置', '认证配置', '系统'];
+  const groupOrder = ['豆包配置', '合成质量', '对象存储', '超时配置', '限流配置', '缓存配置', '章节切分', '日志配置', '认证配置', '系统'];
 
   const dirtyKeys = useMemo(() => {
     if (!items) return [];

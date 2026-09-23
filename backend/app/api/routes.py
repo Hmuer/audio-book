@@ -83,6 +83,7 @@ from ..services.build import (
     BuildStatusResp,
 )
 from ..services.book_split import strip_chapter_prefix
+from ..services.storage import get_storage, media_key
 
 logger = logging.getLogger(__name__)
 
@@ -725,6 +726,20 @@ class RetryFailedBuildRequest(BaseModel):
     force_restart_failed_only: bool = True
 
 
+def _direct_object_url(project_id: str, build_id: str, filename: str | None) -> str | None:
+    """G-4/G-5：对象存储（公有读）下产物名的公网直链；local 后端返回 None。
+
+    用于「本地副本已按决策 6 清理」的场景：此时本地文件不存在是**正常状态**，
+    应把请求重定向到对象存储，而不是报 404。
+    """
+    if not filename:
+        return None
+    st = get_storage()
+    if not st.archives_remotely:
+        return None
+    return st.url(media_key(project_id, build_id, filename))
+
+
 def _safe_download_name_build(book_title: str | None, build_id: str, ext: str) -> str:
     """构造 build 下载文件名（中文 + fallback 安全），ext 带点。"""
     base = (book_title or "").strip() or f"有声书_{build_id[:8]}"
@@ -1238,11 +1253,14 @@ async def api_media_sign(
     ttl_seconds: int = 300,
     current: User = Depends(get_current_user),
 ):
-    """签发媒体签名 token（短时 + 资源绑定；TTL 内可重复使用，见 B-6）。
+    """签发媒体下载地址。
 
     - kind=chapter_mp3   必须带 idx（章节号）
     - kind=all_zip       idx 可选 = ZIP 分片下标（F-7 分片打包；不传 = 第 0 片）
     - ttl_seconds        1~600（默认 300 = 5 分钟）
+
+    G-4：存储为对象存储（公有读）时直接返回**直链** —— 不占用后端带宽、也不需要
+    落 token；本地存储时回落到一次性签名 token（TTL 内可重复使用，见 B-6）。
     """
     if kind == "chapter_mp3":
         if idx is None:
@@ -1260,6 +1278,32 @@ async def api_media_sign(
         if not b:
             raise HTTPException(404, "build 不存在")
         await get_project_for_user(s, b.project_id, current)
+
+        st = get_storage()
+        if st.archives_remotely:
+            # 直链需要产物文件名来拼 key（本地 token 路径不需要，故只在远端时解析）
+            filename: str | None = None
+            if kind_norm == "chapter_mp3":
+                art = (
+                    await s.execute(
+                        select(BuildArtifact).where(
+                            BuildArtifact.build_id == build_id,
+                            BuildArtifact.chapter_idx == idx,
+                        )
+                    )
+                ).scalar_one_or_none()
+                filename = art.audio_filename if art else None
+            else:
+                shards = _parse_zip_shards(b)
+                if shards:
+                    si = 0 if idx is None else max(0, min(int(idx), len(shards) - 1))
+                    filename = shards[si]["filename"]
+            if filename:
+                direct = st.url(media_key(b.project_id, build_id, filename))
+                if direct:
+                    # 对象存储为公有读 → 不需要 token 记录，直接给 URL
+                    return {"token": None, "expires_at": None, "url": direct, "direct": True}
+
         token_info = await issue_media_token(
             s,
             build_id=build_id,
@@ -1387,6 +1431,10 @@ async def api_media_stream(
     audio_dir = Path(settings.AUDIO_DIR)
     fpath = audio_dir / audio_filename
     if not fpath.is_file():
+        # G-5：对象存储 + 本地已清理 → 重定向到公有直链（本地缺失是正常状态）
+        direct = _direct_object_url(b.project_id, build_id, audio_filename)
+        if direct:
+            return RedirectResponse(url=direct, status_code=307)
         raise HTTPException(404, "文件不存在")
     if kind == "chapter_mp3":
         clean_title = strip_chapter_prefix(art_title or '')
@@ -1589,6 +1637,10 @@ async def api_build_chapter_download(
     audio_dir = Path(settings.AUDIO_DIR)
     fpath = audio_dir / audio_filename
     if not fpath.is_file():
+        # G-5：对象存储 + 本地已清理 → 重定向到公有直链
+        direct = _direct_object_url(project_id, build_id, audio_filename)
+        if direct:
+            return RedirectResponse(url=direct, status_code=307)
         raise HTTPException(404, f"章节 {idx} 音频文件不存在")
     clean_title = strip_chapter_prefix(art_title or '')
     fname = f"第{idx+1:03d}章 {clean_title or '章节'}.mp3"
@@ -1694,6 +1746,10 @@ async def api_build_download_all(
     audio_dir = Path(settings.AUDIO_DIR)
     zip_path = audio_dir / zip_filename
     if not zip_path.is_file():
+        # G-5：对象存储 + 本地已清理时，本地文件不存在是正常状态 → 302 到公有直链
+        direct = _direct_object_url(project_id, build_id, zip_filename)
+        if direct:
+            return RedirectResponse(url=direct, status_code=307)
         raise HTTPException(404, "ZIP 文件不存在")
     if shard_total > 1:
         download_name = (
@@ -1973,6 +2029,17 @@ _EDITABLE_SETTINGS = {
     "TTS_MAX_SEGMENT_CHARS": ("int", "合成质量", "单段最大字符数（超长自动按句读切分）"),
     "POLISH_ENABLED": ("bool", "合成质量", "prepare 时用 LLM 润色纠错（每章一次调用，增加费用）"),
     "ZIP_SHARD_CHAPTERS": ("int", "合成质量", "每个 ZIP 分片包含的章节数（默认 50；<=0 表示不分片）"),
+    # 对象存储（腾讯云 COS，走 S3 兼容协议）
+    "STORAGE_BACKEND": ("str", "对象存储", "存储后端：local（仅本地盘）/ s3（腾讯云 COS）"),
+    "S3_ENDPOINT": ("str", "对象存储", "COS 访问域名，例：https://cos.ap-guangzhou.myqcloud.com"),
+    "S3_REGION": ("str", "对象存储", "地域，例：ap-guangzhou"),
+    "S3_BUCKET": ("str", "对象存储", "存储桶名（权限需设为公有读私有写）"),
+    "S3_ACCESS_KEY": ("str", "对象存储", "访问密钥 SecretId"),
+    "S3_SECRET_KEY": ("str", "对象存储", "访问密钥 SecretKey"),
+    "S3_PREFIX": ("str", "对象存储", "key 前缀（可留空），例：novel-tts"),
+    "S3_PUBLIC_BASE_URL": ("str", "对象存储", "公有读下载域名（可留空，按 endpoint 推导）"),
+    "S3_PATH_STYLE": ("bool", "对象存储", "是否用 path-style 寻址（COS 默认 false，MinIO 需 true）"),
+    "STORAGE_CLEANUP_LOCAL": ("bool", "对象存储", "归档成功后删除本地副本（省磁盘；关掉可留双份便于排查）"),
     # 日志
     "LOG_LEVEL": ("str", "日志配置", "日志级别"),
     "LOG_FILE": ("str", "日志配置", "日志文件路径"),

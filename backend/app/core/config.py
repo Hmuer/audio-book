@@ -258,6 +258,23 @@ class Settings(BaseSettings):
     # 5000 章 × 50 = 100 卷、单卷约数百 MB。设为 0 或负数表示不分片（退回单包）。
     ZIP_SHARD_CHAPTERS: int = 50
 
+    # ============ 对象存储（腾讯云 COS，走 S3 兼容协议）============
+    # 交付物（章节 MP3 / 每章 LRC / 分片 ZIP）镜像到对象存储并直连下载。
+    # local：默认，产物只落本地盘（行为与接入前完全一致，便于回滚）。
+    STORAGE_BACKEND: str = "local"
+    S3_ENDPOINT: str = ""          # 例：https://cos.ap-guangzhou.myqcloud.com
+    S3_REGION: str = ""            # 例：ap-guangzhou
+    S3_BUCKET: str = ""
+    S3_ACCESS_KEY: str = ""
+    S3_SECRET_KEY: str = ""
+    S3_PREFIX: str = ""            # key 前缀（可为空）
+    # 公有读下载域名：可填 COS 默认访问域名或绑定的 CDN/自定义域名。
+    # 留空则用 {endpoint 主机}/{bucket} 拼（仅当桶是公有读时可用）。
+    S3_PUBLIC_BASE_URL: str = ""
+    S3_PATH_STYLE: bool = False
+    # 归档成功后删除本地副本（决策 6）。关掉可保留本地双份以便回滚排查。
+    STORAGE_CLEANUP_LOCAL: bool = True
+
 
     # Build running 超时（小时）：如果 start_build 命中的 running build
     # started_at 距离现在超过该值，认为是被 kill 的孤儿，直接改 status 回 queued

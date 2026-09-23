@@ -49,6 +49,7 @@ from ..core.mp3_util import (
 )
 from .chapter import Chapter, _Segment, _build_segments_for_chapter
 from .book_split import strip_chapter_prefix
+from .storage import get_storage, media_key, cleanup_local_enabled
 from .project import (
     PronunciationRule as _PronunciationRule,
     apply_pronunciation_rules,
@@ -110,6 +111,43 @@ def _build_book_zip(
                 zf.writestr(entry_name, make_silent_mp3(100, sample_rate=settings.DOUBAO_AUDIO_SAMPLE_RATE))
             if chapter_lrcs and i < len(chapter_lrcs) and (chapter_lrcs[i] or "").strip():
                 zf.writestr(f"{book_dir}/{base}.lrc", chapter_lrcs[i])
+
+
+async def _archive_file(key: str, local_path: Path, content_type: str) -> bool:
+    """把本地产物归档到对象存储（G-3）。local 后端直接返回 False，不产生任何动作。
+
+    失败只告警不抛：归档是「分发」环节，**不能**因为对象存储不可用就让整次合成失败；
+    调用方约定是「归档成功才允许删本地」，所以失败时本地文件仍在（交付物不会丢）。
+    """
+    try:
+        return await get_storage().archive(
+            key=key, local_path=local_path, content_type=content_type
+        )
+    except Exception as e:
+        logger.warning(f"[build_worker] 归档异常 key={key}: {type(e).__name__}: {e}")
+        return False
+
+
+async def _restore_from_object_storage(
+    project_id: str, build_id: str, filename: str, dest: Path
+) -> bool:
+    """G-5：把对象存储里的产物回源到本地 `dest`（本地副本已被清理时用）。
+
+    注意 `build_id` 传**产物所属的那个 build**（key 里带 build_id）——
+    retry 复用时要回源的是**源 build** 的产物，而不是新 build 的。
+    """
+    st = get_storage()
+    if not st.archives_remotely:
+        return False
+    try:
+        return await st.fetch_to(
+            key=media_key(project_id, build_id, filename), dest=dest
+        )
+    except Exception as e:
+        logger.warning(
+            f"[build_worker] 回源异常 key={filename}: {type(e).__name__}: {e}"
+        )
+        return False
 
 
 def _zip_shard_size() -> int:
@@ -1662,6 +1700,13 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
             src_art = source_art_by_idx.get(ch.idx)
             if ch.idx not in failed_ch_idxs and src_art and src_art.status == "done" and src_art.audio_filename:
                 expected_mp3 = audio_dir / src_art.audio_filename
+                # G-5：源 build 的本地副本可能已被 STORAGE_CLEANUP_LOCAL 清理 →
+                # 先从对象存储回源，再走下面「另存为自身命名」的既有逻辑。
+                # 回源失败（对象存储不可用/无此对象）则跳过该章，让它照常重新合成。
+                if not expected_mp3.is_file():
+                    await _restore_from_object_storage(
+                        project_id, source_build_id, src_art.audio_filename, expected_mp3
+                    )
                 # B-5：不再直接复用 source build 的 audio_filename（两个 build 共享
                 # 同一文件名 → delete_build 按 audio_filename 无条件 unlink，删任一方
                 # 都会连带删掉另一方仍在引用的章节 MP3 / 时间轴 sidecar）。改为把源
@@ -1963,6 +2008,8 @@ async def _run_build_inner(
     audio_dir.mkdir(parents=True, exist_ok=True)
 
     chapter_outputs: list[tuple[str | None, int | None]] = [(None, None)] * total
+    # G-3/G-5：已成功归档到对象存储的产物名 → 打包完成后据此清理本地副本
+    archived_files: set[str] = set()
     completed = 0
     failed_count = 0
     chapter_ok_flag: dict[int, bool] = {}
@@ -2208,6 +2255,15 @@ async def _run_build_inner(
             ch_dur_ms = mp3_duration_ms(ch_bytes)
             chapter_outputs[ch_idx] = (ch_fpath, ch_dur_ms)
 
+            # G-3：章节 MP3 归档到对象存储。
+            # ⚠️ 此处**不能**删本地文件 —— 下面 _finalize 打包 ZIP 需要读本地 MP3，
+            # 本地缺失会被当作失败章写入**静音占位**，等于静默损坏交付物。
+            # 本地清理统一放在 _finalize 的「ZIP 也归档成功」之后。
+            if await _archive_file(
+                media_key(project_id, build_id, ch_fname), Path(ch_fpath), "audio/mpeg"
+            ):
+                archived_files.add(ch_fname)
+
             # 章内时间轴 sidecar（SRT/LRC 用）：gather 保序 → results[i] 对应 segs[i]
             _write_chapter_timings(
                 build_id, ch_idx, segs,
@@ -2278,6 +2334,11 @@ async def _run_build_inner(
             with open(ph_fpath, "wb") as f:
                 f.write(placeholder_bytes)
             chapter_outputs[ch_idx] = (ph_fpath, 1000)
+            # 占位音频也要归档：它会被打进 ZIP（避免缺文件），单章下载也应能拿到
+            if await _archive_file(
+                media_key(project_id, build_id, ph_fname), Path(ph_fpath), "audio/mpeg"
+            ):
+                archived_files.add(ph_fname)
 
             async with factory() as s:
                 stmt_art = select(BuildArtifact).where(
@@ -2351,6 +2412,21 @@ async def _run_build_inner(
         lrc_by_chapter = {}
     chapter_lrcs: list[str] = [lrc_by_chapter.get(c.idx, "") for c in chapters]
 
+    # G-3：每章 LRC 作为独立交付物归档（决策 4 明确 LRC 属于交付物）。
+    # 没有本地文件，直接 put_bytes；失败只告警（ZIP 里仍内嵌同名 .lrc）。
+    # 注：单章 LRC 按钮走的是 /chapters/{idx}/lrc 实时生成（依赖 sidecar，不依赖此处），
+    # 归档的 .lrc 主要用于「直接给外部玩家/脚本一个稳定直链」。
+    if get_storage().archives_remotely:
+        for _c in chapters:
+            _lrc_text = lrc_by_chapter.get(_c.idx, "")
+            if not (_lrc_text or "").strip():
+                continue
+            await get_storage().put_bytes(
+                key=media_key(project_id, build_id, f"ch{_c.idx:04d}.lrc"),
+                data=_lrc_text.encode("utf-8"),
+                content_type="text/plain; charset=utf-8",
+            )
+
     # F-7：按 ZIP_SHARD_CHAPTERS 分片打包。每片自包含（内部章节序号保持全书统一编号），
     # 避免数千章时产出数十 GB 单包（本地峰值磁盘翻倍、浏览器也无法可靠下载）。
     try:
@@ -2391,12 +2467,37 @@ async def _run_build_inner(
             "end": _e,
             "size_bytes": _size,
         })
+        # G-3：分片 ZIP 归档（在本地 MP3 清理之前 —— 打包必须读本地文件）
+        if await _archive_file(
+            media_key(project_id, build_id, shard_name),
+            Path(shard_path),
+            "application/zip",
+        ):
+            archived_files.add(shard_name)
     # zip_filename 保留为首个分片（旧代码路径 / 媒体签名兜底都依赖它）
     zip_fname = zip_shards[0]["filename"] if zip_shards else _zip_filename(build_id)
     if len(zip_shards) > 1:
         logger.info(
             f"[build_worker] build_id={build_id[:8]}... 已生成 {len(zip_shards)} 个 ZIP 分片"
             f"（每片 {shard_size} 章）"
+        )
+
+    # G-5：所有产物都已归档 → 按 STORAGE_CLEANUP_LOCAL 清理本地副本（决策 6）。
+    # 只删「确认归档成功」的文件；**保留 timings sidecar**（KB 级，是 LRC 生成与
+    # retry 复用回源后的时间轴来源，删了会让重试的歌词退化成估算）。
+    if get_storage().archives_remotely and cleanup_local_enabled():
+        freed = 0
+        for _fname in sorted(archived_files):
+            _p = audio_dir / _fname
+            try:
+                if _p.is_file():
+                    freed += _p.stat().st_size
+                    _p.unlink()
+            except OSError as e:
+                logger.warning(f"[build_worker] 清理本地副本失败 {_fname}: {e}")
+        logger.info(
+            f"[build_worker] build_id={build_id[:8]}... 本地副本已清理 "
+            f"files={len(archived_files)} freed_mb={freed // (1024 * 1024)}"
         )
 
     if failed_count == 0:
@@ -2520,10 +2621,13 @@ async def delete_build(project_id: str, build_id: str) -> None:
         if b.project_id != project_id:
             raise ValueError(f"Build 不属于项目 {project_id}")
 
-        stmt_art = select(BuildArtifact.audio_filename).where(
+        stmt_art = select(BuildArtifact.chapter_idx, BuildArtifact.audio_filename).where(
             BuildArtifact.build_id == build_id
         )
-        art_filenames = [r for r in (await session.execute(stmt_art)).scalars().all() if r]
+        _art_rows = (await session.execute(stmt_art)).all()
+        art_filenames = [af for _ci, af in _art_rows if af]
+        # G-5：删对象时要连每章 LRC 一起删，故保留章节号
+        art_idxs = [ci for ci, _af in _art_rows]
         # F-7：删除该 build 的**全部分片**（含旧的单包场景 —— _parse_zip_shards 会兜底）
         zip_fnames = [s["filename"] for s in _parse_zip_shards(b)]
 
@@ -2545,17 +2649,25 @@ async def delete_build(project_id: str, build_id: str) -> None:
                 sidecar.unlink()
         except OSError as e:
             logger.warning(f"[build_delete] 删时间轴文件失败: {sidecar.name} -> {e}")
-    for zip_fname in zip_fnames:
+    for _zf in zip_fnames:
         try:
-            fpath = audio_dir / zip_fname
+            fpath = audio_dir / _zf
             if fpath.is_file():
                 fpath.unlink()
         except OSError as e:
-            logger.warning(f"[build_delete] 删 ZIP 失败: {zip_fname} -> {e}")
+            logger.warning(f"[build_delete] 删 ZIP 失败: {_zf} -> {e}")
+
+    # G-5：对象存储里的对象也要删（公有读桶不会有「本地已清理」的兜底）
+    st = get_storage()
+    if st.archives_remotely:
+        for fname in [*art_filenames, *zip_fnames]:
+            await st.delete_key(media_key(project_id, build_id, fname))
+        for _idx in art_idxs:
+            await st.delete_key(media_key(project_id, build_id, f"ch{_idx:04d}.lrc"))
 
     logger.info(
         f"[build_delete] build_id={build_id[:8]}... "
-        f"deleted audio_files={len(art_filenames)} zip={'yes' if zip_fname else 'no'}"
+        f"deleted audio_files={len(art_filenames)} zips={len(zip_fnames)}"
     )
 
 
