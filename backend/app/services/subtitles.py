@@ -20,10 +20,11 @@ from pathlib import Path
 from sqlalchemy import select
 
 from ..core.config import settings
-from ..db.models import Build, BuildArtifact, Project, ProjectDialogue
+from ..db.models import Build, BuildArtifact, ProjectDialogue
 from ..db.session import get_session_factory
 from .build import _timings_filename
-from .chapter import Chapter, _build_segments_for_chapter
+from .chapter import _build_segments_for_chapter
+from .chapter_store import load_chapters
 
 logger = logging.getLogger(__name__)
 
@@ -146,12 +147,8 @@ async def _collect_build_segments(
             raise ValueError(f"Build 不存在: {build_id}")
         if require_final and b.status not in ("success", "partial_success"):
             raise ValueError(f"Build 尚未完成（status={b.status}），无法生成歌词")
-        proj = await s.get(Project, b.project_id)
-        chapters_dicts = json.loads(proj.chapters_json or "[]") if proj else []
-        chapters = [
-            Chapter(idx=c["idx"], title=c.get("title", ""), text=c.get("text", ""))
-            for c in chapters_dicts
-        ]
+        # F-4：从 project_chapters 取正文（表为空时自动回落到 chapters_json 快照）
+        chapters = await load_chapters(s, b.project_id)
         stmt_d = select(ProjectDialogue).where(ProjectDialogue.project_id == b.project_id)
         if ch_idx is not None:
             # 只要单章时按章过滤：避免为「看一章歌词」拉取全项目对白（F-1）

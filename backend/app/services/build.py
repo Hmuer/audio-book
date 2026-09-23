@@ -49,6 +49,7 @@ from ..core.mp3_util import (
 )
 from .chapter import Chapter, _Segment, _build_segments_for_chapter
 from .book_split import strip_chapter_prefix
+from .chapter_store import load_chapters
 from .storage import get_storage, media_key, cleanup_local_enabled
 from .project import (
     PronunciationRule as _PronunciationRule,
@@ -1322,18 +1323,10 @@ async def _start_build_impl(
         p = await session.get(Project, project_id)
         if not p:
             raise ValueError(f"项目不存在: {project_id}")
-        if not p.chapters_json:
-            raise RuntimeError("项目尚未 prepare，chapters_json 为空")
-        try:
-            chapter_dicts = json.loads(p.chapters_json)
-        except Exception:
-            raise RuntimeError("项目 chapters_json 损坏，请重新 prepare")
-        chapters = [
-            Chapter(idx=c["idx"], title=c.get("title", ""), text=c.get("text", ""))
-            for c in chapter_dicts
-        ]
+        # F-4：正文以 project_chapters 为主路径（表为空时自动回落 chapters_json 快照）
+        chapters = await load_chapters(session, project_id)
         if not chapters:
-            raise RuntimeError("项目没有章节，无法启动 build")
+            raise RuntimeError("项目尚未 prepare（没有章节数据），请先执行识别")
 
         # 未归属对白兜底音色（见 _with_unknown_speaker_voices）。必须放在 digest 计算
         # **之前**：它改变了实际使用的音色映射，digest 不跟着变的话，用户重新合成会命中
@@ -1601,18 +1594,10 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
         p = await session.get(Project, project_id)
         if not p:
             raise ValueError(f"项目不存在: {project_id}")
-        if not p.chapters_json:
-            raise RuntimeError("项目尚未 prepare，chapters_json 为空")
-        try:
-            chapter_dicts = json.loads(p.chapters_json)
-        except Exception:
-            raise RuntimeError("项目 chapters_json 损坏，请重新 prepare")
-        chapters = [
-            Chapter(idx=c["idx"], title=c.get("title", ""), text=c.get("text", ""))
-            for c in chapter_dicts
-        ]
+        # F-4：正文以 project_chapters 为主路径（表为空时自动回落 chapters_json 快照）
+        chapters = await load_chapters(session, project_id)
         if not chapters:
-            raise RuntimeError("项目没有章节，无法启动 build")
+            raise RuntimeError("项目尚未 prepare（没有章节数据），请先执行识别")
 
         narrator_voice_id = source_build.narrator_voice_id
         speed = source_build.speed
@@ -1918,11 +1903,7 @@ async def _run_build_inner(
         p = await s.get(Project, project_id)
         if not p:
             raise RuntimeError(f"项目不存在: {project_id}")
-        chapters_dicts = json.loads(p.chapters_json or "[]")
-        chapters = [
-            Chapter(idx=c["idx"], title=c.get("title", ""), text=c.get("text", ""))
-            for c in chapters_dicts
-        ]
+        chapters = await load_chapters(s, project_id)
         total = len(chapters)
         job_title: str | None = p.book_title or p.source_filename or None
         stmt_d = select(ProjectDialogue).where(ProjectDialogue.project_id == project_id)
@@ -2711,12 +2692,8 @@ async def estimate_project_build(project_id: str, speed: float = 1.0) -> BuildEs
         p = await s.get(Project, project_id)
         if not p:
             raise ValueError(f"项目不存在: {project_id}")
-        chapters_dicts = json.loads(p.chapters_json or "[]") if p.chapters_json else []
-        chapters = [
-            Chapter(idx=c["idx"], title=c.get("title", ""), text=c.get("text", ""))
-            for c in chapters_dicts
-        ]
-        prepared = bool(p.chapters_json)
+        chapters = await load_chapters(s, project_id)
+        prepared = bool(chapters)
         stmt_d = select(ProjectDialogue).where(ProjectDialogue.project_id == project_id)
         all_dialogues = list((await s.execute(stmt_d)).scalars().all())
 

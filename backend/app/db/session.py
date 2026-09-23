@@ -1,3 +1,5 @@
+import logging
+
 from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
@@ -8,6 +10,8 @@ from sqlalchemy.ext.asyncio import (
 
 from ..core.config import settings
 from .models import Base
+
+logger = logging.getLogger(__name__)
 
 
 _engine: AsyncEngine | None = None
@@ -164,6 +168,37 @@ def _migrate_existing_sync(conn) -> None:
     for _name, table, ddl in _NEW_INDEXES:
         if table in tables:
             conn.execute(text(ddl))
+
+    # F-4：把老库的 Project.chapters_json 快照回填进 project_chapters（一行一章）。
+    # 读取侧保留了 chapters_json 回落，所以这里失败只丢优化、不影响功能 —— 逐项目容错，
+    # 绝不因为某本书解析失败就中断启动。
+    if "projects" in tables and "project_chapters" in tables:
+        try:
+            rows = conn.execute(text(
+                "SELECT project_id, chapters_json FROM projects "
+                "WHERE chapters_json IS NOT NULL AND chapters_json != ''"
+            )).fetchall()
+        except Exception:
+            rows = []
+        for _pid, _raw in rows:
+            try:
+                exists = conn.execute(
+                    text("SELECT 1 FROM project_chapters WHERE project_id = :p LIMIT 1"),
+                    {"p": _pid},
+                ).fetchone()
+                if exists:
+                    continue
+                from ..services.chapter_store import backfill_rows_sync
+                _n = backfill_rows_sync(conn, _pid, _raw)
+                if _n:
+                    logger.info(
+                        f"[migrate] F-4 回填 project_chapters project_id={str(_pid)[:8]}... rows={_n}"
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"[migrate] F-4 回填失败（不影响功能，读取侧会回落 chapters_json）"
+                    f" project_id={str(_pid)[:8]}...: {type(e).__name__}: {e}"
+                )
 
 
 async def init_db() -> None:

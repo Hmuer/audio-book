@@ -916,10 +916,10 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 - [x] G-4 下载直连对象存储（`sign` 返回公有直链） — [routes.py](file:///workspace/backend/app/api/routes.py#L1264-L1293) — 完成 2026-09-22
 - [x] G-5 本地副本清理（含 retry 复用回源、delete_build 覆盖对象） — 完成 2026-09-22
 
-#### 批次 9 —— 结构性优化
-- [ ] F-4 拆分 `chapters_json`（单章/列表不再解析全书）
-- [ ] F-6 合成改跨章流水线（贴近 RPM 上限）
-- [ ] F-8 重估 `LLM_MAX_CONCURRENCY` 让批并发生效
+#### 批次 9 —— 结构性优化（部分完成）
+- [x] F-4 拆分 `chapters_json`（单章/列表不再解析全书） — [chapter_store.py](file:///workspace/backend/app/services/chapter_store.py) / [models.py](file:///workspace/backend/app/db/models.py#L270-L293) — 完成 2026-09-22
+- [ ] F-6 合成改跨章流水线（贴近 RPM 上限） — **决策：暂不做**（2026-09-22，用户确认「先提配额」）。理由与收益量化见 §11.6；替代方案见下方「提配额」指引
+- [x] F-8 重估 `LLM_MAX_CONCURRENCY`：**不改默认值**，改为在 prepare 显式给出调用量与耗时估算 + 调优提示 — [project.py](file:///workspace/backend/app/services/project.py#L762-L808) — 完成 2026-09-22
 
 ---
 
@@ -1029,6 +1029,33 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 - `requirements.lock` 未同步更新 `boto3`（**关联 E-3**：该 lock 本身已过期，需按流程重生成）。
 - 未做历史数据上云迁移脚本（老 build 的产物仍在本地盘；`STORAGE_BACKEND` 切回 local 时本地文件仍在，不影响回滚）。
 - 段级缓存、timings sidecar、章节预告片按决策 4 有意不归档。
+
+#### 批次 9（2026-09-22）
+
+| 项 | 改动 | 测试 / 证据 |
+|---|---|---|
+| F-4 | 新增 `ProjectChapter` 表（一行一章 + 冗余 `text_len`，`(project_id, idx)` 复合索引）与 [chapter_store.py](file:///workspace/backend/app/services/chapter_store.py) 存取层；**7 处读取点全部切换**：章节列表只查 `idx/title/text_len`（不再碰正文）、单章详情只读**一行**、歌词/合成/重试/预估走 `load_chapters`。`Project.chapters_json` 保留为兼容快照（不再是读取主路径）。老库回填放在启动迁移里（逐项目容错），读取侧另保留 chapters_json 回落 | T-CS1 摘要行**没有 text 字段**；T-CS2 单章只取一行 + 不存在返回 None；T-CS3 全书正文；T-CS4 无行时回落 chapters_json（列表/单章/正文/计数四条路径）+ 损坏 JSON 不崩；T-CS5 回填**幂等**（跑两次仍只有 1 行）；T-CS6 计数走聚合；T-CS9 单章详情；T-CS8 删项目清行 |
+| F-8 | **不改 `LLM_MAX_CONCURRENCY` 默认值**（1 是为「按量套餐 RPM 严格」准备的保守值，擅自调高可能直接触发上游 429）；改为新增 `_log_prepare_llm_estimate()`：在 prepare 拆章后打印**调用量分解 + 预计耗时**，当「调用量≥200 且并发=1」时用 WARNING 明确提示「批并发参数已失效、可在设置页限流配置调到 2~4」 | T-CS7 三类：调用量分解正确（含 POLISH 每章一次）、100 章不刷警告、2000 章串行必出 WARNING 且提示里含 `LLM_MAX_CONCURRENCY=1` 与「限流配置」 |
+
+**F-4 期间被测试抓到的真实回归（已修）**
+`get_project_chapter_detail` 取到 `load_chapter` 返回的 `Chapter` 对象后，仍按 dict 写法 `ch.get("title")` 取值 → `AttributeError`。全套件跑出 `test_vi10_chapter_detail_exposes_dialogue_instruction` 失败后定位并改为属性访问，同时补 T-CS9 覆盖该路径。**说明：改「数据来源类型」时必须把所有下游消费者的取值方式一并核对**。
+
+**F-6 暂缓的理由（收益/风险）**
+- **收益有限且有上限**：`DOUBAO_TTS_RPM_LIMIT=60` 是硬地板（1 请求/秒）。5000 章 ≈ 21,000 段 → **≥5.8 小时**是物理下限。当前「按章 gather 段」的利用率约 4/5（章内 4~5 段，收尾的拼接/写盘/DB 提交期间桶空转），跨章流水线最多回收这部分 → 乐观估计节省 **≤20%**，约 1 小时量级。
+- **风险集中在最关键的路径**：`_run_build_inner` 同时承载取消检测、失败章降级（静音占位 + partial_success）、每章 DB 提交、进度消息、B-8 增量用量落库。改成全局段级队列需要把这些语义重新安置，而**测试环境没有真实 TTS**，回归只能靠既有单测覆盖，漏测风险高。
+- **建议**：先看真实数据再决定 —— 若线上观察到 TTS 发出速率明显低于 RPM 上限（即确实存在空档），再做；否则把精力放在提高 RPM 配额（收益直接且无代码风险）。
+- **决策（2026-09-22）**：**暂不做 F-6**，改走「提高 `DOUBAO_TTS_RPM_LIMIT` 配额」。用户已确认。
+
+**提配额指引（已读码验证，无需重启）**
+- 位置：设置页 →「豆包配置」→ `DOUBAO_TTS_RPM_LIMIT`（默认 60）。
+- **改完立即生效，不需要重启后端**：限流桶 [factory.py](file:///workspace/backend/app/ai/factory.py#L186-L216) 的 `_interval` 是 **property**，每次 `acquire()` 都实时读 `settings.DOUBAO_TTS_RPM_LIMIT`（`_doubao_tts_rpm()` 在函数内 `from ..core.config import settings` 取当前模块），不存在「按 provider 名缓存实例」那种失效问题（C-3 的坑不适用于此处）。
+- 取值建议：以豆包控制台**实际购买的 QPS/RPM** 为准（如 10 QPS = 600 RPM）。按 5000 章 ≈ 21,000 段估算下限：`耗时 ≈ 1,260,000 / RPM` 秒 → RPM=60 约 5.8h、RPM=300 约 70min、RPM=600 约 35min。
+- 风险与兜底：设得高于实际配额会被上游回 429，此时代码走**指数退避重试**（[llm/tts 重试路径](file:///workspace/backend/app/ai/providers/doubao/tts.py)），表现为「变慢 + 日志出现 429 backoff」而不是直接失败；观察到就往下调。段级 `TTS_MAX_CONCURRENCY=200` 在 RPM 提高后才会真正成为约束（RPM≤12000 时都不会先撞到它）。
+
+**回归结果**
+- 新增 [test_chapter_store_red.py](file:///workspace/backend/tests/test_chapter_store_red.py)（13 用例）全绿
+- 全量后端：`431 passed, 3 failed, 1 skipped`；3 项失败均为既有抖动集合（`test_project_e2e` / `test_project_prepare_voice_pool_red` / `test_review_fixes_red`），**非本批引入**
+- 本批未改前端，未跑 `tsc`
 
 
 

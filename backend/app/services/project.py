@@ -25,6 +25,7 @@ from ..db.models import (
     Project,
     Build,
     BuildArtifact,
+    ProjectChapter,
     ProjectCharacter,
     ProjectDialogue,
     ProjectPronunciationRule,
@@ -32,6 +33,7 @@ from ..db.models import (
 from ..db.session import get_session_factory
 from .book_split import ChapterSplitError, split_book_chapters
 from .chapter import Chapter
+from .chapter_store import load_chapter, load_chapter_rows, save_chapters
 from .epub_reader import read_epub as _read_epub
 from .character import (
     Character,
@@ -756,6 +758,54 @@ def _bucket_chapters_by_chars(
     return out
 
 
+def _log_prepare_llm_estimate(project_id: str, chapters: list[Chapter], cfg) -> int:
+    """估算本次 prepare 的 LLM 调用量并打日志（F-8），返回估算值。
+
+    调用量 ≈ 角色识别切片 + 对白归属批 + 语音指令批 + 音色推荐，其中后两者已按章切批；
+    润色（POLISH_ENABLED）是每章一次，单独累计。
+
+    为什么只打日志不改配置：`LLM_MAX_CONCURRENCY=1` 是为「按量套餐 RPM 严格」准备的
+    保守默认值，擅自调高可能直接触发上游 429；但它在数千章规模下会让批并发参数完全
+    失效（十几个小时的串行）。这里把「事实 + 建议」明确告知，把决定权留给用户。
+    """
+    def _ceil_div(a: int, b: int) -> int:
+        return (a + b - 1) // b if b > 0 else 0
+
+    total_chars = sum(len(c.text or "") for c in chapters)
+    n_ch = len(chapters)
+    slice_size = max(10000, int(getattr(cfg, "LLM_CHAR_EXTRACT_SLICE_SIZE", 0) or 50000))
+    dbatch = max(1, int(getattr(cfg, "DIALOGUE_BATCH_CHAPTERS", 0) or 14))
+    ibatch = max(1, int(getattr(cfg, "VOICE_INSTRUCTION_BATCH_CHAPTERS", 0) or 6))
+
+    char_calls = _ceil_div(total_chars, slice_size)
+    dialogue_calls = _ceil_div(n_ch, dbatch)
+    instruction_calls = _ceil_div(n_ch, ibatch)
+    polish_calls = n_ch if getattr(cfg, "POLISH_ENABLED", False) else 0
+    total_calls = char_calls + dialogue_calls + instruction_calls + 1 + polish_calls
+
+    concurrency = max(1, int(getattr(cfg, "LLM_MAX_CONCURRENCY", 1) or 1))
+    # 按每次 40s 粗估（对白归属/指令批输出更长，取偏保守的下限）
+    est_hours = total_calls * 40 / 3600 / concurrency
+
+    msg = (
+        f"[project_prepare] project_id={project_id[:8]}... LLM 调用量估算："
+        f"章节={n_ch} 总字数={total_chars} → 角色识别 {char_calls} + 对白归属 {dialogue_calls} "
+        f"+ 语音指令 {instruction_calls} + 音色推荐 1"
+        + (f" + 润色 {polish_calls}" if polish_calls else "")
+        + f" = {total_calls} 次；并发={concurrency} → 预计 {est_hours:.1f} 小时（每次按 40s 粗估）"
+    )
+    # 调用量大 + 串行时才用 WARNING（否则每本书都刷警告）
+    if concurrency <= 1 and total_calls >= 200:
+        logger.warning(
+            msg
+            + "。提示：当前 LLM_MAX_CONCURRENCY=1 会让批并发参数失效；若你的套餐 RPM 有余量，"
+            "可在设置页「限流配置」把它调到 2~4 显著缩短耗时（改大后请留意 429 退避日志）。"
+        )
+    else:
+        logger.info(msg)
+    return total_calls
+
+
 async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
     """
     prepare 真正执行逻辑（HTTP 后台任务模式下被 _run_prepare_project_in_background 调用；
@@ -826,6 +876,13 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             f"[project_prepare] project_id={project_id[:8]}... "
             f"split_chapters={len(chapters)} ms={int((_time.perf_counter()-pt)*1000)}"
         )
+
+        # F-8：算一下这次 prepare 大概要串行多少次 LLM 调用，并在「调用量大 + 并发=1」时
+        # 明确提示。背景：LLM_MAX_CONCURRENCY=1 是为了避免按量套餐 RPM 429 的保守默认值，
+        # 但它会让 DIALOGUE_BATCH_CONCURRENCY / VOICE_INSTRUCTION_BATCH_CONCURRENCY **失效**。
+        # 数千章的书按 1 并发可能跑十几小时，用户很容易误以为卡死了 —— 必须显式告知，
+        # 而不是悄悄跑；是否调高交给用户按自己的套餐决定（本函数不改任何配置）。
+        _log_prepare_llm_estimate(project_id, chapters, settings)
 
         # 3.5 LLM 润色纠错（可选，POLISH_ENABLED 控制；默认关闭）
         # - 按章调用 polish_with_llm 修正错别字/同音字，结果替换内存中的章节文本，
@@ -1500,6 +1557,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             p.chapter_count = len(chapters)
             p.book_title = p.book_title or Path(original_filename).stem
             p.status = "ready"
+            # F-4：正文落到 project_chapters（读取主路径），chapters_json 仅作兼容快照
+            await save_chapters(session, project_id, chapters)
             await session.commit()
 
         # prepare 全部完成：润色 sidecar 的内容已固化进 chapters_json，可删除
@@ -1867,21 +1926,11 @@ async def get_project(project_id: str) -> ProjectDetailResp:
         if not p:
             raise ValueError(f"项目不存在: {project_id}")
 
-        # chapters 摘要（从 chapters_json 解析）
-        chapters: list[ChapterSummary] = []
-        if p.chapters_json:
-            try:
-                ch_list = json.loads(p.chapters_json)
-                chapters = [
-                    ChapterSummary(
-                        idx=c["idx"],
-                        title=c.get("title", ""),
-                        text_len=len(c.get("text", "")),
-                    )
-                    for c in ch_list
-                ]
-            except Exception:
-                pass
+        # chapters 摘要（F-4：只查 text_len，不再解析全书 chapters_json）
+        chapters: list[ChapterSummary] = [
+            ChapterSummary(idx=r.idx, title=r.title, text_len=r.text_len)
+            for r in await load_chapter_rows(session, project_id)
+        ]
 
         # 角色
         stmt_c = select(ProjectCharacter).where(
@@ -2098,6 +2147,12 @@ async def delete_project(project_id: str) -> None:
 
         source_path = p.source_file_path
 
+        # F-4：章节正文是独立表，用**批量 DELETE** 清理（不加 relationship 级联，
+        # 否则会话会先把数千行正文全 load 进内存再逐行删，反而更慢更占内存）
+        await session.execute(
+            delete(ProjectChapter).where(ProjectChapter.project_id == project_id)
+        )
+
         # 删 DB（cascade=all,delete-orphan 会自动连带 Build/BuildArtifact/ProjectCharacter/ProjectDialogue）
         await session.delete(p)
         await session.commit()
@@ -2133,19 +2188,10 @@ async def get_project_chapters(project_id: str) -> list[ChapterSummary]:
         p = await session.get(Project, project_id)
         if not p:
             raise ValueError(f"项目不存在: {project_id}")
-        if not p.chapters_json:
-            return []
-        try:
-            ch_list = json.loads(p.chapters_json)
-        except Exception:
-            return []
+        # F-4：只查 idx/title/text_len
         return [
-            ChapterSummary(
-                idx=c["idx"],
-                title=c.get("title", ""),
-                text_len=len(c.get("text", "")),
-            )
-            for c in ch_list
+            ChapterSummary(idx=r.idx, title=r.title, text_len=r.text_len)
+            for r in await load_chapter_rows(session, project_id)
         ]
 
 
@@ -2158,15 +2204,10 @@ async def get_project_chapter_detail(
         p = await session.get(Project, project_id)
         if not p:
             raise ValueError(f"项目不存在: {project_id}")
-        if not p.chapters_json:
-            raise ValueError("项目未识别章节")
-        try:
-            ch_list = json.loads(p.chapters_json)
-        except Exception:
-            raise ValueError("章节数据损坏")
 
-        ch = next((c for c in ch_list if c.get("idx") == chapter_idx), None)
-        if not ch:
+        # F-4：只读目标章节那一行（不再解析全书 chapters_json）
+        ch = await load_chapter(session, project_id, chapter_idx)
+        if ch is None:
             raise ValueError(f"章节 {chapter_idx} 不存在")
 
         # 加载该章的 dialogue
@@ -2191,8 +2232,8 @@ async def get_project_chapter_detail(
 
         return ChapterDetail(
             idx=chapter_idx,
-            title=ch.get("title", ""),
-            text=ch.get("text", ""),
+            title=ch.title or "",
+            text=ch.text or "",
             dialogues=dialogues,
         )
 

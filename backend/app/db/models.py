@@ -266,6 +266,31 @@ class ProjectDialogue(Base):
     project: Mapped[Project] = relationship(back_populates="project_dialogues")
 
 
+class ProjectChapter(Base):
+    """项目章节正文（F-4：从 `Project.chapters_json` 单列拆出来）。
+
+    动机：`chapters_json` 把整本书正文塞进**一列**，于是任何一次「取章节列表 /
+    看单章详情 / 生成歌词」都得反序列化**全书**（数千章时是几十 MB）。
+    拆表后：列表只读 `text_len`（不碰正文），单章只读一行。
+
+    `Project.chapters_json` 保留为**兼容快照**（老代码路径 / 回滚用），不再是读取主路径。
+    """
+    __tablename__ = "project_chapters"
+    __table_args__ = (
+        Index("ix_project_chapters_project_idx", "project_id", "idx"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.project_id", ondelete="CASCADE"), index=True
+    )
+    idx: Mapped[int] = mapped_column(Integer, default=0)
+    title: Mapped[str] = mapped_column(String(512), default="")
+    text: Mapped[str] = mapped_column(Text, default="")
+    # 冗余字数：章节列表只要字数，不该为了 len() 去读整段正文
+    text_len: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class ProjectPronunciationRule(Base):
     """项目级发音规则（别名替换 / 正则替换）。
 
