@@ -551,3 +551,62 @@ async def test_b8_exception_path_keeps_consumed_usage(_isolate_data_dir, monkeyp
             )
     finally:
         await _drop_active(pid)
+
+
+# ---------------------------------------------------------------------
+# B-9：陈旧活跃项（终态已提交、尚未从 _ACTIVE_BUILDS 注销）不应短路新建
+# ---------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_b9_stale_active_entry_does_not_shortcircuit_retry(_isolate_data_dir):
+    """worker 提交终态与从 _ACTIVE_BUILDS 注销之间存在窗口；该窗口内 retry 不应把
+    源 build 原样返回（旧实现命中「project 仍在 _ACTIVE_BUILDS」就返回最新 build，
+    表现为 retry 返回同一个 build_id）。
+    """
+    from backend.app.db.session import get_session_factory
+    from backend.app.db.models import Build, BuildArtifact
+    from backend.app.services.build import (
+        _ACTIVE_BUILDS, _RUNNING_LOCK,
+        start_build, retry_failed_build, delete_build,
+    )
+    from sqlalchemy import select
+
+    pid = await _setup_project("B-9 陈旧活跃项")
+    src = await start_build(
+        project_id=pid, voice_assignments={}, narrator_voice_id="female-tianmei",
+    )
+    src_id = src.build_id
+    assert await _wait_terminal(src_id) == "success"
+
+    # 制造可重试的失败章
+    factory = get_session_factory()
+    async with factory() as s:
+        b = await s.get(Build, src_id)
+        b.status = "partial_success"
+        b.failed_chapters_json = "[1]"
+        art = (await s.execute(select(BuildArtifact).where(
+            BuildArtifact.build_id == src_id,
+            BuildArtifact.chapter_idx == 1,
+        ))).scalar_one()
+        art.status = "failed"
+        await s.commit()
+
+    # 注入陈旧活跃项：模拟「终态已提交、尚未注销」的窗口。
+    # 必须等源 build 的 worker 完全注销后再注入，否则它随后的 finally 会把
+    # 注入项一并 pop 掉，测试退化成「未注入」而失去意义。
+    assert await _wait_active_gone(src_id, timeout=5.0)
+    async with _RUNNING_LOCK:
+        _ACTIVE_BUILDS[src_id] = pid
+
+    new_id = None
+    try:
+        retry = await retry_failed_build(src_id)
+        new_id = retry.build_id
+        assert new_id != src_id, "陈旧活跃项不应让 retry 返回源 build 本身"
+        assert await _wait_terminal(new_id) in ("success", "partial_success")
+    finally:
+        # 先清掉注入的陈旧活跃项：否则 delete_build 会被
+        # _ensure_project_not_running 判定为「项目仍在合成」而拒绝。
+        await _drop_active(pid)
+        if new_id:
+            await _wait_active_gone(new_id, timeout=5.0)
+            await delete_build(pid, new_id)

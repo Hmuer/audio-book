@@ -15,8 +15,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app as _app
-from app.core.config import list_providers, save_providers_config, _parse_providers_config
+from backend.app.main import app as _app
+from backend.app.core.config import list_providers, save_providers_config, _parse_providers_config
 
 
 @pytest.fixture()

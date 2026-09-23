@@ -63,7 +63,7 @@ class _FakeAsyncClient:
 
 def _patch(monkeypatch, contents: list[str]) -> list[dict]:
     import httpx
-    from app.ai.providers.minimax import llm as llm_mod
+    from backend.app.ai.providers.minimax import llm as llm_mod
 
     sink: list[dict] = []
     monkeypatch.setattr(
@@ -78,7 +78,7 @@ def _patch(monkeypatch, contents: list[str]) -> list[dict]:
 
 
 def _provider():
-    from app.ai.providers.minimax.llm import MiniMaxLLMProvider
+    from backend.app.ai.providers.minimax.llm import MiniMaxLLMProvider
 
     return MiniMaxLLMProvider(api_key="test", base_url="http://fake.local/v1")
 
@@ -87,7 +87,7 @@ def _provider():
 # T-PL1 schema 瘦身
 # ---------------------------------------------------------------------
 def test_pl1_polish_result_drops_unused_diff_field():
-    from app.services.polish import PolishResult
+    from backend.app.services.polish import PolishResult
 
     assert "diff" not in PolishResult.model_fields
     schema = PolishResult.model_json_schema()
@@ -101,7 +101,7 @@ def test_pl1_polish_result_drops_unused_diff_field():
 # T-PL2 形状错误重试带纠偏提示
 # ---------------------------------------------------------------------
 async def test_pl2_retry_appends_format_correction_hint(monkeypatch):
-    from app.services.polish import PolishResult
+    from backend.app.services.polish import PolishResult
 
     sink = _patch(monkeypatch, [ARRAY_ONLY, GOOD_OBJ])
     result = await _provider().chat_structured(
@@ -122,7 +122,7 @@ async def test_pl2_retry_appends_format_correction_hint(monkeypatch):
 # T-PL3 期望对象时优先选对象（核心修复）
 # ---------------------------------------------------------------------
 async def test_pl3_prefers_object_candidate_when_schema_expects_object(monkeypatch):
-    from app.services.polish import PolishResult
+    from backend.app.services.polish import PolishResult
 
     sink = _patch(monkeypatch, [OBJ_INSIDE_ARRAY])
     result = await _provider().chat_structured(
@@ -137,7 +137,7 @@ async def test_pl3_prefers_object_candidate_when_schema_expects_object(monkeypat
 # T-PL4 对象 + 尾部垃圾
 # ---------------------------------------------------------------------
 async def test_pl4_object_with_trailing_junk_is_salvaged(monkeypatch):
-    from app.services.polish import PolishResult
+    from backend.app.services.polish import PolishResult
 
     sink = _patch(monkeypatch, [OBJ_TRAILING_JUNK])
     result = await _provider().chat_structured(
@@ -152,7 +152,7 @@ async def test_pl4_object_with_trailing_junk_is_salvaged(monkeypatch):
 # T-PL5 FAIL 日志可诊断
 # ---------------------------------------------------------------------
 async def test_pl5_fail_log_includes_finish_reason_and_tokens(monkeypatch, caplog):
-    from app.services.polish import PolishResult
+    from backend.app.services.polish import PolishResult
 
     _patch(monkeypatch, [ARRAY_ONLY])  # 每次都回数组 → 3 次全败
     with caplog.at_level("WARNING"):

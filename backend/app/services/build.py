@@ -1315,7 +1315,10 @@ async def _start_build_impl(
                     Build.project_id == project_id
                 ).order_by(Build.created_at.desc()).limit(1)
                 b = (await s.execute(stmt)).scalar_one_or_none()
-                if b:
+                # 竞态兜底：worker 提交终态与从 _ACTIVE_BUILDS 注销之间有一小段窗口，
+                # 若最新 build 已是终态说明并没有真正在跑的合成 → 继续往下新建，
+                # 否则会把已完成的旧 build 原样返回（调用方拿不到新 build）。
+                if b and b.status not in ("success", "partial_success", "failed", "cancelled"):
                     return _build_to_resp(b)
 
     factory = get_session_factory()
@@ -1633,7 +1636,10 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
                     Build.project_id == project_id
                 ).order_by(Build.created_at.desc()).limit(1)
                 last = (await session.execute(stmt_last)).scalar_one_or_none()
-                if last:
+                # 竞态兜底：worker 提交终态与从 _ACTIVE_BUILDS 注销之间有窗口，
+                # 若最新 build 已是终态则不应原样返回（否则重试会拿到源 build 本身），
+                # 继续往下创建新的重试 build。
+                if last and last.status not in ("success", "partial_success", "failed", "cancelled"):
                     return _build_to_resp(last)
 
         stmt_active = select(Build).where(

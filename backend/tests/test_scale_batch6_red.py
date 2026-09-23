@@ -18,7 +18,7 @@ from sqlalchemy import text
 # =====================================================================
 async def test_f1_bulk_lrc_loads_segments_once(monkeypatch):
     """逐章生成会退化成 O(N²)；批量入口必须只调用一次 _collect_build_segments。"""
-    from app.services import subtitles
+    from backend.app.services import subtitles
 
     calls: list[int | None] = []
 
@@ -44,7 +44,7 @@ async def test_f1_bulk_lrc_loads_segments_once(monkeypatch):
 
 async def test_f1_bulk_lrc_skips_chapters_without_content(monkeypatch):
     """没有 cue 的章节不出现在结果里（调用方按缺失处理 → ZIP 不写 .lrc）。"""
-    from app.services import subtitles
+    from backend.app.services import subtitles
 
     async def _fake_collect(build_id, *, ch_idx=None, require_final=True):
         return [
@@ -59,7 +59,7 @@ async def test_f1_bulk_lrc_skips_chapters_without_content(monkeypatch):
 
 async def test_f1_single_chapter_lrc_still_works(monkeypatch):
     """单章接口（对外下载用）行为不变。"""
-    from app.services import subtitles
+    from backend.app.services import subtitles
 
     async def _fake_collect(build_id, *, ch_idx=None, require_final=True):
         assert ch_idx == 7, "单章接口必须把 ch_idx 透传下去（据此按章过滤 SQL）"
@@ -81,7 +81,7 @@ def test_f1_single_chapter_query_filters_by_chapter():
     """
     import inspect
 
-    from app.services import subtitles
+    from backend.app.services import subtitles
 
     src = inspect.getsource(subtitles._collect_build_segments)
     assert "ProjectDialogue.chapter_idx == ch_idx" in src
@@ -91,7 +91,7 @@ def test_f1_single_chapter_query_filters_by_chapter():
 # F-2 复合索引
 # =====================================================================
 def test_f2_model_declares_composite_index():
-    from app.db.models import ProjectDialogue
+    from backend.app.db.models import ProjectDialogue
 
     indexes = {
         (ix.name, tuple(c.name for c in ix.columns))
@@ -104,7 +104,7 @@ def test_f2_model_declares_composite_index():
 
 
 def test_f2_migration_ddl_targets_the_composite_index():
-    from app.db import session as sess
+    from backend.app.db import session as sess
 
     names = {name for name, _table, _ddl in sess._NEW_INDEXES}
     assert "ix_project_dialogues_project_chapter" in names
@@ -115,7 +115,7 @@ def test_f2_migration_ddl_targets_the_composite_index():
 
 async def test_f2_index_is_created_for_legacy_db(tmp_path, monkeypatch):
     """老库（表已存在）跑 init_db 必须补建索引 —— create_all 不会补已存在表的索引。"""
-    from app.db import session as sess
+    from backend.app.db import session as sess
 
     await sess.init_db()
     engine = sess.get_engine()
@@ -143,7 +143,7 @@ async def test_f2_index_is_created_for_legacy_db(tmp_path, monkeypatch):
 # F-3 按完整章节装桶
 # =====================================================================
 def _chapters(*texts: str):
-    from app.services.chapter import Chapter
+    from backend.app.services.chapter import Chapter
 
     return [Chapter(idx=i, title=f"第{i+1}章", text=t) for i, t in enumerate(texts)]
 
@@ -151,7 +151,7 @@ def _chapters(*texts: str):
 def test_f3_buckets_never_split_a_chapter():
     """桶内必须是完整章节：拼回来等于原文，且每章只出现在一个桶里。"""
     chapters = _chapters("甲" * 100, "乙" * 100, "丙" * 100, "丁" * 100)
-    from app.services.project import _bucket_chapters_by_chars
+    from backend.app.services.project import _bucket_chapters_by_chars
 
     buckets = _bucket_chapters_by_chars(chapters, 250)
 
@@ -167,7 +167,7 @@ def test_f3_buckets_never_split_a_chapter():
 
 def test_f3_buckets_respect_limit_and_pack_greedily():
     chapters = _chapters("甲" * 100, "乙" * 100, "丙" * 100)
-    from app.services.project import _bucket_chapters_by_chars
+    from backend.app.services.project import _bucket_chapters_by_chars
 
     # 100+1+100=201 ≤ 250，再加丙(1+100) 会到 302 > 250 → 前两章一桶
     buckets = _bucket_chapters_by_chars(chapters, 250)
@@ -180,7 +180,7 @@ def test_f3_oversized_single_chapter_gets_own_bucket_unsplit():
     """单章本身超限时独占一桶，且**不被切开**。"""
     big = "长" * 900
     chapters = _chapters("小" * 10, big, "小" * 10)
-    from app.services.project import _bucket_chapters_by_chars
+    from backend.app.services.project import _bucket_chapters_by_chars
 
     buckets = _bucket_chapters_by_chars(chapters, 100)
     assert [b.chapter_idxs for b in buckets] == [[0], [1], [2]]
@@ -190,7 +190,7 @@ def test_f3_oversized_single_chapter_gets_own_bucket_unsplit():
 def test_f3_offsets_align_with_full_text_join():
     """start/end 必须与 full_text = '\\n'.join(章节正文) 的区间一致（进度显示依赖它）。"""
     chapters = _chapters("甲" * 60, "乙" * 60, "丙" * 60)
-    from app.services.project import _bucket_chapters_by_chars
+    from backend.app.services.project import _bucket_chapters_by_chars
 
     full_text = "\n".join(c.text for c in chapters)
     for b in _bucket_chapters_by_chars(chapters, 130):
@@ -198,14 +198,14 @@ def test_f3_offsets_align_with_full_text_join():
 
 
 def test_f3_empty_chapter_list_yields_no_bucket():
-    from app.services.project import _bucket_chapters_by_chars
+    from backend.app.services.project import _bucket_chapters_by_chars
 
     assert _bucket_chapters_by_chars([], 50000) == []
 
 
 # ---- checkpoint 兼容性（防「静默漏识」）----
 def test_f3_legacy_checkpoint_is_incompatible():
-    from app.services.project import _char_checkpoint_incompatible
+    from backend.app.services.project import _char_checkpoint_incompatible
 
     # 旧口径：有片号但没有 mode 标记
     assert _char_checkpoint_incompatible({"char_slice_completed": [0, 1]}) is True
@@ -218,7 +218,7 @@ def test_f3_legacy_checkpoint_is_incompatible():
 
 
 def test_f3_same_mode_and_fresh_project_are_compatible():
-    from app.services.project import _char_checkpoint_incompatible
+    from backend.app.services.project import _char_checkpoint_incompatible
 
     # 全新项目：什么都没有 → 不需要重置
     assert _char_checkpoint_incompatible({}) is False

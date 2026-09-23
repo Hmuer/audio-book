@@ -269,7 +269,7 @@ async def test_l9_icl_route_500_includes_logid_in_detail(_isolate_data_dir, monk
     await seed_admin_user()
     token, _ = create_access_token("admin")
 
-    from app.main import app as _app
+    from backend.app.main import app as _app
     with TestClient(_app) as client:
         # POST /api/icl/voices：multipart form
         r = client.post(

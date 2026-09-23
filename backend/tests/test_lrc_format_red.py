@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-from app.services.subtitles import (
+from backend.app.services.subtitles import (
     _dialogue_text_set,
     _iter_cue_lines,
     _normalize_lrc_line,

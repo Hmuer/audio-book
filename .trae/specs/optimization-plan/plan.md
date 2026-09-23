@@ -251,7 +251,7 @@
 
 ## 6. Tier E —— 工程化收口
 
-### E-1 测试使用两套导入路径，隔离失效并会读写真实 `./data` 🟡
+### E-1 测试使用两套导入路径，隔离失效并会读写真实 `./data` ✅（2026-09-23 已修复，见 §11.6 批次 E-1）
 - 位置：[test_providers_api_red.py#L18-L19](file:///workspace/backend/tests/test_providers_api_red.py#L18-L19)、[test_logid_propagation_red.py](file:///workspace/backend/tests/test_logid_propagation_red.py)、[test_minimax_emotion_compat_red.py](file:///workspace/backend/tests/test_minimax_emotion_compat_red.py)；`pytest.ini` 的 `pythonpath = ..:.`
 - 现象：其余用例统一用 `backend.app.*`，上述文件用顶层 `app.*`，二者是**不同的模块对象**（conftest 注释中已承认）。autouse fixture 只 patch 了 `backend.app.core.config.settings`。
 - 后果：这些用例的 app 仍使用未隔离的 settings → **读写真实 `./data` 与真实 DB**。个人使用下会污染自己的数据。
@@ -347,7 +347,7 @@
 - [x] D-8 对白 anchor 从游标后搜索 — [chapter.py#L243-L262](file:///workspace/backend/app/services/chapter.py#L243-L262) — 完成 2026-09-20（详见 §5 D-8）
 
 ### 批次 5 —— 工程化
-- [ ] E-1 统一测试导入路径 + 重置全局单例 — [conftest.py](file:///workspace/backend/tests/conftest.py)
+- [x] E-1 统一测试导入路径 + 重置全局单例 — [conftest.py](file:///workspace/backend/tests/conftest.py) — 完成 2026-09-23（详见 §11.6 批次 E-1）
 - [ ] E-2 `start.sh` 安装策略 + `.gitignore` 补 `.env*` — [start.sh#L250](file:///workspace/start.sh#L250)
 - [ ] E-3 重新生成 `requirements.lock`
 - [ ] E-4 CI 门禁真正阻断 — [ci.yml](file:///workspace/.github/workflows/ci.yml)
@@ -1056,6 +1056,35 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 - 新增 [test_chapter_store_red.py](file:///workspace/backend/tests/test_chapter_store_red.py)（13 用例）全绿
 - 全量后端：`431 passed, 3 failed, 1 skipped`；3 项失败均为既有抖动集合（`test_project_e2e` / `test_project_prepare_voice_pool_red` / `test_review_fixes_red`），**非本批引入**
 - 本批未改前端，未跑 `tsc`
+
+#### E-1（2026-09-23）
+
+**目标**：消除「单跑通过、全量失败」的 3 个假失败（`test_project_e2e` / `test_project_prepare_voice_pool_red` / `test_review_fixes_red`），根因是测试存在**两套导入路径**（`app.*` 与 `backend.app.*` 是两个模块对象、各自一份 settings/单例）。
+
+| 项 | 改动 | 说明 |
+|---|---|---|
+| 统一导入路径 | 5 个文件 26 处 `from app.` → `from backend.app.`（`test_llm_structured_output_red.py` / `test_logid_propagation_red.py` / `test_lrc_format_red.py` / `test_providers_api_red.py` / `test_scale_batch6_red.py`）。用带边界正则 `(?<![\w.])from app\.` 避免误伤已是 `backend.app.` 的行 | 双模块对象彻底消除 |
+| [pytest.ini](file:///workspace/backend/pytest.ini) | `pythonpath = ..:.` → `..`（只保留仓库根一个导入根，`/workspace/backend` 不再进 `sys.path`） | 从源头杜绝出现 `app.*` 第二次导入 |
+| [conftest.py](file:///workspace/backend/tests/conftest.py) | 新增 `_reset_global_singletons()`：每用例前重置 `build._ACTIVE_BUILDS/_START_LOCKS/_tts_seg_mem_cache`、`factory._tts_instances/_tts_default_instance/_tts_sem`、`minimax.llm._llm_sem`、`project._prepare_running_tasks`、`storage._storage/_storage_fingerprint`（`factory._llm_instance/_tts_instance` 由 mock 提供，**不重置**） | 跨用例缓存/锁串味与旧事件循环上的信号量问题 |
+| conftest 新增 `_restore_config_settings`（autouse） | 用例结束后把 `core.config.settings` 还原为**权威对象** | 见下方「根因 1」 |
+| conftest 新增 `_snapshot_providers_config`（autouse） | 用例前后快照/还原 `settings.PROVIDERS_CONFIG` | 见下方「根因 2」 |
+
+**根因 1：`importlib.reload(config)` 造成 settings 对象分裂**
+[test_path_env_override_red.py](file:///workspace/backend/tests/test_path_env_override_red.py) 两个用例都 `importlib.reload(cfgmod)` 让 Pydantic 重读 env，但 reload 会把 `cfgmod.settings` 换成**新对象且不恢复**；而 `routes/build/project/session` 在更早 import 时已用 `from ..core.config import settings` 绑定了**旧对象**。于是该文件之后的用例（文件名字典序在其后）里，conftest `monkeypatch.setattr(cfgmod.settings, ...)` 改的是新对象，旧对象纹丝不动 → 模块继续读默认值（真实 `./data`），3 个假失败由此而来。修法：autouse fixture 在用例结束后 `cfgmod.settings = _CANONICAL_SETTINGS`。
+
+**根因 2：`PROVIDERS_CONFIG` 全局泄漏（E-1 统一路径后**新暴露**的真实缺陷）**
+统一为一个 settings 对象后，`test_env_minimal_red.py` / `test_review_fixes_red.py` 里 `save_providers_config({"providers": [单个 doubao]})` 的调用**只还原单字段、不还原厂商列表**，泄漏到后续 `test_providers_api_red.py` 的「默认形状 = minimax + doubao」断言（报 `assert 'minimax' in {'doubao'}`）。此前因为两者用**不同的模块对象**（各自一份 settings）而侥幸隔离。修法：autouse fixture 统一快照/还原 `PROVIDERS_CONFIG`。
+
+**顺带修掉一个真实竞态（B-9）**
+`build.py` 的 worker 先提交 `Build.status` 终态，再在 `finally` 里 `finish_task`（DB 往返）之后才 `_unregister_active_build`。这段窗口内 `start_build` / `retry_failed_build` 命中「project 仍在 `_ACTIVE_BUILDS`」分支会**返回最新 build（即源 build 本身）** → 表现为 `retry` 返回同一个 `build_id`（全量跑时 `test_b5_retry_reused_chapter_has_own_file` 偶发失败正是此竞态）。修法：该分支在「最新 build 已是终态」时**不再短路**，继续往下新建（此时并无真正在跑的合成）。新增回归用例 T-B9（注入陈旧活跃项，断言 retry 返回新 `build_id`；旧实现下必失败）。
+
+**回归结果**
+- 全量后端：`436 passed, 0 failed, 320 warnings`（warnings 由修前 526 降到 320，双模块对象已消除）
+- 3 个假失败 + 6 个 providers 泄漏失败 + 1 个 B-9 竞态失败全部消除，连续多轮跑稳定全绿
+
+**经验**
+- 「测试隔离」不能靠『两套模块对象』这种巧合来隔离；统一导入路径后，任何跨用例的**全局可变状态**（settings 字段、模块级 dict/lock/semaphore）都必须显式重置或快照还原。
+- 只改「数据来源类型/导入路径」时，必须核查所有下游消费者与**全局副作用**（reload、save_*) 的连带影响。
 
 
 
