@@ -514,6 +514,20 @@ export const api = {
     );
     return info.url;
   },
+  // F-5：批量签发章节音频 URL（一次为一批可见章节签发，避免逐章往返）
+  buildChapterSigns: async (
+    projectId: string,
+    buildId: string,
+    start: number,
+    count: number
+  ): Promise<Record<number, string>> => {
+    const r = await _fetch<{ items: { chapter_idx: number; url: string }[] }>(
+      `/api/projects/${projectId}/builds/${buildId}/chapter-signs?start=${start}&count=${count}`
+    );
+    const out: Record<number, string> = {};
+    for (const it of r.items) out[it.chapter_idx] = it.url;
+    return out;
+  },
 
   // ---------- 系统设置 ----------
   settingsGet: () => _fetch<SettingItem[]>('/api/settings'),

@@ -905,8 +905,8 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 - [x] F-2 `project_dialogues` 加 `(project_id, chapter_idx)` 索引 — [models.py#L237-L254](file:///workspace/backend/app/db/models.py#L237-L254) — 完成 2026-09-22
 - [x] F-3 角色识别切片改为「按完整章节装桶」+ 重置旧 checkpoint — [project.py#L886-L889](file:///workspace/backend/app/services/project.py#L886-L889) — 完成 2026-09-22
 
-#### 批次 7 —— 可用性与体验（进行中）
-- [ ] F-5 批量签发 + 虚拟滚动 — [ProjectDetailPage.tsx#L1009-L1018](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L1009-L1018) — **待做（下一步）**
+#### 批次 7 —— 可用性与体验 ✅ 完成 2026-09-22
+- [x] F-5 分批渲染 + 批量签发（**未做真虚拟滚动**，取舍见 §11.6） — [ProjectDetailPage.tsx](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L999-L1029) / [routes.py](file:///workspace/backend/app/api/routes.py#L1275-L1327) — 完成 2026-09-22
 - [x] F-7 ZIP 改为「每 50 章一个独立 ZIP」（含前端分片下载列表、Build 多产物字段、delete_build 覆盖） — [build.py#L74-L165](file:///workspace/backend/app/services/build.py#L74-L165) — 完成 2026-09-22
 
 #### 批次 8 —— 对象存储（腾讯云 COS）
@@ -974,6 +974,31 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 
 **未做**
 - F-5（批量签发 + 虚拟滚动）尚未开始，留作下一步。
+
+#### 批次 7 之 F-5（2026-09-22）
+
+| 项 | 改动 | 测试 / 证据 |
+|---|---|---|
+| 批量签发接口 | [routes.py](file:///workspace/backend/app/api/routes.py#L1275-L1327) 新增 `GET /projects/{pid}/builds/{bid}/chapter-signs?start&count&ttl_seconds`：一次为「一段章节」签发媒体 token，只返回**有音频产物**的章节；`count` 夹到 1~200（防一次签发过多） | T-BS1 一次请求返回区间内全部章节的 URL；T-BS2 返回的 URL 直接喂 `/media/stream` 能取到该章字节；T-BS3 `count=100000` 被夹到 200；T-BS4 无音频产物的章节不出现在 items；T-BS5 非归属项目 → 403/404 |
+| 前端 API | [api.ts](file:///workspace/frontend/src/lib/api.ts#L518-L531) 新增 `buildChapterSigns(projectId, buildId, start, count) → Record<chapterIdx, url>` | `tsc --noEmit` ✅ |
+| 章节列表 | [ProjectDetailPage.tsx](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L999-L1029)：改为**分批渲染**（每批 60 条，底部「加载更多章节（还有 N 章）」）+ **批量签发**（每次 120 章一块，`signedUntilRef` 只签新区间；某块失败则 `break` 并保留进度，下次展开/加载更多时重试） | 单测覆盖后端契约；前端为类型检查 + 静态审阅 |
+| 构建产物列表 | 同一文件 `BuildDetailContent` 采用相同策略（`ARTIFACTS_PAGE_SIZE=60`） | 同上 |
+
+**方案取舍：为什么是「分批渲染」而不是「真虚拟滚动」**
+- 列表行内含 `WaveformPlayer`，展开态还会插入逐行文本标注 → **行高可变**，真虚拟滚动需要动态测量 + 占位补偿，容易出现视觉抖动与滚动跳变，改动面与回归风险显著更高。
+- 分批渲染把「初始渲染 5000 个节点 + 5000 次串行签发」降到「60 个节点 + 1 次批量请求」，已消除本项要解决的两个瓶颈（DOM 数与请求数）。
+- 代价：滚动到底需要点一下「加载更多」。若将来确实需要无缝滚动，可在此基础上再叠虚拟化。
+
+**已知限制（如实记录）**
+- 签名 TTL 仍为 5 分钟；长时间停留后过期由 `WaveformPlayer.onNeedNewSrc` 做**单章**重签兜底（既有机制，未改动）。
+- `signedUntilRef` 记录的是「已签发到的下标」；若某块签发失败会中断后续并在下次交互时重试，但**不会自动重试**（没有定时器）。
+
+**回归结果**
+- 新增 [test_batch_sign_red.py](file:///workspace/backend/tests/test_batch_sign_red.py)（5 用例）全绿
+- 全量后端：`410 passed, 2 failed, 1 skipped`；2 项失败均在基线（`4 failed`）的子集内，属既有 E-1 类跨用例污染，**非本批引入**
+- 前端 `tsc --noEmit` exit=0
+
+**环境备注（沙箱）**：本轮开始前测试依赖与 `node_modules` 均被重置；已重装 `requirements*.txt` 与前端依赖。`npm install` 默认跳过 devDependencies（`NODE_ENV=production` 环境），导致 `tsc` 被解析到全局新版并报 `baseUrl has been removed`；需 `NODE_ENV=development npm install --include=dev` 才能拿到 `package.json` 锁定的 typescript 5.5.3。
 
 
 

@@ -1271,6 +1271,61 @@ async def api_media_sign(
     return token_info
 
 
+@router.get("/projects/{project_id}/builds/{build_id}/chapter-signs")
+async def api_build_chapter_signs(
+    project_id: str,
+    build_id: str,
+    request: Request,
+    start: int = 0,
+    count: int = 60,
+    ttl_seconds: int = 300,
+    current: User = Depends(get_current_user),
+):
+    """批量签发章节音频 URL（F-5）。
+
+    为什么需要：前端逐章签发在数千章规模下是数千次串行请求（>100s，且会超过
+    签名 5 分钟 TTL —— 先签的还没播就过期）。批量接口让「一批可见章节」只花 1 次往返。
+
+    - start/count：章节下标区间（0-based，count 上限 200，防一次签发过多）
+    - 只返回**有音频产物**的章节；其余章节不出现在 items 里
+    """
+    start = max(0, int(start))
+    count = max(1, min(int(count), 200))
+    ttl = max(1, min(int(ttl_seconds), 600))
+
+    factory = get_session_factory()
+    items: list[dict] = []
+    async with factory() as s:
+        await get_project_for_user(s, project_id, current)
+        b = await s.get(Build, build_id)
+        if not b or b.project_id != project_id:
+            raise HTTPException(404, "build 不存在")
+        rows = (
+            await s.execute(
+                select(BuildArtifact)
+                .where(
+                    BuildArtifact.build_id == build_id,
+                    BuildArtifact.chapter_idx >= start,
+                    BuildArtifact.chapter_idx < start + count,
+                )
+                .order_by(BuildArtifact.chapter_idx)
+            )
+        ).scalars().all()
+        for art in rows:
+            if not art.audio_filename:
+                continue
+            info = await issue_media_token(
+                s,
+                build_id=build_id,
+                kind="chapter_mp3",
+                chapter_idx=art.chapter_idx,
+                user_id=current.id,
+                ttl_seconds=ttl,
+            )
+            items.append({"chapter_idx": art.chapter_idx, "url": info["url"]})
+    return {"items": items, "start": start, "count": count}
+
+
 @public_router.get("/media/stream")
 async def api_media_stream(
     token: str,

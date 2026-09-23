@@ -31,6 +31,11 @@ type Tab = 'overview' | 'chapters' | 'voices' | 'builds' | 'settings';
 //   1) 保存时提交数组 → Pydantic 校验失败 → 项目设置页点保存必然 422；
 //   2) 详情页对字符串调 `.map()` → TypeError → 白屏。
 // 统一约定：与后端交互一律用字符串；仅在展示/编辑时转数组。
+// F-5：分批渲染的每批条数（章节列表 / 构建产物列表）。
+// 数千章规模下一性渲染全部节点会明显卡顿，且会让音频签发的请求数爆炸。
+const CHAPTERS_PAGE_SIZE = 60;
+const ARTIFACTS_PAGE_SIZE = 60;
+
 function splitTags(tags: string | null | undefined): string[] {
   if (!tags) return [];
   return tags
@@ -935,6 +940,8 @@ function ChaptersTab({
   const [loadingDetail, setLoadingDetail] = useState(false);
   // P1 #6：每个章节的签名音频 URL（一次性 token，5 分钟过期）
   const [audioUrls, setAudioUrls] = useState<Record<number, string>>({});
+  // F-5：分批渲染 —— 章节数可能上千，一次性渲染全部节点会卡死页面
+  const [visibleCount, setVisibleCount] = useState(CHAPTERS_PAGE_SIZE);
 
   // speaker 归属 map（dialogue 里 anchor_text/text → 原始归属行，含 id/confidence 供逐行修正）
   const speakerMap = useMemo(() => {
@@ -998,32 +1005,40 @@ function ChaptersTab({
     }
   };
 
-  // P1 #6：展开任意章节 / 进入项目时，为每个 chapter 批量签发一次性音频 URL。
-  // 签名 TTL 5 分钟：过期后 audio tag 会拿到 401，由 WaveformPlayer 的
-  // onNeedNewSrc 回调触发单章重签并自动续播（见各处 <WaveformPlayer> 传参）。
+  // P1 #6 / F-5：只给「当前可见的章节」签发一次性音频 URL。
+  // 数千章规模下逐章签发是数千次串行请求（>100s，且会超过签名 5 分钟 TTL，
+  // 先签的还没播就过期）；这里改为：分批渲染 + 每次批量签发一整段。
+  const signedUntilRef = useRef(0);
   useEffect(() => {
     if (!hasAudio || !lastBuild) return;
     let cancelled = false;
-    const signAll = async () => {
+    const run = async () => {
+      const end = Math.min(visibleCount, chapters.length);
+      const CHUNK = 120; // 与后端 count 上限 200 匹配，一次往返覆盖一批
       const updates: Record<number, string> = {};
-      for (const c of chapters) {
-        if (audioUrls[c.idx]) continue;
+      let okUntil = signedUntilRef.current;
+      for (let s0 = signedUntilRef.current; s0 < end; s0 += CHUNK) {
+        const cnt = Math.min(CHUNK, end - s0);
         try {
-          updates[c.idx] = await api.buildChapterAudioUrl(
-            project.project_id, lastBuild.build_id, c.idx
+          Object.assign(
+            updates,
+            await api.buildChapterSigns(project.project_id, lastBuild.build_id, s0, cnt)
           );
+          okUntil = s0 + cnt;
         } catch (e) {
-          console.warn('sign audio url failed', c.idx, e);
+          console.warn('batch sign chapters failed', s0, e);
+          break; // 保留 okUntil，下次（如展开/加载更多）重试
         }
       }
       if (!cancelled && Object.keys(updates).length) {
         setAudioUrls(prev => ({ ...prev, ...updates }));
       }
+      signedUntilRef.current = okUntil;
     };
-    signAll();
+    run();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasAudio, lastBuild?.build_id, chapters.length]);
+  }, [hasAudio, lastBuild?.build_id, visibleCount, chapters.length]);
 
   // 展开：逐行文本标注中正在修正说话人的行 key
   const [editingLineKey, setEditingLineKey] = useState<number | null>(null);
@@ -1088,7 +1103,7 @@ function ChaptersTab({
         </div>
 
         <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
-          {chapters.map(c => {
+          {chapters.slice(0, visibleCount).map(c => {
             const isOpen = expandedIdx === c.idx;
             const key = `ch_${c.idx}`;
             const playing = playingKey === key;
@@ -1301,6 +1316,15 @@ function ChaptersTab({
               </div>
             );
           })}
+          {/* F-5：分批渲染的「加载更多」，避免一次性渲染数千个节点 */}
+          {visibleCount < chapters.length && (
+            <button
+              className="btn-ghost w-full !py-2 text-xs"
+              onClick={() => setVisibleCount(n => n + CHAPTERS_PAGE_SIZE)}
+            >
+              加载更多章节（还有 {chapters.length - visibleCount} 章）
+            </button>
+          )}
         </div>
 
         {!hasAudio && (
@@ -1922,23 +1946,37 @@ function BuildDetailContent({
   // F-7：ZIP 可能是多分片，按分片下标存放签名 URL
   const [zipUrls, setZipUrls] = useState<Record<number, string>>({});
   const zipShards = detail.zip_shards ?? [];
+  // F-5：分批渲染 + 只签发可见区间
+  const [visibleCount, setVisibleCount] = useState(ARTIFACTS_PAGE_SIZE);
+  const signedUntilRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
     const signAll = async () => {
+      // F-5：只为「当前可见的产物」签发（分批渲染 + 批量签发），
+      // 否则数千章时是数千次串行请求，且会超过签名 TTL。
+      const arts = (detail.artifacts ?? []).slice(0, visibleCount);
+      const end = arts.length;
+      const CHUNK = 120;
       const updates: Record<number, string> = {};
-      for (const a of detail.artifacts ?? []) {
-        if (a.status === 'done') {
-          try {
-            updates[a.chapter_idx] = await api.buildChapterAudioUrl(
-              projectId, detail.build_id, a.chapter_idx
-            );
-          } catch (e) {
-            console.warn('sign chapter url failed', a.chapter_idx, e);
-          }
+      let okUntil = signedUntilRef.current;
+      for (let s0 = signedUntilRef.current; s0 < end; s0 += CHUNK) {
+        const cnt = Math.min(CHUNK, end - s0);
+        try {
+          Object.assign(
+            updates,
+            await api.buildChapterSigns(projectId, detail.build_id, s0, cnt)
+          );
+          okUntil = s0 + cnt;
+        } catch (e) {
+          console.warn('batch sign chapters failed', s0, e);
+          break;
         }
       }
-      if (!cancelled) setSignedUrls(prev => ({ ...prev, ...updates }));
+      signedUntilRef.current = okUntil;
+      if (!cancelled && Object.keys(updates).length) {
+        setSignedUrls(prev => ({ ...prev, ...updates }));
+      }
 
       // F-7：ZIP 分片（单包时数组长度为 1）——逐个签发下载 URL
       const shards = detail.zip_shards ?? [];
@@ -1958,7 +1996,7 @@ function BuildDetailContent({
     };
     signAll();
     return () => { cancelled = true; };
-  }, [detail.build_id, projectId, (detail.artifacts ?? []).length, (detail.zip_shards ?? []).length]);
+  }, [detail.build_id, projectId, visibleCount, (detail.artifacts ?? []).length, (detail.zip_shards ?? []).length]);
 
   return (
     <div className="space-y-3">
@@ -2019,7 +2057,7 @@ function BuildDetailContent({
       )}
 
       <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
-        {detail.artifacts.map(a => {
+        {detail.artifacts.slice(0, visibleCount).map(a => {
           const key = `art_${a.chapter_idx}`;
           const playing = playingKey === key;
           return (
@@ -2109,6 +2147,15 @@ function BuildDetailContent({
             </div>
           );
         })}
+        {/* F-5：分批渲染的「加载更多」 */}
+        {visibleCount < detail.artifacts.length && (
+          <button
+            className="btn-ghost w-full !py-2 text-xs"
+            onClick={() => setVisibleCount(n => n + ARTIFACTS_PAGE_SIZE)}
+          >
+            加载更多章节（还有 {detail.artifacts.length - visibleCount} 章）
+          </button>
+        )}
       </div>
     </div>
   );
