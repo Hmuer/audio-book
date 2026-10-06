@@ -204,6 +204,15 @@ class ProjectPrepareTriggerResp(BaseModel):
     prepare_progress: dict | None = None
 
 
+class ProjectPrepareCancelResp(BaseModel):
+    """H-2：取消 prepare 的返回。cancelled=False 表示当前没有在跑的任务。"""
+    project_id: str
+    cancelled: bool
+    status: str
+    message: str
+    prepare_progress: dict | None = None
+
+
 # 正在运行的后台 prepare 任务（进程内）
 #   project_id -> {task, start_ts, token}
 #   - token 用来把『看门狗扫描出来的恢复启动』和『用户手动 /prepare 接口触发』区分开
@@ -485,19 +494,31 @@ def _is_prepare_running_for(project_id: str) -> bool:
     return bool(info and info["task"] and not info["task"].done())
 
 
-def _cancel_running_prepare_task(project_id: str, reason: str = "") -> None:
-    """取消（如果存在）某 pid 的本地 prepare task，不抛。"""
-    info = _prepare_running_tasks.get(project_id)
+def _cancel_running_prepare_task(project_id: str, reason: str = "", kind: str = "retrigger") -> None:
+    """取消（如果存在）某 pid 的本地 prepare task，不抛。
+
+    H-2：kind 决定旧任务被取消后的收尾行为（协程自己持有 info 引用，dict 被 pop
+    也能读到 kind）：
+    - "retrigger"：用户重新触发 prepare，新任务即将接管 → 旧任务收尾**不写
+      last_error / 不置 failed**。旧行为会写：trigger 已把状态写回 preparing，
+      旧任务收尾晚于 commit 时会把 preparing 打成 failed（竞态）。
+    - "user"：用户显式取消 → 终态（stage=cancelled + status=imported）由
+      cancel_prepare_project() 同步写好，旧任务同样**不写**任何 DB 状态，
+      只把 JobTask 记成 cancelled。
+    - 其他（外部 cancel，如事件循环关闭）：保持旧行为（写 last_error + failed），
+      因为没有别人替它写终态。
+    """
+    info = _prepare_running_tasks.pop(project_id, None)
     if info is None:
         return
     task = info.get("task")
+    info["cancel_kind"] = kind
     if task and not task.done():
         logger.info(
             f"[project_prepare] project_id={project_id[:8]}... 取消正在运行的后台 prepare 任务。"
-            + (f" reason={reason}" if reason else "")
+            + (f" reason={reason} kind={kind}" if reason else f" kind={kind}")
         )
         task.cancel()
-    _prepare_running_tasks.pop(project_id, None)
 
 
 def _enqueue_prepare_task(project_id: str, trigger: str) -> None:
@@ -505,21 +526,27 @@ def _enqueue_prepare_task(project_id: str, trigger: str) -> None:
     启动后台 prepare task 并登记到 _prepare_running_tasks。
     并发：PREPARE_RECOVERY_CONCURRENCY 目前只用于 startup/watchdog 扫出来的大量项目，
     接口手动触发的优先级最高，直接并发启动（但每个 pid 至多 1 条）。
+
+    H-2：把 info dict 作为参数传给协程（协程持有自己的登记引用）。
+    旧实现收尾时重新 get(project_id)，会误删「接棒的新任务」的登记（retrigger 竞态）。
     """
     if _is_prepare_running_for(project_id):
         return  # 已经在跑，不重复启动
-    token = f"{trigger}-{os.urandom(4).hex()}"
-    task = asyncio.create_task(
-        _run_prepare_project_in_background(project_id, trigger=trigger),
-        name=f"prepare:{project_id[:8]}:{trigger}",
-    )
     import time as _time
-    _prepare_running_tasks[project_id] = {
-        "task": task,
+    token = f"{trigger}-{os.urandom(4).hex()}"
+    info: dict = {
+        "task": None,
         "start_ts": _time.time(),
         "token": token,
         "trigger": trigger,
+        "cancel_kind": None,
     }
+    task = asyncio.create_task(
+        _run_prepare_project_in_background(project_id, trigger=trigger, info=info),
+        name=f"prepare:{project_id[:8]}:{trigger}",
+    )
+    info["task"] = task
+    _prepare_running_tasks[project_id] = info
     logger.info(
         f"[project_prepare] project_id={project_id[:8]}... 后台任务启动 "
         f"(trigger={trigger}, token={token})"
@@ -558,7 +585,9 @@ async def _write_prepare_last_error(project_id: str, err_type: str, err_msg: str
         )
 
 
-async def _run_prepare_project_in_background(project_id: str, *, trigger: str = "api") -> None:
+async def _run_prepare_project_in_background(
+    project_id: str, *, trigger: str = "api", info: dict | None = None
+) -> None:
     """
     后台任务：真正执行 prepare。
     - 所有异常不往外抛，全部：
@@ -568,7 +597,12 @@ async def _run_prepare_project_in_background(project_id: str, *, trigger: str = 
 
     P1 #7：在最外层用 JobTask 跟踪：注册 → 周期心跳 → 终态写入。
     启动恢复 / 看门狗都通过 JobTask 表判定孤儿。
+    H-2：info 是本任务自己的登记 dict（enqueue 时创建）；被 cancel 时通过
+    info["cancel_kind"] 区分收尾行为（见 _cancel_running_prepare_task）。
     """
+    if info is None:
+        # 防御：老调用路径（watchdog 恢复等）没传 info 时造一个空壳，行为不变
+        info = {"task": None, "start_ts": 0.0, "token": f"{trigger}-orphan", "trigger": trigger, "cancel_kind": None}
     from .job_tasks import (
         register_task,
         HeartbeatContext,
@@ -613,16 +647,23 @@ async def _run_prepare_project_in_background(project_id: str, *, trigger: str = 
                 final_job_status = "failed"
                 final_error = f"{type(e).__name__}: {e}"
             except asyncio.CancelledError:
-                # 用户取消 / 看门狗主动 kill → 记 cancelled
+                # 用户取消 / 看门狗主动 kill → 记 cancelled。
+                # H-2：按 cancel_kind 分流 ——
+                #   user / retrigger：终态由发起方（cancel_prepare_project /
+                #     trigger_prepare_project）同步写好，这里**不写**任何 DB 状态，
+                #     否则旧任务收尾会把新任务刚写的 preparing 打回 failed（竞态）。
+                #   其他（外部 cancel）：没人替它写终态，保持旧行为。
+                kind = info.get("cancel_kind") or "external"
                 logger.warning(
-                    f"[project_prepare] 被取消 project_id={project_id[:8]}..."
+                    f"[project_prepare] 被取消 project_id={project_id[:8]}... kind={kind}"
                 )
-                await _write_prepare_last_error(
-                    project_id, "Cancelled", "task cancelled",
-                )
-                await _mark_project_failed(project_id)
+                if kind not in ("user", "retrigger"):
+                    await _write_prepare_last_error(
+                        project_id, "Cancelled", "task cancelled",
+                    )
+                    await _mark_project_failed(project_id)
                 final_job_status = "cancelled"
-                final_error = "task cancelled"
+                final_error = f"task cancelled ({kind})"
                 raise
             except Exception as e:
                 logger.error(
@@ -646,25 +687,24 @@ async def _run_prepare_project_in_background(project_id: str, *, trigger: str = 
                 logger.warning(
                     f"[project_prepare] 写 JobTask 终态失败 task_id={job_task_id}: {e}"
                 )
-        # 收尾：从运行中任务集合里移除
-        info = _prepare_running_tasks.get(project_id)
-        if info is not None:
-            cur = _prepare_running_tasks.get(project_id)
-            if cur is info:
-                _prepare_running_tasks.pop(project_id, None)
+        # 收尾：从运行中任务集合里移除「自己的」登记。
+        # H-2：只删 dict 里还是本任务的 entry —— 旧实现重新 get 后无条件 pop，
+        # retrigger 竞态下会误删「接棒的新任务」的登记，导致 _is_prepare_running_for
+        # 误判 False、同 pid 可能再起一条并发 prepare。
+        if _prepare_running_tasks.get(project_id) is info:
+            _prepare_running_tasks.pop(project_id, None)
         # 清理 task 的异常（不然 asyncio 会报 Task exception was never retrieved）
-        if info is not None:
-            task = info.get("task")
-            if task is not None:
-                try:
-                    if not task.done():
-                        pass
-                    else:
-                        _ = task.exception()
-                except asyncio.CancelledError:
+        task = info.get("task")
+        if task is not None:
+            try:
+                if not task.done():
                     pass
-                except Exception:
-                    pass
+                else:
+                    _ = task.exception()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
 
 
 async def _mark_project_failed(project_id: str) -> None:
@@ -681,6 +721,104 @@ async def _mark_project_failed(project_id: str) -> None:
             f"[project_prepare] project_id={project_id[:8]}... "
             f"写 status=failed 失败: {type(e).__name__}: {e}"
         )
+
+
+async def _write_prepare_cancelled(project_id: str) -> None:
+    """H-2：写 stage=cancelled 到 progress_json（不算错误，不写 last_error）。
+
+    checkpoint 字段全部保留 → 用户下次重新触发 prepare 可断点续跑。
+    """
+    factory = get_session_factory()
+    try:
+        async with factory() as sess:
+            proj = await sess.get(Project, project_id)
+            if not proj:
+                return
+            prog = _parse_progress(proj)
+            prog["stage"] = "cancelled"
+            prog["cancelled_at"] = _fmt_time_now()
+            prog["updated_at"] = _fmt_time_now()
+            proj.progress_json = json.dumps(prog, ensure_ascii=False)
+            await sess.commit()
+    except Exception as e:
+        logger.warning(
+            f"[project_prepare] project_id={project_id[:8]}... "
+            f"写 stage=cancelled 失败: {type(e).__name__}: {e}"
+        )
+
+
+async def _mark_project_cancelled(project_id: str) -> None:
+    """H-2：用户取消后把 status 从 preparing 恢复为 imported（可重新触发）。
+
+    只动 preparing：ready/failed/其他状态是别的路径写的终态，不覆盖。
+    """
+    factory = get_session_factory()
+    try:
+        async with factory() as sess:
+            proj = await sess.get(Project, project_id)
+            if proj and proj.status == "preparing":
+                proj.status = "imported"
+                await sess.commit()
+    except Exception as e:
+        logger.warning(
+            f"[project_prepare] project_id={project_id[:8]}... "
+            f"写 status=imported（取消恢复）失败: {type(e).__name__}: {e}"
+        )
+
+
+async def cancel_prepare_project(project_id: str) -> ProjectPrepareCancelResp:
+    """H-2：取消正在运行的 prepare（用户显式取消，不算失败）。
+
+    - 进程内有任务在跑：cancel task（kind=user，任务收尾不写 DB），
+      然后由本函数同步写终态：stage=cancelled + status=imported。
+      checkpoint 保留 → 重新触发 prepare 时断点续跑。
+    - 进程内没有任务但 status 卡在 preparing（后端重启后的孤儿）：
+      直接复位（不等看门狗超时）。
+    - 都不是：幂等返回 cancelled=False。
+    """
+    factory = get_session_factory()
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        if not p:
+            raise ValueError(f"项目不存在: {project_id}")
+
+    running = _is_prepare_running_for(project_id)
+    if running:
+        _cancel_running_prepare_task(project_id, reason="用户取消", kind="user")
+        # 终态在这里同步写（而非旧任务的 CancelledError 收尾）：写完即成定局，
+        # 即使用户紧接着重新触发 prepare，也不会被旧任务的迟到写入打回。
+        await _write_prepare_cancelled(project_id)
+        await _mark_project_cancelled(project_id)
+        logger.info(f"[project_prepare] project_id={project_id[:8]}... 用户取消 prepare 成功")
+    else:
+        # 没有在跑的任务：若状态卡在 preparing（如重启后的孤儿），复位成可重新触发的状态
+        async with factory() as session:
+            p = await session.get(Project, project_id)
+            if p and p.status == "preparing":
+                await _write_prepare_cancelled(project_id)
+                await _mark_project_cancelled(project_id)
+                running = True  # 复位成功也按「已取消」上报
+                logger.info(
+                    f"[project_prepare] project_id={project_id[:8]}... "
+                    "无运行任务但状态为 preparing（孤儿），已复位为 imported"
+                )
+
+    prog_view: dict | None = None
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        if p:
+            prog_view = _prepare_progress_public_view(_parse_progress(p))
+    return ProjectPrepareCancelResp(
+        project_id=project_id,
+        cancelled=running,
+        status="cancelled" if running else "idle",
+        message=(
+            "已取消识别（已完成的部分会保留，重新点击「开始识别」可从断点继续）"
+            if running
+            else "当前没有正在运行的识别任务"
+        ),
+        prepare_progress=prog_view,
+    )
 
 
 # F-3：角色识别的切片口径标记。旧实现是按「字符偏移硬切」，会把一章拦腰截断；
@@ -758,8 +896,8 @@ def _bucket_chapters_by_chars(
     return out
 
 
-def _log_prepare_llm_estimate(project_id: str, chapters: list[Chapter], cfg) -> int:
-    """估算本次 prepare 的 LLM 调用量并打日志（F-8），返回估算值。
+def _log_prepare_llm_estimate(project_id: str, chapters: list[Chapter], cfg) -> dict:
+    """估算本次 prepare 的 LLM 调用量并打日志（F-8），返回估算 dict（H-3 透出前端）。
 
     调用量 ≈ 角色识别切片 + 对白归属批 + 语音指令批 + 音色推荐，其中后两者已按章切批；
     润色（POLISH_ENABLED）是每章一次，单独累计。
@@ -803,7 +941,18 @@ def _log_prepare_llm_estimate(project_id: str, chapters: list[Chapter], cfg) -> 
         )
     else:
         logger.info(msg)
-    return total_calls
+    return {
+        "total_calls": total_calls,
+        "char_calls": char_calls,
+        "dialogue_calls": dialogue_calls,
+        "instruction_calls": instruction_calls,
+        "polish_calls": polish_calls,
+        "chapters": n_ch,
+        "total_chars": total_chars,
+        "concurrency": concurrency,
+        # 保守估算（每次 40s / 并发）；实际耗时取决于模型速度
+        "est_hours": round(est_hours, 2),
+    }
 
 
 async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
@@ -882,7 +1031,22 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         # 但它会让 DIALOGUE_BATCH_CONCURRENCY / VOICE_INSTRUCTION_BATCH_CONCURRENCY **失效**。
         # 数千章的书按 1 并发可能跑十几小时，用户很容易误以为卡死了 —— 必须显式告知，
         # 而不是悄悄跑；是否调高交给用户按自己的套餐决定（本函数不改任何配置）。
-        _log_prepare_llm_estimate(project_id, chapters, settings)
+        # H-3：估算结果写入 progress_json（llm_estimate），前端可显示「预计多久」。
+        llm_estimate = _log_prepare_llm_estimate(project_id, chapters, settings)
+        try:
+            async with factory() as s:
+                p_prog = await s.get(Project, project_id)
+                if p_prog:
+                    prog_e = _parse_progress(p_prog)
+                    prog_e["llm_estimate"] = llm_estimate
+                    prog_e["updated_at"] = _fmt_time_now()
+                    p_prog.progress_json = json.dumps(prog_e, ensure_ascii=False)
+                    await s.commit()
+        except Exception as e:
+            logger.warning(
+                f"[project_prepare] 写 llm_estimate 进度失败（不影响识别）: "
+                f"{type(e).__name__}: {e}"
+            )
 
         # 3.5 LLM 润色纠错（可选，POLISH_ENABLED 控制；默认关闭）
         # - 按章调用 polish_with_llm 修正错别字/同音字，结果替换内存中的章节文本，
@@ -1044,6 +1208,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         prog["char_slice_total"] = len(char_slices)
         prog["char_slice_completed_n"] = len(completed_slice_idxs)
         prog["char_full_text_len"] = len(full_text)
+        # H-3：char 阶段重建 prog 时保留本次估算（checkpoint 命中/不兼容重置两条路径都覆盖）
+        prog["llm_estimate"] = llm_estimate
         await _write_progress(prog)
 
         if prog.get("stage") in ("characters", "dedup", "dialogues", "instructions", "voice_recs", "done") and char_raw_list:
@@ -1067,6 +1233,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 "char_extract_raw_list": [],
                 "char_full_text_len": len(full_text),
                 "dialogue_completed_chapters": [],
+                # H-3：全新起跑也要带上本次估算
+                "llm_estimate": llm_estimate,
             }
             await _write_progress(prog)
 
@@ -1481,6 +1649,13 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             f"voice_recs={len(voice_recs)} ms={int((_time.perf_counter()-pt)*1000)}"
         )
 
+        # H-2：全部阶段跑完 → stage=done（终态，与 status=ready 对齐；
+        # 旧行为停在 voice_recs，前端无法从 progress 判断「真的完成了」）
+        if prog.get("stage") != "done":
+            prog["stage"] = "done"
+            prog["updated_at"] = _fmt_time_now()
+            await _write_progress(prog)
+
         # 7. 落库：先清旧数据 → 写新数据
         # voice_recs 转 name → voice_id 映射，方便直接落 assigned_voice_id
         voice_id_by_name: dict[str, str] = {
@@ -1630,6 +1805,8 @@ _PREPARE_PROGRESS_PUBLIC_KEYS: tuple[str, ...] = (
     "last_error_type",
     "prev_error",
     "restart_count",
+    # H-2：用户取消的时间戳（stage=cancelled 时出现）
+    "cancelled_at",
     "char_slice_total",
     "char_slice_completed",
     "char_slice_completed_n",
@@ -1653,6 +1830,8 @@ _PREPARE_PROGRESS_PUBLIC_KEYS: tuple[str, ...] = (
     "polish_reused_n",
     "polish_rejected_n",
     "polish_failed_n",
+    # H-3：LLM 调用量/耗时估算（prepare 开始后即可显示「预计多久」）
+    "llm_estimate",
 )
 
 

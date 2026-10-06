@@ -25,6 +25,7 @@ import shutil
 import time as _time
 import uuid
 import zipfile
+from collections import deque
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
 
@@ -252,6 +253,45 @@ class ZipShardResp(BaseModel):
     size_kb: int | None
 
 
+class QualitySuspiciousChapter(BaseModel):
+    """H-5：可疑章（音频时长与文本长度比例异常）。"""
+    chapter_idx: int
+    chars: int
+    duration_ms: int | None = None
+    chars_per_sec: float | None = None
+
+
+class QualityReport(BaseModel):
+    """H-5：build 终态质检摘要（存 progress_meta_json.quality）。
+
+    - suspicious：chars_per_sec ∉ [0.8, 25] 的 done 章（1s 静音占位 →
+      2500 字/s 必中；正常语速 4~6 字/s，0.5~2 倍速均在区间内，不误报）。
+    - failed_n：合成失败章数（音频为占位静音，必不达标）。
+    - checked_n：参与质检的 done 章数。
+    """
+    suspicious: list[QualitySuspiciousChapter] = []
+    failed_n: int = 0
+    checked_n: int = 0
+
+
+class BuildProgressMeta(BaseModel):
+    """H-4：结构化进度元数据（progress_meta_json 透出）。
+
+    - phase：synthesizing（合成中）→ packaging（打包中，含分片进度）→ done
+    - rate_ch_per_min：只统计**真实合成**的章（复用/跳过不计入，
+      避免 retry 时速率虚高）；样本取最近 50 章完成时刻。
+    - eta_secs：服务端按 remaining ÷ rate 计算；无样本（<2 章）时为 null。
+    - quality：H-5 终态质检摘要（仅终态后存在）。
+    """
+    phase: str | None = None
+    rate_ch_per_min: float | None = None
+    remaining: int | None = None
+    eta_secs: int | None = None
+    shard_done: int | None = None
+    shard_total: int | None = None
+    quality: QualityReport | None = None
+
+
 class BuildDetailResp(BaseModel):
     """Build 详情（含 artifacts）。"""
     build_id: str
@@ -279,6 +319,10 @@ class BuildDetailResp(BaseModel):
     # TTS 用量（真实供应商调用，不含缓存命中）
     tts_calls: int = 0
     tts_chars: int = 0
+    # H-4：结构化进度（phase / rate / eta / 分片进度）
+    meta: BuildProgressMeta | None = None
+    # H-5：终态质检摘要（可疑章清单，供「质检」区块展示与逐章重跑）
+    quality_report: QualityReport | None = None
 
 
 class BuildListItem(BaseModel):
@@ -296,6 +340,8 @@ class BuildListItem(BaseModel):
     is_retry: bool
     tts_calls: int = 0
     tts_chars: int = 0
+    # H-4：结构化进度（构建行直接用服务端 eta_secs，替换 naive 估算）
+    meta: BuildProgressMeta | None = None
 
 
 class BuildStatusResp(BaseModel):
@@ -309,6 +355,8 @@ class BuildStatusResp(BaseModel):
     tts_provider: str = "doubao"
     artifacts: list[BuildArtifactResp]
     failed_chapters: list[int] | None
+    # H-4：结构化进度（phase / rate / eta / 分片进度）
+    meta: BuildProgressMeta | None = None
 
 
 # =====================================================================
@@ -325,6 +373,114 @@ def _parse_failed_chapters_json(s: str | None) -> list[int] | None:
         return None
     except Exception:
         return None
+
+
+def _parse_progress_meta(b: Build) -> BuildProgressMeta | None:
+    """H-4：解析 progress_meta_json（老 build / 写失败时返回 None）。"""
+    if not b.progress_meta_json:
+        return None
+    try:
+        m = json.loads(b.progress_meta_json)
+        if not isinstance(m, dict):
+            return None
+        # H-5：quality 子结构（终态才有；形状不对时置 None，不影响其余字段）
+        quality: QualityReport | None = None
+        q = m.get("quality")
+        if isinstance(q, dict):
+            try:
+                quality = QualityReport.model_validate(q)
+            except Exception:
+                quality = None
+        return BuildProgressMeta(
+            phase=m.get("phase"),
+            rate_ch_per_min=m.get("rate_ch_per_min"),
+            remaining=m.get("remaining"),
+            eta_secs=m.get("eta_secs"),
+            shard_done=m.get("shard_done"),
+            shard_total=m.get("shard_total"),
+            quality=quality,
+        )
+    except Exception:
+        return None
+
+
+def _h5_quality_summary(
+    chapters: "list[Chapter]",
+    art_rows: "list[BuildArtifact]",
+) -> dict:
+    """H-5：build 终态质检摘要。
+
+    可疑判据：status=done 且 chars_per_sec = text_len / (duration_ms/1000)
+    ∉ [0.8, 25]（1s 静音占位 → 2500 字/s 必中；正常语速 4~6 字/s，
+    speed 0.5~2 倍速均在区间内，不误报）。duration 缺失/文本为空的章
+    无法判定，计入 checked 但不标可疑。suspicious 上限 200 条（防爆 payload）。
+    """
+    text_len_by_idx = {ch.idx: len(ch.text or "") for ch in chapters}
+    suspicious: list[dict] = []
+    checked = 0
+    failed_n = 0
+    for a in sorted(art_rows, key=lambda x: x.chapter_idx):
+        if a.status == "failed":
+            failed_n += 1
+            continue
+        if a.status != "done":
+            continue
+        checked += 1
+        dur_s = (a.duration_ms or 0) / 1000.0
+        text_len = text_len_by_idx.get(a.chapter_idx, 0)
+        if dur_s <= 0 or text_len <= 0:
+            continue
+        cps = text_len / dur_s
+        if not (0.8 <= cps <= 25.0) and len(suspicious) < 200:
+            suspicious.append({
+                "chapter_idx": a.chapter_idx,
+                "chars": text_len,
+                "duration_ms": a.duration_ms,
+                "chars_per_sec": round(cps, 2),
+            })
+    return {"suspicious": suspicious, "failed_n": failed_n, "checked_n": checked}
+
+
+def _h4_progress_meta_json(
+    *,
+    phase: str,
+    processed: int,
+    target_total: int,
+    recent_ts: "deque[float]",
+    shard_done: int | None = None,
+    shard_total: int | None = None,
+    quality: dict | None = None,
+) -> str:
+    """H-4：生成 progress_meta_json。
+
+    - rate 只统计**真实合成**的章（recent_ts 仅在真实合成完成时 append），
+      全缓存命中 / retry 复用 / skip 的章不计入 —— 否则瞬时速率虚高、ETA 抖动。
+    - 样本窗口为最近 50 章（deque(maxlen=50)），兼顾平滑与对速率变化的响应。
+    - eta_secs = remaining / rate；无样本（<2 章）时为 null，前端显示「计算中…」。
+    - remaining 用「目标口径」：retry 时只算 only_set 内的章，非全书。
+    - H-5：终态时附 quality 质检摘要。
+    """
+    rate: float | None = None
+    eta_secs: int | None = None
+    remaining = max(0, target_total - processed)
+    if len(recent_ts) >= 2:
+        span_min = (recent_ts[-1] - recent_ts[0]) / 60.0
+        if span_min > 0:
+            rate = round((len(recent_ts) - 1) / span_min, 2)
+            if rate > 0 and remaining > 0:
+                eta_secs = round(remaining / rate * 60.0)
+    return json.dumps(
+        {
+            "phase": phase,
+            "rate_ch_per_min": rate,
+            "remaining": remaining,
+            "eta_secs": eta_secs,
+            "shard_done": shard_done,
+            "shard_total": shard_total,
+            "quality": quality,
+        },
+        ensure_ascii=False,
+    )
 
 
 async def _ensure_default_narrator(narrator_voice_id: str | None) -> str:
@@ -525,6 +681,7 @@ async def _apply_terminal_status(
     tts_calls: int,
     tts_chars: int,
     zip_shards: list[dict] | None = None,
+    progress_meta_json: str | None = None,
 ) -> bool:
     """B-3：仅当 Build 仍为 running 时写终态（条件更新），返回是否真的写回。
 
@@ -532,6 +689,7 @@ async def _apply_terminal_status(
     旧实现无条件把 status 改回 success/partial_success，等于把用户已取消的任务
     "复活"。这里用 `UPDATE ... WHERE build_id=? AND status='running'` + rowcount
     判定：任何非 running 的既有终态都不会被覆盖。
+    H-4：终态时把 progress_meta_json 收口为 phase=done（不再显示打包中）。
     """
     from sqlalchemy import update as _sa_update
     factory = get_session_factory()
@@ -552,6 +710,13 @@ async def _apply_terminal_status(
                 failed_chapters_json=json.dumps(sorted(failed_chapters), ensure_ascii=False),
                 tts_calls=tts_calls,
                 tts_chars=tts_chars,
+                progress_meta_json=(
+                    progress_meta_json
+                    if progress_meta_json is not None
+                    else json.dumps({"phase": "done", "rate_ch_per_min": None,
+                                     "remaining": 0, "eta_secs": None,
+                                     "shard_done": None, "shard_total": None})
+                ),
             )
         )
         await s.commit()
@@ -1043,6 +1208,7 @@ def _build_to_detail(b: Build, artifacts: list[BuildArtifact]) -> BuildDetailRes
         )
         for i, s in enumerate(shards)
     ]
+    meta = _parse_progress_meta(b)
     return BuildDetailResp(
         build_id=b.build_id,
         project_id=b.project_id,
@@ -1076,6 +1242,8 @@ def _build_to_detail(b: Build, artifacts: list[BuildArtifact]) -> BuildDetailRes
         is_retry=bool(b.is_retry),
         tts_calls=int(b.tts_calls or 0),
         tts_chars=int(b.tts_chars or 0),
+        meta=meta,
+        quality_report=meta.quality if meta else None,
     )
 
 
@@ -1094,6 +1262,7 @@ def _build_to_list_item(b: Build) -> BuildListItem:
         is_retry=bool(b.is_retry),
         tts_calls=int(b.tts_calls or 0),
         tts_chars=int(b.tts_chars or 0),
+        meta=_parse_progress_meta(b),
     )
 
 
@@ -1118,6 +1287,7 @@ def _build_to_status_resp(b: Build, artifacts: list[BuildArtifact]) -> BuildStat
             for a in artifacts
         ],
         failed_chapters=_parse_failed_chapters_json(b.failed_chapters_json),
+        meta=_parse_progress_meta(b),
     )
 
 
@@ -1579,7 +1749,17 @@ async def cancel_build(project_id: str, build_id: str, reason: str | None = None
     return _build_to_resp(b)
 
 
-async def retry_failed_build(source_build_id: str, force_restart_failed_only: bool = True) -> BuildResp:
+async def retry_failed_build(
+    source_build_id: str,
+    force_restart_failed_only: bool = True,
+    chapters: list[int] | None = None,
+) -> BuildResp:
+    """重试失败章 / 重跑指定章。
+
+    - chapters=None（默认）：只重跑源 build 的失败章（原行为）。
+    - chapters=[idx...]（H-5）：指定章（0-based chapter_idx）**并入**重合成集合
+      —— 用于质检可疑章 / 用户手动指定的章；其余章按 B-5 硬链接复用原音频。
+    """
     factory = get_session_factory()
     async with factory() as session:
         source_build = await session.get(Build, source_build_id)
@@ -1598,8 +1778,8 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
         if not p:
             raise ValueError(f"项目不存在: {project_id}")
         # F-4：正文以 project_chapters 为主路径（表为空时自动回落 chapters_json 快照）
-        chapters = await load_chapters(session, project_id)
-        if not chapters:
+        chapters_all = await load_chapters(session, project_id)
+        if not chapters_all:
             raise RuntimeError("项目尚未 prepare（没有章节数据），请先执行识别")
 
         narrator_voice_id = source_build.narrator_voice_id
@@ -1626,8 +1806,22 @@ async def retry_failed_build(source_build_id: str, force_restart_failed_only: bo
             )
             failed_ch_idxs = sorted(list((await session.execute(stmt_failed)).scalars().all()))
 
+        # H-5：显式指定章并入重合成集合（0-based chapter_idx，与 artifacts 对齐）
+        if chapters:
+            total_n = len(chapters_all)
+            explicit = sorted({int(c) for c in chapters})
+            bad = [c for c in explicit if not (0 <= c < total_n)]
+            if bad:
+                raise ValueError(
+                    f"chapter_idx 越界: {bad}（有效范围 0~{total_n - 1}）"
+                )
+            failed_ch_idxs = sorted(set(failed_ch_idxs) | set(explicit))
+
         if not failed_ch_idxs:
             raise ValueError("没有失败章可重试")
+
+        # 局部别名：下方建 BuildArtifact 循环沿用原变量名
+        chapters = chapters_all
 
         async with _RUNNING_LOCK:
             if any(pid == project_id for pid in _ACTIVE_BUILDS.values()):
@@ -1940,6 +2134,15 @@ async def _run_build_inner(
     for lst in dialogues_by_chapter.values():
         lst.sort(key=lambda x: x.anchor_start)
 
+    # H-4：结构化进度元数据（提前初始化 —— 启动更新时就要写初始 meta）。
+    # - recent_synth_ts：最近 50 章「真实合成」的完成时刻（复用/跳过/失败不 append，
+    #   否则 retry 大量复用时速率虚高、ETA 剧烈抖动）。
+    # - processed / processed_target：目标口径的处理进度（retry 时只算 only_set
+    #   内的章；全量时为全书章数）。remaining = target - processed。
+    recent_synth_ts: deque[float] = deque(maxlen=50)
+    processed_target = len(only_set) if only_set is not None else total
+    processed = 0
+
     async with factory() as s:
         b = await s.get(Build, build_id)
         if not b:
@@ -1957,6 +2160,8 @@ async def _run_build_inner(
         # worker 启动与用户 cancel 存在竞态（cancel 可能已写终态），
         # 终态一律不复活，worker 直接退出（否则被取消的 build 会被
         # 迟到的 running 覆盖，后续 start_build 又误判"已有活跃 build"）。
+        # H-4：启动即写入初始 meta（phase=synthesizing / remaining=target），
+        # 前端从第一章就能显示「合成中」，不必等第一章完成。
         from sqlalchemy import update as _sa_update
         res = await s.execute(
             _sa_update(Build)
@@ -1968,6 +2173,12 @@ async def _run_build_inner(
                 status="running",
                 started_at=datetime.now(UTC).replace(tzinfo=None),
                 progress_msg=f"开始合成 1/{total} 章…",
+                progress_meta_json=_h4_progress_meta_json(
+                    phase="synthesizing",
+                    processed=0,
+                    target_total=processed_target,
+                    recent_ts=recent_synth_ts,
+                ),
             )
         )
         await s.commit()
@@ -2066,6 +2277,14 @@ async def _run_build_inner(
                     b = await s.get(Build, build_id)
                     if b:
                         b.completed_chapters = completed
+                        # H-4：复用章不进 recent_synth_ts（不是真实合成，速率不虚高）；
+                        # 也不是目标章（only_set 外），processed 不变。
+                        b.progress_meta_json = _h4_progress_meta_json(
+                            phase="synthesizing",
+                            processed=processed,
+                            target_total=processed_target,
+                            recent_ts=recent_synth_ts,
+                        )
                         await s.commit()
                 logger.info(
                     f"[build_worker] build_id={build_id[:8]}... "
@@ -2130,9 +2349,18 @@ async def _run_build_inner(
                             b2.completed_at = datetime.now(UTC).replace(tzinfo=None)
                             await s2.commit()
                     break
+                # H-4：skip 的是目标章（本 build 已 done），processed +1；
+                # 但不进 recent_synth_ts（非真实合成）。
+                processed += 1
                 if b:
                     b.completed_chapters = completed
                     b.progress_msg = f"已跳过第 {ch_idx+1}/{total} 章（已完成）：{ch.title}"
+                    b.progress_meta_json = _h4_progress_meta_json(
+                        phase="synthesizing",
+                        processed=processed,
+                        target_total=processed_target,
+                        recent_ts=recent_synth_ts,
+                    )
                 await s.commit()
             continue
 
@@ -2151,6 +2379,9 @@ async def _run_build_inner(
             await s.commit()
 
         try:
+            # H-4：本章开始前的 TTS 调用数 —— 章完成时若没增加，
+            # 说明整章都是段级缓存命中，不计入速率样本。
+            ch_tts_calls_before = tts_calls_used
             ch_dialogues = dialogues_by_chapter.get(ch_idx, [])
 
             segs, _ = _build_segments_for_chapter(
@@ -2272,6 +2503,11 @@ async def _run_build_inner(
                 b = await s.get(Build, build_id)
                 completed += 1
                 chapter_ok_flag[ch_idx] = True
+                # H-4：仅当本章发生过真实 TTS 调用（缓存未全命中）才计入速率样本；
+                # 否则（整章段级缓存命中）速率会被瞬时推高、ETA 剧烈失真。
+                if tts_calls_used > ch_tts_calls_before:
+                    recent_synth_ts.append(_time.perf_counter())
+                processed += 1
                 if b:
                     b.completed_chapters = completed
                     # B-8：每章结束就把当前 TTS 用量落库，这样即便后续打包/DB
@@ -2283,6 +2519,13 @@ async def _run_build_inner(
                         logger.warning(f"[build_worker] cancelled after done ch {ch_idx+1}")
                         b.progress_msg = f"已取消：已完成 {completed}/{total} 章"
                         b.completed_at = datetime.now(UTC).replace(tzinfo=None)
+                    else:
+                        b.progress_meta_json = _h4_progress_meta_json(
+                            phase="synthesizing",
+                            processed=processed,
+                            target_total=processed_target,
+                            recent_ts=recent_synth_ts,
+                        )
                 await s.commit()
                 if b and b.status == "cancelled":
                     break
@@ -2340,12 +2583,22 @@ async def _run_build_inner(
                     art.duration_ms = 1000
                     art.error_msg = f"{type(ch_err).__name__}: {ch_err}"[:500]
                 b = await s.get(Build, build_id)
+                # H-4：失败章也消耗了一个目标名额（不再重跑），processed +1；
+                # 但不进速率样本（失败章无有效合成耗时）。
+                processed += 1
                 if b:
                     b.completed_chapters = completed
                     if b.status == "cancelled":
                         logger.warning(f"[build_worker] cancelled after fail ch {ch_idx+1}")
                         b.progress_msg = f"已取消：已完成 {completed}/{total} 章"
                         b.completed_at = datetime.now(UTC).replace(tzinfo=None)
+                    else:
+                        b.progress_meta_json = _h4_progress_meta_json(
+                            phase="synthesizing",
+                            processed=processed,
+                            target_total=processed_target,
+                            recent_ts=recent_synth_ts,
+                        )
                 await s.commit()
                 if b and b.status == "cancelled":
                     break
@@ -2423,6 +2676,24 @@ async def _run_build_inner(
     shard_ranges = _zip_shard_ranges(total, shard_size)
     zip_shards: list[dict] = []
     chapter_titles = [c.title for c in chapters]
+
+    # H-4：合成全部结束 → 切到 packaging 阶段（大书数千章打包耗时较久，
+    # 前端据此从「合成中」切到「打包中 i/N 卷」，而不是长时间停在最后一章）。
+    shard_done = 0
+    async with factory() as s:
+        b = await s.get(Build, build_id)
+        if b and b.status == "running":
+            b.progress_msg = f"打包中：0/{len(shard_ranges)} 卷…"
+            b.progress_meta_json = _h4_progress_meta_json(
+                phase="packaging",
+                processed=processed,
+                target_total=processed_target,
+                recent_ts=recent_synth_ts,
+                shard_done=0,
+                shard_total=len(shard_ranges),
+            )
+            await s.commit()
+
     for _s, _e in shard_ranges:
         shard_name = _zip_shard_filename(build_id, _s, _e, total)
         shard_path = str(audio_dir / shard_name)
@@ -2454,6 +2725,21 @@ async def _run_build_inner(
             "end": _e,
             "size_bytes": _size,
         })
+        # H-4：每打完一片更新分片进度（仅 running 时写；已被取消则不动）
+        shard_done += 1
+        async with factory() as s:
+            b = await s.get(Build, build_id)
+            if b and b.status == "running":
+                b.progress_msg = f"打包中：{shard_done}/{len(shard_ranges)} 卷…"
+                b.progress_meta_json = _h4_progress_meta_json(
+                    phase="packaging",
+                    processed=processed,
+                    target_total=processed_target,
+                    recent_ts=recent_synth_ts,
+                    shard_done=shard_done,
+                    shard_total=len(shard_ranges),
+                )
+                await s.commit()
         # G-3：分片 ZIP 归档（在本地 MP3 清理之前 —— 打包必须读本地文件）
         if await _archive_file(
             media_key(project_id, build_id, shard_name),
@@ -2505,6 +2791,27 @@ async def _run_build_inner(
         + (f"（{failed_count} 章失败已用静音占位）" if failed_count else "")
         + (f"，共 {len(zip_shards)} 个 ZIP 分片" if len(zip_shards) > 1 else "")
     )
+    # H-5：终态质检摘要（可疑章 = 字/秒比异常；失败只告警不影响终态写入）
+    quality_summary: dict | None = None
+    try:
+        async with factory() as s:
+            art_rows_q = list(
+                (await s.execute(
+                    select(BuildArtifact).where(BuildArtifact.build_id == build_id)
+                )).scalars().all()
+            )
+        quality_summary = _h5_quality_summary(chapters, art_rows_q)
+        if quality_summary["suspicious"]:
+            logger.info(
+                f"[build_worker] build_id={build_id[:8]}... 质检发现 "
+                f"{len(quality_summary['suspicious'])} 个可疑章（failed_n="
+                f"{quality_summary['failed_n']} checked_n={quality_summary['checked_n']}）"
+            )
+    except Exception as e:
+        logger.warning(
+            f"[build_worker] build_id={build_id[:8]}... 质检摘要计算失败"
+            f"（不影响构建终态）: {type(e).__name__}: {e}"
+        )
     terminal_applied = await _apply_terminal_status(
         build_id,
         final_status=final_status,
@@ -2517,6 +2824,17 @@ async def _run_build_inner(
         tts_calls=tts_calls_used,
         tts_chars=tts_chars_used,
         zip_shards=zip_shards,
+        # H-4：终态 meta 保留最终速率（remaining=0、eta=null、phase=done）
+        # H-5：附带质检摘要
+        progress_meta_json=_h4_progress_meta_json(
+            phase="done",
+            processed=processed_target,
+            target_total=processed_target,
+            recent_ts=recent_synth_ts,
+            shard_done=len(zip_shards),
+            shard_total=len(shard_ranges),
+            quality=quality_summary,
+        ),
     )
 
     # B-8：无论终态是否写回，已真实消耗的 TTS 用量都要入账（打包期间被取消同理）。

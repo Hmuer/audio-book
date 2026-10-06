@@ -22,13 +22,22 @@ def _build_llm_semaphore() -> asyncio.Semaphore:
 
 
 _llm_sem: asyncio.Semaphore | None = None
+# H-1：记录创建 sem 时的并发值；与当前 settings 不一致则重建（热更新）
+_llm_sem_value: int = 0
 
 
 def _get_llm_sem() -> asyncio.Semaphore:
-    """惰性初始化 semaphore（在事件循环内创建，避免跨循环报错）。"""
-    global _llm_sem
-    if _llm_sem is None:
-        _llm_sem = _build_llm_semaphore()
+    """惰性初始化 semaphore（在事件循环内创建，避免跨循环报错）。
+
+    H-1 热更新：settings.LLM_MAX_CONCURRENCY 变化时立即重建 —— 用户在设置页
+    调高/调低并发**不需要重启后端**。旧 sem 由在飞请求的持有者自然释放（不中断
+    在飞请求）；新请求立即按新并发度限流。
+    """
+    global _llm_sem, _llm_sem_value
+    n = max(1, int(settings.LLM_MAX_CONCURRENCY))
+    if _llm_sem is None or _llm_sem_value != n:
+        _llm_sem = asyncio.Semaphore(n)
+        _llm_sem_value = n
     return _llm_sem
 
 

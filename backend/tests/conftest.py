@@ -79,10 +79,13 @@ def _reset_global_singletons() -> None:
         fd._tts_instances = {}
         fd._tts_default_instance = None
         fd._tts_sem = None
+        # H-1：并发值缓存一并清零，保证下个用例按自己的 settings 重建
+        fd._tts_sem_value = 0
 
     m = _get("backend.app.ai.providers.minimax.llm")
     if m is not None:
         m._llm_sem = None
+        m._llm_sem_value = 0
 
     p = _get("backend.app.services.project")
     if p is not None:

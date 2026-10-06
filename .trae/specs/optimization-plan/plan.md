@@ -1086,6 +1086,106 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 - 「测试隔离」不能靠『两套模块对象』这种巧合来隔离；统一导入路径后，任何跨用例的**全局可变状态**（settings 字段、模块级 dict/lock/semaphore）都必须显式重置或快照还原。
 - 只改「数据来源类型/导入路径」时，必须核查所有下游消费者与**全局副作用**（reload、save_*) 的连带影响。
 
+---
+
+## 12. 「四控」收口计划（质量 / 速度 / 进度 / 状态）· 2026-09-23
+
+> 触发：用户要求「优化、完善各功能，尤其针对长篇小说的处理逻辑，在确保质量的同时提高生产运行速度，做到质量可控、速度可控、进度可控、状态可控」。
+> 前提：批次 1~9 已解决「能不能跑完一本 1000~5000 章的书」；本批解决「**跑多快、跑成什么样、跑到哪了、能不能停**」。
+> 用户模型背景：LLM 此前用 deepseek v4 flash（OpenAI 兼容通道、高并发低延迟），速度类优化按「高配额 LLM + 可调 RPM 的豆包 TTS」假设。
+
+### 12.0 四控现状与缺口（读码评估，2026-09-23）
+
+| 控 | 已有（批 1~9） | 缺口 |
+|---|---|---|
+| **质量** | polish 合理性校验 + 长度比防护；失败章静音占位 + `error_msg` 逐章可见；A-6 TTS 截断音频拒收；LRC sidecar 时间轴 | ① done 章**无「可疑」检测**——时长/字数比异常（如上游返回极短音频）不可见；② 可疑章无法**单独重跑**（retry-failed 只认 status=failed） |
+| **速度** | TTS RPM 桶实时读取（改设置立即生效）；F-8 prepare 调用量估算（仅服务器日志）；设置页全部可见（C-1） | ① **LLM/TTS 并发信号量是模块级缓存**（[llm.py#L24-L32](file:///workspace/backend/app/ai/providers/minimax/llm.py#L24-L32) / [factory.py#L172-L177](file:///workspace/backend/app/ai/factory.py#L172-L177)），改 `LLM_MAX_CONCURRENCY`/`TTS_MAX_CONCURRENCY` 必须重启，长任务中途不敢动；② prepare 估算**不透出前端** |
+| **进度** | prepare 分阶段 checkpoint 断点续跑；build 章级断点 + retry-failed；前端分批渲染 + 批量签发（F-5） | ① **prepare 无法取消**（`_cancel_running_prepare_task` 只在重新触发时被调用；5000 章 prepare 数小时，点错只能重启后端）；② build ETA 用 `elapsed/pct` 线性外推（[ProjectDetailPage.tsx#L1846-L1855](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L1846-L1855)），复用跳章/章长不均时误差极大；③ **打包/归档阶段无独立进度**（大书 100 卷 ZIP 打包数十分钟，用户只见 progress_msg 自由文本） |
+| **状态** | build 生命周期 + 看门狗孤儿恢复 + 终态写保护（B-1~B-4）；JobTask 心跳；failed_chapters 清单 | ① build 后半程（打包/归档）状态扁平，无结构化 phase；② **无实时速率观察工具**——F-6 决策「先提配额」后，用户无法看到「TTS 速率是否贴近 RPM 上限」来判断配额是否打满 |
+
+### 12.1 Tier H —— 批次 10
+
+#### H-1 并发信号量热更新【速度】
+- 位置：`llm.py::_get_llm_sem()` / `factory.py::get_tts_sem()` —— sem 在首次调用时按当时的 settings 值创建并**永久缓存**。
+- 后果：切到 deepseek v4 flash 等高并发模型后，把设置页 `LLM_MAX_CONCURRENCY` 从 1 调到 4 **不生效**（长任务中途重启代价大）。
+- 方案：缓存 `(创建时的并发值, sem)`；每次获取对比当前 settings 值，不同则**重建**。旧 sem 由在飞请求持有者自然释放，不中断在飞请求（放宽时新请求立即享受新并发；收紧时只影响新请求）。
+- 连带：`conftest._reset_global_singletons` 同步重置新增的值缓存；设置页 label 标注「改后立即生效」。
+- 验收：red 测试断言改 settings 后 sem 被重建且并发度为新值。
+
+#### H-2 prepare 可取消【进度/状态】
+- 位置：[project.py#L488](file:///workspace/backend/app/services/project.py#L488) `_cancel_running_prepare_task` 已存在但无 API 入口。
+- 方案：`POST /projects/{id}/prepare/cancel` → `cancel_prepare_project()`：
+  - 有运行任务 → `task.cancel()`（既有 `CancelledError` 分支已写 `last_error` + 项目 `failed`）；
+  - 无运行任务（重启后遗留 preparing）→ 直接置 `failed` + `last_error`，**同时避免看门狗把用户取消的项目自动拉起**（`_list_stuck_preparing_projects` 只扫 preparing）。
+- 幂等：项目不在 preparing / 已取消 → 返回当前状态不报错。
+- 前端：详情页 preparing 区加「取消识别」按钮（checkpoint 保留，重新 prepare 可续跑）。
+- 验收：red 测试覆盖「有任务取消」「无任务直接置 failed」两条路径。
+
+#### H-3 prepare 调用量估算透出前端【进度/速度】
+- 位置：`_log_prepare_llm_estimate()`（F-8）只写服务器日志，前端完全看不到「这本 3000 章的书 prepare 要多久」。
+- 方案：估算 dict（总调用次数 / 预计耗时区间 / 当前并发）写入 `progress_json.llm_estimate` 并入 `_PREPARE_PROGRESS_PUBLIC_KEYS` 白名单；前端在准备进度区显示「预计 LLM 调用 N 次 · 约 X 小时（当前并发=C，可在设置→限流配置调高）」。
+- 验收：red 测试断言估算写入 progress 且公开视图可见。
+
+#### H-4 build 实时速率 + 平滑 ETA + 结构化 phase【进度/速度/状态】
+- DB：`Build.progress_meta_json`（TEXT，走 `_BUILD_NEW_COLUMNS` 自动迁移）。
+- worker 维护（随既有每章 commit 顺带写，无额外 DB 往返）：
+  - `phase`：`synthesizing` → `packaging`（含 shard_done/shard_total 打包进度）→ `done`；
+  - `rate_ch_per_min`：**只统计真实合成的章**（复用/跳过不计入，避免 retry 时速率虚高）；样本取最近 50 章完成时间戳；
+  - `remaining`：尚待合成的章数（retry 时为 only_set 口径，非全书口径）。
+- API：`BuildStatusResp` / `BuildDetailResp` 增加 `phase / rate_ch_per_min / eta_secs / shard_done / shard_total`；`eta_secs` 服务端按 `remaining ÷ rate` 计算，无样本时为 null。
+- 前端：构建行**替换** naive ETA 为服务端 `eta_secs`；phase 徽标（合成中 / 打包中 i/N 卷）。
+- 备注：这是 F-6 决策「先提配额」的**配套观察工具**——速率贴近 RPM 上限说明配额已打满，未贴近说明还有调度空档。
+- 验收：red 测试覆盖速率计算、eta 计算、resp 透出、打包阶段 phase。
+
+#### H-5 质检报告 + 可疑章重跑【质量】
+- 方案：build 终态时计算质检摘要，与 H-4 同存 `progress_meta_json.quality`：
+  - 可疑章判据：`status=done` 且 `chars_per_sec = text_len / (duration_ms/1000)` ∉ **[0.8, 25]**（1s 静音占位 → 2500 字/s 必中；正常语速 4~6 字/s，speed 0.5~2 倍速均在区间内，不误报）；
+  - 摘要：`suspicious[]`（chapter_idx/chars/duration_ms/chars_per_sec，上限 200 条）+ `failed_n` + `checked_n`；经 `BuildDetailResp.quality_report` 透出。
+- 可疑章重跑：`retry_failed_build(..., chapters=[...])` —— 指定章并入重合成集合走既有复用/重合成逻辑（其余章按 B-5 硬链接复用）；路由 body 加可选 `chapters`。
+- 前端：构建详情「质检」区块：可疑章清单（章号/字数/时长/字每秒）+ 逐章「重跑」+「重跑全部可疑章」。
+- 验收：red 测试断言占位/极短音频章被标可疑、正常章不误报、`chapters=[..]` 只重跑指定章且其余复用。
+
+### 12.2 执行批次
+
+| 批次 | 内容 | 说明 |
+|---|---|---|
+| **10-A** | H-1 + H-3 | 小改动先行：信号量热更新、估算透出 |
+| **10-B** | H-2 | prepare 取消（API + 前端按钮） |
+| **10-C** | H-4 + H-5 | 共用 `progress_meta_json`：DB 迁移、worker 维护、API 透出、质检 + 指定章重跑、前端展示 |
+| **回归** | 全量 pytest + `tsc --noEmit` + plan.md 回填 | |
+
+### 12.3 跟踪清单
+
+> 完成一项把 `[ ]` 改为 `[x]`，并填写完成日期。
+
+- [x] H-1 LLM/TTS 并发信号量热更新（改设置立即生效）— 2026-10-07 完成
+- [x] H-2 prepare 可取消（API + 前端 + 看门狗兼容）— 2026-10-07 完成
+- [x] H-3 prepare 调用量估算透出前端 — 2026-10-07 完成
+- [x] H-4 build 实时速率 + 平滑 ETA + phase（progress_meta_json）— 2026-10-07 完成
+- [x] H-5 质检报告 + 可疑章重跑 — 2026-10-07 完成
+
+### 12.4 批次 10 实施记录（2026-10-07）
+
+**实施摘要**
+
+| 项 | 关键改动 | 位置 |
+|---|---|---|
+| H-1 信号量热更新 | `_get_llm_sem()` / `get_tts_sem()` 改为缓存 `(创建时并发值, sem)`，每次获取对比当前 settings，不同则**重建**（旧 sem 由在飞请求持有者自然释放，不中断）；conftest `_reset_global_singletons` 同步重置值缓存 | [llm.py](file:///workspace/backend/app/ai/providers/minimax/llm.py) / [factory.py](file:///workspace/backend/app/ai/factory.py) |
+| H-2 prepare 可取消 | `POST /projects/{id}/prepare/cancel` → `cancel_prepare_project()`：有任务 `task.cancel()`（CancelledError 分支已写 last_error）、无任务（重启遗留）直接置 failed；看门狗只扫 preparing 不会拉起已取消项目；**重构 cancel/enqueue/run 三元组**——登记以 task 为键、收尾校验身份，消除旧任务收尾误删新任务登记的竞态；前端 preparing 区「取消识别」按钮（checkpoint 保留可续跑） | [project.py](file:///workspace/backend/app/services/project.py) / [routes.py](file:///workspace/backend/app/api/routes.py) / [ProjectDetailPage.tsx](file:///workspace/frontend/src/components/ProjectDetailPage.tsx) |
+| H-3 估算透出 | `_log_prepare_llm_estimate()` 改为返回 dict（总调用次数/预计耗时/当前并发），写入 `progress_json.llm_estimate` 并入 `_PREPARE_PROGRESS_PUBLIC_KEYS` 白名单；前端准备进度区显示「预计 LLM 调用 N 次 · 约 X 小时（当前并发=C，可在设置→限流配置调高）」 | [project.py](file:///workspace/backend/app/services/project.py) |
+| H-4 速率+ETA+phase | `Build.progress_meta_json`（走 `_BUILD_NEW_COLUMNS` 自动迁移）；worker 每章 commit 顺带写 `phase`（synthesizing→packaging(含 shard_done/shard_total)→done）/`rate_ch_per_min`（最近 50 章真实合成样本）/`remaining`（retry 为 only_set 口径）；API 透出 phase/rate/eta_secs/shard_*；前端**替换** naive 线性 ETA 为服务端 eta_secs + phase 徽标 | [build.py](file:///workspace/backend/app/services/build.py) / [routes.py](file:///workspace/backend/app/api/routes.py) / [api.ts](file:///workspace/frontend/src/lib/api.ts) |
+| H-5 质检+可疑章重跑 | `_h5_quality_summary()`：done 章 `chars_per_sec = text_len/(duration_ms/1000)` ∉ [0.8, 25] 判可疑（1s 静音占位必中，正常语速不误报），上限 200 条 + failed_n + checked_n，存 `progress_meta_json.quality` 经 `BuildDetailResp.quality_report` 透出；`retry_failed_build(chapters=[...])` 指定章并入重合成集合、其余章 B-5 硬链接复用；前端质检报告区块：可疑章清单（章号/字数/时长/字每秒）+ 逐章「重跑」+「重跑全部可疑章」 | [build.py](file:///workspace/backend/app/services/build.py) / [routes.py](file:///workspace/backend/app/api/routes.py) / [api.ts](file:///workspace/frontend/src/lib/api.ts) |
+
+**实现要点与坑（red 测试驱动出的修正）**
+- H-2：prepare 成功后需把 stage 置 done 并更新 progress_json，前端才能正确识别任务真正完成（此前停在 voice_recs）。
+- H-4：① worker 启动时即写初始 meta（phase=synthesizing, rate=0, remaining=总章数），避免第一章完成前 meta 为 None、前端无法显示合成中；② 整章段级缓存命中**不计入速率样本**（记录每章开始前 TTS 调用数，章内发生真实调用才计），否则 retry 复用场景速率虚高；③ `remaining=0` 时 eta_secs 返回 None 而非 0。
+- H-5：`chapters` 显式指定时并入 only_set 口径，`remaining` 与速率分母均按 only_set 计算。
+- 新增 [test_quad_control_red.py](file:///workspace/backend/tests/test_quad_control_red.py)（13 用例）：H-1 sem 重建、H-2 取消双路径 + 竞态、H-3 估算透出、H-4 meta/phase/eta、H-5 质检判据 + 指定章重跑端到端（断言复用章硬链接同 inode）。
+
+**回归结果**
+- 全量后端：`449 passed, 0 failed`（修复 [test_zip_shard_red.py](file:///workspace/backend/tests/test_zip_shard_red.py) `_FakeBuild` 替身缺 H-4 新增 `progress_meta_json` 属性导致的 AttributeError）
+- 前端：`tsc --noEmit` 通过（exit 0）
+
 
 
 

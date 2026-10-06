@@ -214,8 +214,9 @@ def test_cs7_prepare_llm_estimate_counts_and_warns(monkeypatch, caplog):
     # 100 章 × 2500 字 = 25 万字 → 5 片；对白 ceil(100/14)=8；指令 ceil(100/6)=17；+1 推荐
     chapters = [Chapter(idx=i, title=f"第{i}章", text="字" * 2500) for i in range(100)]
     with caplog.at_level("INFO"):
-        n = _log_prepare_llm_estimate("pid12345", chapters, _Cfg)
-    assert n == 5 + 8 + 17 + 1
+        est = _log_prepare_llm_estimate("pid12345", chapters, _Cfg)
+    # H-3：返回 dict（透出前端 llm_estimate），total_calls 即旧口径的调用次数
+    assert est["total_calls"] == 5 + 8 + 17 + 1
 
     msgs = [r.getMessage() for r in caplog.records]
     assert any("LLM 调用量估算" in m for m in msgs), msgs
@@ -256,9 +257,10 @@ def test_cs7_polish_calls_counted_once_per_chapter(caplog):
 
     chapters = [Chapter(idx=i, title="t", text="字" * 100) for i in range(10)]
     with caplog.at_level("INFO"):
-        n = _log_prepare_llm_estimate("pid12345", chapters, _Cfg)
+        est = _log_prepare_llm_estimate("pid12345", chapters, _Cfg)
     # 1 片 + 1 批 + 2 批 + 1 推荐 + 10 润色
-    assert n == 1 + 1 + 2 + 1 + 10
+    assert est["total_calls"] == 1 + 1 + 2 + 1 + 10
+    assert est["polish_calls"] == 10
 
 
 # =====================================================================

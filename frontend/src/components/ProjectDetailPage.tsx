@@ -408,6 +408,7 @@ const PIPELINE_STAGES = [
 ] as const;
 
 function stageLabel(s?: string): string {
+  if (s === 'cancelled') return '已取消';
   const found = PIPELINE_STAGES.find(st => st.key === s);
   if (found) return found.label;
   return s ? `运行中（${s}）` : '运行中';
@@ -466,6 +467,7 @@ function OverviewTab({
   onReload: () => void;
 }) {
   const [prepareTip, setPrepareTip] = useState<string | null>(null);
+  const [cancelBusy, setCancelBusy] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadErr, setUploadErr] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -499,6 +501,22 @@ function OverviewTab({
       await onReload();
     } catch (e: any) {
       alert(`识别触发失败: ${e?.message || e}`);
+    }
+  };
+
+  // H-2：取消正在运行的识别（不算失败；checkpoint 保留，可断点续跑）
+  const handlePrepareCancel = async () => {
+    if (!window.confirm('确定取消识别？已完成的部分会保留，之后可从断点继续。')) return;
+    setCancelBusy(true);
+    try {
+      const res = await api.projectPrepareCancel(project.project_id);
+      setPrepareTip(res.message || '已取消。');
+      setTimeout(() => setPrepareTip(null), 8000);
+      await onReload();
+    } catch (e: any) {
+      alert(`取消识别失败: ${e?.message || e}`);
+    } finally {
+      setCancelBusy(false);
     }
   };
 
@@ -637,6 +655,11 @@ function OverviewTab({
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
                 重跑
               </button>
+              {/* H-2：取消识别（不算失败，checkpoint 保留可续跑） */}
+              <button className="btn-danger !py-1.5 !px-3 text-xs" onClick={handlePrepareCancel} disabled={cancelBusy}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+                {cancelBusy ? '取消中…' : '取消识别'}
+              </button>
             </div>
           </div>
 
@@ -644,6 +667,23 @@ function OverviewTab({
           <div className="relative">
             <PipelineTimeline prog={prog} />
           </div>
+
+          {/* H-3：LLM 调用量/耗时估算（prepare 开始后即有） */}
+          {prog?.llm_estimate && (
+            <div className="text-[11px] text-ink-500 tabular-nums flex flex-wrap items-center gap-x-3">
+              <span>
+                预计 LLM 调用 <span className="text-ink-600 font-medium">{prog.llm_estimate.total_calls}</span> 次
+                （角色 {prog.llm_estimate.char_calls} · 对白 {prog.llm_estimate.dialogue_calls} · 指令 {prog.llm_estimate.instruction_calls}
+                {prog.llm_estimate.polish_calls > 0 ? ` · 润色 ${prog.llm_estimate.polish_calls}` : ''}）
+              </span>
+              <span>
+                {prog.llm_estimate.est_hours >= 1
+                  ? `约 ${prog.llm_estimate.est_hours.toFixed(1)} 小时`
+                  : `约 ${Math.max(1, Math.round(prog.llm_estimate.est_hours * 60))} 分钟`}
+                （并发 {prog.llm_estimate.concurrency} · {(prog.llm_estimate.total_chars / 10000).toFixed(1)} 万字）
+              </span>
+            </div>
+          )}
 
           {hasPartialFailures && !hasPrepareError && (
             <div className="rounded-lg border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-200 flex items-center gap-1.5">
@@ -663,8 +703,31 @@ function OverviewTab({
         </div>
       )}
 
-      {/* ===== 已导入但未识别 Banner ===== */}
-      {needsPrepare && !isPreparing && project.source_filename && (
+      {/* ===== H-2：已取消 Banner（stage=cancelled，非失败；断点保留可续跑）===== */}
+      {prog?.stage === 'cancelled' && !isPreparing && (
+        <div className="glass-panel !border-ink-400/50 !bg-ink-500/[0.06]">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-start gap-3 min-w-0 flex-1">
+              <div className="w-10 h-10 rounded-md grid place-items-center bg-ink-500/20 text-ink-500 shrink-0">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+              </div>
+              <div className="min-w-0">
+                <div className="font-semibold text-ink-800 mb-0.5">识别已取消</div>
+                <div className="text-sm text-ink-600">
+                  已完成的阶段会保留{prog.cancelled_at && `（取消于 ${prog.cancelled_at}）`}，重新识别时将从断点继续，不会重跑已完成的部分。
+                </div>
+              </div>
+            </div>
+            <button className="btn-primary shrink-0" onClick={handlePrepare}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              从断点继续
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ===== 已导入但未识别 Banner（取消后由上面的取消 Banner 接管）===== */}
+      {needsPrepare && !isPreparing && project.source_filename && prog?.stage !== 'cancelled' && (
         <div className="glass-panel !border-brand-500/40 !bg-brand-500/[0.06] relative overflow-hidden">
           <div className="flex items-center justify-between gap-3 flex-wrap relative">
             <div className="flex items-start gap-3 min-w-0 flex-1">
@@ -1844,14 +1907,36 @@ function BuildRow({
           >
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse mr-1" />
             {(() => {
-              const elapsed = (Date.now() - parseTime(item.started_at).getTime()) / 1000;
-              const remaining = elapsed > 0 && pct > 0 ? (elapsed / pct) * (100 - pct) : 0;
-              if (remaining > 0) {
-                const m = Math.floor(remaining / 60);
-                const s = Math.round(remaining % 60);
-                return `预计剩余 ${m}分${s}秒`;
+              // H-4：优先用服务端结构化进度（phase 徽标 + 真实速率 + 平滑 ETA）。
+              // 老构建（无 meta）或尚无速率样本（<2 章）时，回退到基于
+              // 已耗时/百分比的线性外推（naive）。
+              const m = item.meta;
+              const phaseLabel =
+                m?.phase === 'packaging'
+                  ? `打包中${(m.shard_total ?? 0) > 1 ? ` ${m.shard_done ?? 0}/${m.shard_total} 卷` : ''}`
+                  : '合成中';
+              const parts: string[] = [phaseLabel];
+              const rate = m?.rate_ch_per_min;
+              if (rate && rate > 0) parts.push(`${rate} 章/分`);
+              const eta = m?.eta_secs;
+              if (eta != null && eta > 0) {
+                const mm = Math.floor(eta / 60);
+                const ss = Math.round(eta % 60);
+                parts.push(`预计剩余 ${mm}分${ss}秒`);
+              } else if (m?.phase === 'packaging') {
+                parts.push('整理产物中…');
+              } else if (!rate || rate <= 0) {
+                const elapsed = (Date.now() - parseTime(item.started_at).getTime()) / 1000;
+                const remaining = elapsed > 0 && pct > 0 ? (elapsed / pct) * (100 - pct) : 0;
+                if (remaining > 0) {
+                  const mm = Math.floor(remaining / 60);
+                  const ss = Math.round(remaining % 60);
+                  parts.push(`预计剩余 ${mm}分${ss}秒`);
+                } else {
+                  parts.push('计算中…');
+                }
               }
-              return '计算中…';
+              return parts.join(' · ');
             })()}
           </span>
         )}
@@ -1909,6 +1994,7 @@ function BuildRow({
               projectId={projectId}
               playingKey={playingKey}
               onTogglePlay={onTogglePlay}
+              onReload={onReload}
             />
           ) : (
             <div className="text-sm text-ink-500">加载失败</div>
@@ -1934,12 +2020,13 @@ function BuildRow({
 }
 
 function BuildDetailContent({
-  detail, projectId, playingKey, onTogglePlay,
+  detail, projectId, playingKey, onTogglePlay, onReload,
 }: {
   detail: BuildDetailResp;
   projectId: string;
   playingKey: string | null;
   onTogglePlay: (key: string, url: string | null) => void;
+  onReload: () => void;
 }) {
   // P1 #6：每个 BuildArtifact 的签名音频 URL（一次性 token，5 分钟过期）
   const [signedUrls, setSignedUrls] = useState<Record<number, string>>({});
@@ -1949,6 +2036,24 @@ function BuildDetailContent({
   // F-5：分批渲染 + 只签发可见区间
   const [visibleCount, setVisibleCount] = useState(ARTIFACTS_PAGE_SIZE);
   const signedUntilRef = useRef(0);
+  // H-5：质检可疑章重跑（单章 / 全部）
+  const [rerunning, setRerunning] = useState(false);
+  const quality = detail.quality_report ?? null;
+  const isDoneState = BUILD_DONE_STATES.includes(detail.status);
+
+  const onRerunChapters = async (chapters: number[]) => {
+    if (!chapters.length) return;
+    if (!window.confirm(`确定重跑 ${chapters.map(c => c + 1).join('、')} 章？其余章节将复用现有音频。`)) return;
+    setRerunning(true);
+    try {
+      await api.buildRetryFailed(projectId, detail.build_id, chapters);
+      await onReload();
+    } catch (e: any) {
+      alert(`重跑失败: ${e?.message || e}`);
+    } finally {
+      setRerunning(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -2053,6 +2158,72 @@ function BuildDetailContent({
       {detail.progress_msg && (
         <div className="text-xs text-ink-500 rounded-md bg-ink-200 px-3 py-2 border border-ink-300/70">
           {detail.progress_msg}
+        </div>
+      )}
+
+      {/* H-5：终态质检报告（可疑章清单 + 逐章重跑 / 全部重跑） */}
+      {isDoneState && quality && (quality.suspicious.length > 0 || quality.failed_n > 0) && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 space-y-2">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="text-xs text-amber-200">
+              <span className="font-medium">质检报告</span>
+              <span className="ml-2 text-amber-200/80">
+                已检 {quality.checked_n} 章
+                {quality.failed_n > 0 && ` · 失败 ${quality.failed_n} 章（静音占位）`}
+                {quality.suspicious.length > 0 && ` · 可疑 ${quality.suspicious.length} 章`}
+              </span>
+            </div>
+            {quality.suspicious.length > 0 && (
+              <button
+                onClick={() => onRerunChapters(quality.suspicious.map(s => s.chapter_idx))}
+                disabled={rerunning}
+                className="inline-flex items-center gap-1 rounded-md border border-amber-500/50 bg-amber-500/20
+                  px-2.5 py-1 text-xs text-amber-100 hover:bg-amber-500/30
+                  transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+              >
+                {rerunning ? (
+                  <span className="inline-block w-3 h-3 border-2 border-amber-300 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
+                )}
+                重跑全部可疑章
+              </button>
+            )}
+          </div>
+          {quality.suspicious.length > 0 && (
+            <div className="text-[11px] text-amber-200/70">
+              可疑判据：字/秒比异常（正常语速约 4~6 字/秒；占位静音会高达数千字/秒）。
+            </div>
+          )}
+          {quality.suspicious.slice(0, 50).map(s => (
+            <div
+              key={s.chapter_idx}
+              className="flex items-center gap-3 flex-wrap text-xs rounded-md bg-ink-200/70 border border-amber-500/20 px-3 py-1.5"
+            >
+              <span className="font-mono tabular-nums">第 {s.chapter_idx + 1} 章</span>
+              <span className="text-ink-500 tabular-nums">{s.chars} 字</span>
+              <span className="text-ink-500 tabular-nums">
+                {s.duration_ms != null ? `${(s.duration_ms / 1000).toFixed(1)}s` : '时长未知'}
+              </span>
+              <span className="text-amber-300 tabular-nums font-medium">
+                {s.chars_per_sec != null ? `${s.chars_per_sec} 字/秒` : '比例异常'}
+              </span>
+              <button
+                onClick={() => onRerunChapters([s.chapter_idx])}
+                disabled={rerunning}
+                className="ml-auto rounded-md border border-amber-500/40 bg-amber-500/15
+                  px-2 py-0.5 text-[11px] text-amber-100 hover:bg-amber-500/25
+                  transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+              >
+                重跑
+              </button>
+            </div>
+          ))}
+          {quality.suspicious.length > 50 && (
+            <div className="text-[11px] text-amber-200/60">
+              仅显示前 50 条，共 {quality.suspicious.length} 条可疑章（可「重跑全部可疑章」）。
+            </div>
+          )}
         </div>
       )}
 

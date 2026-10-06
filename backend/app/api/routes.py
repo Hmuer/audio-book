@@ -30,6 +30,7 @@ from ..services.project import (
     import_file as project_import_file,
     import_text as project_import_text,
     trigger_prepare_project,
+    cancel_prepare_project,
     get_project,
     list_projects,
     update_project,
@@ -49,6 +50,7 @@ from ..services.project import (
     ProjectListItem,
     ProjectPrepareResp,
     ProjectPrepareTriggerResp,
+    ProjectPrepareCancelResp,
     ChapterSummary,
     ChapterDetail,
     CharacterWithVoice,
@@ -722,8 +724,13 @@ class CancelBuildRequest(BaseModel):
 
 
 class RetryFailedBuildRequest(BaseModel):
-    """失败章重试。默认仅重跑失败章（失败章列表来源：failed_chapters_json 或 Artifact.status==failed）。"""
+    """失败章重试。默认仅重跑失败章（失败章列表来源：failed_chapters_json 或 Artifact.status==failed）。
+
+    H-5：chapters 显式指定要重跑的章（0-based chapter_idx，与 artifacts 对齐），
+    并入重合成集合 —— 用于质检可疑章重跑 / 用户手动指定；其余章硬链接复用原音频。
+    """
     force_restart_failed_only: bool = True
+    chapters: list[int] | None = None
 
 
 def _direct_object_url(project_id: str, build_id: str, filename: str | None) -> str | None:
@@ -1027,6 +1034,55 @@ async def api_project_prepare(
         raise HTTPException(
             500,
             f"触发识别失败: {type(e).__name__}: {e}",
+        )
+
+
+@router.post(
+    "/projects/{project_id}/prepare/cancel",
+    response_model=ProjectPrepareCancelResp,
+)
+async def api_project_prepare_cancel(
+    project_id: str,
+    request: Request,
+    current: User = Depends(get_current_user),
+):
+    """
+    H-2：取消正在运行的识别（prepare）。
+
+    - 后台任务被取消，但**不算失败**：项目状态从 preparing 恢复为 imported，
+      progress_json 写 stage=cancelled（checkpoint 全部保留）。
+    - 再次 POST /prepare 即从断点续跑（已完成的切片/批次不重算）。
+    - 幂等：没有在跑的任务时返回 cancelled=False。
+    P1 #5：写权限校验。
+    """
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
+    t0 = _time.perf_counter()
+    remote = request.client.host if request.client else "?"
+    logger.info(
+        f"[HTTP] POST /api/projects/{project_id[:8]}.../prepare/cancel "
+        f"client={remote} user={current.username!r}"
+    )
+    try:
+        resp = await cancel_prepare_project(project_id)
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        logger.info(
+            f"[HTTP] 200 /api/projects/{project_id[:8]}.../prepare/cancel "
+            f"cancelled={resp.cancelled} total_ms={elapsed_ms}"
+        )
+        return resp
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        logger.error(
+            f"[HTTP] 500 /api/projects/{project_id[:8]}.../prepare/cancel -> "
+            f"{type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            500,
+            f"取消识别失败: {type(e).__name__}: {e}",
         )
 
 
@@ -1961,6 +2017,7 @@ async def api_retry_failed_build(
             force_restart_failed_only=(
                 req_body.force_restart_failed_only if req_body else True
             ),
+            chapters=(req_body.chapters if req_body else None),
         )
         elapsed_ms = int((_time.perf_counter() - t0) * 1000)
         logger.info(
@@ -2006,7 +2063,7 @@ _EDITABLE_SETTINGS = {
     "BUILD_RUNNING_TIMEOUT_HOURS": ("int", "超时配置", "Build 运行超时（小时）"),
     "BUILD_QUEUED_TIMEOUT_MINUTES": ("int", "超时配置", "Build 排队超时（分钟，超时判定为孤儿）"),
     # 限流
-    "LLM_MAX_CONCURRENCY": ("int", "限流配置", "LLM 最大并发"),
+    "LLM_MAX_CONCURRENCY": ("int", "限流配置", "LLM 最大并发（改后立即生效，无需重启）"),
     "LLM_CHAR_EXTRACT_SLICE_SIZE": ("int", "限流配置", "角色识别切片大小（字符）"),
     "DIALOGUE_BATCH_CHAPTERS": ("int", "限流配置", "对白归属批大小（章/批）"),
     "DIALOGUE_BATCH_CONCURRENCY": ("int", "限流配置", "对白归属批并发度"),
@@ -2015,7 +2072,7 @@ _EDITABLE_SETTINGS = {
     "VOICE_INSTRUCTION_ENABLED": ("bool", "限流配置", "逐段语音指令（豆包 2.0 context_texts，LLM 生成）"),
     "VOICE_INSTRUCTION_BATCH_CHAPTERS": ("int", "限流配置", "逐段语音指令批大小（章/批）"),
     "VOICE_INSTRUCTION_BATCH_CONCURRENCY": ("int", "限流配置", "逐段语音指令批并发度"),
-    "TTS_MAX_CONCURRENCY": ("int", "限流配置", "TTS 最大并发"),
+    "TTS_MAX_CONCURRENCY": ("int", "限流配置", "TTS 最大并发（改后立即生效，无需重启）"),
     # 缓存
     "TTS_SEGMENT_CACHE_MAX_ENTRIES": ("int", "缓存配置", "段缓存 LRU 上限（条）"),
     "TTS_SEGMENT_CACHE_TTL_DAYS": ("int", "缓存配置", "段缓存过期天数"),

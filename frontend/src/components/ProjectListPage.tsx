@@ -29,6 +29,7 @@ const STATUS_DEFS: Record<string, { label: string; bg: string; color: string; do
 const STAGE_LABELS: Record<string, string> = {
   start: '准备中', split: '切章', characters: '角色识别',
   dedup: '角色去重', dialogues: '对白归属', voice_recs: '音色推荐', done: '完成',
+  cancelled: '已取消',
 };
 function stageLabel(stage?: string | null): string {
   if (!stage) return '';

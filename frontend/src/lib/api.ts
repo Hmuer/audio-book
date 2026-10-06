@@ -360,6 +360,9 @@ export const api = {
   // 触发后端识别（章节/角色/对白归属）：202 Accepted，后台异步执行
   projectPrepare: (id: string) =>
     _fetch<ProjectPrepareTriggerResp>(`/api/projects/${id}/prepare`, { method: 'POST' }),
+  // H-2：取消正在运行的识别（不算失败；checkpoint 保留，可断点续跑）
+  projectPrepareCancel: (id: string) =>
+    _fetch<ProjectPrepareCancelResp>(`/api/projects/${id}/prepare/cancel`, { method: 'POST' }),
   // 拉取章节列表
   projectChapters: (id: string) =>
     _fetch<ChapterSummary[]>(`/api/projects/${id}/chapters`),
@@ -479,11 +482,15 @@ export const api = {
     _fetch<{ ok: boolean }>(`/api/projects/${projectId}/builds/${buildId}`, {
       method: 'DELETE',
     }),
-  // 重试失败章节（生成新 build，复用成功章节 MP3，继承原 mode/tts_provider）
-  buildRetryFailed: (projectId: string, buildId: string) =>
+  // 重试失败章节（生成新 build，复用成功章节 MP3，继承原 mode/tts_provider）。
+  // H-5：chapters 显式指定要重跑的章（0-based chapter_idx）—— 质检可疑章重跑用
+  buildRetryFailed: (projectId: string, buildId: string, chapters?: number[]) =>
     _fetch<BuildResp>(`/api/projects/${projectId}/builds/${buildId}/retry-failed`, {
       method: 'POST',
-      body: JSON.stringify({ force_restart_failed_only: true }),
+      body: JSON.stringify({
+        force_restart_failed_only: true,
+        ...(chapters?.length ? { chapters } : {}),
+      }),
     }),
   // ZIP 分片下载 URL（F-7：分片打包后用 shard 指定第几片；P1 #6 一次性签名 token）
   buildDownloadAll: async (projectId: string, buildId: string, shard = 0): Promise<string> => {
@@ -608,7 +615,7 @@ export interface ProjectDetailResp {
 // prepare 阶段进度（从 DB progress_json 透传，字段名与后端 progress_json 白名单对齐）
 export interface PrepareProgress {
   version?: number;
-  stage?: string; // start / split / characters / dedup / dialogues / voice_recs / done
+  stage?: string; // start / split / characters / dedup / dialogues / voice_recs / done / cancelled
   started_at?: string;
   updated_at?: string;
   // 失败时：具体错误类型 + 消息 + 时间
@@ -616,6 +623,8 @@ export interface PrepareProgress {
   last_error_at?: string;
   last_error_type?: string;
   prev_error?: { at?: string; msg?: string };
+  /** H-2：用户取消的时间戳（stage=cancelled 时出现） */
+  cancelled_at?: string;
   /** 服务重启/看门狗自动恢复次数（>0 时前端显示"♻ 自动恢复 × N"） */
   restart_count?: number;
   // 角色识别进度
@@ -646,11 +655,36 @@ export interface PrepareProgress {
   polish_rejected_n?: number;
   /** 3 次重试仍失败、该章保留原文的章数 */
   polish_failed_n?: number;
+  /** H-3：LLM 调用量/耗时估算（prepare 开始后即有，前端显示「预计多久」） */
+  llm_estimate?: LlmEstimate | null;
+}
+
+/** H-3：prepare 的 LLM 调用量估算（按当前 settings 的批量口径） */
+export interface LlmEstimate {
+  total_calls: number;
+  char_calls: number;
+  dialogue_calls: number;
+  instruction_calls: number;
+  polish_calls: number;
+  chapters: number;
+  total_chars: number;
+  concurrency: number;
+  /** 保守估算（每次 40s / 并发）；实际取决于模型速度 */
+  est_hours: number;
 }
 
 // prepare 触发立即返回（HTTP 202 Accepted）
 export interface ProjectPrepareTriggerResp {
   project_id: string;
+  status: string;
+  message: string;
+  prepare_progress?: PrepareProgress | null;
+}
+
+// H-2：取消 prepare 的返回（cancelled=false 表示当前没有在跑的任务）
+export interface ProjectPrepareCancelResp {
+  project_id: string;
+  cancelled: boolean;
   status: string;
   message: string;
   prepare_progress?: PrepareProgress | null;
@@ -751,6 +785,33 @@ export interface CharacterResp {
   instruction?: string;
 }
 
+// H-4：构建结构化进度（progress_meta_json 透出）。
+// phase：synthesizing（合成中）→ packaging（打包中，含分片进度）→ done
+// rate_ch_per_min 只统计真实合成的章；eta_secs 无样本（<2 章）时为 null。
+export interface BuildProgressMeta {
+  phase?: string | null;
+  rate_ch_per_min?: number | null;
+  remaining?: number | null;
+  eta_secs?: number | null;
+  shard_done?: number | null;
+  shard_total?: number | null;
+}
+
+// H-5：可疑章（音频时长与文本长度比例异常：chars_per_sec ∉ [0.8, 25]）
+export interface SuspiciousChapter {
+  chapter_idx: number;
+  chars: number;
+  duration_ms: number | null;
+  chars_per_sec: number | null;
+}
+
+// H-5：build 终态质检摘要
+export interface QualityReport {
+  suspicious: SuspiciousChapter[];
+  failed_n: number;
+  checked_n: number;
+}
+
 // build 列表项
 export interface BuildListItem {
   build_id: string;
@@ -767,6 +828,8 @@ export interface BuildListItem {
   /** TTS 用量（真实供应商调用，不含缓存命中） */
   tts_calls?: number;
   tts_chars?: number;
+  /** H-4：结构化进度（构建行直接用服务端 eta_secs，替换 naive 估算） */
+  meta?: BuildProgressMeta | null;
 }
 
 // ZIP 分片（F-7：章节数超过分片阈值时会有多片，每片自包含）
@@ -804,6 +867,10 @@ export interface BuildDetailResp {
   is_retry?: boolean;
   tts_calls?: number;
   tts_chars?: number;
+  /** H-4：结构化进度（phase / rate / eta / 分片进度） */
+  meta?: BuildProgressMeta | null;
+  /** H-5：终态质检摘要（可疑章清单，供逐章重跑） */
+  quality_report?: QualityReport | null;
   artifacts: BuildArtifactResp[];
 }
 
@@ -862,6 +929,8 @@ export interface BuildStatusResp {
   mode?: 'classic' | null;
   tts_provider?: 'doubao' | null;
   failed_chapters?: number[] | null;
+  /** H-4：结构化进度（phase / rate / eta / 分片进度） */
+  meta?: BuildProgressMeta | null;
   artifacts: BuildArtifactResp[];
 }
 

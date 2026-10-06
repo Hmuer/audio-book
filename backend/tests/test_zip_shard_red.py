@@ -110,6 +110,8 @@ class _FakeBuild:
         self.zip_filename = None
         self.zip_filenames_json = None
         self.total_chapters = 0
+        # H-4：Build 模型新增 progress_meta_json，build_to_detail 会读取
+        self.progress_meta_json = None
         for k, v in kw.items():
             setattr(self, k, v)
 

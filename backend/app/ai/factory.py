@@ -19,6 +19,8 @@ _tts_default_instance: BaseTTSProvider | None = None
 # 所有 worker（整本合成、单章合成、项目 Build）共用同一计数，
 # 防止多任务分别开 4 并发 → 实际并发叠加爆 TTS 供应商 RPM 限制（429）。
 _tts_sem: asyncio.Semaphore | None = None
+# H-1：记录创建 sem 时的并发值；与当前 settings 不一致则重建（热更新）
+_tts_sem_value: int = 0
 
 
 def _build_tts_sem() -> asyncio.Semaphore:
@@ -170,10 +172,17 @@ def get_tts_by_voice_id(voice_id: str) -> BaseTTSProvider:
 
 
 def get_tts_sem() -> asyncio.Semaphore:
-    """惰性初始化全局 TTS semaphore（事件循环内创建）。"""
-    global _tts_sem
-    if _tts_sem is None:
-        _tts_sem = _build_tts_sem()
+    """惰性初始化全局 TTS semaphore（事件循环内创建）。
+
+    H-1 热更新：settings.TTS_MAX_CONCURRENCY 变化时立即重建（不需要重启后端）。
+    旧 sem 由在飞请求的持有者自然释放；新请求立即按新并发度限流。
+    """
+    global _tts_sem, _tts_sem_value
+    from ..core.config import settings
+    n = max(1, int(settings.TTS_MAX_CONCURRENCY))
+    if _tts_sem is None or _tts_sem_value != n:
+        _tts_sem = asyncio.Semaphore(n)
+        _tts_sem_value = n
     return _tts_sem
 
 
