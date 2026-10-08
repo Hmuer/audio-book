@@ -75,6 +75,86 @@ async def test_h1_tts_sem_rebuilds_on_concurrency_change(_isolate_data_dir, monk
     assert factory.get_tts_sem() is sem2
 
 
+@pytest.mark.asyncio
+async def test_h1_llm_global_concurrency_effective(_isolate_data_dir, monkeypatch):
+    """H-1 性能守护：LLM_MAX_CONCURRENCY=4 时 8 个 chat_structured 的
+    在飞峰值 ≥ 3、总耗时 ≈ 2×单延迟（而不是 8×串行）。
+
+    背景：用户反馈「最新代码识别更慢」。Mock LLM 不经过全局 sem，
+    本测试直接打生产路径 MiniMaxLLMProvider.chat_structured（含
+    _get_llm_sem()），注入固定 HTTP 延迟，验证并发真实生效、
+    无「sem 热更新导致串行化」回退。
+    """
+    import asyncio
+    import time as _time
+
+    import httpx
+    from pydantic import BaseModel
+
+    from backend.app.ai.providers.minimax.llm import MiniMaxLLMProvider
+    from backend.app.core.config import settings
+
+    class _PingOut(BaseModel):
+        ok: bool
+
+    CALL_DELAY = 0.2
+    N_REQ = 8
+
+    class _FakeResp:
+        status_code = 200
+        headers: dict = {}
+        text = '{"ok": true}'
+
+        def json(self):
+            return {
+                "request_id": "req_test",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                "choices": [
+                    {"message": {"content": '{"ok": true}'}, "finish_reason": "stop"}
+                ],
+            }
+
+    state = {"in_flight": 0, "peak": 0}
+
+    async def _fake_post(self, url, **kw):
+        state["in_flight"] += 1
+        state["peak"] = max(state["peak"], state["in_flight"])
+        await asyncio.sleep(CALL_DELAY)
+        state["in_flight"] -= 1
+        return _FakeResp()
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
+
+    async def _run_n(n_conc: int) -> float:
+        state["peak"] = 0
+        monkeypatch.setattr(settings, "LLM_MAX_CONCURRENCY", n_conc)
+        prov = MiniMaxLLMProvider(api_key="x", base_url="http://test.local")
+        t0 = _time.perf_counter()
+        await asyncio.gather(
+            *[prov.chat_structured("hi", _PingOut) for _ in range(N_REQ)]
+        )
+        return _time.perf_counter() - t0
+
+    # 并发 4：8 请求 ≈ 2 批 × 0.2s ≈ 0.4s（放宽到 5×delay 防 CI 抖动）
+    dt4 = await _run_n(4)
+    assert state["peak"] >= 3, (
+        f"并发=4 时在飞峰值应 ≥3，实际 {state['peak']} —— 全局 sem 未生效/被串行化"
+    )
+    assert dt4 < CALL_DELAY * 5, (
+        f"8 请求在并发 4 下耗时 {dt4:.2f}s，接近串行（8×{CALL_DELAY}s）——识别速度回退实锤"
+    )
+
+    # 对照组：并发 1 → 应接近 8×delay（串行）
+    dt1 = await _run_n(1)
+    assert dt1 >= CALL_DELAY * N_REQ * 0.8, (
+        f"并发=1 时总耗时 {dt1:.2f}s 应 ≈ {N_REQ}×{CALL_DELAY}s"
+    )
+    # 4 并发必须显著快于串行（≥2x 加速）
+    assert dt4 < dt1 / 2, (
+        f"并发 4 ({dt4:.2f}s) 未显著快于并发 1 ({dt1:.2f}s) —— 并发调度失效"
+    )
+
+
 # =====================================================================
 # H-3 prepare 调用量估算透出
 # =====================================================================

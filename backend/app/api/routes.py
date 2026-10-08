@@ -2065,6 +2065,7 @@ _EDITABLE_SETTINGS = {
     # 限流
     "LLM_MAX_CONCURRENCY": ("int", "限流配置", "LLM 最大并发（改后立即生效，无需重启）"),
     "LLM_CHAR_EXTRACT_SLICE_SIZE": ("int", "限流配置", "角色识别切片大小（字符）"),
+    "CHAR_EXTRACT_CONCURRENCY": ("int", "限流配置", "角色识别切片并发度（实际=min(本值, LLM 最大并发)；改后立即生效）"),
     "DIALOGUE_BATCH_CHAPTERS": ("int", "限流配置", "对白归属批大小（章/批）"),
     "DIALOGUE_BATCH_CONCURRENCY": ("int", "限流配置", "对白归属批并发度"),
     "DIALOGUE_BATCH_RETRY_COUNT": ("int", "限流配置", "对白归属重试次数"),

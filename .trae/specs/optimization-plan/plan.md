@@ -1186,6 +1186,35 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 - 全量后端：`449 passed, 0 failed`（修复 [test_zip_shard_red.py](file:///workspace/backend/tests/test_zip_shard_red.py) `_FakeBuild` 替身缺 H-4 新增 `progress_meta_json` 属性导致的 AttributeError）
 - 前端：`tsc --noEmit` 通过（exit 0）
 
+### 12.5 批次 11 · H-11 角色识别切片并发化（2026-10-08）
+
+> 触发：用户反馈「用最新代码跑，识别速度更慢了」。
+
+**定位过程（先证伪、再剖析，用事实收敛）**
+1. **H-1 并发守护**（[test_h1_llm_global_concurrency_effective](file:///workspace/backend/tests/test_quad_control_red.py#L78-L155)）：Mock LLM 不经过全局 sem，直接打生产路径 `MiniMaxLLMProvider.chat_structured`（fake HTTP 注入 0.2s 延迟）——**并发 4 真实生效**（在飞峰值 4、8 请求 ≈ 2 批），批次 10 无「sem 热更新导致串行化」回退。
+2. **prepare 端到端剖析**（[test_prepare_perf_red.py](file:///workspace/backend/tests/test_prepare_perf_red.py)，Mock LLM 固定 40ms 延迟、24 章 × 3000 字 = 8 切片）：**characters 阶段 443ms ≈ 8 片 × 40ms 纯串行**，占 LLM 串行下限的 44%——**角色识别切片逐片串行是既有结构性热点**（60 片大书 × 每片数十秒纯串行），调高 `LLM_MAX_CONCURRENCY` 对它完全无效；dialogues（批并发）/voice_recs 正常。用户感知的「变慢」正是这个热点 + 上游 LLM 波动/书籍规模差异的叠加。
+
+**H-11 修复：角色识别切片窗口并发**
+
+| 项 | 内容 |
+|---|---|
+| 调度 | 逐片串行 for → `asyncio.gather` + `CHAR_EXTRACT_CONCURRENCY`（默认 4）窗口 sem；实际并发 = min(本值, LLM_MAX_CONCURRENCY)，全局 LLM sem 仍是安全阀 |
+| checkpoint | 逐片成功/失败仍即时写库（锁内），断点续跑/失败补跑语义与串行版**完全一致**（`char_slice_completed` / `char_failed_slices` / `char_extract_raw_list` 键不变，旧 checkpoint 直接续跑） |
+| 顺序确定性 | 并发完成乱序，但按 slice_idx 升序重建 `char_extract_raw_list` / `characters_merged`（基底快照 + 新片按 idx 排序追加）→ 与串行版数据完全一致，dedup 结果确定 |
+| 失败语义 | 单片重试耗尽记 `char_failed_slices`、其余片继续、重跑自动补跑；全部片失败才抛业务异常（不变） |
+| 速度可控 | `CHAR_EXTRACT_CONCURRENCY` 加入设置页「限流配置」白名单（[routes.py](file:///workspace/backend/app/api/routes.py#L2068)），与 H-1 一样改后立即生效 |
+| Mock 修复 | MockLLM 的音色推荐分支 `"Voice" in schema_name` 宽匹配把 `VoiceInstructionBatchResponse` 截胡成 `VoiceRecommendation` 形状 → 9 项校验失败 → 批重试 3 次后按空串兜底（既有测试侥幸通过但指令全空、调用数虚高 3 倍）。补专门分支置于宽匹配之前（[mock_providers.py](file:///workspace/backend/tests/mock_providers.py#L173-L201)） |
+
+**剖析验证（修复前后同条件）**：characters 443ms → **182ms**（8 片 / 并发 4 ≈ 2 轮），峰值 4；大书场景按 60 片 × 40s 估算：纯串行 ≈ 40 分钟 → 并发 4 ≈ **10 分钟**。
+
+**回归测试**（[test_prepare_perf_red.py](file:///workspace/backend/tests/test_prepare_perf_red.py)，4 用例）
+- 剖析守护：characters 阶段必须显著低于串行下限（防退回串行）、并发峰值 ≥ 3
+- 乱序完成顺序确定性：偶片慢/奇片快制造乱序完成 → 最终角色按片升序、不重不漏（暴露「直接 extend 乱序」与「重放 extend 重复」两类 bug）
+- 断点续跑：手工构造串行版 checkpoint（片 0-2 完成）→ 已完成片不重跑、新片结果按序合并
+- 失败补跑：片 4 三连失败记 failed → 重跑只补该片、结果完整按序
+
+**给用户的操作提示**：识别阶段的耗时仍主要受 `LLM_MAX_CONCURRENCY`（全局安全阀）约束——设置页「限流配置」把它与「角色识别切片并发度」一起调高（如 4/4），长任务中途改也立即生效（H-1）；上游若出现 429 退避日志则往下调。
+
 
 
 

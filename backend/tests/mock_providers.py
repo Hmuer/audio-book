@@ -170,6 +170,36 @@ class MockLLMProvider(BaseLLMProvider):
                 chapters_data.append({"chapter_idx": idx, "dialogues": attrs})
             return output_schema.model_validate({"data": chapters_data})
 
+        if schema_name == "VoiceInstructionBatchResponse":
+            # 逐段语音指令批：从每个 CHAPTER 块的【本章对白清单】JSON 里抓
+            # (chapter_idx, segment_index)，逐条给固定指令。
+            # 必须放在下方 "Voice" in schema_name 的音色推荐宽匹配**之前**——
+            # 否则会被截胡成 VoiceRecommendation 形状，9 项全部校验失败，
+            # 批重试 3 次后按空串兜底（测试仍过但指令全空 + 调用数虚高 3 倍）。
+            import json as _json
+            import re as _re
+            items: list[dict] = []
+            for m in _re.finditer(
+                r"=====\s*CHAPTER\s+idx=(\d+)\s+START\s+=====(.*?)=====\s*CHAPTER\s+idx=\1\s+END\s+=====",
+                prompt,
+                _re.DOTALL,
+            ):
+                block = m.group(2)
+                lm = _re.search(r"【本章对白清单】\s*(\[.*?\])\s*", block, _re.DOTALL)
+                if not lm:
+                    continue
+                try:
+                    dlgs = _json.loads(lm.group(1))
+                except Exception:
+                    continue
+                for d in dlgs:
+                    items.append({
+                        "chapter_idx": int(d["chapter_idx"]),
+                        "segment_index": int(d.get("segment_index", 0)),
+                        "instruction": f"{d.get('speaker', '')}平静地念出",
+                    })
+            return output_schema.model_validate({"data": items})
+
         if "Chapter" in schema_name:
             text = _extract_text_block(prompt, "---LONG TEXT START---", "---LONG TEXT END---")
             return output_schema.model_validate({"data": [

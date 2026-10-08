@@ -195,11 +195,18 @@ class Settings(BaseSettings):
     LLM_MAX_CONCURRENCY: int = 1
 
     # 角色识别切片大小（字符）：整本小说角色识别时，按该大小切块后
-    # **全量串行**调用 LLM（不抽样、不截断），最后对所有切块结果做一次
+    # **全量**调用 LLM（不抽样、不截断），最后对所有切块结果做一次
     # 跨切块合并 + dedup。50k 是 MiniMax 角色识别 prompt 的比较稳妥上限，
     # 既保证上下文足够又不会因超长输出导致 JSON 解析失败。
-    # 估算：3000 字/章 × 1000 章 = 300 万字 → 60 个切片 × 串行 10s/个 ≈ 10 分钟
+    # 估算：3000 字/章 × 1000 章 = 300 万字 → 60 个切片
     LLM_CHAR_EXTRACT_SLICE_SIZE: int = 50_000
+
+    # 角色识别切片并发度：同时在飞的切片 LLM 调用数（H-11，此前逐片串行是
+    # prepare 阶段最大的串行热点——60 片 × 数十秒/片纯串行，调高
+    # LLM_MAX_CONCURRENCY 也无法提速）。实际并发 = min(本值, LLM_MAX_CONCURRENCY)，
+    # 全局 LLM sem 是安全阀：LLM_MAX_CONCURRENCY=1 时这里多高都会被串行。
+    # 逐片 checkpoint 语义不变（断点续跑/失败补跑与串行版完全一致）。
+    CHAR_EXTRACT_CONCURRENCY: int = 4
 
     # 注意：角色识别 **已移除"前 N 字抽样"策略**（LLM_CHAR_EXTRACT_LIMIT 已不再使用）。
     # 现在无论小说多长，都会按 SLICE_SIZE 全量切片跑完后合并去重；

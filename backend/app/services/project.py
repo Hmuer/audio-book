@@ -1238,33 +1238,50 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             }
             await _write_progress(prog)
 
+        # 基底快照：checkpoint 里已有的旧数据（断点续跑时已完成片的角色），
+        # 本轮新完成片的结果按 idx 升序追加其后，重建完整列表（不重复合并）
+        char_base_raw: list[dict] = list(char_raw_list)
         characters_merged: list[Character] = [
             Character(**d) for d in char_raw_list
         ]
         char_extract_retries = max(0, int(getattr(settings, "CHAR_EXTRACT_RETRY_COUNT", 2) or 0))
-        for slice_idx, slice_text in char_slices:
-            if slice_idx in completed_slice_idxs:
-                logger.info(
-                    f"[project_prepare] project_id={project_id[:8]}... "
-                    f"chars slice {slice_idx+1}/{len(char_slices)} 跳过（checkpoint）"
-                )
-                continue
-            prog["stage"] = "characters"
+
+        # H-11：角色识别切片并发化（此前逐片串行是 prepare 最大串行热点）。
+        # - 窗口并发：CHAR_EXTRACT_CONCURRENCY（默认 4），实际并发还受全局 LLM sem
+        #   约束（min(两者) 生效）——LLM_MAX_CONCURRENCY=1 时仍串行（安全阀）。
+        # - 逐片 checkpoint 语义与串行版完全一致：每片成功/失败都写库，断点续跑 /
+        #   失败补跑行为不变。
+        # - 顺序确定性：本轮新完成的片按 slice_idx 升序合并进 char_raw_list /
+        #   characters_merged（并发完成顺序乱序，但结果顺序与串行版一致，dedup
+        #   输入确定 → 同一本书重跑结果一致）。
+        char_concurrency = max(1, int(
+            getattr(settings, "CHAR_EXTRACT_CONCURRENCY", 4) or 4
+        ))
+        char_slice_sem = asyncio.Semaphore(char_concurrency)
+        char_prog_lock = asyncio.Lock()
+        # 本轮新完成片的结果暂存（idx → dumps），checkpoint 时按 idx 排序生成 flat 列表
+        char_raw_new_by_idx: dict[int, list[dict]] = {}
+
+        async def _process_one_char_slice(slice_idx: int, slice_text: str) -> None:
+            """单切片角色识别（含重试）。成功 → 暂存结果 + checkpoint；
+            重试耗尽 → 记入 char_failed_slices（重跑 prepare 自动补跑）。"""
             _bucket = char_buckets[slice_idx]
-            prog["char_current_slice"] = {
-                "idx": slice_idx,
-                # F-3：按章装桶后桶长不等，start/end 必须取桶自身记录的真实区间，
-                # 不能再按 slice_idx * char_slice_size 推算
-                "start": _bucket.start,
-                "end": _bucket.end,
-                "slice_len": len(slice_text),
-                "chapters_n": len(_bucket.chapter_idxs),
-                "chapter_range": [
-                    _bucket.chapter_idxs[0],
-                    _bucket.chapter_idxs[-1],
-                ] if _bucket.chapter_idxs else [],
-            }
-            await _write_progress(prog)
+            async with char_prog_lock:
+                prog["stage"] = "characters"
+                prog["char_current_slice"] = {
+                    "idx": slice_idx,
+                    # F-3：按章装桶后桶长不等，start/end 必须取桶自身记录的真实区间，
+                    # 不能再按 slice_idx * char_slice_size 推算
+                    "start": _bucket.start,
+                    "end": _bucket.end,
+                    "slice_len": len(slice_text),
+                    "chapters_n": len(_bucket.chapter_idxs),
+                    "chapter_range": [
+                        _bucket.chapter_idxs[0],
+                        _bucket.chapter_idxs[-1],
+                    ] if _bucket.chapter_idxs else [],
+                }
+                await _write_progress(prog)
 
             # 单切片重试：默认 2 次（provider 层另有 3 次总兜底），
             # 仍失败则记入 char_failed_slices，后续重跑 prepare 可自动补跑
@@ -1277,7 +1294,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                         f"chars slice {slice_idx+1}/{len(char_slices)} chars={len(slice_text)} "
                         f"attempt={attempt+1}/{char_extract_retries+1} start"
                     )
-                    r = await extract_characters_with_llm(slice_text)
+                    async with char_slice_sem:
+                        r = await extract_characters_with_llm(slice_text)
                     last_slice_err = None
                     break
                 except Exception as e:
@@ -1288,40 +1306,67 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                         f"FAIL: {last_slice_err}"
                     )
                     # 每次失败都记 checkpoint，前端可看到当前哪片在失败重试
-                    failed_slice_idxs[str(slice_idx)] = {
-                        "slice_idx": int(slice_idx),
-                        "slice_len": len(slice_text),
-                        "retries": attempt + 1,
-                        "last_err": last_slice_err,
-                    }
-                    prog["char_failed_slices"] = failed_slice_idxs
-                    await _write_progress(prog)
-            if last_slice_err is not None:
-                # 重试耗尽：这片角色识别跳过，不写 char_slice_completed，保留在 failed_slices 里
-                # 重跑 prepare 时会自动重试该切片
-                logger.error(
+                    async with char_prog_lock:
+                        failed_slice_idxs[str(slice_idx)] = {
+                            "slice_idx": int(slice_idx),
+                            "slice_len": len(slice_text),
+                            "retries": attempt + 1,
+                            "last_err": last_slice_err,
+                        }
+                        prog["char_failed_slices"] = failed_slice_idxs
+                        await _write_progress(prog)
+
+            async with char_prog_lock:
+                if last_slice_err is not None:
+                    # 重试耗尽：这片角色识别跳过，不写 char_slice_completed，
+                    # 保留在 failed_slices 里；重跑 prepare 时会自动重试该切片
+                    logger.error(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"chars slice {slice_idx+1}/{len(char_slices)} 全部重试耗尽仍失败，"
+                        f"暂时跳过该切片，重跑 prepare 会自动补跑。"
+                    )
+                    return
+                # 该切片成功：从 failed 集合里移除，暂存结果并写 checkpoint
+                failed_slice_idxs.pop(str(slice_idx), None)
+                char_raw_new_by_idx[slice_idx] = [c.model_dump() for c in r]
+                completed_slice_idxs.add(slice_idx)
+                # 顺序确定性：完整列表 = 基底 + 本轮已完成片按 idx 升序（重建，不重复）
+                char_raw_list[:] = char_base_raw + [
+                    d
+                    for i in sorted(char_raw_new_by_idx)
+                    for d in char_raw_new_by_idx[i]
+                ]
+                characters_merged[:] = [Character(**d) for d in char_raw_list]
+                prog["char_slice_completed"] = sorted(completed_slice_idxs)
+                prog["char_slice_completed_n"] = len(completed_slice_idxs)
+                prog["char_extract_raw_list"] = char_raw_list
+                prog["char_failed_slices"] = failed_slice_idxs
+                await _write_progress(prog)
+                logger.info(
                     f"[project_prepare] project_id={project_id[:8]}... "
-                    f"chars slice {slice_idx+1}/{len(char_slices)} 全部重试耗尽仍失败，"
-                    f"暂时跳过该切片，重跑 prepare 会自动补跑。"
+                    f"chars slice {slice_idx+1}/{len(char_slices)} done "
+                    f"extracted={len(r)} cum_unique_chars={len({c.name for c in characters_merged})}"
                 )
-                continue
-            # 该切片成功：从 failed 集合里移除，合并结果，写 checkpoint
-            failed_slice_idxs.pop(str(slice_idx), None)
-            characters_merged.extend(r)
-            completed_slice_idxs.add(slice_idx)
-            char_raw_list.extend([c.model_dump() for c in r])
-            prog["stage"] = "characters"
-            prog["char_slice_completed"] = sorted(completed_slice_idxs)
-            prog["char_slice_completed_n"] = len(completed_slice_idxs)
-            prog["char_extract_raw_list"] = char_raw_list
-            prog["char_failed_slices"] = failed_slice_idxs
-            prog.pop("char_current_slice", None)
-            await _write_progress(prog)
-            logger.info(
-                f"[project_prepare] project_id={project_id[:8]}... "
-                f"chars slice {slice_idx+1}/{len(char_slices)} done "
-                f"extracted={len(r)} cum_unique_chars={len({c.name for c in characters_merged})}"
+
+        pending_char_slices = [
+            (slice_idx, slice_text)
+            for slice_idx, slice_text in char_slices
+            if slice_idx not in completed_slice_idxs
+        ]
+        for slice_idx, _text in char_slices:
+            if slice_idx in completed_slice_idxs:
+                logger.info(
+                    f"[project_prepare] project_id={project_id[:8]}... "
+                    f"chars slice {slice_idx+1}/{len(char_slices)} 跳过（checkpoint）"
+                )
+        if pending_char_slices:
+            await asyncio.gather(
+                *[_process_one_char_slice(i, t) for i, t in pending_char_slices]
             )
+            # 全部片跑完：清掉「正在处理」标记（并发下逐片 pop 会互相打架，收尾统一清）
+            async with char_prog_lock:
+                prog.pop("char_current_slice", None)
+                await _write_progress(prog)
 
         # 角色识别切片循环结束：若有失败切片，输出汇总 WARNING 便于排查
         if len(failed_slice_idxs) > 0:
