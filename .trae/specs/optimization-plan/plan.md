@@ -1299,6 +1299,30 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 - 失败态（红）优先级高于闪烁，保持不变。
 - `npm run build` ✅；产物 CSS 已确认含 `blink-stage` keyframes。
 
+**H-15 时间显示 BUG 修复 + H-16 时间线 UI 等高对齐（2026-10-08）**
+
+> 用户反馈两个问题：
+> 1. 耗时显示有 BUG：刷新页面后时间会回退（如 40 秒刷新后变 10 秒）；秒数有时会连续快速涨两次（如 41 秒快速跳到 43 秒）。
+> 2. UI 不合理：有显示时间的步骤因为多了一行耗时文字，比没有时间的步骤高一截，前后不统一。
+
+**问题 1：时间回退与双跳**
+
+根因（多因素叠加）：
+1. **后端 `server_now_ms` 过时**：`get_project()` 直接透出 DB `progress_json` 里的 `server_now_ms`，该值只在 `_write_progress` 时写入。`polish` 阶段每 10 章才写一次心跳（可能几分钟），导致前端读到的 `server_now_ms` 已经过时很久。前端基于过时值做时钟校准 → 刷新页面时用新基线重新校准，耗时显示回退到过时值对应的时刻。
+2. **前端 `useServerNow` 的 render→useEffect 时序差**：旧实现「`serverNowMs + (Date.now() - receivedAtRef)`」中，`receivedAtRef` 在 `useEffect` 里更新（比 render 晚一拍）。当新 `serverNowMs` 到达时，新值 + 旧 `receivedAtRef` 会在渲染中短暂产生一个比真实值大的中间值 → 用户看到秒数快速跳了 2 秒。
+
+修复：
+- **后端**：`get_project()` 在解析 `progress_json` 后，将 `server_now_ms` 覆写为当前时刻（`_now_ms()`），确保每次 API 请求都返回新鲜的服务器时钟（[project.py](file:///workspace/backend/app/services/project.py) `get_project()` 内）。
+- **前端**：`useServerNow` hook 从「`base + (Date.now() - receivedAtRef)`」模型重写为「**时钟偏移模型**」：每次收到新 `serverNowMs` 时计算 `offset = serverNowMs - Date.now()`，此后返回 `Date.now() + offset`。偏移在渲染期同步更新（不用 `useEffect`），消除了 render→effect 的时序差，彻底消除双跳和回退（[ProjectDetailPage.tsx](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L391-L423)）。
+
+**问题 2：时间线步骤高低不齐**
+
+根因：只有部分步骤（`_PREPARE_TIMED_STAGES` 中的 7 个阶段）会显示耗时文字，`start` 和 `done` 不显示 → 有的列多一行文字变高，有的没有 → 视觉上高低不齐。
+
+修复：在 `PipelineTimeline` 组件中，**所有步骤都渲染耗时占位 span**，用 `h-[14px] leading-[14px]` 固定高度：有计时的显示 `fmtElapsed(elapsedMs)`，没计时的显示空字符串（但仍占据 14px 高度），保证所有步骤列等高对齐（[ProjectDetailPage.tsx](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L538-L561)）。
+
+**回归**：后端全量 `465 passed`（包括 `test_h13_stage_timings_red.py` 中所有阶段计时测试）；前端 `npm run build` ✅。
+
 
 
 

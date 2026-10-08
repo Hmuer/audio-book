@@ -389,25 +389,37 @@ export default function ProjectDetailPage({
 // =================== Overview Tab ===================
 
 /**
- * H-13：服务器时钟校准 + 1s tick。
- * 返回「服务器当前时刻」的本地推算值：server_now_ms + 自收到该值以来本地流逝的时间。
- * 每秒强制重渲染 → 正在执行的阶段耗时直观地一直在增加。
- * - serverNowMs 为 null/undefined（老数据/无 meta）→ 退化为本地时钟。
- * - active=false 时不 tick（终态/未运行，静止显示）。
+ * H-15：服务器时钟校准（时钟偏移模型）。
+ *
+ * 后端 get_project 每次轮询都返回新鲜的 server_now_ms（响应层现算现盖）。
+ * 收到时计算「偏移 = 服务器时刻 - 本地时刻」，此后用本地时钟外推：
+ *   - 轮询间平滑增长（偏移不变，Date.now() 随 1s tick 增长）
+ *   - 每次轮询重新校准（serverNowMs 变化 → 偏移重算，网络抖动 ±几十ms，秒级显示无感）
+ *   - 刷新页面不回退（首轮询重新建立偏移）
+ *   - 消除跳变：旧实现「新基线 + 旧偏移」在 render→useEffect 的间隙里被混用
+ *     （新值先进 render、receivedAt 还是旧的），导致秒数先跳 2 再回 1。
  */
 function useServerNow(serverNowMs: number | null | undefined, active: boolean): number {
-  const receivedAtRef = useRef(Date.now());
-  useEffect(() => {
-    receivedAtRef.current = Date.now();
-  }, [serverNowMs]);
+  const offsetRef = useRef<number | null>(null);
+  const prevServerNowRef = useRef<number | null | undefined>(undefined);
+
+  // 渲染期同步更新：serverNowMs 变化时才重算偏移。
+  // 每次渲染都重算会把 Date.now() 的增长「吃掉」，导致轮询间秒数冻结。
+  if (serverNowMs !== prevServerNowRef.current) {
+    prevServerNowRef.current = serverNowMs;
+    if (serverNowMs != null) {
+      offsetRef.current = serverNowMs - Date.now();
+    }
+  }
+
   const [, tick] = useState(0);
   useEffect(() => {
     if (!active) return;
     const t = setInterval(() => tick(x => (x + 1) % 1000), 1000);
     return () => clearInterval(t);
   }, [active]);
-  const base = serverNowMs ?? Date.now();
-  return base + (Date.now() - receivedAtRef.current);
+
+  return Date.now() + (offsetRef.current ?? 0);
 }
 
 const STAGE_ICONS: Record<string, JSX.Element> = {
@@ -524,17 +536,29 @@ function PipelineTimeline({
                 isDone || isCurrent ? 'text-ink-600' : 'text-ink-500'
               }`}>{st.label}</span>
               {/* H-13：阶段耗时（运行中实时跳动，便于直观看热点）。
-                  H-14：进行中改绿色与节点闪烁同色系（原品牌紫与绿灰状态色不搭） */}
-              {elapsedMs != null && (
-                <span
-                  className={`text-[10px] whitespace-nowrap tabular-nums ${
-                    running ? 'text-emerald-300 font-medium' : 'text-ink-500'
-                  }`}
-                  title={running ? '该阶段正在执行，耗时实时增长' : '该阶段总耗时'}
-                >
-                  {running ? `${fmtElapsed(elapsedMs)}…` : fmtElapsed(elapsedMs)}
-                </span>
-              )}
+                  H-14：进行中改绿色与节点闪烁同色系（原品牌紫与绿灰状态色不搭）。
+                  H-16：无论有无耗时数据都渲染固定高度 span → 所有步骤等高对齐，
+                  不会因为某步骤多一行耗时而比其他步骤高一截。 */}
+              <span
+                className={`text-[10px] h-[14px] leading-[14px] whitespace-nowrap tabular-nums ${
+                  elapsedMs != null && running
+                    ? 'text-emerald-300 font-medium'
+                    : 'text-ink-500'
+                }`}
+                title={
+                  elapsedMs != null
+                    ? running
+                      ? '该阶段正在执行，耗时实时增长'
+                      : '该阶段总耗时'
+                    : undefined
+                }
+              >
+                {elapsedMs != null
+                  ? running
+                    ? `${fmtElapsed(elapsedMs)}…`
+                    : fmtElapsed(elapsedMs)
+                  : ''}
+              </span>
             </div>
             {i < PIPELINE_STAGES.length - 1 && (
               <div className={`h-px w-6 ${isDone ? 'bg-emerald-500/40' : 'bg-ink-300/60'}`} />

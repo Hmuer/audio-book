@@ -2343,6 +2343,12 @@ async def get_project(project_id: str) -> ProjectDetailResp:
                 prog_dict = pp if isinstance(pp, dict) else None
             except Exception:
                 prog_dict = None
+        # H-15：服务器时钟。progress_json 里的 server_now_ms 只在 _write_progress
+        # 写库时刷新，polish 等长阶段会过时数十秒；如果直接透出这个旧值，
+        # 前端「本地流逝时间」外推基线就会错 → 刷新页面后耗时显示回退。
+        # 每次读详情都用「当前时刻」覆写，前端拿到的永远是新鲜值。
+        if prog_dict and "server_now_ms" in prog_dict:
+            prog_dict["server_now_ms"] = _now_ms()
         prepare_progress = _prepare_progress_public_view(prog_dict)
 
         return ProjectDetailResp(
