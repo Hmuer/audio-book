@@ -1,0 +1,427 @@
+2026-10-08 14:14:45 | WARNING | backend.app.ai.providers.minimax.llm:416 | [LLM] FAIL model=MiniMax-M3 schema=DialogueBatchResponse attempt=1/3 req_id=None status=200 this_ms=344870 finish_reason=stop tok_c=5772 resp_chars=14898 ValidationError: 142 validation errors for DialogueBatchResponse
+data.0.dialogues.0.anchor.text
+  Field required [type=missing, input_value={'start': 141, 'end': 158}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.1.anchor.text
+  Field required [type=missing, input_value={'start': 165, 'end': 174}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.2.anchor.text
+  Field required [type=missing, input_value={'start': 195, 'end': 214}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.3.anchor.text
+  Field required [type=missing, input_value={'start': 229, 'end': 239}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.4.anchor.text
+  Field required [type=missing, input_value={'start': 253, 'end': 270}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.5.anchor.text
+  Field required [type=missing, input_value={'start': 280, 'end': 301}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.6.anchor.text
+  Field required [type=missing, input_value={'start': 305, 'end': 412}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.7.anchor.text
+  Field required [type=missing, input_value={'start': 423, 'end': 438}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.8.anchor.text
+  Field required [type=missing, input_value={'start': 448, 'end': 486}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.9.anchor.text
+  Field required [type=missing, input_value={'start': 496, 'end': 526}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.10.anchor.text
+  Field required [type=missing, input_value={'start': 536, 'end': 549}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.11.anchor.text
+  Field required [type=missing, input_value={'start': 559, 'end': 569}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.12.anchor.text
+  Field required [type=missing, input_value={'start': 577, 'end': 593}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.13.anchor.text
+  Field required [type=missing, input_value={'start': 597, 'end': 627}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.14.anchor.text
+  Field required [type=missing, input_value={'start': 637, 'end': 648}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.15.anchor.text
+  Field required [type=missing, input_value={'start': 652, 'end': 669}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.16.anchor.text
+  Field required [type=missing, input_value={'start': 679, 'end': 716}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.17.anchor.text
+  Field required [type=missing, input_value={'start': 720, 'end': 729}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.18.anchor.text
+  Field required [type=missing, input_value={'start': 739, 'end': 743}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.19.anchor.text
+  Field required [type=missing, input_value={'start': 747, 'end': 750}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.20.anchor.text
+  Field required [type=missing, input_value={'start': 756, 'end': 759}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.21.anchor.text
+  Field required [type=missing, input_value={'start': 778, 'end': 785}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.22.anchor.text
+  Field required [type=missing, input_value={'start': 893, 'end': 916}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.23.anchor.text
+  Field required [type=missing, input_value={'start': 920, 'end': 933}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.0.dialogues.24.anchor.text
+  Field required [type=missing, input_value={'start': 1313, 'end': 1327}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.0.anchor.text
+  Field required [type=missing, input_value={'start': 360, 'end': 372}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.1.anchor.text
+  Field required [type=missing, input_value={'start': 382, 'end': 402}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.2.anchor.text
+  Field required [type=missing, input_value={'start': 412, 'end': 425}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.3.anchor.text
+  Field required [type=missing, input_value={'start': 436, 'end': 449}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.4.anchor.text
+  Field required [type=missing, input_value={'start': 453, 'end': 486}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.5.anchor.text
+  Field required [type=missing, input_value={'start': 494, 'end': 501}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.6.anchor.text
+  Field required [type=missing, input_value={'start': 505, 'end': 561}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.7.anchor.text
+  Field required [type=missing, input_value={'start': 589, 'end': 647}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.8.anchor.text
+  Field required [type=missing, input_value={'start': 654, 'end': 657}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.9.anchor.text
+  Field required [type=missing, input_value={'start': 696, 'end': 724}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.10.anchor.text
+  Field required [type=missing, input_value={'start': 784, 'end': 848}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.11.anchor.text
+  Field required [type=missing, input_value={'start': 852, 'end': 888}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.12.anchor.text
+  Field required [type=missing, input_value={'start': 897, 'end': 902}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.13.anchor.text
+  Field required [type=missing, input_value={'start': 906, 'end': 917}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.14.anchor.text
+  Field required [type=missing, input_value={'start': 929, 'end': 934}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.15.anchor.text
+  Field required [type=missing, input_value={'start': 938, 'end': 1004}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.16.anchor.text
+  Field required [type=missing, input_value={'start': 1170, 'end': 1193}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.17.anchor.text
+  Field required [type=missing, input_value={'start': 1203, 'end': 1213}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.18.anchor.text
+  Field required [type=missing, input_value={'start': 1217, 'end': 1290}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.19.anchor.text
+  Field required [type=missing, input_value={'start': 1300, 'end': 1305}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.20.anchor.text
+  Field required [type=missing, input_value={'start': 1325, 'end': 1361}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.21.anchor.text
+  Field required [type=missing, input_value={'start': 1369, 'end': 1372}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.22.anchor.text
+  Field required [type=missing, input_value={'start': 1376, 'end': 1390}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.23.anchor.text
+  Field required [type=missing, input_value={'start': 1400, 'end': 1410}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.24.anchor.text
+  Field required [type=missing, input_value={'start': 1414, 'end': 1456}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.25.anchor.text
+  Field required [type=missing, input_value={'start': 1466, 'end': 1476}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.26.anchor.text
+  Field required [type=missing, input_value={'start': 1480, 'end': 1554}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.1.dialogues.27.anchor.text
+  Field required [type=missing, input_value={'start': 1564, 'end': 1580}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.0.anchor.text
+  Field required [type=missing, input_value={'start': 17, 'end': 34}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.1.anchor.text
+  Field required [type=missing, input_value={'start': 70, 'end': 114}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.2.anchor.text
+  Field required [type=missing, input_value={'start': 130, 'end': 143}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.3.anchor.text
+  Field required [type=missing, input_value={'start': 191, 'end': 210}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.4.anchor.text
+  Field required [type=missing, input_value={'start': 275, 'end': 280}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.5.anchor.text
+  Field required [type=missing, input_value={'start': 284, 'end': 345}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.6.anchor.text
+  Field required [type=missing, input_value={'start': 355, 'end': 365}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.7.anchor.text
+  Field required [type=missing, input_value={'start': 369, 'end': 412}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.8.anchor.text
+  Field required [type=missing, input_value={'start': 422, 'end': 428}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.9.anchor.text
+  Field required [type=missing, input_value={'start': 432, 'end': 459}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.10.anchor.text
+  Field required [type=missing, input_value={'start': 470, 'end': 474}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.11.anchor.text
+  Field required [type=missing, input_value={'start': 484, 'end': 487}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.12.anchor.text
+  Field required [type=missing, input_value={'start': 491, 'end': 502}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.13.anchor.text
+  Field required [type=missing, input_value={'start': 691, 'end': 738}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.14.anchor.text
+  Field required [type=missing, input_value={'start': 748, 'end': 756}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.15.anchor.text
+  Field required [type=missing, input_value={'start': 760, 'end': 809}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.16.anchor.text
+  Field required [type=missing, input_value={'start': 819, 'end': 826}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.17.anchor.text
+  Field required [type=missing, input_value={'start': 830, 'end': 869}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.18.anchor.text
+  Field required [type=missing, input_value={'start': 879, 'end': 893}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.19.anchor.text
+  Field required [type=missing, input_value={'start': 897, 'end': 943}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.20.anchor.text
+  Field required [type=missing, input_value={'start': 955, 'end': 963}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.21.anchor.text
+  Field required [type=missing, input_value={'start': 967, 'end': 1044}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.22.anchor.text
+  Field required [type=missing, input_value={'start': 1066, 'end': 1093}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.23.anchor.text
+  Field required [type=missing, input_value={'start': 1103, 'end': 1114}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.24.anchor.text
+  Field required [type=missing, input_value={'start': 1118, 'end': 1172}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.25.anchor.text
+  Field required [type=missing, input_value={'start': 1182, 'end': 1189}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.26.anchor.text
+  Field required [type=missing, input_value={'start': 1199, 'end': 1208}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.27.anchor.text
+  Field required [type=missing, input_value={'start': 1212, 'end': 1218}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.28.anchor.text
+  Field required [type=missing, input_value={'start': 1228, 'end': 1235}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.29.anchor.text
+  Field required [type=missing, input_value={'start': 1239, 'end': 1274}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.30.anchor.text
+  Field required [type=missing, input_value={'start': 1284, 'end': 1293}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.31.anchor.text
+  Field required [type=missing, input_value={'start': 1297, 'end': 1402}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.32.anchor.text
+  Field required [type=missing, input_value={'start': 1490, 'end': 1503}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.33.anchor.text
+  Field required [type=missing, input_value={'start': 1507, 'end': 1548}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.34.anchor.text
+  Field required [type=missing, input_value={'start': 1558, 'end': 1587}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.35.anchor.text
+  Field required [type=missing, input_value={'start': 1591, 'end': 1635}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.2.dialogues.36.anchor.text
+  Field required [type=missing, input_value={'start': 1816, 'end': 1821}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.0.anchor.text
+  Field required [type=missing, input_value={'start': 53, 'end': 57}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.1.anchor.text
+  Field required [type=missing, input_value={'start': 70, 'end': 73}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.2.anchor.text
+  Field required [type=missing, input_value={'start': 97, 'end': 105}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.3.anchor.text
+  Field required [type=missing, input_value={'start': 117, 'end': 123}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.4.anchor.text
+  Field required [type=missing, input_value={'start': 147, 'end': 155}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.5.anchor.text
+  Field required [type=missing, input_value={'start': 167, 'end': 183}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.6.anchor.text
+  Field required [type=missing, input_value={'start': 201, 'end': 210}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.7.anchor.text
+  Field required [type=missing, input_value={'start': 222, 'end': 252}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.8.anchor.text
+  Field required [type=missing, input_value={'start': 256, 'end': 277}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.9.anchor.text
+  Field required [type=missing, input_value={'start': 289, 'end': 304}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.10.anchor.text
+  Field required [type=missing, input_value={'start': 308, 'end': 330}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.11.anchor.text
+  Field required [type=missing, input_value={'start': 342, 'end': 346}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.12.anchor.text
+  Field required [type=missing, input_value={'start': 364, 'end': 370}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.13.anchor.text
+  Field required [type=missing, input_value={'start': 384, 'end': 435}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.14.anchor.text
+  Field required [type=missing, input_value={'start': 447, 'end': 453}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.15.anchor.text
+  Field required [type=missing, input_value={'start': 479, 'end': 489}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.16.anchor.text
+  Field required [type=missing, input_value={'start': 540, 'end': 547}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.17.anchor.text
+  Field required [type=missing, input_value={'start': 551, 'end': 575}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.18.anchor.text
+  Field required [type=missing, input_value={'start': 601, 'end': 627}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.19.anchor.text
+  Field required [type=missing, input_value={'start': 639, 'end': 642}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.20.anchor.text
+  Field required [type=missing, input_value={'start': 646, 'end': 717}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.21.anchor.text
+  Field required [type=missing, input_value={'start': 729, 'end': 738}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.22.anchor.text
+  Field required [type=missing, input_value={'start': 742, 'end': 755}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.23.anchor.text
+  Field required [type=missing, input_value={'start': 769, 'end': 781}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.24.anchor.text
+  Field required [type=missing, input_value={'start': 785, 'end': 900}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.25.anchor.text
+  Field required [type=missing, input_value={'start': 912, 'end': 975}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.26.anchor.text
+  Field required [type=missing, input_value={'start': 987, 'end': 991}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.27.anchor.text
+  Field required [type=missing, input_value={'start': 1005, 'end': 1103}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.28.anchor.text
+  Field required [type=missing, input_value={'start': 1107, 'end': 1189}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.29.anchor.text
+  Field required [type=missing, input_value={'start': 1202, 'end': 1254}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.30.anchor.text
+  Field required [type=missing, input_value={'start': 1258, 'end': 1316}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.31.anchor.text
+  Field required [type=missing, input_value={'start': 1360, 'end': 1375}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.32.anchor.text
+  Field required [type=missing, input_value={'start': 1414, 'end': 1549}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.33.anchor.text
+  Field required [type=missing, input_value={'start': 1553, 'end': 1632}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.34.anchor.text
+  Field required [type=missing, input_value={'start': 1644, 'end': 1649}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.35.anchor.text
+  Field required [type=missing, input_value={'start': 1768, 'end': 1778}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.36.anchor.text
+  Field required [type=missing, input_value={'start': 1790, 'end': 1791}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.37.anchor.text
+  Field required [type=missing, input_value={'start': 1795, 'end': 1850}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.38.anchor.text
+  Field required [type=missing, input_value={'start': 1864, 'end': 1912}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.39.anchor.text
+  Field required [type=missing, input_value={'start': 1916, 'end': 1927}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.40.anchor.text
+  Field required [type=missing, input_value={'start': 1939, 'end': 1959}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.41.anchor.text
+  Field required [type=missing, input_value={'start': 1963, 'end': 2050}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.42.anchor.text
+  Field required [type=missing, input_value={'start': 2064, 'end': 2091}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.43.anchor.text
+  Field required [type=missing, input_value={'start': 2103, 'end': 2109}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.44.anchor.text
+  Field required [type=missing, input_value={'start': 2113, 'end': 2209}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.45.anchor.text
+  Field required [type=missing, input_value={'start': 2221, 'end': 2228}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.46.anchor.text
+  Field required [type=missing, input_value={'start': 2242, 'end': 2293}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.47.anchor.text
+  Field required [type=missing, input_value={'start': 2297, 'end': 2390}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.48.anchor.text
+  Field required [type=missing, input_value={'start': 2402, 'end': 2407}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.49.anchor.text
+  Field required [type=missing, input_value={'start': 2421, 'end': 2471}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.50.anchor.text
+  Field required [type=missing, input_value={'start': 2479, 'end': 2494}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+data.3.dialogues.51.anchor.text
+  Field required [type=missing, input_value={'start': 2517, 'end': 2524}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing

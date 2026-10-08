@@ -1215,6 +1215,34 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 
 **给用户的操作提示**：识别阶段的耗时仍主要受 `LLM_MAX_CONCURRENCY`（全局安全阀）约束——设置页「限流配置」把它与「角色识别切片并发度」一起调高（如 4/4），长任务中途改也立即生效（H-1）；上游若出现 429 退避日志则往下调。
 
+### 12.6 批次 12 · H-12 对白归属 anchor.text 本地回填（2026-10-08）
+
+> 触发：用户上传 app.log，满屏 `ValidationError: 142 validation errors for DialogueBatchResponse`。
+
+**日志诊断（app.log 实测证据）**
+- `schema=DialogueBatchResponse status=200 finish_reason=stop this_ms=344870 tok_c=5772` —— 单次批调用 **344 秒**、上游正常返回
+- 但 M3 返回的每条对白 `anchor` 只有 `{start, end}`、**缺 `text` 字段**（模型输出风格变化：认为有偏移即可，省略冗余）→ 142 条 ValidationError → **整批作废重试 3 次 ≈ 17 分钟纯浪费**；且重试结果相同（不是随机噪声），最终 3 次耗尽后该批章节按**空对白**兜底 —— 既是速度杀手也是质量杀手
+- 每条错误 3 行日志 × 142 条 = 426 行/次 × 3 次重试 → 日志刷屏
+
+**H-12 修复：宽容 schema + 本地回填（不再依赖 LLM 重试）**
+
+| 项 | 内容 | 位置 |
+|---|---|---|
+| schema 宽容 | `Anchor.text` / `DialogueAttribution.text` 改 `str \| None`（校验放行），回填后流出对象永远非空 | [dialogue.py](file:///workspace/backend/app/services/dialogue.py#L42-L57) |
+| 本地回填 | `_backfill_anchor_text()`：`text` 缺失但 `0 <= start < end <= len(chapter_text)` → `chapter_text[start:end]` 回填；对白 `text` 也缺失 → anchor 切片去引号兜底；**越界条目丢弃**（宁缺勿错）+ 一批一条汇总 warning | [dialogue.py](file:///workspace/backend/app/services/dialogue.py#L60-L107) |
+| 接入点 | 批量版按 `chapter_idx` 逐章回填、单章版直接回填（两条路径全覆盖） | [dialogue.py](file:///workspace/backend/app/services/dialogue.py#L139-L140) / [dialogue.py](file:///workspace/backend/app/services/dialogue.py#L231-L238) |
+| prompt 纠偏 | 单章 FEW_SHOT + 批量 PROLOGUE 均加「anchor.text 必须输出，不可省略/null」 | 同上 |
+| 日志降噪 | FAIL 日志的 ValidationError 详情截断为「前 2 条 + 总数」（原 426 行/次 → 1 行） | [llm.py](file:///workspace/backend/app/ai/providers/minimax/llm.py#L410-L427) |
+| 下游恢复 | 落库 `anchor_text` 非空 → [chapter.py](file:///workspace/backend/app/services/chapter.py#L250-L258) 的「anchor_text 精确定位修正」恢复工作（此前空串会退化为裸 start/end 定位，LLM 偏移不准时切错段） | 联动收益 |
+
+**修复效果**：单批从「344s × 3 次全废 + 空对白兜底」→「**一次成功**」（M3 省略 text 不再触发重试）；即使位置越界也只丢单条而非整批。大书对白阶段（如 500 批）最坏可省 500 × 11.4 分钟 ≈ **95 小时**无效重试，且对白不再整批丢失。
+
+**回归测试**（[test_dialogue_anchor_red.py](file:///workspace/backend/tests/test_dialogue_anchor_red.py)，4 用例）
+- app.log 场景复现：anchor 只有 {start,end} → 回填成功、不抛 ValidationError
+- 越界三态（end>章长 / end<=start / 负数）丢弃 + 对白 text 双缺失兜底
+- 单章接口回填
+- 端到端：Mock 以「省略 anchor.text 模式」跑 prepare → 对白正常落库、`anchor_text` 非空且与原书文本切片对齐
+
 
 
 

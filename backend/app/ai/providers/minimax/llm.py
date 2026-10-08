@@ -407,11 +407,22 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                 elapsed = _time.perf_counter() - t0
                 is_last = attempt == max_retries
                 lvl = logging.ERROR if is_last else logging.WARNING
+                # H-12 日志降噪：ValidationError 的 str(e) 可达数千行
+                # （app.log 实测 142 errors × 3 行 = 426 行/条），只打前 2 条 + 总数
+                if isinstance(e, ValidationError):
+                    errs = e.errors()
+                    head = "; ".join(
+                        f"{'.'.join(str(x) for x in er.get('loc', ()))}: {er.get('msg')}"
+                        for er in errs[:2]
+                    )
+                    detail = f"{len(errs)} validation errors, head=[{head}]"
+                else:
+                    detail = f"{type(e).__name__}: {e}"
                 msg = (
                     f"[LLM] FAIL model={use_model} schema={schema_name} attempt={attempt}/{max_retries} "
                     f"req_id={req_id} status={http_status} this_ms={int(elapsed*1000)} "
                     f"finish_reason={finish_reason} tok_c={completion_tokens} resp_chars={resp_chars} "
-                    f"{type(e).__name__}: {e}"
+                    f"{detail}"
                 )
                 logger.log(lvl, msg, exc_info=is_last)
                 if attempt < max_retries:

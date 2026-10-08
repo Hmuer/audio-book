@@ -17,6 +17,7 @@ FEW_SHOT = r"""
 2. 如果对白前有"XX 说/道/喊/回答/冷喝/喃喃"等提示词，优先用提示词。
 3. 如果没有提示词，根据上下文语境、角色性格、对话内容风格合理推断。
 4. anchor 的 start/end 是对白原文（包含引号）在**该章的 chapter_text 里**的 0-indexed **字符位置**（Python 字符串索引，不是字节位置）。即 `text[start:end]` 应严格等于 anchor.text。
+   ⚠️ anchor.text 字段**必须输出**（与 start/end 一起，不可省略、不可用 null 代替）。
 5. confidence 0-1：0.7 以下表示你不太确定，让人工复核。
 6. 每段对白 text 字段去掉引号后的纯对白文本。
 
@@ -39,7 +40,10 @@ FEW_SHOT = r"""
 
 
 class Anchor(BaseModel):
-    text: str
+    # H-12：text 可选化（M3 实测会省略 anchor.text 只给 start/end —— 142 条校验
+    # 错误导致 344s 的大批调用整批作废、重试 3 次全废）。text 缺失时由
+    # _backfill_anchor_text 用 chapter_text[start:end] 本地回填，不再依赖 LLM 重试。
+    text: str | None = None
     start: int
     end: int
 
@@ -48,7 +52,59 @@ class DialogueAttribution(BaseModel):
     anchor: Anchor
     speaker: str
     confidence: float
-    text: str
+    # H-12：对白 text 同样可选化（M3 偶发省略）；_backfill_anchor_text
+    # 会用 anchor 切片去引号兜底 → 流出的对象 text 永远非空
+    text: str | None = None
+
+
+def _backfill_anchor_text(
+    dialogues: list[DialogueAttribution],
+    chapter_text: str,
+    *,
+    chapter_idx: int | None = None,
+) -> list[DialogueAttribution]:
+    """H-12：anchor.text 本地回填 + 越界过滤。
+
+    M3 实测（app.log 2026-10-08）：对白归属批返回 anchor 只有 {start, end}，
+    缺 text → 142 条 ValidationError → 344s/次的批调用整批作废重试 3 次。
+    anchor.start/end 本就是该章 chapter_text 的 0-indexed 偏移，
+    text 完全可以本地切片回填，一次调用即成功、不再重试。
+
+    回填后 chapter.py 的「anchor_text 精确定位修正」也恢复工作
+    （此前空串落库会退化为裸 start/end 定位）。
+
+    过滤规则（宁缺勿错）：start/end 越界（负数 / end>章长 / end<=start）
+    的条目丢弃并计数 warning（一批一条汇总日志，不刷屏）。
+    """
+    kept: list[DialogueAttribution] = []
+    dropped = 0
+    ch_len = len(chapter_text)
+    where = f"chapter_idx={chapter_idx} " if chapter_idx is not None else ""
+    for d in dialogues:
+        a = d.anchor
+        text_ok = bool(a.text and a.text.strip())
+        pos_ok = 0 <= a.start < a.end <= ch_len
+        if text_ok and pos_ok:
+            kept.append(d)
+            continue
+        if not pos_ok:
+            # 位置非法：无法回填也无法定位 → 丢弃
+            dropped += 1
+            continue
+        # text 缺失但位置合法 → 切片回填（并同时修正对白 text 缺引号场景）
+        backfilled = chapter_text[a.start:a.end]
+        d.anchor = Anchor(text=backfilled, start=a.start, end=a.end)
+        if not (d.text and d.text.strip()):
+            # 对白 text 也缺失：从回填的 anchor 去引号兜底
+            stripped = backfilled.strip().strip("「」『』“”\"'")
+            d.text = stripped
+        kept.append(d)
+    if dropped:
+        logger.warning(
+            f"[dialogue] {where}anchor 越界/无效丢弃 {dropped} 条对白"
+            f"（start/end 不在 [0, {ch_len}) 区间或 end<=start）"
+        )
+    return kept
 
 
 async def attribute_dialogues_with_llm(
@@ -80,7 +136,8 @@ async def attribute_dialogues_with_llm(
         use_fast_model=True,  # 对白归属任务结构化、prompt 内带角色名/少样本；M2.7-highspeed 足够快
     )
     track_llm(calls=1, chars=len(prompt), detail="dialogue")
-    return wrapped.data
+    # H-12：anchor.text 本地回填（text=None 但位置合法 → 切片回填；越界 → 丢弃）
+    return _backfill_anchor_text(wrapped.data, text)
 
 
 # =====================================================================
@@ -105,6 +162,7 @@ _BATCH_PROLOGUE = r"""
 2. 如果对白前有"XX 说/道/喊/回答/冷喝/喃喃"等提示词，优先用提示词。
 3. anchor 的 start/end 是对白原文（含引号）**在该章 chapter_text 内部**的 0-indexed 字符位置——
    ⚠️ 不是整本书里的位置！必须是 `chapter_text[start:end] == anchor.text`。
+   anchor.text 字段**必须输出**（与 start/end 一起，不可省略、不可用 null 代替）。
 4. confidence 0-1，0.7 以下表示不确定。
 5. 每段对白 text 字段去掉引号后的纯对白文本。
 
@@ -170,6 +228,15 @@ async def attribute_dialogues_batch_with_llm(
     )
     track_llm(calls=1, chars=len(prompt), detail="dialogue_batch")
     results = wrapped.data
+
+    # H-12：逐章回填 anchor.text（M3 实测会省略；批调用 344s/次，
+    # 校验整批作废重试 3 次全废 —— 回填后一次即成功）
+    text_by_idx = {idx: t for idx, t in chapters}
+    for r in results:
+        if r.chapter_idx in text_by_idx:
+            r.dialogues = _backfill_anchor_text(
+                r.dialogues, text_by_idx[r.chapter_idx], chapter_idx=r.chapter_idx
+            )
 
     # 按 chapter_idx 做成 map，缺的补空
     idx_set = {idx for idx, _ in chapters}
