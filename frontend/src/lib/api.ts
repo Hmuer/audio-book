@@ -657,6 +657,11 @@ export interface PrepareProgress {
   polish_failed_n?: number;
   /** H-3：LLM 调用量/耗时估算（prepare 开始后即有，前端显示「预计多久」） */
   llm_estimate?: LlmEstimate | null;
+  /** H-13：各阶段耗时（started_ms 为 epoch ms；elapsed_ms 阶段完成时写死，
+   * 进行中缺失 → 前端用 server_now_ms 实时算，秒级跳动） */
+  stage_timings?: Record<string, { started_ms?: number; elapsed_ms?: number }>;
+  /** H-13：progress 写库时刻（epoch ms），前端校准本机时钟偏差 */
+  server_now_ms?: number;
 }
 
 /** H-3：prepare 的 LLM 调用量估算（按当前 settings 的批量口径） */
@@ -795,6 +800,13 @@ export interface BuildProgressMeta {
   eta_secs?: number | null;
   shard_done?: number | null;
   shard_total?: number | null;
+  quality?: QualityReport | null;
+  /** H-13：当前 phase 起点（epoch ms）；进行中耗时 = server_now_ms - phase_started_ms */
+  phase_started_ms?: number | null;
+  /** H-13：已完成 phase → 最终耗时 ms（如 { synthesizing: 730000, packaging: 12000 }） */
+  completed_timings?: Record<string, number> | null;
+  /** H-13：meta 写库时刻（epoch ms），前端校准时钟 */
+  server_now_ms?: number | null;
 }
 
 // H-5：可疑章（音频时长与文本长度比例异常：chars_per_sec ∉ [0.8, 25]）

@@ -52,3 +52,17 @@ export function sortByTimeDesc<T>(list: T[], getIso: (item: T) => string | null 
     return tb - ta;
   });
 }
+
+/**
+ * H-13：格式化阶段耗时（毫秒）。
+ * 45s → "45s"；3m05s → "3m05s"；1h05m → "1h05m"；无效 → "—"
+ */
+export function fmtElapsed(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return '—';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${String(s % 60).padStart(2, '0')}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h${String(m % 60).padStart(2, '0')}m`;
+}

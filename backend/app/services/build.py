@@ -282,6 +282,9 @@ class BuildProgressMeta(BaseModel):
       避免 retry 时速率虚高）；样本取最近 50 章完成时刻。
     - eta_secs：服务端按 remaining ÷ rate 计算；无样本（<2 章）时为 null。
     - quality：H-5 终态质检摘要（仅终态后存在）。
+    - H-13 阶段耗时：phase_started_ms（当前阶段起点，进行中耗时的前端实时算）；
+      completed_timings（已完成 phase → 最终耗时 ms）；server_now_ms（写库时刻，
+      前端校准时钟）。
     """
     phase: str | None = None
     rate_ch_per_min: float | None = None
@@ -290,6 +293,10 @@ class BuildProgressMeta(BaseModel):
     shard_done: int | None = None
     shard_total: int | None = None
     quality: QualityReport | None = None
+    # H-13：阶段耗时（synthesizing / packaging）
+    phase_started_ms: int | None = None
+    completed_timings: dict[str, int] | None = None
+    server_now_ms: int | None = None
 
 
 class BuildDetailResp(BaseModel):
@@ -391,6 +398,9 @@ def _parse_progress_meta(b: Build) -> BuildProgressMeta | None:
                 quality = QualityReport.model_validate(q)
             except Exception:
                 quality = None
+        # H-13：阶段耗时（老 build 无此字段 → None）
+        ct = m.get("completed_timings")
+        completed_timings = ct if isinstance(ct, dict) else None
         return BuildProgressMeta(
             phase=m.get("phase"),
             rate_ch_per_min=m.get("rate_ch_per_min"),
@@ -399,6 +409,9 @@ def _parse_progress_meta(b: Build) -> BuildProgressMeta | None:
             shard_done=m.get("shard_done"),
             shard_total=m.get("shard_total"),
             quality=quality,
+            phase_started_ms=m.get("phase_started_ms"),
+            completed_timings=completed_timings,
+            server_now_ms=m.get("server_now_ms"),
         )
     except Exception:
         return None
@@ -450,6 +463,8 @@ def _h4_progress_meta_json(
     shard_done: int | None = None,
     shard_total: int | None = None,
     quality: dict | None = None,
+    phase_started_ms: int | None = None,
+    completed_timings: dict[str, int] | None = None,
 ) -> str:
     """H-4：生成 progress_meta_json。
 
@@ -459,6 +474,8 @@ def _h4_progress_meta_json(
     - eta_secs = remaining / rate；无样本（<2 章）时为 null，前端显示「计算中…」。
     - remaining 用「目标口径」：retry 时只算 only_set 内的章，非全书。
     - H-5：终态时附 quality 质检摘要。
+    - H-13：phase_started_ms / completed_timings / server_now_ms 阶段耗时；
+      进行中 phase 的耗时由前端用 server_now_ms 校准后实时计算（秒级跳动）。
     """
     rate: float | None = None
     eta_secs: int | None = None
@@ -478,6 +495,10 @@ def _h4_progress_meta_json(
             "shard_done": shard_done,
             "shard_total": shard_total,
             "quality": quality,
+            # H-13：阶段耗时
+            "phase_started_ms": phase_started_ms,
+            "completed_timings": completed_timings or {},
+            "server_now_ms": int(_time.time() * 1000),
         },
         ensure_ascii=False,
     )
@@ -2162,6 +2183,8 @@ async def _run_build_inner(
         # 迟到的 running 覆盖，后续 start_build 又误判"已有活跃 build"）。
         # H-4：启动即写入初始 meta（phase=synthesizing / remaining=target），
         # 前端从第一章就能显示「合成中」，不必等第一章完成。
+        # H-13：synthesizing 阶段起点（epoch ms）—— 前端实时算「已用时」。
+        _h13_synth_t0_ms = int(_time.time() * 1000)
         from sqlalchemy import update as _sa_update
         res = await s.execute(
             _sa_update(Build)
@@ -2178,6 +2201,7 @@ async def _run_build_inner(
                     processed=0,
                     target_total=processed_target,
                     recent_ts=recent_synth_ts,
+                    phase_started_ms=_h13_synth_t0_ms,
                 ),
             )
         )
@@ -2284,6 +2308,7 @@ async def _run_build_inner(
                             processed=processed,
                             target_total=processed_target,
                             recent_ts=recent_synth_ts,
+                            phase_started_ms=_h13_synth_t0_ms,
                         )
                         await s.commit()
                 logger.info(
@@ -2360,6 +2385,7 @@ async def _run_build_inner(
                         processed=processed,
                         target_total=processed_target,
                         recent_ts=recent_synth_ts,
+                        phase_started_ms=_h13_synth_t0_ms,
                     )
                 await s.commit()
             continue
@@ -2525,6 +2551,7 @@ async def _run_build_inner(
                             processed=processed,
                             target_total=processed_target,
                             recent_ts=recent_synth_ts,
+                            phase_started_ms=_h13_synth_t0_ms,
                         )
                 await s.commit()
                 if b and b.status == "cancelled":
@@ -2598,6 +2625,7 @@ async def _run_build_inner(
                             processed=processed,
                             target_total=processed_target,
                             recent_ts=recent_synth_ts,
+                            phase_started_ms=_h13_synth_t0_ms,
                         )
                 await s.commit()
                 if b and b.status == "cancelled":
@@ -2679,6 +2707,12 @@ async def _run_build_inner(
 
     # H-4：合成全部结束 → 切到 packaging 阶段（大书数千章打包耗时较久，
     # 前端据此从「合成中」切到「打包中 i/N 卷」，而不是长时间停在最后一章）。
+    # H-13：synthesizing 收口（耗时写死）+ packaging 起点记录。
+    _h13_now_ms = int(_time.time() * 1000)
+    _h13_completed_timings: dict[str, int] = {
+        "synthesizing": max(0, _h13_now_ms - _h13_synth_t0_ms),
+    }
+    _h13_pack_t0_ms = _h13_now_ms
     shard_done = 0
     async with factory() as s:
         b = await s.get(Build, build_id)
@@ -2691,6 +2725,8 @@ async def _run_build_inner(
                 recent_ts=recent_synth_ts,
                 shard_done=0,
                 shard_total=len(shard_ranges),
+                phase_started_ms=_h13_pack_t0_ms,
+                completed_timings=_h13_completed_timings,
             )
             await s.commit()
 
@@ -2738,6 +2774,8 @@ async def _run_build_inner(
                     recent_ts=recent_synth_ts,
                     shard_done=shard_done,
                     shard_total=len(shard_ranges),
+                    phase_started_ms=_h13_pack_t0_ms,
+                    completed_timings=_h13_completed_timings,
                 )
                 await s.commit()
         # G-3：分片 ZIP 归档（在本地 MP3 清理之前 —— 打包必须读本地文件）
@@ -2826,6 +2864,7 @@ async def _run_build_inner(
         zip_shards=zip_shards,
         # H-4：终态 meta 保留最终速率（remaining=0、eta=null、phase=done）
         # H-5：附带质检摘要
+        # H-13：两个阶段的耗时都写死（synthesizing / packaging），phase_started 清空
         progress_meta_json=_h4_progress_meta_json(
             phase="done",
             processed=processed_target,
@@ -2834,6 +2873,11 @@ async def _run_build_inner(
             shard_done=len(zip_shards),
             shard_total=len(shard_ranges),
             quality=quality_summary,
+            phase_started_ms=None,
+            completed_timings={
+                **_h13_completed_timings,
+                "packaging": max(0, int(_time.time() * 1000) - _h13_pack_t0_ms),
+            },
         ),
     )
 

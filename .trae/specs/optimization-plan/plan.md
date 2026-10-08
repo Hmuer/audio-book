@@ -1243,6 +1243,38 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 - 单章接口回填
 - 端到端：Mock 以「省略 anchor.text 模式」跑 prepare → 对白正常落库、`anchor_text` 非空且与原书文本切片对齐
 
+### 12.7 批次 13 · H-13 页面显示各阶段总耗时（实时增长）（2026-10-08）
+
+> 触发：用户要求「页面上显示每个阶段的总耗时更容易定位热点，包括正在执行中的阶段也要实时显示总耗时（可以直观看到一直在增加）」。
+
+**设计（三个关键决策）**
+
+| 决策 | 内容 | 理由 |
+|---|---|---|
+| 计时口径 | `started_ms` **首次**进入时写（幂等不覆盖），`elapsed_ms` 阶段完成时写死（[project.py](file:///workspace/backend/app/services/project.py#L579-L600)） | 断点续跑保留历史起点 → elapsed 是「该阶段**累计**耗时」（含上次挂掉前跑掉的时间），正是热点定位要的口径 |
+| 进行中实时算 | 进行中**不写** elapsed（进度条低频写库，写了也不会跳）；后端每次写 progress 只刷 `server_now_ms`，前端 `serverNowMs - started_ms` 每秒算 | 写库频率与显示频率解耦：显示 1s 一跳，写库频率不变 |
+| 时钟校准 | 前端 `useServerNow`：`server_now_ms + 本地流逝时间` 推算服务器当前时刻（[ProjectDetailPage.tsx](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L395-L410)） | 前后端时钟可能有偏差（容器/宿主时区漂移），直接 `Date.now() - started_ms` 会跳变甚至为负 |
+
+**实现**
+
+| 端 | 改动 | 位置 |
+|---|---|---|
+| prepare 后端 | `_stage_timing_touch` / `_stamp_server_now` / `_read_write_progress_timing`（split/polish 在 prog 框架前的独立小读写），7 阶段切换点全部打点（start/end）；白名单透出 `stage_timings` / `server_now_ms` | [project.py](file:///workspace/backend/app/services/project.py#L561-L634) |
+| build 后端 | `BuildProgressMeta` + `phase_started_ms` / `completed_timings` / `server_now_ms` 三字段；`_h4_progress_meta_json` 写入（synthesizing 起点 `_h13_synth_t0_ms`、packaging 起点 `_h13_pack_t0_ms`、终态写 completed_timings） | [build.py](file:///workspace/backend/app/services/build.py#L285-L299) |
+| 前端类型 | `PrepareProgress.stage_timings/server_now_ms`、`BuildProgressMeta.phase_started_ms/completed_timings/server_now_ms` | [api.ts](file:///workspace/frontend/src/lib/api.ts#L661-L664) |
+| 前端格式化 | `fmtElapsed`：45s / 3m05s / 1h05m，无效 → — | [time.ts](file:///workspace/frontend/src/lib/time.ts#L66-L77) |
+| 前端 UI | `useServerNow`（校准 + 1s tick，终态不 tick）；`PipelineTimeline` 每阶段显示耗时（进行中 `serverNowMs - started_ms` + `…` 后缀实时增长，已完成固定）；`ready` 态加「识别耗时」汇总条（一眼看出时间花在哪） | [ProjectDetailPage.tsx](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L447-L545) |
+
+**回归测试**（[test_h13_stage_timings_red.py](file:///workspace/backend/tests/test_h13_stage_timings_red.py)，5 用例）
+- 首次进入记 started_ms 幂等（断点续跑不覆盖历史起点，累计口径）+ 进行中不写 elapsed_ms
+- end=True 写死 elapsed_ms 且此后幂等；非白名单阶段忽略；白名单覆盖全部 7 个 prepare 阶段
+- `server_now_ms` 刷新 + **白名单透出守护**（漏字段 = 前端实时耗时直接消失，显式列表最容易在后续加字段时漏掉）+ 老数据不炸
+- build meta JSON 含三字段、形状可被 `BuildProgressMeta` 解析（与前端 api.ts 类型对齐）
+
+**回归结果**
+- 后端全量：`458 passed`（含本次新增 5 用例）
+- 前端：`npm install` 后 `npm run build` ✅（Next.js 构建含 tsc 类型检查）
+
 
 
 

@@ -558,6 +558,82 @@ def _fmt_time_now() -> str:
     return _time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+# =====================================================================
+# H-13：prepare 各阶段耗时记录（stage_timings）
+#
+# 目的：页面上直接看到每个阶段花了多久（热点定位），正在执行的阶段
+# 耗时实时增长（前端 1s tick + server_now_ms 时钟校准）。
+#
+# 结构（progress_json.stage_timings，随白名单透出到前端）：
+#   {
+#     "split":      {"started_ms": 1728..., "elapsed_ms": 1234},
+#     "characters": {"started_ms": ..., "elapsed_ms": null},   # 进行中
+#     ...
+#   }
+# - started_ms：**首次**进入该阶段时写（断点续跑保留历史起点 → elapsed
+#   语义是「该阶段累计耗时」，含上次挂掉前跑掉的时间——这正是热点定位要的口径）
+# - elapsed_ms：阶段完成时写死；进行中不写（前端用 server_now_ms 实时算）
+# - server_now_ms：每次写 progress 都刷新，前端用来校准本机时钟偏差
+# =====================================================================
+
+_PREPARE_TIMED_STAGES: tuple[str, ...] = (
+    "split", "polish", "characters", "dedup",
+    "dialogues", "instructions", "voice_recs",
+)
+
+
+def _now_ms() -> int:
+    import time as _time
+    return int(_time.time() * 1000)
+
+
+def _stage_timing_touch(prog: dict, stage: str, *, end: bool = False) -> None:
+    """H-13：标记阶段计时。首次进入记 started_ms（幂等，不覆盖历史）；
+    end=True 时写死 elapsed_ms（阶段完成，此后不再变化）。"""
+    if stage not in _PREPARE_TIMED_STAGES:
+        return
+    timings = prog.setdefault("stage_timings", {})
+    st = timings.setdefault(stage, {})
+    now_ms = _now_ms()
+    st.setdefault("started_ms", now_ms)
+    if end:
+        st["elapsed_ms"] = now_ms - int(st.get("started_ms") or now_ms)
+
+
+def _stamp_server_now(prog: dict) -> None:
+    """H-13：progress 里刷服务器当前时刻（epoch ms），前端校准时钟用。"""
+    prog["server_now_ms"] = _now_ms()
+
+
+async def _read_write_progress_timing(
+    project_id: str, stage: str, *, end: bool
+) -> None:
+    """H-13：split / polish 等在 prog 框架建立**之前**的阶段，
+    用独立的小读写把阶段计时落库（低频，每阶段前后各一次）。"""
+    factory = get_session_factory()
+    try:
+        async with factory() as sess:
+            proj = await sess.get(Project, project_id)
+            if not proj:
+                return
+            try:
+                prog = json.loads(proj.progress_json) if proj.progress_json else {}
+                if not isinstance(prog, dict):
+                    prog = {}
+            except Exception:
+                prog = {}
+            _stage_timing_touch(prog, stage, end=end)
+            _stamp_server_now(prog)
+            prog["updated_at"] = _fmt_time_now()
+            proj.progress_json = json.dumps(prog, ensure_ascii=False)
+            await sess.commit()
+    except Exception as e:
+        logger.warning(
+            f"[project_prepare] project_id={project_id[:8]}... 写阶段计时({stage})失败（不影响识别）: "
+            f"{type(e).__name__}: {e}"
+        )
+
+
 async def _write_prepare_last_error(project_id: str, err_type: str, err_msg: str) -> None:
     """prepare 失败时写 last_error 到 progress_json（不覆盖 checkpoint），前端 GET /projects/{id} 可以看到具体错误。"""
     factory = get_session_factory()
@@ -1011,6 +1087,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
     try:
         # 3. 章节识别
         pt = _time.perf_counter()
+        # H-13：split 阶段计时（prog 框架建立前，独立落库）
+        await _read_write_progress_timing(project_id, "split", end=False)
         try:
             chapters = await split_book_chapters(raw_text)
         except ChapterSplitError as e:
@@ -1021,6 +1099,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 f"no LLM fallback → raise directly"
             )
             raise
+        await _read_write_progress_timing(project_id, "split", end=True)
         logger.info(
             f"[project_prepare] project_id={project_id[:8]}... "
             f"split_chapters={len(chapters)} ms={int((_time.perf_counter()-pt)*1000)}"
@@ -1039,6 +1118,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 if p_prog:
                     prog_e = _parse_progress(p_prog)
                     prog_e["llm_estimate"] = llm_estimate
+                    _stamp_server_now(prog_e)
                     prog_e["updated_at"] = _fmt_time_now()
                     p_prog.progress_json = json.dumps(prog_e, ensure_ascii=False)
                     await s.commit()
@@ -1059,6 +1139,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             from .usage import track_llm
 
             polish_t0 = _time.perf_counter()
+            # H-13：polish 阶段计时（进行中不写 checkpoint，started_ms 供前端实时算）
+            await _read_write_progress_timing(project_id, "polish", end=False)
             sidecar_path = Path(settings.DATA_DIR) / f"polish_{project_id}.json"
             polished_map: dict[str, str] = {}
             try:
@@ -1134,6 +1216,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     p_prog = await s.get(Project, project_id)
                     if p_prog:
                         prog_p = _parse_progress(p_prog)
+                        _stage_timing_touch(prog_p, "polish", end=True)
                         prog_p.update({
                             "polish_total": len(chapters),
                             "polish_changed_n": changed_n,
@@ -1142,6 +1225,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                             "polish_failed_n": failed_n,
                             "updated_at": _fmt_time_now(),
                         })
+                        _stamp_server_now(prog_p)
                         p_prog.progress_json = json.dumps(prog_p, ensure_ascii=False)
                         await s.commit()
             except Exception as e:
@@ -1172,6 +1256,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
 
         async def _write_progress(partial: dict) -> None:
             partial["updated_at"] = _time.strftime("%Y-%m-%d %H:%M:%S")
+            # H-13：每次写进度都刷服务器当前时刻（前端做时钟校准 + 阶段耗时实时跳动）
+            _stamp_server_now(partial)
             async with factory() as sess:
                 proj = await sess.get(Project, project_id)
                 if proj:
@@ -1187,6 +1273,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         # 记的是偏移片的序号，两者含义完全不同 —— 不重置的话，续跑会把「没跑过的桶」
         # 当成「已跑过的片」直接跳过，静默漏掉角色识别。仅在确实存在旧 checkpoint 时重置。
         char_slice_mode = prog.get("char_slice_mode")
+        # H-13：重置 prog 前保留已发生的阶段计时（split / polish 在此之前已落库）
+        _keep_timings = dict(prog.get("stage_timings") or {})
         if _char_checkpoint_incompatible(prog):
             logger.warning(
                 f"[project_prepare] project_id={project_id[:8]}... 角色识别 checkpoint "
@@ -1194,6 +1282,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 f" → 重置该阶段，从头识别"
             )
             prog = {}
+        prog["stage_timings"] = _keep_timings
         prog["char_slice_mode"] = _CHAR_SLICE_MODE
 
         char_buckets = _bucket_chapters_by_chars(chapters, char_slice_size)
@@ -1226,6 +1315,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             prog = {
                 "version": 1,
                 "stage": "characters",
+                # H-13：保留 split / polish 的阶段计时（fresh 起跑也会先经过 split）
+                "stage_timings": _keep_timings,
                 "char_slice_total": len(char_slices),
                 "char_slice_completed": [],
                 "char_slice_completed_n": 0,
@@ -1237,6 +1328,10 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 "llm_estimate": llm_estimate,
             }
             await _write_progress(prog)
+
+        # H-13：characters 阶段计时起点（断点续跑命中 checkpoint 时 setdefault 不覆盖，
+        # elapsed 保持「累计耗时」口径）
+        _stage_timing_touch(prog, "characters")
 
         # 基底快照：checkpoint 里已有的旧数据（断点续跑时已完成片的角色），
         # 本轮新完成片的结果按 idx 升序追加其后，重建完整列表（不重复合并）
@@ -1368,6 +1463,10 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 prog.pop("char_current_slice", None)
                 await _write_progress(prog)
 
+        # H-13：characters 阶段结束（含全部命中 checkpoint 直接跳过的情形；
+        # setdefault 保历史起点 → elapsed 为该阶段累计耗时）
+        _stage_timing_touch(prog, "characters", end=True)
+
         # 角色识别切片循环结束：若有失败切片，输出汇总 WARNING 便于排查
         if len(failed_slice_idxs) > 0:
             logger.warning(
@@ -1385,11 +1484,14 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             raise RuntimeError(f"角色识别全部切片失败（{len(char_slices)} 片）：{bad}")
 
         # 4c. dedup（完成后 checkpoint 跳到 dedup=done）
+        # H-13：dedup 阶段计时（命中 checkpoint 则 start+end 同刻，elapsed≈0）
+        _stage_timing_touch(prog, "dedup")
         if prog.get("stage") in ("dedup", "dialogues", "instructions", "voice_recs", "done") and prog.get("dedup_done"):
             name_map: dict[str, str] = dict(prog.get("name_map", {}) or {})
             characters = [Character(**d) for d in prog.get("deduped_characters", []) or []]
             if not name_map:
                 name_map = {c.name: c.name for c in characters}
+            _stage_timing_touch(prog, "dedup", end=True)
             logger.info(
                 f"[project_prepare] project_id={project_id[:8]}... "
                 f"命中角色 dedup checkpoint：characters={len(characters)}"
@@ -1408,6 +1510,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             prog["dedup_done"] = True
             prog["deduped_characters"] = [c.model_dump() for c in characters]
             prog["name_map"] = name_map
+            _stage_timing_touch(prog, "dedup", end=True)
             await _write_progress(prog)
         logger.info(
             f"[project_prepare] project_id={project_id[:8]}... "
@@ -1437,6 +1540,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         # 对白阶段开始：写总章数/总批数到 progress，前端能直接算进度条
         prog["dialogue_total_chapters"] = len(chapters)
         prog["dialogue_completed_chapters_count"] = len(completed_ch_idxs)
+        # H-13：dialogues 阶段计时起点
+        _stage_timing_touch(prog, "dialogues")
         await _write_progress(prog)
 
         # 5a. 先把已完成章节的缓存填入
@@ -1592,6 +1697,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     f"重跑 prepare 可自动重跑这些失败批。"
                 )
 
+        # H-13：dialogues 阶段结束（含 batches 为空、全部命中 checkpoint 的情形）
+        _stage_timing_touch(prog, "dialogues", end=True)
         logger.info(
             f"[project_prepare] project_id={project_id[:8]}... "
             f"dialogue_attr done total_dialogues={total_dialogues} "
@@ -1604,6 +1711,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         #   重跑 prepare 命中则跳过、不再调 LLM（口径与对白归属/音色推荐一致）
         # - 批级失败不致命（service 内整批按空串）；VOICE_INSTRUCTION_ENABLED=False 时整段跳过且不调 LLM
         pt = _time.perf_counter()
+        # H-13：instructions 阶段计时（命中 checkpoint / 整段跳过则 start+end 同刻）
+        _stage_timing_touch(prog, "instructions")
         instruction_map: dict[tuple[int, int], str] = {}
         if not bool(getattr(settings, "VOICE_INSTRUCTION_ENABLED", True)):
             logger.info(
@@ -1656,6 +1765,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 f"{k[0]}:{k[1]}": v for k, v in instruction_map.items()
             }
             await _write_progress(prog)
+        # H-13：instructions 阶段结束
+        _stage_timing_touch(prog, "instructions", end=True)
         logger.info(
             f"[project_prepare] project_id={project_id[:8]}... "
             f"instructions={len(instruction_map)} "
@@ -1665,6 +1776,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
 
         # 6. 音色推荐（完成后 checkpoint 跳过）
         pt = _time.perf_counter()
+        # H-13：voice_recs 阶段计时（命中 checkpoint 则 start+end 同刻）
+        _stage_timing_touch(prog, "voice_recs")
         if prog.get("stage") in ("voice_recs", "done") and prog.get("voice_recs_done"):
             voice_recs_raw = prog.get("voice_recs_raw", []) or []
             voice_recs: list[VoiceRecommendation] = [
@@ -1689,6 +1802,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             prog["voice_recs_done"] = True
             prog["voice_recs_raw"] = [r.model_dump() for r in voice_recs]
             await _write_progress(prog)
+        # H-13：voice_recs 阶段结束
+        _stage_timing_touch(prog, "voice_recs", end=True)
         logger.info(
             f"[project_prepare] project_id={project_id[:8]}... "
             f"voice_recs={len(voice_recs)} ms={int((_time.perf_counter()-pt)*1000)}"
@@ -1877,6 +1992,10 @@ _PREPARE_PROGRESS_PUBLIC_KEYS: tuple[str, ...] = (
     "polish_failed_n",
     # H-3：LLM 调用量/耗时估算（prepare 开始后即可显示「预计多久」）
     "llm_estimate",
+    # H-13：各阶段耗时（started_ms/elapsed_ms；正在执行的阶段 elapsed 由前端
+    # 用 server_now_ms 实时计算，秒级跳动）
+    "stage_timings",
+    "server_now_ms",
 )
 
 

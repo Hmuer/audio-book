@@ -17,7 +17,7 @@ import {
   ChapterSummary,
   ChapterDetail,
 } from '@/lib/api';
-import { parseTime, relativeTime } from '@/lib/time';
+import { parseTime, relativeTime, fmtElapsed } from '@/lib/time';
 import { normalizeGender } from '@/lib/voiceUtils';
 import VoicePicker from './VoicePicker';
 import WaveformPlayer from './WaveformPlayer';
@@ -387,24 +387,52 @@ export default function ProjectDetailPage({
 }
 
 // =================== Overview Tab ===================
+
+/**
+ * H-13：服务器时钟校准 + 1s tick。
+ * 返回「服务器当前时刻」的本地推算值：server_now_ms + 自收到该值以来本地流逝的时间。
+ * 每秒强制重渲染 → 正在执行的阶段耗时直观地一直在增加。
+ * - serverNowMs 为 null/undefined（老数据/无 meta）→ 退化为本地时钟。
+ * - active=false 时不 tick（终态/未运行，静止显示）。
+ */
+function useServerNow(serverNowMs: number | null | undefined, active: boolean): number {
+  const receivedAtRef = useRef(Date.now());
+  useEffect(() => {
+    receivedAtRef.current = Date.now();
+  }, [serverNowMs]);
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => tick(x => (x + 1) % 1000), 1000);
+    return () => clearInterval(t);
+  }, [active]);
+  const base = serverNowMs ?? Date.now();
+  return base + (Date.now() - receivedAtRef.current);
+}
+
 const STAGE_ICONS: Record<string, JSX.Element> = {
   start: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>,
   split: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="6" cy="6" r="3"/><path d="M8.12 8.12 12 12"/><path d="M20 4 8.12 15.88"/><circle cx="6" cy="18" r="3"/><path d="M14.8 14.8 20 20"/></svg>,
   characters: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
   dedup: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>,
   dialogues: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
+  // H-13：polish（润色纠错，POLISH_ENABLED 时出现）与 instructions（逐段语音指令）
+  polish: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>,
+  instructions: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg>,
   voice_recs: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>,
   done: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>,
 };
 
 const PIPELINE_STAGES = [
-  { key: 'start',       label: '初始化' },
-  { key: 'split',       label: '切分章节' },
-  { key: 'characters',  label: '角色识别' },
-  { key: 'dedup',       label: '角色去重' },
-  { key: 'dialogues',   label: '对白归属' },
-  { key: 'voice_recs',  label: '音色推荐' },
-  { key: 'done',        label: '完成' },
+  { key: 'start',        label: '初始化' },
+  { key: 'split',        label: '切分章节' },
+  { key: 'polish',       label: '润色纠错' },
+  { key: 'characters',   label: '角色识别' },
+  { key: 'dedup',        label: '角色去重' },
+  { key: 'dialogues',    label: '对白归属' },
+  { key: 'instructions', label: '语音指令' },
+  { key: 'voice_recs',   label: '音色推荐' },
+  { key: 'done',         label: '完成' },
 ] as const;
 
 function stageLabel(s?: string): string {
@@ -414,7 +442,14 @@ function stageLabel(s?: string): string {
   return s ? `运行中（${s}）` : '运行中';
 }
 
-function PipelineTimeline({ prog }: { prog: ProjectDetailResp['prepare_progress'] }) {
+function PipelineTimeline({
+  prog,
+  serverNowMs,
+}: {
+  prog: ProjectDetailResp['prepare_progress'];
+  /** H-13：服务器当前时刻（useServerNow 推算），算运行中阶段的实时耗时 */
+  serverNowMs: number;
+}) {
   const currentIdx = prog?.stage
     ? PIPELINE_STAGES.findIndex(s => s.key === prog.stage)
     : -1;
@@ -424,6 +459,19 @@ function PipelineTimeline({ prog }: { prog: ProjectDetailResp['prepare_progress'
         const isDone = currentIdx > i || (prog?.stage === 'done' && i === PIPELINE_STAGES.length - 1);
         const isCurrent = currentIdx === i;
         const isFailed = isCurrent && !!prog?.last_error;
+        // H-13：阶段耗时 —— elapsed_ms 有值（已完成）直接显示；
+        // 只有 started_ms（正在跑）→ serverNow - started 实时跳动
+        const timing = prog?.stage_timings?.[st.key];
+        let elapsedMs: number | null = null;
+        let running = false;
+        if (timing) {
+          if (typeof timing.elapsed_ms === 'number') {
+            elapsedMs = timing.elapsed_ms;
+          } else if (typeof timing.started_ms === 'number') {
+            elapsedMs = serverNowMs - timing.started_ms;
+            running = true;
+          }
+        }
         return (
           <div key={st.key} className="flex items-center shrink-0">
             <div className="flex flex-col items-center gap-1.5 px-2">
@@ -446,6 +494,17 @@ function PipelineTimeline({ prog }: { prog: ProjectDetailResp['prepare_progress'
               <span className={`text-[11px] whitespace-nowrap ${
                 isDone || isCurrent ? 'text-ink-600' : 'text-ink-500'
               }`}>{st.label}</span>
+              {/* H-13：阶段耗时（运行中实时跳动，便于直观看热点） */}
+              {elapsedMs != null && (
+                <span
+                  className={`text-[10px] whitespace-nowrap tabular-nums ${
+                    running ? 'text-brand-300 font-medium' : 'text-ink-500'
+                  }`}
+                  title={running ? '该阶段正在执行，耗时实时增长' : '该阶段总耗时'}
+                >
+                  {running ? `${fmtElapsed(elapsedMs)}…` : fmtElapsed(elapsedMs)}
+                </span>
+              )}
             </div>
             {i < PIPELINE_STAGES.length - 1 && (
               <div className={`h-px w-6 ${isDone ? 'bg-emerald-500/40' : 'bg-ink-300/60'}`} />
@@ -480,6 +539,10 @@ function OverviewTab({
 
   const isPreparing = project.status === 'preparing';
   const hasPrepareError = Boolean(prog?.last_error);
+
+  // H-13：服务器时钟校准 + 每秒 tick —— 识别中正在执行的阶段耗时直观跳动；
+  // ready 后（stage=done）各阶段耗时已写死，无需 tick
+  const serverNowMs = useServerNow(prog?.server_now_ms, isPreparing);
 
   const failedCharSlicesN = prog?.char_failed_slices_n ?? 0;
   const failedDialogueBatchesN = prog?.dialogue_failed_batch_count ?? 0;
@@ -665,7 +728,7 @@ function OverviewTab({
 
           {/* 7阶段时间线 */}
           <div className="relative">
-            <PipelineTimeline prog={prog} />
+            <PipelineTimeline prog={prog} serverNowMs={serverNowMs} />
           </div>
 
           {/* H-3：LLM 调用量/耗时估算（prepare 开始后即有） */}
@@ -766,6 +829,22 @@ function OverviewTab({
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
               重新识别（自动补跑失败部分）
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* H-13：识别完成后各阶段耗时汇总（热点定位：一眼看出时间花在哪） */}
+      {project.status === 'ready' && !isPreparing && prog?.stage_timings && (
+        <div className="glass-panel">
+          <div className="text-xs text-ink-500 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="font-medium text-ink-600 shrink-0">识别耗时：</span>
+            {PIPELINE_STAGES
+              .filter(st => typeof prog.stage_timings?.[st.key]?.elapsed_ms === 'number')
+              .map(st => (
+                <span key={st.key} className="tabular-nums">
+                  {st.label} <span className="text-ink-600 font-medium">{fmtElapsed(prog.stage_timings![st.key]!.elapsed_ms)}</span>
+                </span>
+              ))}
           </div>
         </div>
       )}
