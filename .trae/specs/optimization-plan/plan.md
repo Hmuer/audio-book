@@ -1289,6 +1289,16 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 
 **修复后回归**：后端全量 `465 passed`（含 H-11 断点续跑恢复绿灯）；`npm run build` ✅
 
+**H-14 时间线状态色优化（2026-10-08）**
+
+> 触发：用户建议「已完成绿色、未完成灰色、正在进行的绿色和灰色闪烁」。
+
+- 已完成/未开始本就是绿/灰，未改；进行中节点从「品牌紫 pulse-soft 透明度呼吸」改为 **`animate-blink-stage`：绿色态（emerald-500/20 底 + emerald-300 图标）↔ 灰色态（ink 系）交替闪烁**，与完成/未开始两态同色系，一眼三分（[tailwind.config.js](file:///workspace/frontend/tailwind.config.js#L106-L128)）。
+- keyframes 中颜色必须静态声明：emerald 用固定色值，ink 用 CSS 变量保持深浅模式自适应。
+- 进行中阶段的耗时文字同步从品牌紫改 emerald-300（与闪烁绿色态同色系）。
+- 失败态（红）优先级高于闪烁，保持不变。
+- `npm run build` ✅；产物 CSS 已确认含 `blink-stage` keyframes。
+
 
 
 

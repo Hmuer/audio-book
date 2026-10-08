@@ -506,7 +506,9 @@ function PipelineTimeline({
                 className={`w-8 h-8 rounded-full grid place-items-center transition-all ${
                   isFailed ? 'bg-red-500/20 text-red-300 border border-red-500/40'
                   : isDone ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                  : isCurrent ? 'bg-brand-500/20 text-brand-300 border border-brand-500/40 animate-pulse-soft'
+                  // H-14：正在执行 —— 绿色态与灰色态交替闪烁（animate-blink-stage
+                  // 的 keyframes 接管底色/边框/图标色，这里只补 border 宽度）
+                  : isCurrent ? 'border animate-blink-stage'
                   : 'bg-ink-200 text-ink-500 border border-ink-300/70'
                 }`}
               >
@@ -521,11 +523,12 @@ function PipelineTimeline({
               <span className={`text-[11px] whitespace-nowrap ${
                 isDone || isCurrent ? 'text-ink-600' : 'text-ink-500'
               }`}>{st.label}</span>
-              {/* H-13：阶段耗时（运行中实时跳动，便于直观看热点） */}
+              {/* H-13：阶段耗时（运行中实时跳动，便于直观看热点）。
+                  H-14：进行中改绿色与节点闪烁同色系（原品牌紫与绿灰状态色不搭） */}
               {elapsedMs != null && (
                 <span
                   className={`text-[10px] whitespace-nowrap tabular-nums ${
-                    running ? 'text-brand-300 font-medium' : 'text-ink-500'
+                    running ? 'text-emerald-300 font-medium' : 'text-ink-500'
                   }`}
                   title={running ? '该阶段正在执行，耗时实时增长' : '该阶段总耗时'}
                 >

@@ -103,11 +103,29 @@ module.exports = {
           '0%': { backgroundPosition: '-200% 0' },
           '100%': { backgroundPosition: '200% 0' },
         },
+        // H-14：正在执行的管线阶段 —— 绿色态与灰色态交替闪烁。
+        // 绿色态与「已完成」一致（emerald-500/20 底 + emerald-300 图标），
+        // 灰色态与「未开始」一致（ink 系）；用户一眼分辨完成/进行中/未开始。
+        // 颜色不能用 Tailwind class 组合（keyframes 里的样式必须静态声明），
+        // emerald 用固定色值、ink 用 CSS 变量保持深浅模式自适应。
+        'blink-stage': {
+          '0%, 100%': {
+            backgroundColor: 'rgba(16, 185, 129, 0.2)',
+            borderColor: 'rgba(16, 185, 129, 0.4)',
+            color: 'rgb(110, 231, 183)',
+          },
+          '50%': {
+            backgroundColor: 'rgba(var(--ink-200), 1)',
+            borderColor: 'rgba(var(--ink-300), 0.7)',
+            color: 'rgba(var(--ink-500), 1)',
+          },
+        },
       },
       animation: {
         'pulse-soft': 'pulse-soft 2.2s ease-in-out infinite',
         'scale-in': 'scale-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.0)',
         'shimmer': 'shimmer 2.2s linear infinite',
+        'blink-stage': 'blink-stage 1.8s ease-in-out infinite',
       },
     },
   },
