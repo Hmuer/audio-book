@@ -609,7 +609,15 @@ async def _read_write_progress_timing(
     project_id: str, stage: str, *, end: bool
 ) -> None:
     """H-13：split / polish 等在 prog 框架建立**之前**的阶段，
-    用独立的小读写把阶段计时落库（低频，每阶段前后各一次）。"""
+    用独立的小读写把阶段计时落库（低频，每阶段前后各一次）。
+
+    ⚠️ 只写 stage_timings / server_now_ms，**绝不碰 prog["stage"]**：
+    checkpoint 续跑判断（characters 阶段的 `stage in ("characters",...)`）
+    依赖 stage 值 —— 在这里把 "characters" 改写成 "split" 会让续跑判断
+    失效、已完成切片被静默重跑（H-13b 曾引入此回归，已回退）。
+    split/polish 期间前端高亮停在「初始化」的问题由前端从 stage_timings
+    推断运行阶段解决（推断比 stage 字段更精确）。
+    """
     factory = get_session_factory()
     try:
         async with factory() as sess:
@@ -1154,10 +1162,21 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             rejected_n = 0
             failed_n = 0
             failed_chapters: list[int] = []
+
+            async def _polish_progress_hb() -> None:
+                """H-13b：polish 心跳 —— 每处理 10 章刷一次 updated_at/server_now_ms。
+
+                polish 可能跑几小时（数千次 LLM 调用），期间完全不写库会让前端
+                「更新于 X 分钟前」假死、时钟校准基准变陈旧。touch 幂等：
+                started_ms 不覆盖（累计口径），只刷新 server_now_ms/updated_at。"""
+                if (changed_n + reused_n + rejected_n + failed_n) % 10 == 0:
+                    await _read_write_progress_timing(project_id, "polish", end=False)
+
             for ch in chapters:
                 if str(ch.idx) in polished_map:
                     ch.text = polished_map[str(ch.idx)]
                     reused_n += 1
+                    await _polish_progress_hb()
                     continue
                 try:
                     result = await polish_with_llm(ch.text)
@@ -1187,6 +1206,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                         f"[project_prepare] project_id={project_id[:8]}... "
                         f"polish ch {ch.idx + 1} 失败，保留原文: {type(e).__name__}: {e}"
                     )
+                    await _polish_progress_hb()
                     continue
                 # 每章落盘 sidecar（断点续跑）
                 try:
@@ -1196,6 +1216,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     )
                 except OSError:
                     pass
+                await _polish_progress_hb()
 
             # 未润色章数必须显式透出：3 次重试全失败时该章会静默保留原文，
             # 用户以为开了纠错却拿到未纠错文本 —— 不写日志/进度就完全不可见。

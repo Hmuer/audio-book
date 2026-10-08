@@ -120,3 +120,102 @@ def test_build_meta_json_carries_phase_timing_fields():
     meta2 = BuildProgressMeta.model_validate(json.loads(raw2))
     assert meta2.completed_timings == {"synthesizing": 730_000}
     assert meta2.phase == "packaging" and meta2.phase_started_ms is not None
+
+
+# =====================================================================
+# H-13b：计时 touch 与 checkpoint 的边界守护。
+#
+# 曾引入的回归：让 _read_write_progress_timing 顺带把 stage 写成 "split"，
+# 结果「上次中断在 characters 的断点续跑」在重跑经过 split touch 后 stage 被
+# 改写 → characters 阶段的续跑判断（stage in ("characters",...)）失效 →
+# 已完成切片被静默重跑（test_h11_checkpoint_resume_skips_completed_slices 红灯）。
+# 结论：touch 只写 stage_timings / server_now_ms，**绝不碰 stage**；
+# split/polish 期间「页面卡在初始化」的显示问题由前端从 stage_timings 推断解决。
+# =====================================================================
+
+async def test_timing_touch_never_overwrites_stage(_isolate_data_dir):
+    """计时 touch 不得改写 prog["stage"] —— 它是 checkpoint 续跑判断的依据。
+
+    场景还原：断点续跑（stage=characters 的 checkpoint）→ 重跑经过
+    split/polish touch → stage 必须保持 "characters"（一旦被写成 "split"，
+    characters 阶段判断不命中 → 已完成切片被重跑）。
+    """
+    import uuid
+    from sqlalchemy import select
+    from app.db.models import Project, User
+    from app.db.session import init_db, get_session_factory
+    from app.services.auth import seed_admin_user
+    from app.services.project import _read_write_progress_timing
+
+    await init_db()
+    await seed_admin_user()
+    factory = get_session_factory()
+    pid = uuid.uuid4().hex
+    checkpoint = json.dumps({
+        "version": 1,
+        "stage": "characters",
+        "char_slice_mode": "chapter",
+        "char_slice_completed": [0, 1, 2],
+        "char_extract_raw_list": [{"name": "角色1号"}],
+    }, ensure_ascii=False)
+    async with factory() as s:
+        admin = (await s.execute(select(User).where(User.username == "admin"))).scalar_one()
+        s.add(Project(project_id=pid, name="T13b", status="preparing",
+                      owner_user_id=admin.id, progress_json=checkpoint))
+        await s.commit()
+
+    # 重跑经过 split / polish 的计时 touch —— stage 与 checkpoint 字段必须原样
+    await _read_write_progress_timing(pid, "split", end=False)
+    await _read_write_progress_timing(pid, "split", end=True)
+    await _read_write_progress_timing(pid, "polish", end=False)
+    await _read_write_progress_timing(pid, "polish", end=True)  # 心跳同路径（幂等 touch）
+    async with factory() as s:
+        prog = json.loads((await s.get(Project, pid)).progress_json)
+    assert prog["stage"] == "characters", (
+        "touch 改写 stage 会破坏 characters 续跑判断 → 已完成切片被重跑"
+    )
+    assert prog["char_slice_completed"] == [0, 1, 2]
+    assert prog["char_extract_raw_list"] == [{"name": "角色1号"}]
+    # timing 本身正常落库：split/polish 有起止，characters 未动
+    assert isinstance(prog["stage_timings"]["split"]["elapsed_ms"], int)
+    assert isinstance(prog["stage_timings"]["polish"]["elapsed_ms"], int)
+    assert "characters" not in prog["stage_timings"]
+    assert isinstance(prog["server_now_ms"], int)
+
+
+async def test_timing_touch_refreshes_server_now(_isolate_data_dir):
+    """touch / 心跳必须刷 server_now_ms（前端时钟校准基准），且 started 幂等。"""
+    import time as _time
+    import uuid
+    from sqlalchemy import select
+    from app.db.models import Project, User
+    from app.db.session import init_db, get_session_factory
+    from app.services.auth import seed_admin_user
+    from app.services.project import _read_write_progress_timing
+
+    await init_db()
+    await seed_admin_user()
+    factory = get_session_factory()
+    pid = uuid.uuid4().hex
+    async with factory() as s:
+        admin = (await s.execute(select(User).where(User.username == "admin"))).scalar_one()
+        s.add(Project(project_id=pid, name="T13b2", status="preparing",
+                      owner_user_id=admin.id,
+                      progress_json='{"version": 1, "stage": "start"}'))
+        await s.commit()
+
+    await _read_write_progress_timing(pid, "polish", end=False)
+    async with factory() as s:
+        prog = json.loads((await s.get(Project, pid)).progress_json)
+    started = prog["stage_timings"]["polish"]["started_ms"]
+    now1 = prog["server_now_ms"]
+    assert isinstance(now1, int) and abs(now1 - int(_time.time() * 1000)) < 60_000
+
+    _time.sleep(0.005)
+    # 再次 touch（polish 心跳每 10 章走一次同路径）：started 不覆盖（累计口径），
+    # server_now_ms 刷新
+    await _read_write_progress_timing(pid, "polish", end=False)
+    async with factory() as s:
+        prog = json.loads((await s.get(Project, pid)).progress_json)
+    assert prog["stage_timings"]["polish"]["started_ms"] == started
+    assert prog["server_now_ms"] >= now1

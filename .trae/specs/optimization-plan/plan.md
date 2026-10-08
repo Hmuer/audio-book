@@ -1275,6 +1275,20 @@ CS-6 路由 200 与 400）。前端 `npx tsc --noEmit` ✅。
 - 后端全量：`458 passed`（含本次新增 5 用例）
 - 前端：`npm install` 后 `npm run build` ✅（Next.js 构建含 tsc 类型检查）
 
+**H-13b 后续修复（同日）：「卡在初始化」+ 一次回归教训（2026-10-08）**
+
+> 触发：用户反馈「初始化正下面没有显示时间，其他步骤有显示耗时，但页面一直停留在初始化阶段」。
+
+| 项 | 内容 | 说明 |
+|---|---|---|
+| 根因 | split / polish 在主流程首次写 stage（`characters`）**之前**就已在跑，`stage` 一直停在 `"start"` → 前端时间线高亮/标题卡在「初始化」，而耗时却在跳动，自相矛盾 | 「初始化」只是 prepare 触发时的占位状态（无实际工作，故无计时条目） |
+| 回归教训 | 第一版让 `_read_write_progress_timing` 顺带写 `stage="split"` → **红灯**：characters 续跑判断 `prog["stage"] in ("characters",...)`（[project.py](file:///workspace/backend/app/services/project.py#L1347)）依赖 stage 值，被 touch 改写后 checkpoint 判定失效 → 已完成切片被静默重跑（`test_h11_checkpoint_resume_skips_completed_slices` 抓住）。**已回退**：touch 只写 stage_timings / server_now_ms，绝不碰 stage | stage 字段承担「checkpoint 有效性」职责，不能当纯显示字段用 |
+| 前端修复 | `inferRunningStage()`：按管线顺序取 stage_timings 里「最后一个有 started_ms 且无 elapsed_ms」的阶段作为运行中阶段，时间线高亮与面板标题都用它（老项目无计时数据退化用 prog.stage）——推断比滞后的 stage 字段更准 | [ProjectDetailPage.tsx](file:///workspace/frontend/src/components/ProjectDetailPage.tsx#L445-L467) |
+| polish 心跳 | polish 可能跑几小时（数千次 LLM 调用）期间完全不写库 → 前端「更新于 X 分钟前」假死、时钟校准基准变陈旧 → 每处理 10 章刷一次 updated_at/server_now_ms（幂等 touch） | [project.py](file:///workspace/backend/app/services/project.py#L1166-L1173) |
+| 新增守护 | `test_timing_touch_never_overwrites_stage`（断点续跑场景经过 split/polish touch 后 stage 与 checkpoint 字段必须原样——防未来再往 touch 里加 stage 写入）+ `test_timing_touch_refreshes_server_now`（心跳刷 server_now_ms + started 幂等） | [test_h13_stage_timings_red.py](file:///workspace/backend/tests/test_h13_stage_timings_red.py#L125-L221) |
+
+**修复后回归**：后端全量 `465 passed`（含 H-11 断点续跑恢复绿灯）；`npm run build` ✅
+
 
 
 

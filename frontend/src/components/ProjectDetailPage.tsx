@@ -442,6 +442,30 @@ function stageLabel(s?: string): string {
   return s ? `运行中（${s}）` : '运行中';
 }
 
+/**
+ * H-13b：从 stage_timings 推断「正在执行的阶段」。
+ *
+ * 为什么不直接用 prog.stage：split / polish 在主流程写 stage 之前就已在跑
+ * （后端只写 stage_timings，不敢动 stage —— stage 值是 checkpoint 续跑判断
+ * 的依据），该期间 stage 停在 "start"，页面会一直卡在「初始化」而耗时却在跳。
+ * 计时打点是每阶段开始/结束精确写的，比滞后的 stage 字段更准。
+ *
+ * 规则：按管线顺序取「最后一个有 started_ms 且无 elapsed_ms」的阶段。
+ * 全部已完成 / 无计时数据 → null（退化用 prog.stage）。
+ */
+function inferRunningStage(prog: ProjectDetailResp['prepare_progress']): string | null {
+  const t = prog?.stage_timings;
+  if (!t) return null;
+  let cur: string | null = null;
+  for (const st of PIPELINE_STAGES) {
+    const tm = t[st.key];
+    if (tm && typeof tm.started_ms === 'number' && typeof tm.elapsed_ms !== 'number') {
+      cur = st.key;
+    }
+  }
+  return cur;
+}
+
 function PipelineTimeline({
   prog,
   serverNowMs,
@@ -450,8 +474,11 @@ function PipelineTimeline({
   /** H-13：服务器当前时刻（useServerNow 推算），算运行中阶段的实时耗时 */
   serverNowMs: number;
 }) {
-  const currentIdx = prog?.stage
-    ? PIPELINE_STAGES.findIndex(s => s.key === prog.stage)
+  // H-13b：优先用 stage_timings 推断运行阶段（split/polish 期间 stage 还停在
+  // "start"，页面会卡在「初始化」）；无计时数据（老项目）退化用 prog.stage
+  const displayStage = inferRunningStage(prog) ?? prog?.stage;
+  const currentIdx = displayStage
+    ? PIPELINE_STAGES.findIndex(s => s.key === displayStage)
     : -1;
   return (
     <div className="flex items-center gap-0 overflow-x-auto pb-1">
@@ -705,7 +732,10 @@ function OverviewTab({
         <div className="glass-panel space-y-4 relative overflow-hidden">
           <div className="flex items-center justify-between gap-3 flex-wrap relative">
             <div className="min-w-0 flex-1">
-              <div className="font-semibold text-ink-800 truncate">{stageLabel(prog?.stage)}</div>
+              {/* H-13b：标题与时间线一致用推断阶段（split/polish 期间 stage 停在 start） */}
+              <div className="font-semibold text-ink-800 truncate">
+                {stageLabel(inferRunningStage(prog) ?? prog?.stage)}
+              </div>
               {prog?.updated_at && (
                 <div className="text-[11px] text-ink-500 tabular-nums mt-0.5">
                   更新于 {relativeTime(prog.updated_at)}
