@@ -1401,6 +1401,11 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             for k in (
                 "polish_total", "polish_changed_n", "polish_reused_n",
                 "polish_clean_n", "polish_rejected_n", "polish_failed_n",
+                # H-23：restart_count 必须跨过下面两条 prog 重建路径存活——
+                # 它是恢复上限（PREPARE_RECOVERY_MAX_RESTARTS）的计数命脉；
+                # 被吞掉的话崩溃循环里每次恢复都从 0 数起，上限永远到不了，
+                # 「任务停了 token 还在烧」的死循环依旧无界。
+                "restart_count",
             )
             if k in prog
         }
@@ -2000,6 +2005,10 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         if prog.get("stage") != "done":
             prog["stage"] = "done"
             prog["updated_at"] = _fmt_time_now()
+            # H-23：prepare 完整跑通 → 恢复计数清零（语义是「连续失败恢复」；
+            # 成功后若再遇崩溃，重新享有完整恢复额度）
+            if "restart_count" in prog:
+                prog.pop("restart_count", None)
             await _write_progress(prog)
 
         # 7. 落库：先清旧数据 → 写新数据
@@ -2259,23 +2268,29 @@ def _seconds_since(s: str | None, now: float) -> float | None:
         return None
 
 
-async def _recover_one_preparing_project(proj: Project, prog: dict, trigger: str) -> None:
+async def _recover_one_preparing_project(proj: Project, prog: dict, trigger: str) -> bool:
     """
     把一个 DB 中 status=preparing 且卡死的项目恢复：
     - 有 source_file → 从 checkpoint 继续（_do_prepare_project_async 内置 resume）
     - 没有 source_file / 路径不存在 → 直接置 failed + last_error（不可能再恢复，避免循环卡死）
+    - H-23：restart_count 达到 PREPARE_RECOVERY_MAX_RESTARTS 后不再自动恢复 →
+      置 failed + last_error。此前 restart_count 只增不查：进程反复死亡（OOM 等）
+      时看门狗每轮都把同一项目重新拉起，每次恢复重跑未 checkpoint 的阶段，
+      LLM 配额按滚动窗口释放多少吃多少 —— 「任务已停止 token 还在烧」的幽灵
+      消耗死循环（实测无任务时段 7M tokens/小时 × 4 小时）。
+    返回 True 表示已 enqueue 新 task，False 表示未恢复（含被上限拦截）。
     """
     pid = proj.project_id
     if _is_prepare_running_for(pid):
-        return
+        return False
     factory = get_session_factory()
     async with factory() as sess:
         p_latest = await sess.get(Project, pid)
         if not p_latest:
-            return
+            return False
         # 重新读一遍最新状态（避免并发导致我们用旧快照）
         if p_latest.status != "preparing":
-            return
+            return False
         if not p_latest.source_file_path or not os.path.isfile(p_latest.source_file_path):
             # 没有源文件，不可能继续恢复；直接失败
             await sess.execute(
@@ -2292,11 +2307,42 @@ async def _recover_one_preparing_project(proj: Project, prog: dict, trigger: str
             logger.warning(
                 f"[project_prepare][recover] project_id={pid[:8]}... 源文件缺失，已置为 failed。"
             )
-            return
+            return False
         # 把 stage 重置成 "restarted"（前端可显示"正在恢复…"），保留 checkpoint 字段
         latest_prog = _parse_progress(p_latest)
+        # H-23：恢复次数上限（详见 config.PREPARE_RECOVERY_MAX_RESTARTS 注释）。
+        # 达到上限 → failed 收口：自动恢复本质是「无人工确认的重试」，崩溃
+        # 循环下每次都烧配额；置 failed 后用户排查（看 app.log 的 recover 行 /
+        # 服务器内存）再手动触发，是最安全的行为。
+        try:
+            prev_restarts = int(latest_prog.get("restart_count") or 0)
+        except Exception:
+            prev_restarts = 0
+        max_restarts = max(0, int(
+            getattr(settings, "PREPARE_RECOVERY_MAX_RESTARTS", 3) or 3
+        ))
+        if prev_restarts >= max_restarts:
+            # 与 _write_prepare_last_error 同款键，但直接在本 session 写：
+            # 状态 + 错误一次 commit 原子落库（跨 session 双写会互相等锁）
+            p_latest.status = "failed"
+            latest_prog["last_error"] = (
+                f"RecoveryLimit: 识别中断后已自动恢复 {prev_restarts} 次（上限 "
+                f"{max_restarts} 次）仍未能完成，已停止自动恢复以避免反复消耗 "
+                f"LLM 配额。请检查后端日志（搜 [recover]）与服务器内存/重启记录，"
+                f"排查后手动重新触发「开始识别」将从断点继续。"
+            )
+            latest_prog["last_error_at"] = _fmt_time_now()
+            latest_prog["last_error_type"] = "RecoveryLimit"
+            latest_prog["updated_at"] = _fmt_time_now()
+            p_latest.progress_json = json.dumps(latest_prog, ensure_ascii=False)
+            await sess.commit()
+            logger.warning(
+                f"[project_prepare][recover] project_id={pid[:8]}... 自动恢复次数达上限"
+                f"（{prev_restarts}/{max_restarts}），置为 failed 停止自动重试。"
+            )
+            return False
         latest_prog.setdefault("restart_count", 0)
-        latest_prog["restart_count"] = int(latest_prog["restart_count"] or 0) + 1
+        latest_prog["restart_count"] = prev_restarts + 1
         latest_prog["stage"] = "start"
         latest_prog["started_at"] = latest_prog.get("started_at") or _fmt_time_now()
         latest_prog["updated_at"] = _fmt_time_now()
@@ -2313,6 +2359,7 @@ async def _recover_one_preparing_project(proj: Project, prog: dict, trigger: str
         f"[project_prepare][recover] project_id={pid[:8]}... 已从 checkpoint 恢复 "
         f"(trigger={trigger}, restart_count={latest_prog.get('restart_count', '?')})"
     )
+    return True
 
 
 async def _scan_preparing_and_recover(trigger: str) -> None:

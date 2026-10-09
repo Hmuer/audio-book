@@ -462,9 +462,11 @@ async def _recover_prepare_orphan(job: JobTask) -> bool:
             return False
         prog = _parse_progress(proj)
     # 触发恢复：既有的 _recover_one_preparing_project 会 _enqueue_prepare_task
-    # （进程锁 + 看门狗双重覆盖）
-    await _recover_one_preparing_project(proj, prog, trigger="job_task_recover")
-    return True
+    # （进程锁 + 看门狗双重覆盖）。H-23：传播其返回值 —— 恢复上限拦截（防
+    # 幽灵消耗死循环）时返回 False，不计入「已恢复」。
+    return await _recover_one_preparing_project(
+        proj, prog, trigger="job_task_recover"
+    )
 
 
 async def _recover_build_orphan(job: JobTask) -> bool:

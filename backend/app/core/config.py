@@ -202,6 +202,16 @@ class Settings(BaseSettings):
     # 探测调用，代价可忽略。改后立即生效，无需重启。
     LLM_QUOTA_RETRY_SECS: int = 300
 
+    # prepare 看门狗自动恢复的最大次数（H-23 幽灵消耗防护）：prepare 中途崩溃/
+    # 被杀（状态卡 preparing）时，看门狗（15s 轮询）和启动恢复会自动从
+    # checkpoint 续跑。旧实现 restart_count 只增不查 → 进程反复死亡（OOM 等）
+    # 时形成**无限恢复死循环**：每次恢复重跑未 checkpoint 的阶段，LLM 配额
+    # 按 5h 滚动窗口释放多少吃多少——用户看到「任务已停止 token 还在烧」
+    # （实测无任务时段 7M tokens/小时连续 4 小时）。达到本上限后不再自动
+    # 恢复：置 failed + last_error 明确指引，由用户排查（内存/日志）后手动
+    # 重新触发。改后立即生效，无需重启。
+    PREPARE_RECOVERY_MAX_RESTARTS: int = 3
+
     # 角色识别切片大小（字符）：整本小说角色识别时，按该大小切块后
     # **全量**调用 LLM（不抽样、不截断），最后对所有切块结果做一次
     # 跨切块合并 + dedup。50k 是 MiniMax 角色识别 prompt 的比较稳妥上限，
