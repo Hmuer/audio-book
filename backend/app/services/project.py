@@ -30,6 +30,7 @@ from ..db.models import (
     ProjectDialogue,
     ProjectPronunciationRule,
 )
+from ..ai.base import LLMQuotaExhaustedError
 from ..db.session import get_session_factory
 from .book_split import ChapterSplitError, split_book_chapters
 from .chapter import Chapter
@@ -1144,6 +1145,22 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 f"{type(e).__name__}: {e}"
             )
 
+        # -----------------------------------------------------------------
+        # H-22 402 配额联动：任一 LLM 调用抛 LLMQuotaExhaustedError（provider
+        # 层熔断中同样如此）→ 置 quota_hit，各并发循环里未起跑的任务静默跳过、
+        # 在跑的任务不再重试；本阶段 gather 结束后 _raise_if_quota() 中止整个
+        # prepare。窗口内继续跑毫无意义（每个调用都必然失败），还会把日志刷爆
+        # （实测 383 章书 = 数百条重复 402 + traceback）。已完成部分有 checkpoint，
+        # 配额重置后重跑 prepare 自动断点续跑。
+        quota_hit = asyncio.Event()
+
+        def _raise_if_quota() -> None:
+            if quota_hit.is_set():
+                raise RuntimeError(
+                    "LLM 配额已耗尽（HTTP 402，套餐周期内额度用完，约每 5 小时重置）。"
+                    "prepare 已中止：已完成章节/切片有 checkpoint，"
+                    "等配额重置后重新触发 prepare 将自动断点续跑，无需重新导入。"
+                )
         # 3.5 LLM 润色纠错（可选，POLISH_ENABLED 控制；默认关闭）
         # - 按章润色（POLISH_MODE=diff：LLM 只输出「锚点→替换」错字清单，本地应用，
         #   H-18 默认；rewrite：整章重写，回退通道），修正错别字/同音字后替换内存中的
@@ -1209,6 +1226,10 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     await _read_write_progress_timing(project_id, "polish", end=False)
 
             async def _polish_one(ch: Chapter) -> None:
+                # H-22：配额已命中 → 未起跑的章直接静默跳过（不计任何计数，
+                # 该章保持"未润色"，重跑 prepare 自动补跑）
+                if quota_hit.is_set():
+                    return
                 # checkpoint 复用：上次已润色过的章直接替换文本，不再调 LLM
                 if str(ch.idx) in polished_map:
                     ch.text = polished_map[str(ch.idx)]
@@ -1220,6 +1241,10 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     # 两阶段结构：sem 内只做 LLM 调用 + 纯函数判定（outcome），
                     # 锁内只做计数 / sidecar 落盘 —— 与旧版相同，无锁内 await LLM。
                     async with polish_sem:
+                        # H-22：排队等 sem 期间配额可能已命中 → 二次检查，
+                        # 避免熔断后 383 个任务空跑一圈
+                        if quota_hit.is_set():
+                            return
                         if use_diff_mode:
                             diff_result = await polish_diff_with_llm(ch.text)
                             new_text, outcome = apply_polish_diffs(ch.text, diff_result)
@@ -1255,6 +1280,17 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                             # 不进 sidecar —— 重跑 prepare 时该章会被补跑
                             counters["rejected"] += 1
                         await _polish_heartbeat_locked()
+                except LLMQuotaExhaustedError:
+                    # H-22：配额耗尽不是章节级失败——不计 failed（该章保持
+                    # 未润色，重跑自动补跑），置位后整阶段立即收尾中止
+                    if not quota_hit.is_set():
+                        logger.warning(
+                            f"[project_prepare] project_id={project_id[:8]}... "
+                            f"polish ch {ch.idx + 1} 遇到 402 配额耗尽，"
+                            f"本阶段剩余章节跳过，prepare 将中止（checkpoint 已保住）。"
+                        )
+                    quota_hit.set()
+                    return
                 except Exception as e:
                     async with polish_lock:
                         counters["failed"] += 1
@@ -1266,6 +1302,11 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     )
 
             await asyncio.gather(*[_polish_one(ch) for ch in chapters])
+
+            # H-22：配额中止前兜底落一次盘（幂等；changed/clean 已即时落过），
+            # 保住已润色章的 checkpoint → 重跑只补未润色章
+            _write_polish_sidecar()
+            _raise_if_quota()
 
             changed_n = counters["changed"]
             reused_n = counters["reused"]
@@ -1457,6 +1498,10 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         async def _process_one_char_slice(slice_idx: int, slice_text: str) -> None:
             """单切片角色识别（含重试）。成功 → 暂存结果 + checkpoint；
             重试耗尽 → 记入 char_failed_slices（重跑 prepare 自动补跑）。"""
+            # H-22：配额已命中 → 未起跑的切片静默跳过（不写 failed checkpoint，
+            # 该片保持未完成态，重跑 prepare 自动补跑）
+            if quota_hit.is_set():
+                return
             _bucket = char_buckets[slice_idx]
             async with char_prog_lock:
                 prog["stage"] = "characters"
@@ -1480,6 +1525,9 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             last_slice_err: str | None = None
             r: list[Character] = []
             for attempt in range(char_extract_retries + 1):
+                # H-22：重试间隙配额可能已命中 → 不再起跑，直接按"未完成"退出
+                if attempt > 0 and quota_hit.is_set():
+                    return
                 try:
                     logger.info(
                         f"[project_prepare] project_id={project_id[:8]}... "
@@ -1490,6 +1538,17 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                         r = await extract_characters_with_llm(slice_text)
                     last_slice_err = None
                     break
+                except LLMQuotaExhaustedError:
+                    # H-22：配额耗尽不算切片失败（不写 failed checkpoint），
+                    # 置位后本片按"未完成"退出，重跑 prepare 自动补跑
+                    if not quota_hit.is_set():
+                        logger.warning(
+                            f"[project_prepare] project_id={project_id[:8]}... "
+                            f"chars slice {slice_idx+1}/{len(char_slices)} 遇到 402 配额耗尽，"
+                            f"剩余切片跳过，prepare 将中止（checkpoint 已保住）。"
+                        )
+                    quota_hit.set()
+                    return
                 except Exception as e:
                     last_slice_err = f"{type(e).__name__}: {e}"
                     logger.warning(
@@ -1559,6 +1618,9 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             async with char_prog_lock:
                 prog.pop("char_current_slice", None)
                 await _write_progress(prog)
+            # H-22：配额耗尽 → 中止 prepare（已完成切片 checkpoint 已保住，
+            # 重跑只补未完成片）
+            _raise_if_quota()
 
         # H-13：characters 阶段结束（含全部命中 checkpoint 直接跳过的情形；
         # setdefault 保历史起点 → elapsed 为该阶段累计耗时）
@@ -1692,6 +1754,10 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             """
             last_err: str | None = None
             for attempt in range(dialogue_batch_retries + 1):
+                # H-22：配额已命中 → 未起跑/待重试的批静默退出（不写 failed
+                # checkpoint；对应章保持未完成，重跑自动补跑）
+                if quota_hit.is_set():
+                    return batch_idx, None, "quota_exhausted: 配额耗尽跳过"
                 try:
                     async with dialogue_batch_sem:
                         logger.info(
@@ -1708,6 +1774,17 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                             a.speaker = name_map.get(a.speaker, a.speaker)
                         out.append((r.chapter_idx, [a.model_dump() for a in attrs]))
                     return batch_idx, out, None
+                except LLMQuotaExhaustedError:
+                    # H-22：配额耗尽不算批失败（failed checkpoint 由中止语义
+                    # 取代），置位后本批静默退出，gather 后统一中止 prepare
+                    if not quota_hit.is_set():
+                        logger.warning(
+                            f"[project_prepare] project_id={project_id[:8]}... "
+                            f"dialogue batch {batch_idx+1}/{len(batches)} 遇到 402 配额耗尽，"
+                            f"剩余批跳过，prepare 将中止（checkpoint 已保住）。"
+                        )
+                    quota_hit.set()
+                    return batch_idx, None, "quota_exhausted: 配额耗尽跳过"
                 except Exception as e:
                     last_err = f"{type(e).__name__}: {e}"
                     logger.warning(
@@ -1794,6 +1871,10 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     f"重跑 prepare 可自动重跑这些失败批。"
                 )
 
+        # H-22：配额耗尽 → 中止 prepare（已完成章节 checkpoint 已保住，
+        # 重跑只补未完成章）。放在 checkpoint 写库之后，确保不丢。
+        _raise_if_quota()
+
         # H-13：dialogues 阶段结束（含 batches 为空、全部命中 checkpoint 的情形）
         _stage_timing_touch(prog, "dialogues", end=True)
         logger.info(
@@ -1849,6 +1930,10 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 instruction_map = await generate_dialogue_instructions(
                     chapters, dialogues_for_instr, characters
                 )
+            except LLMQuotaExhaustedError:
+                # H-22：配额耗尽穿透（否则下方会把全空指令写成
+                # instructions_done=True 的投毒 checkpoint，重跑直接跳过）
+                raise
             except Exception as e:
                 # service 内已做批级容错，这里再保一层：指令生成失败绝不能拖垮 prepare
                 logger.warning(
@@ -1893,6 +1978,10 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     user_id=owner_user_id_for_recommend,
                     project_id=project_id,
                 )
+            except LLMQuotaExhaustedError:
+                # H-22：配额耗尽穿透（否则全空推荐会写成 voice_recs_done=True
+                # 的投毒 checkpoint，重跑直接跳过）
+                raise
             except Exception as e:
                 logger.warning(f"[project_prepare] project_id={project_id[:8]}... voice_rec failed: {e}")
             prog["stage"] = "voice_recs"

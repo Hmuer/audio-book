@@ -30,6 +30,7 @@ import logging
 from pydantic import BaseModel
 
 from ..ai.factory import get_llm
+from ..ai.base import LLMQuotaExhaustedError
 from ..core.config import settings
 from .usage import track_llm
 
@@ -290,6 +291,11 @@ async def generate_dialogue_instructions(
                             f"[voice_instruction] LLM 返回不存在的键 key={key}，已忽略"
                         )
                 return out
+            except LLMQuotaExhaustedError:
+                # H-22：配额耗尽不是"批级容错"能消化的错误——吞掉会让上层把
+                # 全书空指令写成 instructions_done=True 的投毒 checkpoint
+                # （重跑直接跳过 → 指令永远全空）。直接穿透让 prepare 中止。
+                raise
             except Exception as e:
                 last_err = f"{type(e).__name__}: {e}"
                 logger.warning(

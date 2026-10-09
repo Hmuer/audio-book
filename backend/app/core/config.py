@@ -194,6 +194,14 @@ class Settings(BaseSettings):
     # 业务层可能并发调用（如每章对白归属 asyncio.gather），这里在 provider 层强制串行
     LLM_MAX_CONCURRENCY: int = 1
 
+    # 402 配额耗尽熔断时长（秒）：MiniMax Token Plan 等按周期计费套餐额度
+    # 用完时（HTTP 402），窗口内重试毫无意义只会刷日志。收到 402 后该时长
+    # 内的所有 LLM 调用**不发 HTTP、瞬间失败**（LLMQuotaExhaustedError）；
+    # 到期后放一次真实调用探测——配额已重置则自动恢复，仍未重置则重新熔断。
+    # 周期未知（Token Plan 约 5h/窗口），默认 300s 意味着窗口内最多 ~60 次
+    # 探测调用，代价可忽略。改后立即生效，无需重启。
+    LLM_QUOTA_RETRY_SECS: int = 300
+
     # 角色识别切片大小（字符）：整本小说角色识别时，按该大小切块后
     # **全量**调用 LLM（不抽样、不截断），最后对所有切块结果做一次
     # 跨切块合并 + dedup。50k 是 MiniMax 角色识别 prompt 的比较稳妥上限，

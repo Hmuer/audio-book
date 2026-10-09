@@ -2064,6 +2064,7 @@ _EDITABLE_SETTINGS = {
     "BUILD_QUEUED_TIMEOUT_MINUTES": ("int", "超时配置", "Build 排队超时（分钟，超时判定为孤儿）"),
     # 限流
     "LLM_MAX_CONCURRENCY": ("int", "限流配置", "LLM 最大并发（改后立即生效，无需重启）"),
+    "LLM_QUOTA_RETRY_SECS": ("int", "限流配置", "402 配额耗尽熔断秒数（窗口内调用不发 HTTP 直接快速失败；到期自动探测恢复）"),
     "LLM_CHAR_EXTRACT_SLICE_SIZE": ("int", "限流配置", "角色识别切片大小（字符）"),
     "CHAR_EXTRACT_CONCURRENCY": ("int", "限流配置", "角色识别切片并发度（实际=min(本值, LLM 最大并发)；改后立即生效）"),
     "DIALOGUE_BATCH_CHAPTERS": ("int", "限流配置", "对白归属批大小（章/批）"),

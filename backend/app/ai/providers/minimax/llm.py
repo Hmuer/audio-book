@@ -1,13 +1,14 @@
 import json
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Type, TypeVar, Optional, Any
 import httpx
 from pydantic import BaseModel, ValidationError
 
 from ....core.config import settings
-from ...base import BaseLLMProvider
+from ...base import BaseLLMProvider, LLMQuotaExhaustedError
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,32 @@ def _build_llm_semaphore() -> asyncio.Semaphore:
 _llm_sem: asyncio.Semaphore | None = None
 # H-1：记录创建 sem 时的并发值；与当前 settings 不一致则重建（热更新）
 _llm_sem_value: int = 0
+
+
+# ---------------------------------------------------------------------
+# H-22 402 配额熔断：MiniMax Token Plan 等按周期计费套餐额度用完时，
+# 窗口内（约 5h）所有调用必然 402，重试只会刷日志。首个 402 打开熔断，
+# _quota_blocked_until 之前的所有调用**不发 HTTP、瞬间失败、不打日志**
+# （快速失败静默：熔断打开事件本身已记过一次 WARNING）；到期后放一次
+# 真实调用探测，配额已重置则自动恢复，仍未重置则重新熔断（再记一行）。
+# 业务层（prepare）捕获 LLMQuotaExhaustedError 后中止流水线并保住 checkpoint。
+# ---------------------------------------------------------------------
+_quota_blocked_until: float = 0.0
+
+
+def reset_quota_breaker() -> None:
+    """手动/测试用：清掉 402 熔断状态（下一次调用直接发真实 HTTP）。"""
+    global _quota_blocked_until
+    _quota_blocked_until = 0.0
+
+
+def _quota_breaker_secs() -> int:
+    return max(1, int(getattr(settings, "LLM_QUOTA_RETRY_SECS", 300) or 300))
+
+
+def _open_quota_breaker() -> None:
+    global _quota_blocked_until
+    _quota_blocked_until = time.monotonic() + _quota_breaker_secs()
 
 
 def _get_llm_sem() -> asyncio.Semaphore:
@@ -85,6 +112,14 @@ class MiniMaxLLMProvider(BaseLLMProvider):
         max_retries: int = 3,
     ) -> T:
         import time as _time
+        # H-22 熔断快速失败：402 配额窗口内的调用不发 HTTP、瞬间失败。
+        # 静默（debug 级）—— 熔断打开时已记过一次 WARNING，此后每次调用
+        # 再记只会回到"刷屏"老路（383 章书 = 数千次调用 × 日志行）。
+        if time.monotonic() < _quota_blocked_until:
+            raise LLMQuotaExhaustedError(
+                "LLM 配额已耗尽（HTTP 402 熔断中，本周期内调用直接快速失败）。"
+                "请等待配额周期重置后重试；已完成部分有 checkpoint，重跑将断点续跑。"
+            )
         model = self.model_fast if use_fast_model else self.model_pro
         sys_prompt = (
             system_prompt
@@ -184,6 +219,20 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                         # 429 速率限制：标记走指数退避路径
                         if resp.status_code == 429:
                             is_rate_limited = True
+                        # H-22 402 配额耗尽：**不重试**（周期内重试必然再 402，
+                        # 只会刷日志），打开熔断让窗口内后续调用零成本快速失败。
+                        # 与 429 的本质区别：429 是瞬时限速（退避几秒就恢复），
+                        # 402 是计费额度（要等周期重置）。
+                        if resp.status_code == 402:
+                            _open_quota_breaker()
+                            logger.warning(
+                                f"[LLM] 402 配额已耗尽（model={model}）："
+                                f"熔断 {_quota_breaker_secs()}s 内所有调用快速失败，不发 HTTP。"
+                                f"err={err_msg}"
+                            )
+                            raise LLMQuotaExhaustedError(
+                                f"LLM HTTP 402: {err_msg}"
+                            )
                         raise RuntimeError(
                             f"LLM HTTP {resp.status_code}: {err_msg}"
                         )
@@ -406,6 +455,10 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                     )
                     return validated
 
+            except LLMQuotaExhaustedError:
+                # H-22：配额耗尽直接穿透 —— 不重试（窗口内必然再 402）、
+                # 不退避、不进 FAIL/exhausted 日志（上面 402 分支已记过一行）
+                raise
             except (json.JSONDecodeError, ValidationError, ValueError, RuntimeError, httpx.HTTPError) as e:
                 last_err = e
                 elapsed = _time.perf_counter() - t0
