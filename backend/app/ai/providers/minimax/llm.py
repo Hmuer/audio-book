@@ -98,7 +98,11 @@ class MiniMaxLLMProvider(BaseLLMProvider):
         prompt_chars = len(prompt) + len(sys_prompt)
 
         total_start = _time.perf_counter()
-        logger.info(
+        # H-19 日志降噪：逐调用 start/ok 降为 DEBUG —— 大书 prepare 期间
+        # 数千次 LLM 调用 × 2 行 INFO 是 app.log 刷屏主因（383 章实测仅
+        # [LLM] 前缀就 2000+ 行）。阶段级汇总（polish/dialogue done 等）仍
+        # 在 INFO；排查单次调用时切 LOG_LEVEL=DEBUG 全量回来。
+        logger.debug(
             f"[LLM] start model={model} schema={schema_name} "
             f"prompt_chars={prompt_chars} max_tokens={max_tokens} retries={max_retries} "
             f"concurrency={settings.LLM_MAX_CONCURRENCY}"
@@ -395,7 +399,7 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                         f"tok_p={prompt_tokens} tok_c={completion_tokens} tok_t={total_tokens}"
                         if total_tokens is not None else "tok=N/A"
                     )
-                    logger.info(
+                    logger.debug(
                         f"[LLM] ok model={use_model} schema={schema_name} attempt={attempt}/{max_retries} "
                         f"req_id={req_id} status={http_status} {tok_str} "
                         f"resp_chars={resp_chars} this_ms={int(elapsed*1000)} total_ms={int(total_elapsed*1000)}"

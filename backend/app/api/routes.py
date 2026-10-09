@@ -2101,10 +2101,9 @@ _EDITABLE_SETTINGS = {
     "S3_PATH_STYLE": ("bool", "对象存储", "是否用 path-style 寻址（COS 默认 false，MinIO 需 true）"),
     "STORAGE_CLEANUP_LOCAL": ("bool", "对象存储", "归档成功后删除本地副本（省磁盘；关掉可留双份便于排查）"),
     # 日志
-    "LOG_LEVEL": ("str", "日志配置", "日志级别"),
+    "LOG_LEVEL": ("str", "日志配置", "日志级别（INFO=阶段摘要；DEBUG 才有逐次 LLM 调用明细）"),
     "LOG_FILE": ("str", "日志配置", "日志文件路径"),
-    "LOG_MAX_BYTES": ("int", "日志配置", "单个日志文件最大字节数"),
-    "LOG_BACKUP_COUNT": ("int", "日志配置", "日志备份保留份数"),
+    "LOG_RETENTION_DAYS": ("int", "日志配置", "按天压缩归档保留天数（每天 0 点滚动压缩，超期自动清理；改后生效无需重启）"),
     # 认证
     "JWT_EXP_DAYS": ("int", "认证配置", "JWT 过期天数"),
     # ---- 豆包运行参数（页面化 P-env）----

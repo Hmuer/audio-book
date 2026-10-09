@@ -98,11 +98,11 @@ def test_em_3_doubao_endpoint_field_concatenates_base_url():
 # T-EM-4：白名单含新增项
 # ---------------------------------------------------------------------
 def test_em_4_editable_settings_has_new_keys():
-    """_EDITABLE_SETTINGS 应包含豆包 9 + 日志 2 = 11 项新键。"""
+    """_EDITABLE_SETTINGS 应包含豆包 8 + 日志 1（H-19 按天滚动）= 9 项新键。"""
     from backend.app.api.routes import _EDITABLE_SETTINGS
 
     expected_new = {
-        # 豆包 9 项
+        # 豆包 8 项
         "DOUBAO_TTS_USE_V3",
         "DOUBAO_TTS_RPM_LIMIT",
         "DOUBAO_ICL_RPM_LIMIT",
@@ -111,9 +111,8 @@ def test_em_4_editable_settings_has_new_keys():
         "ICL_MAX_AUDIO_BYTES",
         "DOUBAO_AUDIO_SAMPLE_RATE",
         "DOUBAO_AUDIO_LOUDNESS_RATE",
-        # 日志 2 项
-        "LOG_MAX_BYTES",
-        "LOG_BACKUP_COUNT",
+        # 日志 1 项（H-19：LOG_MAX_BYTES/LOG_BACKUP_COUNT 被 LOG_RETENTION_DAYS 取代）
+        "LOG_RETENTION_DAYS",
     }
     for k in expected_new:
         assert k in _EDITABLE_SETTINGS, f"_EDITABLE_SETTINGS 缺 {k}"

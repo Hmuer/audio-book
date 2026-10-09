@@ -324,15 +324,19 @@ class Settings(BaseSettings):
     STRICT_PROD_SECURITY: bool = False
 
     # =====================================================================
-    # 日志：默认同时输出到 stdout 和文件（RotatingFileHandler 10MB×5）
+    # 日志：默认同时输出到 stdout 和文件（按天滚动 + gzip 压缩 + 按天清理）
     # - LOG_FILE 为相对路径时，相对进程工作目录（即 start.sh 的 PROJ_DIR）
     # - 置空字符串 → 不落盘，只走 stdout
     # - LOG_LEVEL 支持 DEBUG / INFO / WARNING / ERROR
+    #   （INFO=阶段级摘要；DEBUG 才有逐次 LLM 调用明细 —— 大书 prepare 期间
+    #    逐调用日志数千行，正是 app.log 刷屏的主因，默认必须安静）
+    # - 滚动：每天 0 点（首个写入触发）→ app.log.YYYY-MM-DD.gz
+    # - 清理：归档保留最近 LOG_RETENTION_DAYS 天（启动时 + 每次滚动时清理；
+    #   文件名日期解析，解析失败回退 mtime。修改后无需重启即生效）
     # =====================================================================
     LOG_FILE: str = "./data/logs/app.log"
     LOG_LEVEL: str = "INFO"
-    LOG_MAX_BYTES: int = 10 * 1024 * 1024  # 10 MB
-    LOG_BACKUP_COUNT: int = 5
+    LOG_RETENTION_DAYS: int = 14
 
     # =====================================================================
     # 章节切分（正则驱动，完全不调 LLM）

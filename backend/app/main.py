@@ -1,9 +1,11 @@
 from __future__ import annotations
+import gzip
 import logging
-import os
 import re
+import shutil
 from contextlib import asynccontextmanager
-from logging.handlers import RotatingFileHandler
+from datetime import date, datetime, timedelta
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -15,16 +17,97 @@ from .api.routes import router as api_router, auth_router, public_router
 from .services.auth import seed_admin_user
 
 # ---------------------------------------------------------------------------
-# 日志配置：同时输出到 stdout 和文件（RotatingFileHandler，10MB × 5 份）
+# 日志配置：同时输出到 stdout 和文件
 # - LOG_FILE="" 时只走 stdout，不落盘
 # - 文件 UTF-8，避免中文字符 ??? 替换
 # - 解决 502/prepare 异常时"关掉终端日志就丢"的问题
+#
+# 文件滚动（H-19）：按天滚动 + gzip 压缩 + 按保留天数清理，取代旧的
+# RotatingFileHandler(10MB×5)。旧方案三个问题：
+#   ① 按大小滚动一天能切出十几个碎文件，排查时得挨个翻；
+#   ② 无压缩，10MB×5 永远只有 50MB 窗口，大书 prepare 一天就滚没了；
+#   ③ 按份数清理与"我要看上周三的日志"的时间直觉不匹配。
+# 新方案：app.log → 每天 0 点 → app.log.YYYY-MM-DD.gz，保留最近
+# LOG_RETENTION_DAYS 天（默认 14），启动/滚动时都清一次过期归档。
+# 注：单进程部署（start.sh 一个 uvicorn worker）；多 worker 各自持有
+# fd 同时写同一文件会滚乱，那是后续需求。
 # ---------------------------------------------------------------------------
 _LOG_FMT = logging.Formatter(
     "%(asctime)s | %(levelname)-5s | %(name)s:%(lineno)d | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 _log_level = getattr(logging, (settings.LOG_LEVEL or "INFO").upper(), logging.INFO)
+
+# 归档文件名里的日期（TimedRotatingFileHandler MIDNIGHT 的 suffix）
+_ARCHIVE_DATE_RE = re.compile(r"\.(\d{4}-\d{2}-\d{2})\.gz$")
+
+
+class _DailyGzipFileHandler(TimedRotatingFileHandler):
+    """按天滚动（午夜）+ gzip 压缩 + 按保留天数清理过期归档。
+
+    不用 stdlib 的 namer/rotator 扩展点，直接在 doRollover 后追加两步，
+    时间戳/DST/重开流的逻辑全部复用父类实现：
+    1. 压缩所有「裸归档」（正常只有刚滚出的一个；上次崩溃残留在压缩前
+       的裸文件也会在这里补上 —— 幂等）
+    2. 清理超过保留期的 .gz（保留期从 settings 实时读，改配置立即生效，
+       无需重启）
+    """
+
+    def __init__(self, filename: str, encoding: str = "utf-8"):
+        super().__init__(
+            filename, when="MIDNIGHT", backupCount=0, encoding=encoding
+        )
+        # 启动即清一次：服务器停一周没触发滚动，过期归档也不能积压
+        self._cleanup_expired()
+
+    def doRollover(self) -> None:
+        super().doRollover()  # 改名 app.log → app.log.YYYY-MM-DD，重开流
+        self._compress_plain_archives()
+        self._cleanup_expired()
+
+    # ---- 内部工具 ----
+
+    def _compress_plain_archives(self) -> None:
+        """把所有非 .gz 归档压成 .gz 并删原文件（gzip 压缩级别 6，日志文本
+        实测压到 5~8%，10MB 当天文件 → 几百 KB 归档）。"""
+        try:
+            base = Path(self.baseFilename)
+            for plain in base.parent.glob(base.name + ".*"):
+                if plain.name.endswith(".gz") or plain.is_dir():
+                    continue
+                gz_path = plain.with_name(plain.name + ".gz")
+                with open(plain, "rb") as f_in, gzip.open(
+                    gz_path, "wb", compresslevel=6
+                ) as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+                plain.unlink()
+        except OSError as e:
+            # 归档压缩失败绝不影响日志写入主路径
+            print(f"[logger][WARN] 归档压缩失败: {e}", flush=True)
+
+    def _cleanup_expired(self) -> None:
+        """删除超过保留期的 .gz 归档。日期优先从文件名解析（与滚动时间轴一致），
+        解析失败回退文件 mtime。"""
+        try:
+            retention_days = max(
+                1, int(getattr(settings, "LOG_RETENTION_DAYS", 14) or 14)
+            )
+            cutoff = date.today() - timedelta(days=retention_days)
+            base = Path(self.baseFilename)
+            for gz in base.parent.glob(base.name + ".*.gz"):
+                m = _ARCHIVE_DATE_RE.search(gz.name)
+                if m:
+                    try:
+                        d = datetime.strptime(m.group(1), "%Y-%m-%d").date()
+                    except ValueError:
+                        d = date.fromtimestamp(gz.stat().st_mtime)
+                else:
+                    d = date.fromtimestamp(gz.stat().st_mtime)
+                if d < cutoff:
+                    gz.unlink()
+        except OSError as e:
+            print(f"[logger][WARN] 过期归档清理失败: {e}", flush=True)
+
 
 # 根 logger：先清掉 uvicorn/pytest 可能预挂的 handler，避免重复行
 _root = logging.getLogger()
@@ -38,18 +121,13 @@ _stream_h.setLevel(_log_level)
 _stream_h.setFormatter(_LOG_FMT)
 _root.addHandler(_stream_h)
 
-# 2) 文件 handler（默认 ./data/logs/app.log，10MB × 5 份滚动）
+# 2) 文件 handler（按天滚动 + gzip + 保留 LOG_RETENTION_DAYS 天）
 if settings.LOG_FILE:
     try:
         _log_path = Path(settings.LOG_FILE)
         # 相对路径相对进程 CWD 解析；父目录不存在则自动创建
         _log_path.parent.mkdir(parents=True, exist_ok=True)
-        _file_h = RotatingFileHandler(
-            filename=str(_log_path),
-            maxBytes=settings.LOG_MAX_BYTES,
-            backupCount=settings.LOG_BACKUP_COUNT,
-            encoding="utf-8",
-        )
+        _file_h = _DailyGzipFileHandler(filename=str(_log_path), encoding="utf-8")
         _file_h.setLevel(_log_level)
         _file_h.setFormatter(_LOG_FMT)
         _root.addHandler(_file_h)
@@ -57,7 +135,7 @@ if settings.LOG_FILE:
         print(
             f"[logger] 文件日志已启用: {str(_log_path)} "
             f"(level={logging.getLevelName(_log_level)}, "
-            f"maxBytes={settings.LOG_MAX_BYTES}, backupCount={settings.LOG_BACKUP_COUNT})",
+            f"按天滚动+gzip, retention={settings.LOG_RETENTION_DAYS}d)",
             flush=True,
         )
     except Exception as _e:  # 权限/路径不可写时，不能把整个 app 拖崩
