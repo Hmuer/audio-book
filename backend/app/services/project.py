@@ -1006,14 +1006,22 @@ def _log_prepare_llm_estimate(project_id: str, chapters: list[Chapter], cfg) -> 
     total_calls = char_calls + dialogue_calls + instruction_calls + 1 + polish_calls
 
     concurrency = max(1, int(getattr(cfg, "LLM_MAX_CONCURRENCY", 1) or 1))
+    # H-17：润色有独立并发窗口（POLISH_CONCURRENCY），实际并发仍受全局 LLM sem
+    # 约束（min 生效）；其余调用按全局并发摊算
+    polish_conc = min(
+        max(1, int(getattr(cfg, "POLISH_CONCURRENCY", 4) or 4)), concurrency
+    )
     # 按每次 40s 粗估（对白归属/指令批输出更长，取偏保守的下限）
-    est_hours = total_calls * 40 / 3600 / concurrency
+    est_hours = (
+        (total_calls - polish_calls) * 40 / concurrency
+        + polish_calls * 40 / polish_conc
+    ) / 3600
 
     msg = (
         f"[project_prepare] project_id={project_id[:8]}... LLM 调用量估算："
         f"章节={n_ch} 总字数={total_chars} → 角色识别 {char_calls} + 对白归属 {dialogue_calls} "
         f"+ 语音指令 {instruction_calls} + 音色推荐 1"
-        + (f" + 润色 {polish_calls}" if polish_calls else "")
+        + (f" + 润色 {polish_calls}（并发={polish_conc}）" if polish_calls else "")
         + f" = {total_calls} 次；并发={concurrency} → 预计 {est_hours:.1f} 小时（每次按 40s 粗估）"
     )
     # 调用量大 + 串行时才用 WARNING（否则每本书都刷警告）
@@ -1143,8 +1151,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         #   中途失败重跑时，已完成章节直接复用，不再二次调 LLM
         # - 单章润色失败一律保留原文，绝不阻塞 prepare
         if settings.POLISH_ENABLED and chapters:
+            # 注：track_llm 已在 polish_with_llm 内部统一计数（此处曾重复计一次）
             from .polish import polish_with_llm
-            from .usage import track_llm
 
             polish_t0 = _time.perf_counter()
             # H-13：polish 阶段计时（进行中不写 checkpoint，started_ms 供前端实时算）
@@ -1163,52 +1171,22 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             failed_n = 0
             failed_chapters: list[int] = []
 
-            async def _polish_progress_hb() -> None:
-                """H-13b：polish 心跳 —— 每处理 10 章刷一次 updated_at/server_now_ms。
+            # H-17：润色并发化（此前逐章串行是 prepare 最大热点）。章与章完全
+            # 独立、逐章 checkpoint，与 H-11 角色识别切片并发同构：
+            # - 窗口并发 POLISH_CONCURRENCY（默认 4），实际并发还受全局 LLM sem
+            #   约束（min(两者) 生效）——LLM_MAX_CONCURRENCY=1 时仍串行（安全阀）。
+            # - checkpoint 语义与串行版完全一致：sidecar 只增不删、续跑复用已完成章。
+            # - 计数器 / polished_map / sidecar 落盘都在锁内 → 并发下统计与
+            #   落盘无竞态；单章失败仍只保留原文，绝不阻塞 prepare。
+            polish_concurrency = max(1, int(
+                getattr(settings, "POLISH_CONCURRENCY", 4) or 4
+            ))
+            polish_sem = asyncio.Semaphore(polish_concurrency)
+            polish_lock = asyncio.Lock()
+            counters = {"changed": 0, "reused": 0, "rejected": 0, "failed": 0}
 
-                polish 可能跑几小时（数千次 LLM 调用），期间完全不写库会让前端
-                「更新于 X 分钟前」假死、时钟校准基准变陈旧。touch 幂等：
-                started_ms 不覆盖（累计口径），只刷新 server_now_ms/updated_at。"""
-                if (changed_n + reused_n + rejected_n + failed_n) % 10 == 0:
-                    await _read_write_progress_timing(project_id, "polish", end=False)
-
-            for ch in chapters:
-                if str(ch.idx) in polished_map:
-                    ch.text = polished_map[str(ch.idx)]
-                    reused_n += 1
-                    await _polish_progress_hb()
-                    continue
-                try:
-                    result = await polish_with_llm(ch.text)
-                    track_llm(calls=1, chars=len(ch.text), detail="polish")
-                    polished = (result.polished_text or "").strip()
-                    # 合理性校验：LLM 自评通过 + 长度不出现异常缩水/膨胀
-                    if not polished:
-                        # 空响应：视为被拒（保留原文）
-                        rejected_n += 1
-                    elif polished == ch.text:
-                        # 原文无需修改（正常结果，不算失败）
-                        pass
-                    elif (
-                        result.is_reasonable
-                        and 0.5 <= len(polished) / max(len(ch.text), 1) <= 1.5
-                    ):
-                        ch.text = polished
-                        polished_map[str(ch.idx)] = polished
-                        changed_n += 1
-                    else:
-                        # 自评不合理（过度修改）或长度异常 → 保留原文
-                        rejected_n += 1
-                except Exception as e:
-                    failed_n += 1
-                    failed_chapters.append(ch.idx + 1)
-                    logger.warning(
-                        f"[project_prepare] project_id={project_id[:8]}... "
-                        f"polish ch {ch.idx + 1} 失败，保留原文: {type(e).__name__}: {e}"
-                    )
-                    await _polish_progress_hb()
-                    continue
-                # 每章落盘 sidecar（断点续跑）
+            def _write_polish_sidecar() -> None:
+                """polished_map → sidecar 落盘（锁内调用；OSError 不阻塞流程）。"""
                 try:
                     settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
                     sidecar_path.write_text(
@@ -1216,7 +1194,70 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     )
                 except OSError:
                     pass
-                await _polish_progress_hb()
+
+            async def _polish_heartbeat_locked() -> None:
+                """H-13b：polish 心跳 —— 每完成 10 章刷一次 updated_at/server_now_ms。
+
+                polish 可能跑几小时（数千次 LLM 调用），期间完全不写库会让前端
+                「更新于 X 分钟前」假死、时钟校准基准变陈旧。touch 幂等：
+                started_ms 不覆盖（累计口径），只刷新 server_now_ms/updated_at。
+                （H-17 并发化后在锁内调用，计数器读取无竞态）"""
+                total_done = sum(counters.values())
+                if total_done % 10 == 0:
+                    await _read_write_progress_timing(project_id, "polish", end=False)
+
+            async def _polish_one(ch: Chapter) -> None:
+                # checkpoint 复用：上次已润色过的章直接替换文本，不再调 LLM
+                if str(ch.idx) in polished_map:
+                    ch.text = polished_map[str(ch.idx)]
+                    async with polish_lock:
+                        counters["reused"] += 1
+                        await _polish_heartbeat_locked()
+                    return
+                try:
+                    async with polish_sem:
+                        result = await polish_with_llm(ch.text)
+                    polished = (result.polished_text or "").strip()
+                    async with polish_lock:
+                        # 合理性校验：LLM 自评通过 + 长度不出现异常缩水/膨胀
+                        if not polished:
+                            # 空响应：视为被拒（保留原文）
+                            counters["rejected"] += 1
+                        elif polished == ch.text:
+                            # 原文无需修改（正常结果，不算失败，不进 sidecar）
+                            pass
+                        elif (
+                            result.is_reasonable
+                            and 0.5 <= len(polished) / max(len(ch.text), 1) <= 1.5
+                        ):
+                            ch.text = polished
+                            polished_map[str(ch.idx)] = polished
+                            counters["changed"] += 1
+                            _write_polish_sidecar()
+                        else:
+                            # 自评不合理（过度修改）或长度异常 → 保留原文
+                            counters["rejected"] += 1
+                        await _polish_heartbeat_locked()
+                except Exception as e:
+                    async with polish_lock:
+                        counters["failed"] += 1
+                        failed_chapters.append(ch.idx + 1)
+                        await _polish_heartbeat_locked()
+                    logger.warning(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"polish ch {ch.idx + 1} 失败，保留原文: {type(e).__name__}: {e}"
+                    )
+
+            await asyncio.gather(*[_polish_one(ch) for ch in chapters])
+
+            changed_n = counters["changed"]
+            reused_n = counters["reused"]
+            rejected_n = counters["rejected"]
+            failed_n = counters["failed"]
+            # 并发完成顺序乱序，日志里按章号升序展示
+            failed_chapters.sort()
+            # 收尾兜底落一次盘（changed 章已即时落过，这里保证极端中断后也一致）
+            _write_polish_sidecar()
 
             # 未润色章数必须显式透出：3 次重试全失败时该章会静默保留原文，
             # 用户以为开了纠错却拿到未纠错文本 —— 不写日志/进度就完全不可见。
@@ -1286,9 +1327,22 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     await sess.commit()
 
         prog = await _read_progress()
-
         # 4b. 角色识别（按「完整章节」装桶，逐桶 checkpoint + 单桶级异常不崩整体）
         char_slice_size = max(10000, int(settings.LLM_CHAR_EXTRACT_SLICE_SIZE) or 50000)
+
+        # H-17：polish 汇总键必须跨过下方两个「重建 prog」的重置路径存活：
+        # ① checkpoint 口径不兼容 → prog = {}；② fresh 起跑 → else 分支整体重建。
+        # 不带走的话，polish 阶段末尾落库的 polish_total / polish_failed_n 等
+        # 会被吞掉 —— 「哪些章没润色」对用户永久不可见（该字段就是为暴露
+        # 失败章数才写的；H-17 测试发现的既有 regression）。
+        _polish_summary_keep = {
+            k: prog[k]
+            for k in (
+                "polish_total", "polish_changed_n", "polish_reused_n",
+                "polish_rejected_n", "polish_failed_n",
+            )
+            if k in prog
+        }
 
         # F-3：切片口径已由「字符偏移硬切」改为「按完整章节装桶」。旧库的 checkpoint
         # 记的是偏移片的序号，两者含义完全不同 —— 不重置的话，续跑会把「没跑过的桶」
@@ -1348,6 +1402,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 # H-3：全新起跑也要带上本次估算
                 "llm_estimate": llm_estimate,
             }
+            # H-17：带回 polish 汇总键（见上方 _polish_summary_keep 注释）
+            prog.update(_polish_summary_keep)
             await _write_progress(prog)
 
         # H-13：characters 阶段计时起点（断点续跑命中 checkpoint 时 setdefault 不覆盖，

@@ -67,6 +67,12 @@ def _parse_stage_ms(caplog_text: str) -> dict[str, int]:
     m = re.search(r"voice_recs=(\d+) ms=(\d+)", caplog_text)
     if m:
         out["voice_recs"] = int(m.group(2))
+    m = re.search(
+        r"polish done: changed=\d+ reused=\d+ rejected=\d+ failed=\d+ / total=\d+ ms=(\d+)",
+        caplog_text,
+    )
+    if m:
+        out["polish"] = int(m.group(1))
     return out
 
 
@@ -86,7 +92,11 @@ async def test_prepare_stage_profiling(_isolate_data_dir, monkeypatch, caplog):
         prepare_project,
     )
 
-    LLM_DELAY_S = 0.04
+    # 0.08s 而非 0.04s：全量套件并发跑时 CPU 负载会给每次 asyncio.sleep
+    # 叠加 ~100ms 级调度抖动，40ms 延迟下「0.6×串行下限」余量会被吃光
+    # （实测 194ms vs 阈值 192ms 临界翻车）。加倍延迟让 sleep 主导抖动，
+    # 阈值不变、断言强度不降。
+    LLM_DELAY_S = 0.08
     N_CHAPTERS = 24
     N_CHAR_SLICES = 8  # 72k 字 / 9k 桶
 
@@ -360,3 +370,228 @@ async def test_h11_failed_slice_retried_on_rerun(_isolate_data_dir, monkeypatch)
     raw = prog.get("char_extract_raw_list") or []
     names = [c["name"] for c in raw]
     assert names == [f"角色{i}号" for i in range(1, 25)], f"补跑后结果应完整按序：{names}"
+
+
+# =====================================================================
+# H-17 润色并发化（383 章实测 4h11m，prepare 最大热点）
+# =====================================================================
+
+def _h17_book_text(n: int) -> str:
+    """H-17 专用书文本：每章 ~2800 字、含对白；第 3 章嵌 H17FAIL 标记。"""
+    parts = []
+    for i in range(1, n + 1):
+        marker = "H17FAIL" if i == 3 else ""
+        body = (
+            "「你怎么了？」李明拍了拍她的肩膀。"
+            "「没什么。」林若雪小声说，低下头继续走路。" + marker
+        )
+        parts.append(f"第{i}章 情景{i}\n\n{body * 80}")
+    return "\n\n".join(parts)
+
+
+@pytest.mark.asyncio
+async def test_h17_polish_concurrency_speeds_up_stage(
+    _isolate_data_dir, monkeypatch, caplog
+):
+    """H-17：润色并发真实生效（12 章 / 并发 4 ≈ 3 轮，串行版 12 轮）。
+
+    旧实现逐章串行 await → 383 章 × ~39s/章 = 4h11m（用户实测）。
+    固定延迟解耦调度结构与上游快慢：
+    - 并发版 polish 阶段 ≈ ceil(12/4) × delay = 3 × delay
+    - 串行下限 = 12 × delay；断言 < 60% 才算并发生效
+    """
+    from backend.app.ai import factory as ai_factory
+    from backend.app.core.config import settings
+    from backend.app.db.session import init_db
+    from backend.app.services.project import (
+        create_project,
+        import_file,
+        prepare_project,
+    )
+
+    # 同 test_prepare_stage_profiling：0.08s 让 sleep 主导全量套件下的调度抖动
+    LLM_DELAY_S = 0.08
+    N = 12
+
+    await init_db()
+    monkeypatch.setattr(settings, "POLISH_ENABLED", True)
+    monkeypatch.setattr(settings, "POLISH_CONCURRENCY", 4)
+
+    mock_llm = ai_factory._llm_instance
+    orig_chat = mock_llm.chat_structured
+    stats = {"polish_calls": 0, "in_flight": 0, "peak": 0}
+
+    async def slow_chat(*a, **kw):
+        prompt = a[0] if a else kw.get("prompt", "")
+        is_polish = "---RAW TEXT START---" in prompt
+        if is_polish:
+            stats["polish_calls"] += 1
+            stats["in_flight"] += 1
+            stats["peak"] = max(stats["peak"], stats["in_flight"])
+        try:
+            if is_polish:
+                await asyncio.sleep(LLM_DELAY_S)
+            return await orig_chat(*a, **kw)
+        finally:
+            if is_polish:
+                stats["in_flight"] -= 1
+
+    monkeypatch.setattr(mock_llm, "chat_structured", slow_chat)
+    caplog.set_level(logging.INFO, logger="backend.app.services.project")
+
+    resp = await create_project("H17-并发提速")
+    await import_file(resp.project_id, _h17_book_text(N).encode("utf-8"), "h17a.txt")
+    await prepare_project(resp.project_id)
+
+    stages = _parse_stage_ms(caplog.text)
+    assert stats["polish_calls"] == N, (
+        f"每章恰好一次润色调用，实际 {stats['polish_calls']}"
+    )
+    assert stats["peak"] >= 3, (
+        f"润色并发峰值仅 {stats['peak']} —— H-17 并发被串行化（提速失效实锤）"
+    )
+    polish_ms = stages.get("polish", -1)
+    assert polish_ms > 0, "未解析到 polish 阶段耗时，polish done 日志格式变化？"
+    serial_lower = LLM_DELAY_S * 1000 * N
+    assert polish_ms < serial_lower * 0.6, (
+        f"polish 阶段 {polish_ms}ms 接近串行下限 {serial_lower:.0f}ms —— "
+        f"H-17 润色并发未生效"
+    )
+
+
+@pytest.mark.asyncio
+async def test_h17_polish_checkpoint_reuse_skips_llm(_isolate_data_dir, monkeypatch):
+    """H-17：断点续跑——sidecar 已润色过的章不重跑 LLM，DB 文本直接复用。
+
+    并发化后该语义必须原样保留：12 章预写 2 章进 sidecar → 只应剩 10 次润色调用。
+    """
+    from pathlib import Path as _P
+
+    from backend.app.core.config import settings
+    from backend.app.db.session import init_db, get_session_factory
+    from backend.app.db.models import ProjectChapter
+    from backend.app.services.project import create_project, import_file, prepare_project
+
+    await init_db()
+    monkeypatch.setattr(settings, "POLISH_ENABLED", True)
+
+    resp = await create_project("H17-断点复用")
+    pid = resp.project_id
+    await import_file(pid, _h17_book_text(12).encode("utf-8"), "h17b.txt")
+
+    # 预写 sidecar：第 0/1 章已润色过（模拟上次 prepare 中断）
+    sidecar = _P(settings.DATA_DIR) / f"polish_{pid}.json"
+    sidecar.write_text(
+        json.dumps(
+            {"0": "第0章-已润色文本", "1": "第1章-已润色文本"},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    mock_llm = _isolate_data_dir["llm"]
+    await prepare_project(pid)
+
+    prog = await _read_prog(pid)
+    assert prog.get("polish_total") == 12
+    assert prog.get("polish_reused_n") == 2, (
+        f"sidecar 里 2 章应被复用，实际 reused={prog.get('polish_reused_n')}"
+    )
+    polish_calls = sum(
+        1 for c in mock_llm.calls if "---RAW TEXT START---" in c["prompt"]
+    )
+    assert polish_calls == 10, (
+        f"12 章中 2 章复用 sidecar，应只调 10 次润色，实际 {polish_calls}"
+    )
+
+    # DB 章节文本必须等于 sidecar 内容（复用生效，而不是被重跑覆盖）
+    from sqlalchemy import select
+
+    factory = get_session_factory()
+    async with factory() as sess:
+        rows = (
+            (
+                await sess.execute(
+                    select(ProjectChapter)
+                    .where(ProjectChapter.project_id == pid)
+                    .order_by(ProjectChapter.idx)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows[0].text == "第0章-已润色文本"
+    assert rows[1].text == "第1章-已润色文本"
+
+
+@pytest.mark.asyncio
+async def test_h17_polish_failure_keeps_original_and_changed_persisted(
+    _isolate_data_dir, monkeypatch, caplog
+):
+    """H-17：单章润色失败只保留原文（不阻塞 prepare），成功章持久化润色结果。
+
+    覆盖 changed / failed 两条路径 + sidecar 收尾删除（prepare 完成后不残留）。
+    """
+    from pathlib import Path as _P
+
+    from backend.app.core.config import settings
+    from backend.app.db.session import init_db, get_session_factory
+    from backend.app.db.models import ProjectChapter
+    from backend.app.services import polish as polish_mod
+    from backend.app.services.polish import PolishResult
+    from backend.app.services.project import create_project, import_file, prepare_project
+
+    await init_db()
+    monkeypatch.setattr(settings, "POLISH_ENABLED", True)
+
+    async def fake_polish(raw_text: str) -> PolishResult:
+        if "H17FAIL" in raw_text:
+            raise RuntimeError("mock polish failure")
+        # 长度比例 ≈ 1 → 走 changed 路径
+        return PolishResult(
+            polished_text=raw_text + "【润】", is_reasonable=True, reason="ok"
+        )
+
+    monkeypatch.setattr(polish_mod, "polish_with_llm", fake_polish)
+    caplog.set_level(logging.INFO, logger="backend.app.services.project")
+
+    resp = await create_project("H17-失败语义")
+    pid = resp.project_id
+    await import_file(pid, _h17_book_text(12).encode("utf-8"), "h17c.txt")
+
+    await prepare_project(pid)
+
+    prog = await _read_prog(pid)
+    assert prog.get("polish_changed_n") == 11, f"changed 应为 11：{prog}"
+    assert prog.get("polish_failed_n") == 1, f"failed 应为 1：{prog}"
+
+    # 失败章保留原文（H17FAIL 标记还在），成功章带【润】后缀
+    from sqlalchemy import select
+
+    factory = get_session_factory()
+    async with factory() as sess:
+        rows = (
+            (
+                await sess.execute(
+                    select(ProjectChapter)
+                    .where(ProjectChapter.project_id == pid)
+                    .order_by(ProjectChapter.idx)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 12
+    assert "H17FAIL" in rows[2].text and "【润】" not in rows[2].text, (
+        "第 3 章（idx=2）失败后必须保留原文"
+    )
+    for i in (0, 1, 3, 5, 11):
+        assert rows[i].text.endswith("【润】"), f"第 {i+1} 章应采用润色后文本"
+
+    # 失败详情在日志里可见（章号按升序展示）
+    assert "polish ch 3 失败" in caplog.text
+    assert "章号=[3]" in caplog.text
+
+    # sidecar 收尾删除（不残留半成品文件）
+    sidecar = _P(settings.DATA_DIR) / f"polish_{pid}.json"
+    assert not sidecar.exists(), "prepare 完成后 polish sidecar 应被删除"

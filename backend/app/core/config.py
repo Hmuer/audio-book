@@ -259,6 +259,12 @@ class Settings(BaseSettings):
     # 在 设置页「合成质量」中开启。
     POLISH_ENABLED: bool = False
 
+    # 润色批并发度：同时在飞的章节 LLM 调用数（H-17，此前逐章串行是 prepare
+    # 最大热点 —— 383 章实测 4h11m，占总时长 75%+）。实际并发仍受全局 LLM sem
+    # 约束（min(两者) 生效）—— LLM_MAX_CONCURRENCY=1 时这里多高都会被串行。
+    # 逐章 checkpoint 语义不变（sidecar 只增不删，断点续跑复用已完成章）。
+    POLISH_CONCURRENCY: int = 4
+
     # 每个 ZIP 分片包含的章节数（F-7）。
     # 动机：整包 ZIP 在数千章规模下会到数十 GB，本地峰值磁盘翻倍、浏览器也基本
     # 无法可靠下载（无分片/断点续传）。改为「每 N 章一个自包含 ZIP」：
