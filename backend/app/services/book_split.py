@@ -4,7 +4,16 @@
 策略：
 1. 按配置 CHAPTER_SPLIT_PATTERNS（支持用户扩展正则）匹配章节标题行
    → 命中时直接复用**原文标题**，不改写
-2. 命中数 < CHAPTER_SPLIT_MIN_MATCHES：
+2. 章/卷分级（H-20，剑来实测：『第一卷 笼中雀』被切成第 1 章，正文只有
+   一行分隔线，全书章节错位）：
+   - 合体行『第一卷 笼中雀 第一章 惊蛰』→ 按章处理，标题归一为从章级
+     标记起的原文子串『第一章 惊蛰』（标题朗读 / zip 文件名都更干净）
+   - 纯卷行『第一卷 笼中雀』→ 分组头，全书存在章级/关键词级标题时不
+     作为章节（否则是只有分隔线的幽灵章）；全书只有卷行（卷即章的书）
+     保持原行为
+3. 剥离纯分隔线行（------ / ──── / ***** 等）：零朗读价值，不剥离会被
+   narrator 段念出来，白占润色/对白归属的 token
+4. 命中数 < CHAPTER_SPLIT_MIN_MATCHES：
    - CHAPTER_SPLIT_HARD_FALLBACK_ENABLED=True → 按字数硬切（保留旧行为）
    - CHAPTER_SPLIT_HARD_FALLBACK_ENABLED=False（默认）→ 抛 ChapterSplitError
      （绝不回退 LLM，直接提示用户补自定义正则后重试）
@@ -51,6 +60,26 @@ def strip_chapter_prefix(title: str) -> str:
         return title
     stripped = _CHAPTER_PREFIX_RE.sub('', title).strip()
     return stripped or title
+
+
+# ---------------------------------------------------------------------
+# H-20 章/卷分级与分隔线清理
+# ---------------------------------------------------------------------
+# 章级标记（第X章/回/节）：一行内出现即按章处理；合体行标题从它起截取。
+# 数字字符组与 CHAPTER_SPLIT_PATTERNS 第 1 条保持一致。
+_CH_MARKER_RE = re.compile(
+    r"第[ \t]*[零〇一二三四五六七八九十百千0-9]+[ \t]*(?:章|回|节)"
+)
+# 卷级标记（第X卷/篇/部）：仅当行内没有章级标记时才是「卷分组头」
+_VOL_MARKER_RE = re.compile(
+    r"第[ \t]*[零〇一二三四五六七八九十百千0-9]+[ \t]*(?:卷|篇|部)"
+)
+# 纯分隔线：整行只有 3 个及以上连续排版符号（------ / ──── / ***** / _____）
+# 含半角/全角变体。不匹配行内带正文的破折号对白（—— 你说什么）。
+_SEPARATOR_LINE_RE = re.compile(
+    r"^[ \t]*[-－—─_=＝+＋*＊~～]{3,}[ \t]*$",
+    re.MULTILINE,
+)
 
 
 # 中文数字 → 阿拉伯，用于章节序号归一化（仅前 99）
@@ -138,7 +167,8 @@ def split_chapters_regex(text: str, *, min_matches: Optional[int] = None) -> lis
 
     关于开头内容（广告/书名/作者/简介/卷头）：
     - **一律忽略**。只有明确命中标题正则的行（第X章 / 序章 / 楔子 等）才算章节。
-    - 『【第一卷 XXX】』这种卷分隔如果用户自己没在正则里匹配，不作为章节。
+    - 纯卷行（第X卷/篇/部）在全书存在章级/关键词级标题时同样不作为章节
+      （H-20 分组头，见模块 docstring）；全书只有卷行时卷即章，保持原行为。
     - 不再把第一章前面的非标题内容自动合并成一个"序"章。
 
     Args:
@@ -160,32 +190,64 @@ def split_chapters_regex(text: str, *, min_matches: Optional[int] = None) -> lis
                 continue
             matches.append((start, m.end(), m.group(0).strip()))
 
-    if len(matches) < min_matches:
-        return []
-
     # 按位置排序
     matches.sort(key=lambda x: x[0])
+
+    # ---- H-20 章/卷分级 ----
+    # 「全书存在任何非卷级标题」= 卷行只是分组头，应剔除；否则（全书只有
+    # 卷行）卷即章，保持原行为。非卷级 = 有章级标记，或是序章/番外/Chapter X
+    # 等无卷标记的命中行。
+    has_chapter_level = any(
+        _CH_MARKER_RE.search(line) or not _VOL_MARKER_RE.search(line)
+        for _, _, line in matches
+    )
+    kept: list[tuple[int, int, str]] = []
+    volume_spans: list[tuple[int, int]] = []  # 被剔除的卷标题行 (start, end)
+    for start, end, line in matches:
+        ch_m = _CH_MARKER_RE.search(line)
+        if ch_m:
+            # 章级（含『第X卷 XXX 第X章 YYY』合体行）：
+            # 标题归一为从章级标记起的原文子串 →『第一章 惊蛰』
+            kept.append((start, end, line[ch_m.start():].strip()))
+        elif _VOL_MARKER_RE.search(line) and has_chapter_level:
+            volume_spans.append((start, end))
+        else:
+            kept.append((start, end, line))
+    if volume_spans:
+        preview = [text[s:e].strip() for s, e in volume_spans[:3]]
+        logger.info(
+            f"[book_split] 卷/篇/部级标题 {len(volume_spans)} 行不作为章节"
+            f"（全书存在章级标题）：{preview}{'...' if len(volume_spans) > 3 else ''}"
+        )
+    matches = kept
+
+    if len(matches) < min_matches:
+        return []
 
     # 切分章节
     chapters: list[Chapter] = []
     for i, (start, end, title_line) in enumerate(matches):
-        # 章节内容：从该标题行开头到下一个标题行开头
-        chapter_start = start
+        # 章节内容：标题行之后到下一个标题行开头（match span 即标题行本身，
+        # 正文从 end 起切片 —— 标题段在 chapter.py 里单独朗读，留在 text 里
+        # 会双重朗读）
+        body_start = end
         chapter_end = matches[i + 1][0] if i + 1 < len(matches) else len(text)
-        chapter_text = text[chapter_start:chapter_end].strip()
+        # 剔除本章区间内残留的卷标题行 span（卷行的正文如卷头语并入上一章
+        # 尾部，只删标题行本身，不丢内容）
+        pieces: list[str] = []
+        cursor = body_start
+        for vs, ve in volume_spans:
+            if vs < body_start or vs >= chapter_end:
+                continue
+            pieces.append(text[cursor:vs])
+            cursor = ve
+        pieces.append(text[cursor:chapter_end])
+        chapter_text = "".join(pieces).strip()
+        # 剥离纯分隔线行（------ / ──── 等）：零朗读价值，留着会被 narrator
+        # 段念出来（TTS 对连续符号会读出怪音），还白占润色/对白归属的 token
+        chapter_text = _SEPARATOR_LINE_RE.sub("", chapter_text).strip()
         if not chapter_text:
             continue
-        # 去掉标题行本身，只保留正文：
-        # 标题段会在 chapter.py 里单独朗读，
-        # 若 text 里仍保留标题行，narrator 段会再读一遍 → 双重朗读。
-        # 仅当首行确为标题行时才剥离，避免误伤正文（硬切章首行非标题）。
-        title_norm = title_line.strip()
-        nl = chapter_text.find("\n")
-        if nl != -1 and chapter_text[:nl].strip() == title_norm:
-            chapter_text = chapter_text[nl + 1:].lstrip()
-        elif chapter_text.strip() == title_norm:
-            # 整章只有标题行（极罕见），正文留空
-            chapter_text = ""
         chapters.append(Chapter(
             idx=len(chapters),
             title=title_line,
