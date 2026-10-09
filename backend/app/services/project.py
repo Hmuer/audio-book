@@ -1145,30 +1145,34 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             )
 
         # 3.5 LLM 润色纠错（可选，POLISH_ENABLED 控制；默认关闭）
-        # - 按章调用 polish_with_llm 修正错别字/同音字，结果替换内存中的章节文本，
-        #   后续角色识别/对白归属/合成均基于润色后的文本
-        # - 断点：data/polish_<pid>.json（idx → 润色后文本）；prepare 全部完成后删除。
-        #   中途失败重跑时，已完成章节直接复用，不再二次调 LLM
+        # - 按章润色（POLISH_MODE=diff：LLM 只输出「锚点→替换」错字清单，本地应用，
+        #   H-18 默认；rewrite：整章重写，回退通道），修正错别字/同音字后替换内存中的
+        #   章节文本，后续角色识别/对白归属/合成均基于润色后的文本
+        # - checkpoint：data/polish_<pid>.json（v2，带章节指纹）。changed 与 clean
+        #   （LLM 认证无误）都记录；rejected / failed 不记录 → 同一项目重跑
+        #   prepare 时只补跑这些章，这就是「上次没润上的章」的补录路径
+        #   （383 章实测 59 章未润上，H-18 前只能全量重跑）。源文件/切分参数变化
+        #   → 指纹失配 → 整个作废重跑（不跨内容串档）。
         # - 单章润色失败一律保留原文，绝不阻塞 prepare
         if settings.POLISH_ENABLED and chapters:
-            # 注：track_llm 已在 polish_with_llm 内部统一计数（此处曾重复计一次）
-            from .polish import polish_with_llm
+            # 注：track_llm 已在 polish_with_llm / polish_diff_with_llm 内统一计数
+            from .polish import (
+                apply_polish_diffs,
+                load_polish_sidecar,
+                polish_diff_with_llm,
+                polish_sidecar_fingerprint,
+                polish_with_llm,
+                save_polish_sidecar,
+            )
 
             polish_t0 = _time.perf_counter()
             # H-13：polish 阶段计时（进行中不写 checkpoint，started_ms 供前端实时算）
             await _read_write_progress_timing(project_id, "polish", end=False)
             sidecar_path = Path(settings.DATA_DIR) / f"polish_{project_id}.json"
-            polished_map: dict[str, str] = {}
-            try:
-                if sidecar_path.is_file():
-                    polished_map = json.loads(sidecar_path.read_text(encoding="utf-8"))
-            except Exception:
-                polished_map = {}
+            # H-18：指纹以「切分后的章节文本」为准（prepare 每次都从源文件重新切分）
+            src_fp = polish_sidecar_fingerprint([c.text or "" for c in chapters])
+            polished_map: dict[str, str] = load_polish_sidecar(sidecar_path, src_fp)
 
-            changed_n = 0
-            reused_n = 0
-            rejected_n = 0
-            failed_n = 0
             failed_chapters: list[int] = []
 
             # H-17：润色并发化（此前逐章串行是 prepare 最大热点）。章与章完全
@@ -1183,17 +1187,15 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             ))
             polish_sem = asyncio.Semaphore(polish_concurrency)
             polish_lock = asyncio.Lock()
-            counters = {"changed": 0, "reused": 0, "rejected": 0, "failed": 0}
+            # H-18：新增 clean（LLM 认证原文无误）计数，与 rejected 显式区分
+            counters = {"changed": 0, "reused": 0, "clean": 0, "rejected": 0, "failed": 0}
+            use_diff_mode = str(
+                getattr(settings, "POLISH_MODE", "diff") or "diff"
+            ).lower() != "rewrite"
 
             def _write_polish_sidecar() -> None:
                 """polished_map → sidecar 落盘（锁内调用；OSError 不阻塞流程）。"""
-                try:
-                    settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
-                    sidecar_path.write_text(
-                        json.dumps(polished_map, ensure_ascii=False), encoding="utf-8"
-                    )
-                except OSError:
-                    pass
+                save_polish_sidecar(sidecar_path, src_fp, polished_map)
 
             async def _polish_heartbeat_locked() -> None:
                 """H-13b：polish 心跳 —— 每完成 10 章刷一次 updated_at/server_now_ms。
@@ -1215,27 +1217,42 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                         await _polish_heartbeat_locked()
                     return
                 try:
+                    # 两阶段结构：sem 内只做 LLM 调用 + 纯函数判定（outcome），
+                    # 锁内只做计数 / sidecar 落盘 —— 与旧版相同，无锁内 await LLM。
                     async with polish_sem:
-                        result = await polish_with_llm(ch.text)
-                    polished = (result.polished_text or "").strip()
+                        if use_diff_mode:
+                            diff_result = await polish_diff_with_llm(ch.text)
+                            new_text, outcome = apply_polish_diffs(ch.text, diff_result)
+                        else:
+                            result = await polish_with_llm(ch.text)
+                            polished = (result.polished_text or "").strip()
+                            if not polished:
+                                # 空响应：视为被拒（保留原文）
+                                new_text, outcome = ch.text, "rejected"
+                            elif polished == ch.text:
+                                new_text, outcome = ch.text, "clean"
+                            elif (
+                                result.is_reasonable
+                                and 0.5 <= len(polished) / max(len(ch.text), 1) <= 1.5
+                            ):
+                                new_text, outcome = polished, "changed"
+                            else:
+                                # 自评不合理（过度修改）或长度异常 → 保留原文
+                                new_text, outcome = ch.text, "rejected"
                     async with polish_lock:
-                        # 合理性校验：LLM 自评通过 + 长度不出现异常缩水/膨胀
-                        if not polished:
-                            # 空响应：视为被拒（保留原文）
-                            counters["rejected"] += 1
-                        elif polished == ch.text:
-                            # 原文无需修改（正常结果，不算失败，不进 sidecar）
-                            pass
-                        elif (
-                            result.is_reasonable
-                            and 0.5 <= len(polished) / max(len(ch.text), 1) <= 1.5
-                        ):
-                            ch.text = polished
-                            polished_map[str(ch.idx)] = polished
+                        if outcome == "changed":
+                            ch.text = new_text
+                            polished_map[str(ch.idx)] = new_text
                             counters["changed"] += 1
                             _write_polish_sidecar()
-                        else:
-                            # 自评不合理（过度修改）或长度异常 → 保留原文
+                        elif outcome == "clean":
+                            # LLM 认证原文无误：也记入 sidecar，续跑/重跑不再复检
+                            # （rewrite 模式下旧实现不记录，重跑会再调一次 LLM 白验一遍）
+                            polished_map[str(ch.idx)] = ch.text
+                            counters["clean"] += 1
+                            _write_polish_sidecar()
+                        else:  # rejected
+                            # 不进 sidecar —— 重跑 prepare 时该章会被补跑
                             counters["rejected"] += 1
                         await _polish_heartbeat_locked()
                 except Exception as e:
@@ -1252,11 +1269,12 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
 
             changed_n = counters["changed"]
             reused_n = counters["reused"]
+            clean_n = counters["clean"]
             rejected_n = counters["rejected"]
             failed_n = counters["failed"]
             # 并发完成顺序乱序，日志里按章号升序展示
             failed_chapters.sort()
-            # 收尾兜底落一次盘（changed 章已即时落过，这里保证极端中断后也一致）
+            # 收尾兜底落一次盘（changed/clean 章已即时落过，这里保证极端中断后也一致）
             _write_polish_sidecar()
 
             # 未润色章数必须显式透出：3 次重试全失败时该章会静默保留原文，
@@ -1264,8 +1282,9 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             polish_elapsed_ms = int((_time.perf_counter() - polish_t0) * 1000)
             polish_summary = (
                 f"[project_prepare] project_id={project_id[:8]}... polish done: "
-                f"changed={changed_n} reused={reused_n} rejected={rejected_n} "
-                f"failed={failed_n} / total={len(chapters)} ms={polish_elapsed_ms}"
+                f"changed={changed_n} reused={reused_n} clean={clean_n} "
+                f"rejected={rejected_n} failed={failed_n} / total={len(chapters)} "
+                f"ms={polish_elapsed_ms}"
             )
             if failed_n:
                 logger.warning(
@@ -1283,6 +1302,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                             "polish_total": len(chapters),
                             "polish_changed_n": changed_n,
                             "polish_reused_n": reused_n,
+                            "polish_clean_n": clean_n,
                             "polish_rejected_n": rejected_n,
                             "polish_failed_n": failed_n,
                             "updated_at": _fmt_time_now(),
@@ -1339,7 +1359,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             k: prog[k]
             for k in (
                 "polish_total", "polish_changed_n", "polish_reused_n",
-                "polish_rejected_n", "polish_failed_n",
+                "polish_clean_n", "polish_rejected_n", "polish_failed_n",
             )
             if k in prog
         }
@@ -1973,11 +1993,10 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             await save_chapters(session, project_id, chapters)
             await session.commit()
 
-        # prepare 全部完成：润色 sidecar 的内容已固化进 chapters_json，可删除
-        try:
-            (Path(settings.DATA_DIR) / f"polish_{project_id}.json").unlink(missing_ok=True)
-        except OSError:
-            pass
+        # H-18：润色 sidecar **不再删除** —— 它现在是持久的润色 checkpoint
+        # （内容已固化进 chapters_json，但 rejected/failed 章的重跑补录依赖它：
+        # 重跑 prepare 时 sidecar 里的章 0 LLM 复用，缺的章才补调 LLM）。
+        # 源文件/切分参数变化时由指纹自动作废；项目删除时由 delete_project 清理。
 
         total_ms = int((_time.perf_counter() - t0) * 1000)
         logger.info(
@@ -2065,6 +2084,7 @@ _PREPARE_PROGRESS_PUBLIC_KEYS: tuple[str, ...] = (
     "polish_total",
     "polish_changed_n",
     "polish_reused_n",
+    "polish_clean_n",
     "polish_rejected_n",
     "polish_failed_n",
     # H-3：LLM 调用量/耗时估算（prepare 开始后即可显示「预计多久」）
@@ -2600,6 +2620,12 @@ async def delete_project(project_id: str) -> None:
                 sp.unlink()
         except OSError as e:
             logger.warning(f"[project_delete] 删源文件失败: {source_path} -> {e}")
+
+    # H-18：润色 checkpoint 现在跨 prepare 成功保留（重跑补录用），项目删除必须清理
+    try:
+        (Path(settings.DATA_DIR) / f"polish_{project_id}.json").unlink(missing_ok=True)
+    except OSError as e:
+        logger.warning(f"[project_delete] 删润色 checkpoint 失败: {e}")
 
     logger.info(
         f"[project_delete] project_id={project_id[:8]}... "

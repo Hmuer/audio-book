@@ -259,10 +259,20 @@ class Settings(BaseSettings):
     # 在 设置页「合成质量」中开启。
     POLISH_ENABLED: bool = False
 
+    # 润色模式（H-18）：
+    # - diff（默认）：LLM 只输出「锚点 → 替换」错字清单，本地应用。输出 token
+    #   ≈ 整章重写的 1/10~1/30（383 章实测 4h11m → 分钟级），且不存在
+    #   「誊写漂移」—— rewrite 模式下 LLM 抄写全文时顺手改写干净句子，触发
+    #   is_reasonable/长度比校验拒收（实测 51/383 章被拒，~33min LLM 时间白烧）。
+    # - rewrite：旧行为（整章重写 + is_reasonable 自评 + 长度比校验），diff
+    #   出问题时的回退通道。
+    POLISH_MODE: str = "diff"
+
     # 润色批并发度：同时在飞的章节 LLM 调用数（H-17，此前逐章串行是 prepare
     # 最大热点 —— 383 章实测 4h11m，占总时长 75%+）。实际并发仍受全局 LLM sem
     # 约束（min(两者) 生效）—— LLM_MAX_CONCURRENCY=1 时这里多高都会被串行。
-    # 逐章 checkpoint 语义不变（sidecar 只增不删，断点续跑复用已完成章）。
+    # 逐章 checkpoint 语义不变；H-18 起 checkpoint（sidecar）跨 prepare 成功
+    # 保留且带章节指纹 —— 重跑只补录上次 rejected/failed 的章。
     POLISH_CONCURRENCY: int = 4
 
     # 每个 ZIP 分片包含的章节数（F-7）。

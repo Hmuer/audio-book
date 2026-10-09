@@ -64,6 +64,28 @@ class MockLLMProvider(BaseLLMProvider):
                 "reason": "无需修改",
             })
 
+        # H-18 diff 模式润色：按测试文本里的标记/固定错字对生成修改清单。
+        # - __BAD_ANCHOR__：返回无法命中的锚点 → apply 侧 rejected（原文保留）
+        # - 常规：扫描固定错字对（走进教师/心理），带 ±4 字上下文做锚点，
+        #   逼真还原「LLM 抄半句改错字」的输出形状；扫不到 → data=[]（clean）
+        if schema_name == "PolishDiffResult":
+            import re as _re
+            raw = _extract_raw_from_prompt(prompt)
+            if "__BAD_ANCHOR__" in raw:
+                return output_schema.model_validate({"data": [
+                    {"anchor": "原文里根本不存在的锚点片段xyz", "replacement": "随便改改"}
+                ]})
+            items: list[dict] = []
+            for pat, fix in (("走进了教师", "走进了教室"), ("心理", "心里")):
+                for m in _re.finditer(_re.escape(pat), raw):
+                    s = max(0, m.start() - 4)
+                    e = min(len(raw), m.end() + 4)
+                    items.append({
+                        "anchor": raw[s:e],
+                        "replacement": raw[s:e].replace(pat, fix),
+                    })
+            return output_schema.model_validate({"data": items})
+
         if schema_name == "_ListWrapper" or "Character" in schema_name:
             # Character 识别：从 prompt 抓名字。测试 1 是短文本(<20字)也要返回。
             chars = [

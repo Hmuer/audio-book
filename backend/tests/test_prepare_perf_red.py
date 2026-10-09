@@ -68,7 +68,7 @@ def _parse_stage_ms(caplog_text: str) -> dict[str, int]:
     if m:
         out["voice_recs"] = int(m.group(2))
     m = re.search(
-        r"polish done: changed=\d+ reused=\d+ rejected=\d+ failed=\d+ / total=\d+ ms=(\d+)",
+        r"polish done: changed=\d+ reused=\d+ clean=\d+ rejected=\d+ failed=\d+ / total=\d+ ms=(\d+)",
         caplog_text,
     )
     if m:
@@ -464,6 +464,7 @@ async def test_h17_polish_checkpoint_reuse_skips_llm(_isolate_data_dir, monkeypa
     """H-17：断点续跑——sidecar 已润色过的章不重跑 LLM，DB 文本直接复用。
 
     并发化后该语义必须原样保留：12 章预写 2 章进 sidecar → 只应剩 10 次润色调用。
+    H-18 起这同时也是 v1 sidecar（无指纹裸 dict，历史中断现场）的兼容性测试。
     """
     from pathlib import Path as _P
 
@@ -530,7 +531,10 @@ async def test_h17_polish_failure_keeps_original_and_changed_persisted(
 ):
     """H-17：单章润色失败只保留原文（不阻塞 prepare），成功章持久化润色结果。
 
-    覆盖 changed / failed 两条路径 + sidecar 收尾删除（prepare 完成后不残留）。
+    覆盖 rewrite 模式 changed / failed 两条路径 + H-18 起 sidecar 跨 prepare
+    成功保留（成功章固化进 chapters_json 后文件仍在，供重跑补录复用）。
+    显式 POLISH_MODE=rewrite：H-18 起默认是 diff，本测试 monkeypatch 的是
+    rewrite 专属的 polish_with_llm。
     """
     from pathlib import Path as _P
 
@@ -543,6 +547,7 @@ async def test_h17_polish_failure_keeps_original_and_changed_persisted(
 
     await init_db()
     monkeypatch.setattr(settings, "POLISH_ENABLED", True)
+    monkeypatch.setattr(settings, "POLISH_MODE", "rewrite")
 
     async def fake_polish(raw_text: str) -> PolishResult:
         if "H17FAIL" in raw_text:
@@ -564,6 +569,7 @@ async def test_h17_polish_failure_keeps_original_and_changed_persisted(
     prog = await _read_prog(pid)
     assert prog.get("polish_changed_n") == 11, f"changed 应为 11：{prog}"
     assert prog.get("polish_failed_n") == 1, f"failed 应为 1：{prog}"
+    assert prog.get("polish_clean_n") == 0, f"rewrite+追加后缀不应有 clean：{prog}"
 
     # 失败章保留原文（H17FAIL 标记还在），成功章带【润】后缀
     from sqlalchemy import select
@@ -592,6 +598,277 @@ async def test_h17_polish_failure_keeps_original_and_changed_persisted(
     assert "polish ch 3 失败" in caplog.text
     assert "章号=[3]" in caplog.text
 
-    # sidecar 收尾删除（不残留半成品文件）
+    # H-18：sidecar 跨 prepare 成功**保留**（重跑补录依赖），且只含成功章
+    # （rejected/failed 不进 sidecar —— 下次 prepare 只有它们会补调 LLM）
     sidecar = _P(settings.DATA_DIR) / f"polish_{pid}.json"
-    assert not sidecar.exists(), "prepare 完成后 polish sidecar 应被删除"
+    assert sidecar.exists(), "H-18 起 prepare 完成后 polish sidecar 应保留（补录路径依赖）"
+    sc = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert sc.get("_version") == 2
+    assert "2" not in sc.get("chapters", {}), "失败章不应进 sidecar"
+    assert len(sc.get("chapters", {})) == 11
+
+
+# =====================================================================
+# H-18 diff 模式润色 + checkpoint 持久化（补录路径）
+# =====================================================================
+# 背景（383 章实测）：rewrite 模式 4h11m（H-17 并发化后 ~1h），且 51/383 章
+# 被 is_reasonable/长度比校验拒收 —— 誊写漂移的税。diff 模式让 LLM 只输出
+# 「锚点→替换」清单，本地应用；rejected/failed 章不进 sidecar，重跑 prepare
+# 只补跑这些章（此前 sidecar 在 prepare 成功后被删，只能全量重跑）。
+
+def _h18_book_text(n: int = 6) -> str:
+    """H-18 专用书文本（每章 ~330 字，够正则切章即可）：
+    - 奇数章（除 3）含「他走进了教师。」，偶数章（除 4）含「心理想着考试。」
+      → mock diff 分支给固定修复（changed）
+    - 第 3 章嵌 __BAD_ANCHOR__ → mock 返回无法命中的锚点（rejected）
+    - 第 4 章全干净 → mock 返回空清单（clean）
+    """
+    parts = []
+    filler = "街边杨柳依依，行人往来如织。" * 10
+    for i in range(1, n + 1):
+        if i == 3:
+            body = "__BAD_ANCHOR__" + filler
+        elif i == 4:
+            body = filler
+        elif i % 2 == 1:
+            body = "他走进了教师。" + filler
+        else:
+            body = "心理想着考试。" + filler
+        parts.append(f"第{i}章 情景{i}\n\n{body}")
+    return "\n\n".join(parts)
+
+
+def test_h18_apply_polish_diffs_matrix():
+    """H-18 单元：diff 应用引擎的全部判定路径（不依赖 LLM / DB）。"""
+    from backend.app.services.polish import (
+        PolishDiffItem,
+        PolishDiffResult,
+        apply_polish_diffs,
+    )
+
+    def _diff(*pairs: tuple[str, str]) -> PolishDiffResult:
+        return PolishDiffResult(
+            data=[PolishDiffItem(anchor=a, replacement=r) for a, r in pairs]
+        )
+
+    # 1. 空清单 → clean（LLM 认证原文无误）
+    text = "他走进了教师。"
+    out, outcome = apply_polish_diffs(text, _diff())
+    assert outcome == "clean" and out == text
+
+    # 2. 精确锚点 → changed
+    out, outcome = apply_polish_diffs(
+        "他走进了教师。心理想着考试。",
+        _diff(("走进了教师。", "走进了教室。")),
+    )
+    assert outcome == "changed" and out == "他走进了教室。心理想着考试。"
+
+    # 3. 锚点带空白/引号风格差异 → 归一化兜底命中（区间经 idx_map 回溯）
+    out, outcome = apply_polish_diffs(
+        "他说：『我 错 了。』",
+        _diff(("他说：「我 错 了。」", "他说：「我错了。」")),
+    )
+    assert outcome == "changed" and out == "他说：「我错了。」"
+
+    # 4. 一条失配 + 一条命中 → 只丢失配那条，其余生效
+    out, outcome = apply_polish_diffs(
+        "他走进了教师。心理想着考试。",
+        _diff(("不存在的片段", "随便"), ("心理想着", "心里想着")),
+    )
+    assert outcome == "changed" and out == "他走进了教师。心里想着考试。"
+
+    # 5. 全部失配 → rejected（原文保留）
+    out, outcome = apply_polish_diffs(
+        text, _diff(("不存在的片段甲", "随便"), ("不存在的片段乙", "随便"))
+    )
+    assert outcome == "rejected" and out == text
+
+    # 6. 单条 replacement/anchor 长度比超上界 → 该条被防护丢弃 → rejected
+    out, outcome = apply_polish_diffs(
+        "他好。", _diff(("他好", "他" + "好" * 10))  # 2→11 字，ratio=5.5 > 5
+    )
+    assert outcome == "rejected" and out == "他好。"
+
+    # 7. 每条都合规但累积膨胀超整章上界 → 整章 rejected
+    text = "A" * 10
+    out, outcome = apply_polish_diffs(
+        text, _diff(*[("AA", "BBBBBBBB") for _ in range(5)])
+    )
+    assert outcome == "rejected" and out == text
+
+    # 8. anchor == replacement → no-op → clean
+    out, outcome = apply_polish_diffs(text, _diff(("AA", "AA")))
+    assert outcome == "clean" and out == text
+
+
+def test_h18_sidecar_helpers_roundtrip(tmp_path):
+    """H-18 单元：sidecar v2 读写 / 指纹失配作废 / v1 兼容 / 损坏容错。"""
+    from backend.app.services.polish import (
+        load_polish_sidecar,
+        polish_sidecar_fingerprint,
+        save_polish_sidecar,
+    )
+
+    p = tmp_path / "polish_x.json"
+    fp = polish_sidecar_fingerprint(["a", "b"])
+    save_polish_sidecar(p, fp, {"0": "润a", "1": "润b"})
+    assert load_polish_sidecar(p, fp) == {"0": "润a", "1": "润b"}
+
+    # 指纹失配（模拟源文件/切分参数变化）→ 整个作废
+    assert load_polish_sidecar(p, "0" * 64) == {}
+
+    # v1 兼容：无指纹字段的裸 dict（历史中断现场）按原样接受
+    p.write_text(json.dumps({"0": "v1文本"}, ensure_ascii=False), encoding="utf-8")
+    assert load_polish_sidecar(p, fp) == {"0": "v1文本"}
+
+    # 损坏文件 → 空表（不抛异常）
+    p.write_text("not json", encoding="utf-8")
+    assert load_polish_sidecar(p, fp) == {}
+
+    # 指纹对内容敏感（章数 / 章文本任一变化都应失配）
+    assert polish_sidecar_fingerprint(["a", "b"]) == polish_sidecar_fingerprint(["a", "b"])
+    assert polish_sidecar_fingerprint(["a", "b"]) != polish_sidecar_fingerprint(["a", "c"])
+    assert polish_sidecar_fingerprint(["a"]) != polish_sidecar_fingerprint(["a", "b"])
+
+
+@pytest.mark.asyncio
+async def test_h18_diff_mode_e2e_counts_and_text(_isolate_data_dir, monkeypatch):
+    """H-18 端到端：diff 模式按章分桶计数 + DB 文本实际修复 + sidecar 记录口径。
+
+    6 章：changed=4（错字章）/ rejected=1（bad-anchor 章保留原文）/
+    clean=1（干净章）；sidecar 记 changed+clean 共 5 章，rejected 不进。
+    """
+    from pathlib import Path as _P
+
+    from sqlalchemy import select
+
+    from backend.app.core.config import settings
+    from backend.app.db.session import init_db, get_session_factory
+    from backend.app.db.models import ProjectChapter
+    from backend.app.services.project import create_project, import_file, prepare_project
+
+    await init_db()
+    monkeypatch.setattr(settings, "POLISH_ENABLED", True)
+    # POLISH_MODE 默认 diff，不 patch —— 守护默认值本身
+
+    resp = await create_project("H18-diff端到端")
+    pid = resp.project_id
+    await import_file(pid, _h18_book_text(6).encode("utf-8"), "h18a.txt")
+    await prepare_project(pid)
+
+    prog = await _read_prog(pid)
+    assert prog.get("polish_changed_n") == 4, f"changed 应为 4：{prog}"
+    assert prog.get("polish_rejected_n") == 1, f"rejected 应为 1：{prog}"
+    assert prog.get("polish_clean_n") == 1, f"clean 应为 1：{prog}"
+    assert prog.get("polish_failed_n") == 0, f"failed 应为 0：{prog}"
+    assert prog.get("polish_reused_n") == 0
+
+    # DB 文本：错字真被修了，rejected 章原文保留，clean 章未动
+    factory = get_session_factory()
+    async with factory() as sess:
+        rows = (
+            (
+                await sess.execute(
+                    select(ProjectChapter)
+                    .where(ProjectChapter.project_id == pid)
+                    .order_by(ProjectChapter.idx)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 6
+    assert "走进了教室" in rows[0].text and "走进了教师" not in rows[0].text
+    assert "心里想着" in rows[1].text and "心理" not in rows[1].text
+    assert "__BAD_ANCHOR__" in rows[2].text, "rejected 章必须保留原文"
+    assert "走进了教师" not in rows[4].text
+    assert "心理" not in rows[5].text
+
+    # sidecar（v2）：changed + clean 共 5 章；rejected 章（idx=2）不进
+    sidecar = _P(settings.DATA_DIR) / f"polish_{pid}.json"
+    assert sidecar.exists()
+    sc = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert sc.get("_version") == 2
+    assert set(sc.get("chapters", {}).keys()) == {"0", "1", "3", "4", "5"}
+
+
+@pytest.mark.asyncio
+async def test_h18_gap_fill_rerun_only_repolishes_missing(_isolate_data_dir, monkeypatch):
+    """H-18 补录路径（用户 383 章实测 59 章未润上的场景）：
+
+    run1 有 1 章 rejected → sidecar 保留 → 同一项目重跑 prepare：
+    已完成的 5 章 0 次 LLM 调用直接复用，只有缺的 1 章补跑。
+    （H-18 前 sidecar 在成功后被删，重跑 = 全量重润。）
+    """
+    from backend.app.core.config import settings
+    from backend.app.db.session import init_db
+    from backend.app.services.project import create_project, import_file, prepare_project
+
+    await init_db()
+    monkeypatch.setattr(settings, "POLISH_ENABLED", True)
+
+    resp = await create_project("H18-补录")
+    pid = resp.project_id
+    await import_file(pid, _h18_book_text(6).encode("utf-8"), "h18b.txt")
+
+    mock_llm = _isolate_data_dir["llm"]
+    await prepare_project(pid)  # run1：changed=4 clean=1 rejected=1
+
+    # run2：不重导文件、不改任何东西，直接重跑（触发补录）
+    mock_llm.calls.clear()
+    await prepare_project(pid)
+
+    polish_calls = sum(
+        1 for c in mock_llm.calls if "---RAW TEXT START---" in c["prompt"]
+    )
+    assert polish_calls == 1, (
+        f"重跑应只补跑 rejected 的 1 章，实际润色调用 {polish_calls} 次"
+    )
+
+    prog = await _read_prog(pid)
+    assert prog.get("polish_reused_n") == 5, f"5 章应复用 sidecar：{prog}"
+    assert prog.get("polish_rejected_n") == 1, "补跑的 bad-anchor 章按预期再次被拒"
+    assert prog.get("polish_changed_n") == 0 and prog.get("polish_clean_n") == 0
+
+
+@pytest.mark.asyncio
+async def test_h18_sidecar_fingerprint_invalidation_full_repolish(
+    _isolate_data_dir, monkeypatch
+):
+    """H-18 防串档：sidecar 指纹失配（源文件/切分参数变化）→ checkpoint 作废，
+    全量重润，绝不把旧内容的润色文本串进新切分。"""
+    from pathlib import Path as _P
+
+    from backend.app.core.config import settings
+    from backend.app.db.session import init_db
+    from backend.app.services.project import create_project, import_file, prepare_project
+
+    await init_db()
+    monkeypatch.setattr(settings, "POLISH_ENABLED", True)
+
+    resp = await create_project("H18-指纹失配")
+    pid = resp.project_id
+    await import_file(pid, _h18_book_text(6).encode("utf-8"), "h18c.txt")
+
+    mock_llm = _isolate_data_dir["llm"]
+    await prepare_project(pid)  # run1
+
+    # 篡改指纹（等价于源文件被替换后旧 checkpoint 失效）
+    sidecar = _P(settings.DATA_DIR) / f"polish_{pid}.json"
+    sc = json.loads(sidecar.read_text(encoding="utf-8"))
+    sc["_fingerprint"] = "0" * 64
+    sidecar.write_text(json.dumps(sc, ensure_ascii=False), encoding="utf-8")
+
+    mock_llm.calls.clear()
+    await prepare_project(pid)  # run2 → checkpoint 作废 → 全量重润
+
+    polish_calls = sum(
+        1 for c in mock_llm.calls if "---RAW TEXT START---" in c["prompt"]
+    )
+    assert polish_calls == 6, f"指纹失配后应全量重润 6 章，实际 {polish_calls} 次"
+
+    prog = await _read_prog(pid)
+    assert prog.get("polish_reused_n") == 0, f"失配后不应有复用：{prog}"
+    assert prog.get("polish_changed_n") == 4
+    assert prog.get("polish_clean_n") == 1
+    assert prog.get("polish_rejected_n") == 1

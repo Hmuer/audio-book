@@ -2086,6 +2086,8 @@ _EDITABLE_SETTINGS = {
     # 合成质量
     "TTS_MAX_SEGMENT_CHARS": ("int", "合成质量", "单段最大字符数（超长自动按句读切分）"),
     "POLISH_ENABLED": ("bool", "合成质量", "prepare 时用 LLM 润色纠错（每章一次调用，增加费用）"),
+    "POLISH_MODE": ("str", "合成质量", "润色模式：diff（默认，LLM 只输出错字清单本地应用，约为 rewrite 耗时 1/10）/ rewrite（整章重写，回退通道）"),
+    "POLISH_CONCURRENCY": ("int", "合成质量", "润色并发度（实际=min(本值, LLM 最大并发)；改后立即生效）"),
     "ZIP_SHARD_CHAPTERS": ("int", "合成质量", "每个 ZIP 分片包含的章节数（默认 50；<=0 表示不分片）"),
     # 对象存储（腾讯云 COS，走 S3 兼容协议）
     "STORAGE_BACKEND": ("str", "对象存储", "存储后端：local（仅本地盘）/ s3（腾讯云 COS）"),
