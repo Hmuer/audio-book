@@ -156,3 +156,71 @@ def test_h20_combined_line_keyword_chapters_kept():
     assert "大梦正文" in chapters[0].text
     # 卷行正文（『无关内容。』）并入上一章尾部；卷行在最前 → 属于被丢弃的前言区
     assert all("第一卷 楔子卷" not in c.text for c in chapters)
+
+
+def test_h21_keyword_body_lines_not_titles():
+    """H-21：正文段落以关键词开头不再被误识别为标题（幽灵章消灭）。
+
+    旧模式 4 宽松匹配实测误命中（整个下一章的正文全被切走）：
+    - 『    序章正文。』 → 序章 + 正文（复合词）
+    - 『    前言不搭后语，是常见的批评。』 → 前言 + 不搭后语…
+    - 『    番外一提，…』 → 番外 + 一提（编号串也拦不住）
+    - 『    写在最后，…』 → 写在最后 + 感谢语（流式标点）
+    """
+    text = """第一章 起
+
+    正文开始。
+
+    序章正文。这一行以序章开头，但它是正文。
+
+    前言不搭后语，是常见的批评。
+
+    写在最后，作者想说些感谢的话。
+
+    番外一提，引子里其实埋了伏笔。
+
+第二章 承
+
+    正文继续。
+"""
+    chapters = split_chapters_regex(text, min_matches=2)
+    assert [c.title for c in chapters] == ["第一章 起", "第二章 承"], \
+        [c.title for c in chapters]
+    # 被拒的正文行完整保留在第 1 章内（一个字不丢）
+    for frag in ("序章正文", "前言不搭后语", "写在最后，作者", "番外一提"):
+        assert frag in chapters[0].text, f"正文行丢失：{frag}"
+        assert frag not in chapters[1].text, f"正文行被切进第 2 章：{frag}"
+
+
+def test_h21_keyword_titles_still_match():
+    """H-21：合法关键词标题仍正常识别，含编号变体（番外一 / 附录3 / 番外：X）。"""
+    text = """楔子
+
+    楔子内容。
+
+番外一
+
+    番外一内容。
+
+番外：东京奇遇
+
+    番外正文。
+
+附录3 常用命令
+
+    附录内容。
+
+写在最后
+
+    感言正文。
+"""
+    chapters = split_chapters_regex(text, min_matches=2)
+    titles = [c.title for c in chapters]
+    assert titles == ["楔子", "番外一", "番外：东京奇遇", "附录3 常用命令", "写在最后"], \
+        titles
+    # 各章正文非空，且首行不是标题行本身（标题段单独朗读，正文出现会双重朗读；
+    # 注意：正文中合法出现关键词（如『番外正文。』）不算标题残留）
+    for c in chapters:
+        assert c.text.strip(), f"第 {c.idx+1} 章正文为空"
+        first_line = c.text.split("\n")[0].strip()
+        assert first_line != c.title.strip(), f"第 {c.idx+1} 章正文首行是标题行残留"
