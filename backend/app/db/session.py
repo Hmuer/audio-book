@@ -99,18 +99,12 @@ _BUILD_NEW_COLUMNS = {
     # 情感/语气配置快照 + TTS 用量
     "narrator_emotion": "VARCHAR(32) DEFAULT ''",
     "narrator_instruction": "VARCHAR(512) DEFAULT ''",
-    "voice_styles_json": "TEXT",
     "tts_calls": "INTEGER DEFAULT 0",
     "tts_chars": "INTEGER DEFAULT 0",
     # F-7：ZIP 分片清单（JSON）；NULL = 老库单包
     "zip_filenames_json": "TEXT",
     # H-4/H-5：结构化进度元数据（phase / rate / remaining / quality）
     "progress_meta_json": "TEXT",
-}
-# 角色：情感/语气字段（旧库补列）
-_PROJECT_CHARACTERS_NEW_COLUMNS = {
-    "emotion": "VARCHAR(32) DEFAULT ''",
-    "instruction": "VARCHAR(512) DEFAULT ''",
 }
 # 对白：逐段语音指令（豆包 2.0 context_texts，旧库补列；空串=不下发）
 _PROJECT_DIALOGUES_NEW_COLUMNS = {
@@ -152,12 +146,6 @@ def _migrate_existing_sync(conn) -> None:
         for col, ddl in _BUILD_NEW_COLUMNS.items():
             if col not in existing_cols:
                 conn.execute(text(f"ALTER TABLE builds ADD COLUMN {col} {ddl}"))
-
-    if "project_characters" in tables:
-        existing_cols = {c["name"] for c in insp.get_columns("project_characters")}
-        for col, ddl in _PROJECT_CHARACTERS_NEW_COLUMNS.items():
-            if col not in existing_cols:
-                conn.execute(text(f"ALTER TABLE project_characters ADD COLUMN {col} {ddl}"))
 
     if "project_dialogues" in tables:
         existing_cols = {c["name"] for c in insp.get_columns("project_dialogues")}

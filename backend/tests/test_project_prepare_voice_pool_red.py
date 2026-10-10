@@ -7,6 +7,8 @@
            让 voice_recommender 拿到后端状态（admin 看到所有项目时该看到所有 ICL）
   T-VR-E3  recommend_voices_with_llm 拿到 user_id 后实际调了
            _aggregate_voice_pool(user_id=...)
+  T-VR-E4  有角色却 0 条推荐 → 不写 voice_recs_done 投毒 checkpoint，
+           重跑 prepare 会重试音色推荐并落上 assigned_voice_id
 """
 from __future__ import annotations
 
@@ -121,3 +123,80 @@ async def test_prepare_passes_zero_user_id_when_orphan(stub_recommend):
 
     # 同步检查 pool 也收到 0
     assert last["user_id"] == 0
+
+
+# ---------------------------------------------------------------------
+# T-VR-E4：0 推荐 → 不写投毒 checkpoint，重跑 prepare 重试音色推荐
+#（真实案例：798 角色单批输出超 8000 token 全废，若写成 voice_recs_done=True，
+#  重跑永远跳过推荐，所有角色无自动音色）
+# ---------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_prepare_retries_voice_rec_after_total_failure(monkeypatch):
+    import json
+
+    from sqlalchemy import select
+
+    from backend.app.db.session import init_db, get_session_factory
+    from backend.app.db.models import Project, ProjectCharacter
+    from backend.app.services import project as project_mod
+    from backend.app.services.project import create_project, import_file, prepare_project
+    from backend.app.services.voice_recommender import VoiceRecommendation
+
+    state = {"calls": 0}
+
+    async def _fake_recommend(characters, *, user_id=None, project_id=None, **_kw):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            return []  # 模拟首跑推荐全废（如单批输出超限被截断）
+        return [
+            VoiceRecommendation(
+                character_name=c.name,
+                suggested_voice_id="doubao:zh_female_vv_uranus_bigtts",
+                reason="重试成功",
+            )
+            for c in characters
+        ]
+
+    monkeypatch.setattr(project_mod, "recommend_voices_with_llm", _fake_recommend)
+
+    await init_db()
+    pid = (await create_project("vr-e4-retry", owner_user_id=0)).project_id
+    await import_file(pid, SAMPLE_BOOK.encode("utf-8"), "book.txt")
+
+    # 第一次 prepare：推荐全废 → 角色落库但无自动音色
+    await prepare_project(pid)
+    assert state["calls"] == 1
+    factory = get_session_factory()
+
+    async def _char_rows():
+        async with factory() as s:
+            return list(
+                (await s.execute(
+                    select(ProjectCharacter).where(ProjectCharacter.project_id == pid)
+                )).scalars().all()
+            )
+
+    rows = await _char_rows()
+    assert rows, "应有角色落库"
+    assert all(r.assigned_voice_id is None for r in rows), "首跑全废 → 不应有自动音色"
+
+    # 重跑 prepare：voice_recs_done 未写 → 音色推荐必须重试并落上
+    await prepare_project(pid)
+    assert state["calls"] == 2, "0 推荐未写 done checkpoint → 重跑应重试音色推荐"
+    rows2 = await _char_rows()
+    assert rows2 and all(r.assigned_voice_id for r in rows2), "重试后所有角色应有自动音色"
+
+    # ---- 历史投毒 checkpoint 自愈：模拟旧版写下的 done=True + 0 推荐 ----
+    async with factory() as s:
+        p = await s.get(Project, pid)
+        prog = json.loads(p.progress_json or "{}")
+        prog["stage"] = "done"
+        prog["voice_recs_done"] = True
+        prog["voice_recs_raw"] = []
+        p.progress_json = json.dumps(prog, ensure_ascii=False)
+        await s.commit()
+
+    await prepare_project(pid)
+    assert state["calls"] == 3, "历史投毒 checkpoint（done=True + 0 推荐）应自愈并重试推荐"
+    rows3 = await _char_rows()
+    assert rows3 and all(r.assigned_voice_id for r in rows3), "自愈重试后所有角色应有自动音色"

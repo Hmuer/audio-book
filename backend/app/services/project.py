@@ -114,7 +114,7 @@ class ChapterDetail(BaseModel):
 
 
 class CharacterWithVoice(BaseModel):
-    """角色 + 已分配音色。"""
+    """角色 + 已分配音色。角色不绑定语气：对白语气由逐段 instruction 按内容生成。"""
     id: int
     name: str
     gender: str
@@ -122,8 +122,6 @@ class CharacterWithVoice(BaseModel):
     personality: str
     canonical_name: str | None
     assigned_voice_id: str | None
-    emotion: str = ""
-    instruction: str = ""
 
 
 class CharacterResp(BaseModel):
@@ -131,8 +129,6 @@ class CharacterResp(BaseModel):
     id: int
     name: str
     assigned_voice_id: str | None
-    emotion: str = ""
-    instruction: str = ""
 
 
 class BuildBrief(BaseModel):
@@ -2187,16 +2183,29 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         pt = _time.perf_counter()
         # H-13：voice_recs 阶段计时（命中 checkpoint 则 start+end 同刻）
         _stage_timing_touch(prog, "voice_recs")
-        if prog.get("stage") in ("voice_recs", "done") and prog.get("voice_recs_done"):
-            voice_recs_raw = prog.get("voice_recs_raw", []) or []
+        # 历史投毒 checkpoint 自愈：旧版音色推荐失败时也写成 voice_recs_done=True
+        # （真实案例：798 角色单批输出超限全废），重跑永远跳过推荐 →
+        # 有角色却 0 条推荐的 done checkpoint 视为未完成，强制重试
+        _vr_raw = prog.get("voice_recs_raw", []) or []
+        _vr_hit = (
+            prog.get("stage") in ("voice_recs", "done")
+            and prog.get("voice_recs_done")
+            and (bool(_vr_raw) or not characters)
+        )
+        if _vr_hit:
             voice_recs: list[VoiceRecommendation] = [
-                VoiceRecommendation(**d) for d in voice_recs_raw
+                VoiceRecommendation(**d) for d in _vr_raw
             ]
             logger.info(
                 f"[project_prepare] project_id={project_id[:8]}... "
                 f"命中音色推荐 checkpoint：voice_recs={len(voice_recs)}"
             )
         else:
+            if prog.get("voice_recs_done") and characters:
+                logger.warning(
+                    f"[project_prepare] project_id={project_id[:8]}... "
+                    f"检测到 0 推荐的历史投毒 checkpoint（{len(characters)} 角色），重试音色推荐"
+                )
             voice_recs = []
             try:
                 # 透传 user_id → 把该用户的 ICL 复刻音色纳入候选池
@@ -2212,8 +2221,20 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             except Exception as e:
                 logger.warning(f"[project_prepare] project_id={project_id[:8]}... voice_rec failed: {e}")
             prog["stage"] = "voice_recs"
-            prog["voice_recs_done"] = True
-            prog["voice_recs_raw"] = [r.model_dump() for r in voice_recs]
+            # 有角色却 0 条推荐 → 判定本阶段失败：**不写 voice_recs_done**，
+            # 否则重跑 prepare 永远跳过音色推荐（真实案例：798 角色单批输出超限
+            # 全废，写成 done=True 后所有角色永远无自动音色）。
+            # characters 为空（无角色）时 0 推荐是合法终态，正常写 done。
+            if voice_recs or not characters:
+                prog["voice_recs_done"] = True
+                prog["voice_recs_raw"] = [r.model_dump() for r in voice_recs]
+            else:
+                prog["voice_recs_done"] = False
+                prog.pop("voice_recs_raw", None)
+                logger.warning(
+                    f"[project_prepare] project_id={project_id[:8]}... "
+                    f"{len(characters)} 个角色 0 条音色推荐，不写 checkpoint（重跑将重试）"
+                )
             await _write_progress(prog)
         # H-13：voice_recs 阶段结束
         _stage_timing_touch(prog, "voice_recs", end=True)
@@ -3104,8 +3125,6 @@ async def get_project_characters(project_id: str) -> list[CharacterWithVoice]:
                 personality=c.personality,
                 canonical_name=c.canonical_name,
                 assigned_voice_id=c.assigned_voice_id,
-                emotion=c.emotion or "",
-                instruction=c.instruction or "",
             )
             for c in rows
         ]
@@ -3113,12 +3132,8 @@ async def get_project_characters(project_id: str) -> list[CharacterWithVoice]:
 
 async def update_character_voice(
     project_id: str, character_id: int, voice_id: str | None,
-    *, emotion: str | None = None, instruction: str | None = None,
 ) -> CharacterResp:
-    """更新角色音色（voice_id 可为 None，表示清除）。
-
-    emotion / instruction 为 None 表示不修改；传空串表示清除该配置。
-    """
+    """更新角色音色（voice_id 可为 None，表示清除）。"""
     factory = get_session_factory()
     async with factory() as session:
         stmt = select(ProjectCharacter).where(
@@ -3129,18 +3144,12 @@ async def update_character_voice(
         if not c:
             raise ValueError(f"角色不存在: char_id={character_id} project_id={project_id}")
         c.assigned_voice_id = voice_id
-        if emotion is not None:
-            c.emotion = emotion.strip()[:32]
-        if instruction is not None:
-            c.instruction = instruction.strip()[:512]
         await session.commit()
         await session.refresh(c)
         return CharacterResp(
             id=c.id,
             name=c.name,
             assigned_voice_id=c.assigned_voice_id,
-            emotion=c.emotion or "",
-            instruction=c.instruction or "",
         )
 
 

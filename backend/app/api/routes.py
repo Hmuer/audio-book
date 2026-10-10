@@ -699,9 +699,6 @@ class UpdateProjectRequest(BaseModel):
 
 class UpdateCharacterVoiceRequest(BaseModel):
     voice_id: str | None = None  # None 表示清除
-    # 情感/语气：None = 不修改；空串 = 清除
-    emotion: str | None = Field(default=None, max_length=32)
-    instruction: str | None = Field(default=None, max_length=512)
 
 
 class StartBuildRequest(BaseModel):
@@ -1178,10 +1175,7 @@ async def api_update_character_voice(
     async with factory() as s:
         await assert_project_writable(s, project_id, current)
     try:
-        return await update_character_voice(
-            project_id, char_id, req.voice_id,
-            emotion=req.emotion, instruction=req.instruction,
-        )
+        return await update_character_voice(project_id, char_id, req.voice_id)
     except ValueError as e:
         raise HTTPException(404, str(e))
     except Exception as e:

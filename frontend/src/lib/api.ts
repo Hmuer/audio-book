@@ -389,20 +389,15 @@ export const api = {
   // 拉取角色列表
   projectCharacters: (id: string) =>
     _fetch<CharacterWithVoice[]>(`/api/projects/${id}/characters`),
-  // 修改角色音色 / 情感 / 语气（emotion/instruction 传 null 表示不修改）
+  // 修改角色音色（角色不绑定语气：对白语气由逐段 instruction 按内容自动生成）
   projectUpdateCharVoice: (
     projectId: string,
     charId: number,
     voiceId: string,
-    opts?: { emotion?: string | null; instruction?: string | null }
   ) =>
     _fetch<CharacterResp>(`/api/projects/${projectId}/characters/${charId}`, {
       method: 'PATCH',
-      body: JSON.stringify({
-        voice_id: voiceId,
-        ...(opts?.emotion !== undefined ? { emotion: opts.emotion } : {}),
-        ...(opts?.instruction !== undefined ? { instruction: opts.instruction } : {}),
-      }),
+      body: JSON.stringify({ voice_id: voiceId }),
     }),
   // 修正一条对白的说话人（LLM 归属错误兜底；confidence 置 1.0）
   projectUpdateDialogueSpeaker: (projectId: string, dialogueId: number, speaker: string) =>
@@ -748,7 +743,7 @@ export interface PronunciationRuleInput {
   note: string;
 }
 
-// 角色（含已分配音色）
+// 角色（含已分配音色）。角色不绑定语气：对白语气由逐段 instruction 按内容自动生成
 export interface CharacterWithVoice {
   id: number;
   name: string;
@@ -757,10 +752,6 @@ export interface CharacterWithVoice {
   personality: string;
   canonical_name: string | null;
   assigned_voice_id: string | null;
-  /** 情感（英文枚举风格值，空串 = provider 默认） */
-  emotion?: string;
-  /** 风格指令（自由文本，豆包支持） */
-  instruction?: string;
 }
 
 // 最近一次 build 的摘要
@@ -786,13 +777,7 @@ export interface ProjectPrepareResp {
 export interface CharacterResp {
   id: number;
   name: string;
-  gender: string;
-  age: string;
-  personality: string;
-  canonical_name: string | null;
   assigned_voice_id: string | null;
-  emotion?: string;
-  instruction?: string;
 }
 
 // H-4：构建结构化进度（progress_meta_json 透出）。

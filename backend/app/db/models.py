@@ -168,12 +168,11 @@ class Build(Base):
     # 细粒度的段级缓存走段级 sha256，不在这里比。
     config_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
-    # 情感/语气配置快照：narrator 的 emotion/instruction + 各角色 speaker → {emotion, instruction}。
-    # 与 voice_assignments_json 同属"本次配置快照"：启动 build 时从 ProjectCharacter 拷贝，
-    # 后续修改角色情感不影响历史 build。
+    # 情感/语气配置快照：narrator 的 emotion/instruction。角色不绑定语气——
+    # 对白语气由每句 ProjectDialogue.instruction（按对白内容生成）自动决定。
+    # 与 voice_assignments_json 同属"本次配置快照"。
     narrator_emotion: Mapped[str] = mapped_column(String(32), default="")
     narrator_instruction: Mapped[str] = mapped_column(String(512), default="")
-    voice_styles_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # 本次 build 的 TTS 用量（真实供应商调用，不含段级缓存命中）
     tts_calls: Mapped[int] = mapped_column(Integer, default=0)
@@ -232,11 +231,6 @@ class ProjectCharacter(Base):
     personality: Mapped[str] = mapped_column(String(512), default="")
     canonical_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     assigned_voice_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    # 情感/语气（合成时透传给 TTS provider）：emotion 为英文枚举风格值
-    # （如 calm/happy/sad/angry，MiniMax 官方枚举；豆包同理），空串 = 用 provider 默认
-    emotion: Mapped[str] = mapped_column(String(32), default="")
-    # 自由文本风格指令（豆包 TTS 2.0 的 instruction_text；MiniMax 忽略）
-    instruction: Mapped[str] = mapped_column(String(512), default="")
 
     project: Mapped[Project] = relationship(back_populates="project_characters")
 
@@ -263,7 +257,7 @@ class ProjectDialogue(Base):
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     # 该句对白的豆包 2.0 语音指令（TTS 的 context_texts），由 LLM 在 prepare 的
     # instructions 阶段逐段生成；空串 = 不下发指令（用音色默认语气）。
-    # 长度上限与角色级 instruction 一致（512），便于落库口径统一。
+    # 对白语气只来自这里，不与角色绑定。
     instruction: Mapped[str] = mapped_column(String(512), default="")
 
     project: Mapped[Project] = relationship(back_populates="project_dialogues")

@@ -14,9 +14,15 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from ..ai.base import LLMQuotaExhaustedError
 from ..ai.factory import get_tts
 
 logger = logging.getLogger("novel-tts")
+
+# 每批推荐的角色数上限。单批输出 token 随角色数线性增长（每条约 50~80 token），
+# 798 个角色单批输出 >8000 max_tokens 必被截断、结构化解析失败、重试全废
+# → 全部角色无自动音色。40 个/批输出约 2k~3k token，离 8000 上限有足够余量。
+_REC_CHAR_BATCH_SIZE = 40
 
 
 class VoiceMeta(BaseModel):
@@ -253,7 +259,8 @@ async def recommend_voices_with_llm(
         narrator_voice_id: 旁白音色 id；显式传入时优先于项目设置
 
     Returns:
-        每个角色一条建议（LLM 输出）
+        每个角色一条建议（LLM 输出）。角色按 _REC_CHAR_BATCH_SIZE 分批调用，
+        单批失败只损失该批（其余批次照常返回），配额耗尽仍然向上抛。
     """
     pool = await _aggregate_voice_pool(user_id)
 
@@ -310,31 +317,79 @@ async def recommend_voices_with_llm(
             f"**不得分配给任何角色**（已从下方音色列表中移除）。\n"
         )
 
-    prompt = (
-        PROMPT_BASE
-        + project_hint
-        + narrator_hint
-        + "\n【角色列表】\n"
-        + json.dumps([_character_dump(c) for c in characters], ensure_ascii=False, indent=2)
-        + "\n【音色列表】\n"
-        + json.dumps([v.model_dump() for v in voices], ensure_ascii=False, indent=2)
+    # 音色列表各批共享，序列化一次即可
+    voices_json = json.dumps(
+        [v.model_dump() for v in voices], ensure_ascii=False, indent=2
     )
+
+    batches = [
+        characters[i:i + _REC_CHAR_BATCH_SIZE]
+        for i in range(0, len(characters), _REC_CHAR_BATCH_SIZE)
+    ]
 
     class _Wrapper(BaseModel):
         data: list[VoiceRecommendation]
 
     from ..ai.factory import get_llm
     llm = get_llm()
-    wrapped = await llm.chat_structured(
-        prompt=prompt,
-        output_schema=_Wrapper,
-        temperature=0.2,
-        max_tokens=8000,
-        use_fast_model=True,  # 音色推荐是"特征匹配"任务；M2.7-highspeed 准确率足够且速度快
-    )
+
+    all_recs: list[VoiceRecommendation] = []
+    used_ids: set[str] = set()
+    failed_batches = 0
+    total_prompt_chars = 0
+    for bi, batch in enumerate(batches, 1):
+        # 跨批去重提示：分批后 LLM 看不到其他批的角色，把已用音色以软约束传入，
+        # 尽量保住辨识度。角色数远大于音色池时（如 798 角色 vs ~150 音色）去重在
+        # 数学上不可能，提示在音色池用尽后自动省略，避免无意义的超长 prompt。
+        used_hint = ""
+        if used_ids and len(used_ids) < len(pool):
+            used_hint = (
+                "\n【已用音色】以下音色已分配给其他角色，除非特征特别匹配否则尽量避开：\n"
+                + ", ".join(sorted(used_ids)) + "\n"
+            )
+        prompt = (
+            PROMPT_BASE
+            + project_hint
+            + narrator_hint
+            + used_hint
+            + "\n【角色列表】\n"
+            + json.dumps([_character_dump(c) for c in batch], ensure_ascii=False, indent=2)
+            + "\n【音色列表】\n"
+            + voices_json
+        )
+        total_prompt_chars += len(prompt)
+        try:
+            wrapped = await llm.chat_structured(
+                prompt=prompt,
+                output_schema=_Wrapper,
+                temperature=0.2,
+                max_tokens=8000,
+                use_fast_model=True,  # 音色推荐是"特征匹配"任务；M2.7-highspeed 准确率足够且速度快
+            )
+        except LLMQuotaExhaustedError:
+            # 配额耗尽必须穿透：调用方（prepare）要靠它阻止写下
+            # voice_recs_done=True 的投毒 checkpoint
+            raise
+        except Exception as e:
+            failed_batches += 1
+            logger.warning(
+                f"[voice_recommender] 第 {bi}/{len(batches)} 批（{len(batch)} 角色）"
+                f"音色推荐失败，跳过: {type(e).__name__}: {e}"
+            )
+            continue
+        batch_recs = wrapped.data or []
+        all_recs.extend(batch_recs)
+        used_ids.update(r.suggested_voice_id for r in batch_recs)
+
+    if len(batches) > 1 or failed_batches:
+        logger.info(
+            f"[voice_recommender] 分批推荐完成：{len(characters)} 角色 / {len(batches)} 批，"
+            f"成功推荐 {len(all_recs)} 条，失败 {failed_batches} 批"
+        )
+
     from .usage import track_llm
-    track_llm(calls=1, chars=len(prompt), detail="voice_recommend")
-    return _avoid_narrator_reuse(wrapped.data, narrator_id, pool, characters)
+    track_llm(calls=len(batches), chars=total_prompt_chars, detail="voice_recommend")
+    return _avoid_narrator_reuse(all_recs, narrator_id, pool, characters)
 
 
 def _norm_gender_for_prompt(gender: str) -> str:

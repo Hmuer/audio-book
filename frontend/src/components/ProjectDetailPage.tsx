@@ -1623,25 +1623,6 @@ function VoicesTab({
     }
   };
 
-  // 保存角色情感/语气（合成时透传 TTS：emotion=英文枚举值，instruction=豆包风格指令）
-  const onSaveCharStyle = async (charId: number, patch: { emotion?: string; instruction?: string }) => {
-    setChars(prev => prev.map(c => (c.id === charId ? { ...c, ...patch } : c)));
-    try {
-      const cur = chars.find(c => c.id === charId);
-      await api.projectUpdateCharVoice(
-        project.project_id,
-        charId,
-        cur?.assigned_voice_id || '',
-        {
-          emotion: patch.emotion ?? null,
-          instruction: patch.instruction ?? null,
-        }
-      );
-    } catch (e: any) {
-      alert(`保存角色情感失败: ${e?.message || e}`);
-    }
-  };
-
   return (
     <div className="space-y-4">
       <div className="glass-panel space-y-5 p-5 sm:p-6 relative overflow-hidden">
@@ -1733,6 +1714,9 @@ function VoicesTab({
           角色音色
           <span className="chip-soft">{chars.length} 个角色</span>
         </h3>
+        <div className="text-xs text-ink-500 -mt-1">
+          语气无需手动设置：合成时按每句对白内容自动匹配（愤怒、悲伤、轻快……），角色只需选音色。
+        </div>
         {chars.length === 0 ? (
           <div className="rounded-lg border border-dashed border-ink-300 p-10 text-center">
             <div className="mx-auto mb-3 w-14 h-14 rounded-lg grid place-items-center bg-ink-200 border border-ink-300 text-ink-500">
@@ -1801,30 +1785,6 @@ function VoicesTab({
                     loadingVoiceId={loadingVoice}
                     compact
                   />
-                  {/* 情感/语气：合成时透传 TTS（emotion=英文枚举；instruction=豆包风格指令，MiniMax 忽略） */}
-                  <div className="flex items-center gap-2">
-                    <select
-                      className="input-base !py-1.5 !px-2 text-xs w-24 shrink-0"
-                      value={c.emotion || ''}
-                      onChange={e => onSaveCharStyle(c.id, { emotion: e.target.value })}
-                      title="情感（MiniMax 官方枚举；豆包同样支持）"
-                    >
-                      {EMOTION_PRESETS.map(p => (
-                        <option key={p.value} value={p.value}>{p.label}</option>
-                      ))}
-                    </select>
-                    <input
-                      type="text"
-                      className="input-base !py-1.5 !px-2 text-xs flex-1 min-w-0"
-                      placeholder="语气指令（豆包），如：低沉沙哑、压抑着怒火"
-                      defaultValue={c.instruction || ''}
-                      onBlur={e => {
-                        const v = e.target.value.trim();
-                        if (v !== (c.instruction || '')) onSaveCharStyle(c.id, { instruction: v });
-                      }}
-                      maxLength={200}
-                    />
-                  </div>
                 </div>
               );
             })}
@@ -2545,7 +2505,7 @@ function CreateBuildModal({
   // TTS 厂商**不再由用户选择**：每个角色的音色自带命名空间前缀（doubao: / icl:），
   // 合成时后端按 voice_id 前缀自动路由到对应厂商。
   // 多播剧（Seed-Audio）模式已下线，构建模式固定为 classic。
-  // 旁白情感/风格指令（本次构建快照；角色级情感在「音色」页配置）
+  // 旁白情感/风格指令（本次构建快照；角色不绑定语气，对白语气按内容自动生成）
   const [narrEmotion, setNarrEmotion] = useState('');
   const [narrInstruction, setNarrInstruction] = useState('');
   const [showNarrAdvanced, setShowNarrAdvanced] = useState(false);

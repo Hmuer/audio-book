@@ -165,7 +165,6 @@ def _build_segments_for_chapter(
     *,
     narrator_emotion: str = "",
     narrator_instruction: str = "",
-    speaker_styles: dict[str, dict[str, str]] | None = None,
 ) -> tuple[list[_Segment], int]:
     """
     把一章切成：title(+1.5s静音) + 对白/旁白交替段 + 段间短静音
@@ -173,16 +172,11 @@ def _build_segments_for_chapter(
 
     情感参数（可选）：
     - narrator_emotion / narrator_instruction：标题与旁白段的 emotion / instruction_text
-    - speaker_styles：{角色名: {"emotion": str, "instruction": str}}，对白段按 speaker 取用
-    - 对白对象自带 instruction（ProjectDialogue.instruction）非空时优先于角色级 instruction
+    - 对白段的语气完全由对白对象自带的 instruction（ProjectDialogue.instruction，
+      prepare 阶段 LLM 按每句对白内容生成）决定，**不与角色绑定**：为空时不下发
+      指令、用 provider 默认语气，也不回落旁白/角色级配置。
     """
     narrator_style = {"emotion": narrator_emotion or "", "instruction": narrator_instruction or ""}
-    styles = speaker_styles or {}
-
-    def _style_for(speaker: str | None) -> dict[str, str]:
-        if speaker and speaker in styles:
-            return styles[speaker]
-        return narrator_style
 
     def _max_chars() -> int:
         try:
@@ -203,7 +197,7 @@ def _build_segments_for_chapter(
         speaker: str | None = None,
         confidence: float | None = None,
     ) -> None:
-        """追加文本段；超长自动按句读切分成同 voice/情感的多个子段。"""
+        """追加文本段（title/narrator，用旁白风格）；超长自动按句读切分成同 voice/情感的多个子段。"""
         for piece in _split_long_text(text, max_seg_chars):
             segs_out.append(_Segment(
                 kind=kind,
@@ -213,8 +207,8 @@ def _build_segments_for_chapter(
                 voice_id=voice_id,
                 text=piece,
                 confidence=confidence,
-                emotion=_style_for(speaker)["emotion"],
-                instruction=_style_for(speaker)["instruction"],
+                emotion=narrator_style["emotion"],
+                instruction=narrator_style["instruction"],
             ))
             idx_holder[0] += 1
 
@@ -279,13 +273,13 @@ def _build_segments_for_chapter(
         speaker = getattr(dlg, "speaker", None)
         seg_voice_id = voice_assignments.get(speaker or "", narrator_voice_id)
         dlg_pieces = _split_long_text(getattr(dlg, "text", ""), max_seg_chars)
-        dlg_style = _style_for(speaker)
-        # 逐段语音指令优先于角色级：对白自身（ProjectDialogue.instruction，LLM 逐段生成）
-        # 非空时覆盖角色级 instruction；为空才回落到角色级（本轮不引入逐段 emotion，
-        # emotion 仍走角色级）。该值在子段循环外计算，故被 _split_long_text 切出的多个
-        # 子段共享同一条指令（子段共用父对白指令，不重复生成）。
+        # 逐段语音指令：对白语气**只**来自对白自身的 instruction（prepare 阶段
+        # LLM 按每句对白内容生成），不与角色绑定；为空 = 不下发指令，用 provider
+        # 默认语气。emotion 对对白段恒为空（豆包 2.0 的语气控制走 instruction_text）。
+        # 该值在子段循环外计算，故被 _split_long_text 切出的多个子段共享同一条
+        # 指令（子段共用父对白指令，不重复生成）。
         # 用 getattr 防御：ProjectDialogue / DbDialogue 两种对象都兼容。
-        dlg_instruction = (getattr(dlg, "instruction", "") or "").strip() or dlg_style.get("instruction", "")
+        dlg_instruction = (getattr(dlg, "instruction", "") or "").strip()
         for piece in dlg_pieces:
             segs.append(_Segment(
                 kind="dialogue", chapter_idx=ch.idx, idx=idx,
@@ -293,7 +287,7 @@ def _build_segments_for_chapter(
                 voice_id=seg_voice_id,
                 text=piece,
                 confidence=getattr(dlg, "confidence", None),
-                emotion=dlg_style.get("emotion", ""),
+                emotion="",
                 instruction=dlg_instruction,
             ))
             idx += 1

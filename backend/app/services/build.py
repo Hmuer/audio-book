@@ -794,24 +794,6 @@ def _link_or_copy(src: Path, dst: Path) -> bool:
         return False
 
 
-async def _load_voice_styles(project_id: str) -> dict[str, dict[str, str]]:
-    """从 ProjectCharacter 读取 speaker → {emotion, instruction}（只保留配置过的角色）。"""
-    from sqlalchemy import select as _select
-    factory = get_session_factory()
-    async with factory() as s:
-        stmt = _select(ProjectCharacter).where(ProjectCharacter.project_id == project_id)
-        rows = list((await s.execute(stmt)).scalars().all())
-    styles: dict[str, dict[str, str]] = {}
-    for c in rows:
-        if not c.name:
-            continue
-        emo = (c.emotion or "").strip()
-        ins = (c.instruction or "").strip()
-        if emo or ins:
-            styles[c.name] = {"emotion": emo, "instruction": ins}
-    return styles
-
-
 # =====================================================================
 # TTS 段级缓存（跨 Build、跨段复用）
 # 键：sha256(f"v1|{voice_id}|{speed:.2f}|{text}").hexdigest()
@@ -1097,12 +1079,10 @@ def _calc_config_digest(
     tts_provider: str = "doubao",
     narrator_emotion: str = "",
     narrator_instruction: str = "",
-    voice_styles: dict[str, dict[str, str]] | None = None,
     content_digest: str = "",
     tts_model: str = "",
 ) -> str:
     sorted_va = dict(sorted((voice_assignments or {}).items()))
-    sorted_styles = dict(sorted((voice_styles or {}).items()))
     raw = json.dumps(
         {
             "narrator": narrator_voice_id or "",
@@ -1113,7 +1093,6 @@ def _calc_config_digest(
             # 情感/语气也参与摘要：改了情感但音色没变也应生成新 build
             "narrator_emotion": narrator_emotion or "",
             "narrator_instruction": narrator_instruction or "",
-            "styles": sorted_styles,
             # A-7：正文/对白/发音规则的内容哈希。缺了它会出现「改了内容却复用旧产物」：
             # 用户润色正文、重新识别对白、增删发音规则后，只要音色语速不变，
             # digest 不变 → 直接命中历史成功 build，新内容永远不会被合成。
@@ -1488,14 +1467,10 @@ async def _start_build_impl(
         voice_assignments=voice_assignments,
     )
 
-    # 角色情感/语气快照：从 ProjectCharacter 读取（与 voice_assignments 同属配置快照）
+    # 旁白情感/语气（与 voice_assignments 同属配置快照）；角色语气不在此配置——
+    # 对白语气由每句对白的 instruction（prepare 阶段按内容生成）自动决定
     narrator_emotion = (narrator_emotion or "").strip()[:32]
     narrator_instruction = (narrator_instruction or "").strip()[:512]
-    try:
-        voice_styles = await _load_voice_styles(project_id)
-    except Exception as e:
-        logger.warning(f"[build_start] 读取角色情感配置失败（按无情感继续）: {type(e).__name__}: {e}")
-        voice_styles = {}
 
     async with _RUNNING_LOCK:
         if any(pid == project_id for pid in _ACTIVE_BUILDS.values()):
@@ -1537,7 +1512,6 @@ async def _start_build_impl(
             mode=resolved_mode, tts_provider=effective_provider,
             narrator_emotion=narrator_emotion,
             narrator_instruction=narrator_instruction,
-            voice_styles=voice_styles,
             content_digest=content_digest,
             tts_model=_tts_model_param(),
         )
@@ -1625,7 +1599,6 @@ async def _start_build_impl(
             config_digest=digest,
             narrator_emotion=narrator_emotion,
             narrator_instruction=narrator_instruction,
-            voice_styles_json=json.dumps(voice_styles, ensure_ascii=False),
         )
         session.add(b)
         for ch in chapters:
@@ -1897,7 +1870,6 @@ async def retry_failed_build(
             # 情感/语气配置同样继承快照（保证 digest 一致 + 合成结果一致）
             narrator_emotion=(source_build.narrator_emotion or ""),
             narrator_instruction=(source_build.narrator_instruction or ""),
-            voice_styles_json=source_build.voice_styles_json,
         )
         session.add(new_b)
 
@@ -2170,13 +2142,9 @@ async def _run_build_inner(
             raise RuntimeError(f"Build 不存在: {build_id}")
         build_mode = (b.mode or "classic").lower()
         tts_provider_label = b.tts_provider or "doubao"
-        # 情感/语气配置快照（build 启动时从 ProjectCharacter 拷贝，这里只读快照）
+        # 情感/语气配置快照（build 启动时写入，这里只读快照）
         narrator_emotion = (b.narrator_emotion or "").strip()
         narrator_instruction = (b.narrator_instruction or "").strip()
-        try:
-            voice_styles: dict[str, dict[str, str]] = json.loads(b.voice_styles_json or "{}")
-        except Exception:
-            voice_styles = {}
         # 条件状态迁移 queued/running → running：
         # worker 启动与用户 cancel 存在竞态（cancel 可能已写终态），
         # 终态一律不复活，worker 直接退出（否则被取消的 build 会被
@@ -2216,7 +2184,7 @@ async def _run_build_inner(
     logger.info(
         f"[build_worker] build_id={build_id[:8]}... total_chapters={total} "
         f"mode={build_mode} tts_provider={tts_provider_label} "
-        f"styles={len(voice_styles)} narrator_emo={narrator_emotion!r}"
+        f"narrator_emo={narrator_emotion!r}"
     )
 
     from ..ai.factory import get_tts_sem, get_tts_by_voice_id
@@ -2418,7 +2386,6 @@ async def _run_build_inner(
                 start_idx=0,
                 narrator_emotion=narrator_emotion,
                 narrator_instruction=narrator_instruction,
-                speaker_styles=voice_styles,
             )
 
             async def _synth_seg(s: _Segment) -> tuple[_Segment, bytes, int]:

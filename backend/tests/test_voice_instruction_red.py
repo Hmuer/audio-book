@@ -224,7 +224,7 @@ def _dialogue_segments(segs):
     return [s for s in segs if s.kind == "dialogue"]
 
 
-def test_vi6_per_dialogue_instruction_overrides_role_level():
+def test_vi6_per_dialogue_instruction_used_and_not_bound_to_role():
     from backend.app.services.chapter import _build_segments_for_chapter
 
     ch = _chapters("「你骗我！」")[0]
@@ -235,16 +235,17 @@ def test_vi6_per_dialogue_instruction_overrides_role_level():
     segs, _ = _build_segments_for_chapter(
         ch, [dlg], narrator_voice_id="narr",
         voice_assignments={"林若雪": "v1"}, segment_overrides=None, start_idx=0,
-        speaker_styles={"林若雪": {"emotion": "angry", "instruction": "角色级：平淡地说"}},
+        # 旁白语气配置不得泄漏到对白段（角色语气只按对白内容走）
+        narrator_emotion="angry", narrator_instruction="旁白指令",
     )
     dlgs = _dialogue_segments(segs)
     assert dlgs, "应至少有一个对白段"
     assert all(s.instruction == "用尖锐质问、几近失控的语气说" for s in dlgs)
-    # emotion 仍走角色级（本轮不引入逐段 emotion）
-    assert all(s.emotion == "angry" for s in dlgs)
+    # 对白段 emotion 恒为空：语气只由逐段 instruction 控制，不绑定角色/旁白
+    assert all(s.emotion == "" for s in dlgs)
 
 
-def test_vi7_empty_per_dialogue_falls_back_to_role_level():
+def test_vi7_empty_per_dialogue_instruction_no_fallback():
     from backend.app.services.chapter import _build_segments_for_chapter
 
     ch = _chapters("「嗯。」")[0]
@@ -255,11 +256,17 @@ def test_vi7_empty_per_dialogue_falls_back_to_role_level():
     segs, _ = _build_segments_for_chapter(
         ch, [dlg], narrator_voice_id="narr",
         voice_assignments={"李明": "v1"}, segment_overrides=None, start_idx=0,
-        speaker_styles={"李明": {"emotion": "calm", "instruction": "角色级：温和地说"}},
+        narrator_emotion="sad", narrator_instruction="旁白：低沉缓慢",
     )
     dlgs = _dialogue_segments(segs)
     assert dlgs
-    assert all(s.instruction == "角色级：温和地说" for s in dlgs)
+    # 逐段 instruction 为空 → 不下发指令（provider 默认语气），也不回落旁白配置
+    assert all(s.instruction == "" for s in dlgs)
+    assert all(s.emotion == "" for s in dlgs)
+    # 旁白段仍用旁白配置
+    narrs = [s for s in segs if s.kind == "narrator"]
+    if narrs:
+        assert all(s.instruction == "旁白：低沉缓慢" and s.emotion == "sad" for s in narrs)
 
 
 def test_vi8_subsegments_share_instruction_across_chapters():
@@ -275,7 +282,6 @@ def test_vi8_subsegments_share_instruction_across_chapters():
     segs0, _ = _build_segments_for_chapter(
         ch0, [dlg0], narrator_voice_id="narr",
         voice_assignments={"林若雪": "v1"}, segment_overrides=None, start_idx=0,
-        speaker_styles={"林若雪": {"emotion": "sad", "instruction": "角色级指令"}},
     )
     dlgs0 = _dialogue_segments(segs0)
     assert len(dlgs0) >= 2, "超长对白应被切成多个子段"
@@ -290,7 +296,6 @@ def test_vi8_subsegments_share_instruction_across_chapters():
     segs1, _ = _build_segments_for_chapter(
         ch1, [dlg1], narrator_voice_id="narr",
         voice_assignments={"林若雪": "v1"}, segment_overrides=None, start_idx=0,
-        speaker_styles={"林若雪": {"emotion": "sad", "instruction": "角色级指令"}},
     )
     dlgs1 = _dialogue_segments(segs1)
     assert dlgs1 and all(s.instruction == "逐段指令B" for s in dlgs1)
