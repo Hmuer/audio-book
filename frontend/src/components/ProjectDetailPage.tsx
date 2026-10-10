@@ -389,26 +389,69 @@ export default function ProjectDetailPage({
 // =================== Overview Tab ===================
 
 /**
- * H-15：服务器时钟校准（时钟偏移模型）。
+ * H-15：服务器时钟校准（时钟偏移模型，H-27 改为限速吸收）。
  *
  * 后端 get_project 每次轮询都返回新鲜的 server_now_ms（响应层现算现盖）。
- * 收到时计算「偏移 = 服务器时刻 - 本地时刻」，此后用本地时钟外推：
- *   - 轮询间平滑增长（偏移不变，Date.now() 随 1s tick 增长）
- *   - 每次轮询重新校准（serverNowMs 变化 → 偏移重算，网络抖动 ±几十ms，秒级显示无感）
- *   - 刷新页面不回退（首轮询重新建立偏移）
- *   - 消除跳变：旧实现「新基线 + 旧偏移」在 render→useEffect 的间隙里被混用
- *     （新值先进 render、receivedAt 还是旧的），导致秒数先跳 2 再回 1。
+ * 收到时计算「目标偏移 = 服务器时刻 - 本地时刻」，此后用本地时钟外推。
+ *
+ * H-27（用户实测「刷新页面后还是跳秒」，2026-10-11 复现确证）：
+ * 旧实现每次轮询把偏移**硬切**到新值。server_now_ms 是响应「生成时刻」，
+ * 到前端渲染之间隔着网络传输 + JSON 解析 + React 调度（d），d 每轮不同
+ * —— 两轮 d 的差值直接变成显示基线跳变（实测形态：wall +200ms 显示
+ * +2000ms / -1000ms，即「先跳 2 再回 1」）。刷新页面后首轮响应链路
+ * 最长（冷连接 + 首渲染 + 大响应体），与稳态轮的 d 差最大 → 跳秒最明显。
+ *
+ * 修复：offset 不再硬切，改**限速吸收**（每秒最多移动 250ms，类似 NTP
+ * slew 模式）：
+ *   - 显示每秒增量 ∈ [0.75s, 1.25s] → floor 秒位恒 +1，永不回退、永不跳 2
+ *   - 冷启动的大偏差（1~2s）在几秒内平滑消化，肉眼无感
+ *   - 真实时钟漂移（≪250ms/s）永远追得上，不会累积
  */
+const SERVER_NOW_SLEW_MS_PER_SEC = 250;
+
 function useServerNow(serverNowMs: number | null | undefined, active: boolean): number {
-  const offsetRef = useRef<number | null>(null);
+  const offsetRef = useRef<number | null>(null);     // 当前生效偏移（限速后）
+  const targetRef = useRef<number | null>(null);     // 最新校准目标偏移
+  const lastMoveRef = useRef<number>(0);             // 上次移动 offset 的时刻
   const prevServerNowRef = useRef<number | null | undefined>(undefined);
 
-  // 渲染期同步更新：serverNowMs 变化时才重算偏移。
+  // 渲染期同步更新：serverNowMs 变化时才重算目标偏移。
   // 每次渲染都重算会把 Date.now() 的增长「吃掉」，导致轮询间秒数冻结。
   if (serverNowMs !== prevServerNowRef.current) {
     prevServerNowRef.current = serverNowMs;
     if (serverNowMs != null) {
-      offsetRef.current = serverNowMs - Date.now();
+      targetRef.current = serverNowMs - Date.now();
+      if (offsetRef.current == null) {
+        // 首次校准：直接建立基线（此时无显示在跑，不存在跳变）
+        offsetRef.current = targetRef.current;
+        lastMoveRef.current = Date.now();
+      }
+    }
+  }
+
+  // 渲染期：offset 向 target 限速移动（H-27 slew）+ 秒位相位保护。
+  // 移动量以真实流逝时间计算，tick(1s)/轮询(2s) 任意渲染节奏下速率恒定。
+  if (offsetRef.current != null && targetRef.current != null) {
+    const now = Date.now();
+    const dt = now - lastMoveRef.current;
+    if (dt > 0) {
+      const maxMove = (dt / 1000) * SERVER_NOW_SLEW_MS_PER_SEC;
+      const diff = targetRef.current - offsetRef.current;
+      let move = Math.max(-maxMove, Math.min(maxMove, diff));
+      // 相位保护：下帧显示 ≈ 本帧显示 + Δt(~1s tick) + move。
+      //   加速方向（move>0）：frac + 1000 + move ≥ 2000 → 秒位跳 +2（44→46），
+      //     钳到 move < 1000 - frac → 秒位恒 +1
+      //   减速方向（move<0）：frac + 1000 + move < 1000 → 秒位卡 +0（冻结），
+      //     钳到 move > -frac → 秒位恒 +1
+      // 被钳掉的量下一帧继续（frac 随真实时钟滑动，延后 ≤ 数百 ms）。
+      const frac = ((now + offsetRef.current) % 1000 + 1000) % 1000;
+      if (move > 0 && frac + 1000 + move >= 2000) {
+        move = Math.max(0, 1000 - frac - 1);
+      } else if (move < 0 && frac + 1000 + move < 1000) {
+        move = -Math.max(0, frac - 1);
+      }
+      offsetRef.current += move;
+      lastMoveRef.current = now;
     }
   }
 
