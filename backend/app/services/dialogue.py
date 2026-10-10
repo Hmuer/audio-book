@@ -113,7 +113,11 @@ async def attribute_dialogues_with_llm(
     """单章对白归属（保留原接口，兼容未切批的调用方）。"""
     import json as _json
 
-    names = [c.model_dump() for c in characters]
+    # H-24：只传名字不传全量 model_dump。归属任务的输出是「从角色列表里选
+    # name」，性别/年龄/人设描述对选名字零信息增益；大书角色列表可达
+    # 100k+ 字符，塞进每个批 prompt 纯烧 token（实测 27 批 × ~75k 字符
+    # ≈ 2M 字符 ≈ 55 万 token 的无效输入）。
+    names = [c.name for c in characters]
     prompt = (
         FEW_SHOT
         + "\n【现在处理以下正文（单章）】\n---TEXT START---\n"
@@ -188,12 +192,15 @@ async def attribute_dialogues_batch_with_llm(
         characters: 角色列表（整本共用）。
 
     Returns:
-        与输入长度相同、chapter_idx 一一对应的结果列表。
-        若 LLM 输出少了某一章，会补空 dialogues 占位并打 warning。
+        LLM 实际返回的章节结果列表（chapter_idx 与输入对应）。
+        缺失的章节不出现在返回里（H-24：不补空占位——补空会让调用方
+        把该章误标 completed，静默丢对白；缺失章保持 pending 由重跑补跑）。
     """
     import json as _json
 
-    names = [c.model_dump() for c in characters]
+    # H-24：同单章路径 —— 只传名字（角色描述对「选 speaker 名字」零信息增益，
+    # 全量 dump 是每批 ~75k 字符的纯浪费，详见上方注释）
+    names = [c.name for c in characters]
 
     # 每个章节单独封装一个 "CHAPTER_XXX" 块，让 LLM 清楚章节边界。
     chapter_blocks: list[str] = []
@@ -238,7 +245,7 @@ async def attribute_dialogues_batch_with_llm(
                 r.dialogues, text_by_idx[r.chapter_idx], chapter_idx=r.chapter_idx
             )
 
-    # 按 chapter_idx 做成 map，缺的补空
+    # 按 chapter_idx 做成 map；重复/越界忽略
     idx_set = {idx for idx, _ in chapters}
     got_map: dict[int, ChapterDialogueBatchResult] = {}
     for r in results:
@@ -250,6 +257,10 @@ async def attribute_dialogues_batch_with_llm(
                 f"已忽略（需要的 idx={sorted(idx_set)}）"
             )
 
+    # H-24：缺失章**不补空占位**——实测 383 章一次跑缺失 59 章，旧逻辑补
+    # dialogues=[] 会让调用方把该章标 completed，空对白进 DB 且永远不会被
+    # 补跑（静默丢对白）。改为缺失章不出现在返回里 → 调用方保持该章
+    # pending → 重跑 prepare 自动补跑。
     final: list[ChapterDialogueBatchResult] = []
     for idx, _ in chapters:
         if idx in got_map:
@@ -257,7 +268,6 @@ async def attribute_dialogues_batch_with_llm(
         else:
             logger.warning(
                 f"[dialogue_batch] LLM 输出缺失 chapter_idx={idx}，"
-                f"补空 dialogues=[] 占位（后续可单独重跑该章）"
+                f"该章不计入本批结果（保持未完成，重跑 prepare 自动补跑）"
             )
-            final.append(ChapterDialogueBatchResult(chapter_idx=idx, dialogues=[]))
     return final

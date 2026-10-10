@@ -17,6 +17,19 @@ class LLMQuotaExhaustedError(RuntimeError):
     pass
 
 
+class LLMContentRejectedError(RuntimeError):
+    """LLM 内容审核拒绝（HTTP 422，MiniMax 错误码 1026=input 敏感 / 1027=output 敏感）。
+
+    H-24：与瞬时错误同理**重试无用**——input 敏感是确定性的（同一段原文
+    重发 100 次还是 422，实测剑来 4 章 × 3 次重试全 422；每个 50k 字符的
+    角色识别切片重试 ×3 全 422），output 敏感在同一段强约束 prompt 下也
+    几乎必然复现。provider 层不重试、只记一行 WARNING；
+    业务层把它当"该片段跳过"处理（润色保留原文 / 切片记 failed 补跑），
+    绝不因重试拖慢阶段或刷日志。
+    """
+    pass
+
+
 class BaseLLMProvider(ABC):
     name: str = "base"
 

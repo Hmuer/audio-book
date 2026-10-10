@@ -30,7 +30,7 @@ from ..db.models import (
     ProjectDialogue,
     ProjectPronunciationRule,
 )
-from ..ai.base import LLMQuotaExhaustedError
+from ..ai.base import LLMQuotaExhaustedError, LLMContentRejectedError
 from ..db.session import get_session_factory
 from .book_split import ChapterSplitError, split_book_chapters
 from .chapter import Chapter
@@ -1554,6 +1554,27 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                         )
                     quota_hit.set()
                     return
+                except LLMContentRejectedError as e:
+                    # H-24：422 内容审核拒绝是确定性的（同一段原文重发必然再 422）
+                    # —— 不再服务层重试（旧实现 2 次服务重试 × 3 次 provider 重试
+                    # = 最多 9 次 50k 字符级调用全白烧）。直接记 failed 切片收口，
+                    # 重跑 prepare 时可补跑（届时若仍 422 会同样快速失败）。
+                    last_slice_err = f"LLMContentRejected: {e}"
+                    logger.warning(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"chars slice {slice_idx+1}/{len(char_slices)} 内容审核拒绝（422），"
+                        f"跳过重试，记为失败切片待重跑补跑。"
+                    )
+                    async with char_prog_lock:
+                        failed_slice_idxs[str(slice_idx)] = {
+                            "slice_idx": int(slice_idx),
+                            "slice_len": len(slice_text),
+                            "retries": attempt + 1,
+                            "last_err": last_slice_err,
+                        }
+                        prog["char_failed_slices"] = failed_slice_idxs
+                        await _write_progress(prog)
+                    return
                 except Exception as e:
                     last_slice_err = f"{type(e).__name__}: {e}"
                     logger.warning(
@@ -1746,17 +1767,30 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             getattr(settings, "DIALOGUE_BATCH_RETRY_COUNT", 2) or 0
         ))
         # 失败批 checkpoint：记录 {batch_idx: {"last_err": "...", "retries": N}}
-        failed_batches_by_idx: dict[int, dict] = {}
+        # H-24：拆分子批用字符串 key（"0L"/"0R"…）与整批 key 区分
+        failed_batches_by_idx: dict[int | str, dict] = {}
 
         async def _process_one_batch(
-            batch: list[tuple[int, str]], batch_idx: int
+            batch: list[tuple[int, str]], batch_idx: int, *,
+            _fail_key: int | str | None = None, _depth: int = 0,
         ) -> tuple[int, list[tuple[int, list]] | None, str | None]:
             """
             返回：
               (batch_idx, list[(ch_idx, attrs_dict_list)] 或 None, err_msg 或 None)
             - 成功：err_msg=None，第二项非 None
             - 重试耗尽仍失败：第二项为 None，err_msg 有内容，调用方写入 failed_batches checkpoint
+            - H-24 对半拆分兜底：重试耗尽且 len(batch)>2 时拆成两半递归处理。
+              部分成功 → 只返回成功的章节（失败半边已用独立 key 写入 failed
+              checkpoint，对应章保持 pending，重跑自动补跑）；全部失败才返回 None。
+              失败与批体积强相关（200k+ 字符 prompt 是 600s ReadTimeout /
+              系统性校验错的直接诱因），14 章全废的批拆成 7+7 往往一次就过。
+            - _fail_key：failed checkpoint 的 dict key。拆分出的子批用
+              f"{父key}L"/f"{父key}R"（避免与父 key 冲突——父批部分成功时
+              调用方会 pop 父 key，子 key 的失败记录必须独立存活）。
+            - _depth：拆分深度，len(batch)<=2 不再拆（最多 log2(14)≈4 层，
+              防御性上限）。
             """
+            fail_key = batch_idx if _fail_key is None else _fail_key
             last_err: str | None = None
             for attempt in range(dialogue_batch_retries + 1):
                 # H-22：配额已命中 → 未起跑/待重试的批静默退出（不写 failed
@@ -1799,7 +1833,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     )
                     # 失败先记一次 checkpoint，让用户/前端看到失败批
                     async with progress_write_lock:
-                        failed_batches_by_idx[batch_idx] = {
+                        failed_batches_by_idx[fail_key] = {
                             "retries": attempt + 1,
                             "last_err": last_err,
                             "chapters": [int(c[0]) for c in batch],
@@ -1810,7 +1844,47 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                         prog["dialogue_completed_chapters"] = sorted(completed_ch_idxs)
                         prog["dialogue_attrs_by_chapter_json"] = chapter_attrs_cache
                         await _write_progress(prog)
-            # 所有重试都失败
+            # H-24：重试耗尽 → 对半拆分兜底（quota 命中时保持静默退出语义，不拆）
+            if len(batch) > 2 and not quota_hit.is_set():
+                mid = len(batch) // 2
+                halves = [batch[:mid], batch[mid:]]
+                logger.warning(
+                    f"[project_prepare] project_id={project_id[:8]}... "
+                    f"dialogue batch {batch_idx+1}/{len(batches)} 重试耗尽，"
+                    f"对半拆分兜底：{len(batch)} 章 → "
+                    f"{len(halves[0])}+{len(halves[1])} 递归处理"
+                )
+                half_results = await asyncio.gather(*[
+                    _process_one_batch(
+                        h, batch_idx,
+                        _fail_key=f"{fail_key}{'L' if i == 0 else 'R'}",
+                        _depth=_depth + 1,
+                    )
+                    for i, h in enumerate(halves)
+                ])
+                salvage: list[tuple[int, list]] = []
+                for _, h_out, _h_err in half_results:
+                    if h_out:
+                        salvage.extend(h_out)
+                if salvage:
+                    # 部分成功：返回成功章节（err=None 走调用方成功分支）；
+                    # 失败半边的 checkpoint（独立 key）原样保留，
+                    # 其章节不在 completed_ch_idxs 里，重跑自动补跑。
+                    logger.warning(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"dialogue batch {batch_idx+1}/{len(batches)} 拆分后部分拯救："
+                        f"{len(salvage)}/{len(batch)} 章成功"
+                    )
+                    return batch_idx, salvage, None
+                # 两半全失败：清掉子 key 避免与父 key 重复计数（父 key 记录仍在）
+                async with progress_write_lock:
+                    failed_batches_by_idx.pop(f"{fail_key}L", None)
+                    failed_batches_by_idx.pop(f"{fail_key}R", None)
+                    prog["dialogue_failed_batches"] = {
+                        str(k): v for k, v in failed_batches_by_idx.items()
+                    }
+                    await _write_progress(prog)
+            # 所有重试都失败（含拆分后仍全失败）
             logger.error(
                 f"[project_prepare] project_id={project_id[:8]}... "
                 f"dialogue batch {batch_idx+1}/{len(batches)} 全部重试耗尽，仍失败。"

@@ -8,7 +8,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from ....core.config import settings
-from ...base import BaseLLMProvider, LLMQuotaExhaustedError
+from ...base import BaseLLMProvider, LLMQuotaExhaustedError, LLMContentRejectedError
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,243 @@ def _get_llm_sem() -> asyncio.Semaphore:
         _llm_sem = asyncio.Semaphore(n)
         _llm_sem_value = n
     return _llm_sem
+
+
+# =====================================================================
+# H-24 响应抢救（salvage）：partial > total loss
+#
+# 实测（app.log 2026-10-09，383 章剑来）：模型大批量结构化输出时
+# 「整体校验失败 → 整批作废 → 全量重试 3×」是最大的 token/时间浪费源——
+#   - 对白批 200k 字符 prompt × 3 服务重试 × 3 provider 重试，606~1188 条
+#     校验错（部分 dialogues 缺 anchor）→ 14 章全丢；ReadTimeout 600s × 3
+#   - 润色 diff 频繁返回裸数组/键名偏差（`data: Field required`）→ 30+ 次重试
+#   - 语音指令批撞 8k token 上限被截断 → JSON 不可解析 → 整批丢
+# 抢救三层（只对『唯一 list[BaseModel] 字段』的包裹 schema 生效，全部
+# 主业务 schema 均是该形状——_ListWrapper / _Wrapper / PolishDiffResult /
+# DialogueBatchResponse / VoiceInstructionBatchResponse / 音色推荐 _Wrapper）：
+#   S1 形状归一化（零损失）：裸数组包 {field:[...]} / 键名不对重命名 / 
+#      field 是 dict 且只含一个 list → 解包
+#   S2 逐条丢弃：合法条目留下、非法条目丢弃（嵌套 list 字段递归，如
+#      ChapterDialogueBatchResult.dialogues）；保留 ≥50% 才算成功（防把
+#      纯垃圾响应当成功吞掉本该重试的机会）
+#   S3 不可解析兜底：整体 JSON 解析失败（截断/夹杂垃圾）时，把响应里
+#      所有括号平衡的片段逐个按 item 校验，能过的凑成响应（截断的尾巴
+#      条目天然不是平衡片段、自动丢弃）
+# 抢救成功一律打一行 WARNING（schema/kept/dropped），失败照旧走重试。
+# =====================================================================
+
+def _scan_balanced_blobs(s: str) -> list[tuple[int, int, str]]:
+    """扫描 s 中所有「括号平衡」的 JSON 片段（对象或数组），返回 (start, end, blob)。
+
+    与贪婪正则的本质区别：字符串里的转义引号 / 孤立花括号不会误配；
+    截断响应的最后一个不完整条目因括号不平衡天然不会入选。
+    """
+    n = len(s)
+    out: list[tuple[int, int, str]] = []
+    i = 0
+    while i < n:
+        ch = s[i]
+        if ch not in "[{":
+            i += 1
+            continue
+        open_ch = ch
+        close_ch = "]" if open_ch == "[" else "}"
+        depth = 0
+        in_str = False
+        escape_next = False
+        j = i
+        while j < n:
+            c = s[j]
+            if in_str:
+                if escape_next:
+                    escape_next = False
+                elif c == "\\":
+                    escape_next = True
+                elif c == '"':
+                    in_str = False
+            else:
+                if c == '"':
+                    in_str = True
+                elif c == open_ch:
+                    depth += 1
+                elif c == close_ch:
+                    depth -= 1
+                    if depth == 0:
+                        out.append((i, j, s[i : j + 1]))
+                        break
+            j += 1
+        i += 1
+    return out
+
+
+def _extract_json_blob(
+    s: str,
+    *,
+    prefer_object: bool = False,
+    required_keys: tuple[str, ...] = (),
+) -> str | None:
+    """从噪声文本里提取第一个**可解析**的平衡 JSON 片段（原 H-12 逻辑）。
+
+    prefer_object=True（schema 期望 dict）时优先含全部 required_keys 的对象。
+    """
+    candidates = _scan_balanced_blobs(s)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: (t[0], t[1] - t[0]))
+    parsed_cands: list[tuple[int, int, str, Any]] = []
+    for start, end, blob in candidates:
+        try:
+            obj = json.loads(blob)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        parsed_cands.append((start, end, blob, obj))
+    if not parsed_cands:
+        return None
+    if prefer_object:
+        objs = [c for c in parsed_cands if isinstance(c[3], dict)]
+        if required_keys:
+            full = [c for c in objs if all(k in c[3] for k in required_keys)]
+            if full:
+                return full[0][2]
+        if objs:
+            return objs[0][2]
+    return parsed_cands[0][2]
+
+
+def _single_list_field(schema_cls: type) -> tuple[str, type] | None:
+    """schema 是『唯一一个 list[BaseModel] 字段』的包裹 schema（含 Optional）→
+    (字段名, item 类)；其余形状（多字段 / 非 list / 标量 list）不适用抢救。"""
+    from typing import get_origin, get_args, Union
+    hits: list[tuple[str, type]] = []
+    for fname, fi in schema_cls.model_fields.items():
+        ann = fi.annotation
+        # Optional[list[X]] → 取 list[X]
+        if get_origin(ann) is Union:
+            inner = [a for a in get_args(ann) if get_origin(a) is list]
+            ann = inner[0] if len(inner) == 1 else ann
+        if get_origin(ann) is list:
+            args = get_args(ann)
+            if args and isinstance(args[0], type) and issubclass(args[0], BaseModel):
+                hits.append((fname, args[0]))
+    return hits[0] if len(hits) == 1 else None
+
+
+def _validate_item_lenient(item_cls: type, item: dict) -> Any | None:
+    """单条校验；失败时若 item 自身也是『单 list 字段』schema（如对白批里
+    某章的 dialogues），先对子列表逐条抢救再重试整条。返回 model 或 None。"""
+    try:
+        return item_cls.model_validate(item)
+    except ValidationError:
+        pass
+    fld = _single_list_field(item_cls)
+    if not fld:
+        return None
+    field_name, sub_cls = fld
+    raw = item.get(field_name)
+    if not isinstance(raw, list) or not raw:
+        return None
+    kept: list[Any] = []
+    for x in raw:
+        if isinstance(x, dict):
+            m = _validate_item_lenient(sub_cls, x)
+            if m is not None:
+                kept.append(m.model_dump())
+    # 多数子条目合法才救这条（1/40 合法 ≈ 垃圾响应，交给上层重试）
+    if not kept or len(kept) * 2 < len(raw):
+        return None
+    try:
+        return item_cls.model_validate({**item, field_name: kept})
+    except ValidationError:
+        return None
+
+
+def _validate_or_salvage(
+    schema_cls: type, parsed: Any
+) -> tuple[Any, int, int, bool]:
+    """校验 + 抢救。返回 (model, kept_n, dropped_n, shape_fixed)。
+
+    - 正常校验通过：(model, 0, 0, False)
+    - S1 形状归一化后通过：(model, 0, 0, True) —— 零数据损失
+    - S2 逐条丢弃后通过：(model, kept, dropped, ...) —— 部分数据损失
+    - 全部失败：抛出原 ValidationError（照旧走重试）
+    """
+    try:
+        return schema_cls.model_validate(parsed), 0, 0, False
+    except ValidationError as outer:
+        fld = _single_list_field(schema_cls)
+        if not fld:
+            raise
+        field_name, item_cls = fld
+        # ---- S1 形状归一化（裸数组 / 键名不对 / dict 包 list）----
+        parsed2 = parsed
+        if isinstance(parsed, list):
+            parsed2 = {field_name: parsed}
+        elif isinstance(parsed, dict):
+            if field_name not in parsed:
+                lists = {k: v for k, v in parsed.items() if isinstance(v, list)}
+                if len(lists) == 1:
+                    parsed2 = {field_name: next(iter(lists.values()))}
+            elif isinstance(parsed.get(field_name), dict):
+                inner_lists = [
+                    v for v in parsed[field_name].values() if isinstance(v, list)
+                ]
+                if len(inner_lists) == 1:
+                    parsed2 = {field_name: inner_lists[0]}
+        if parsed2 is not parsed:
+            try:
+                return schema_cls.model_validate(parsed2), 0, 0, True
+            except ValidationError:
+                pass
+        # ---- S2 逐条丢弃（嵌套递归）----
+        items = parsed2.get(field_name) if isinstance(parsed2, dict) else None
+        if not isinstance(items, list) or not items:
+            raise outer
+        kept: list[Any] = []
+        dropped = 0
+        for it in items:
+            if isinstance(it, dict):
+                m = _validate_item_lenient(item_cls, it)
+                if m is not None:
+                    kept.append(m.model_dump())
+                    continue
+            dropped += 1
+        # 保留 ≥50% 才算抢救成功
+        if kept and len(kept) * 2 >= len(items):
+            model = schema_cls.model_validate({**parsed2, field_name: kept})
+            return model, len(kept), dropped, parsed2 is not parsed
+        raise outer
+
+
+def _salvage_from_unparseable(
+    schema_cls: type, s: str
+) -> tuple[Any, int] | None:
+    """S3：整体 JSON 解析失败（截断 / 夹杂垃圾）时的兜底抢救。
+
+    把响应里所有括号平衡的片段逐个按 item 校验，能过的凑成一个合法响应。
+    截断的尾巴条目括号不平衡，天然不会入选（自动丢弃）。
+    返回 (model, kept_n) 或 None。
+    """
+    fld = _single_list_field(schema_cls)
+    if not fld:
+        return None
+    field_name, item_cls = fld
+    kept: list[Any] = []
+    for _start, _end, blob in _scan_balanced_blobs(s):
+        try:
+            obj = json.loads(blob)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        m = _validate_item_lenient(item_cls, obj)
+        if m is not None:
+            kept.append(m.model_dump())
+    if not kept:
+        return None
+    try:
+        return schema_cls.model_validate({field_name: kept}), len(kept)
+    except ValidationError:
+        return None
 
 
 class MiniMaxLLMProvider(BaseLLMProvider):
@@ -233,6 +470,19 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                             raise LLMQuotaExhaustedError(
                                 f"LLM HTTP 402: {err_msg}"
                             )
+                        # H-24 422 内容审核拒绝：**不重试**（input 敏感是确定性
+                        # 的——同一段原文重发必然再 422；实测 383 章剑来：4 个润色
+                        # 章 × 3 次重试全 422、角色切片 17 × 3 次全 422，白白多烧
+                        # 2 次 50k 字符级调用）。业务层按「该片段跳过」处理。
+                        if resp.status_code == 422:
+                            logger.warning(
+                                f"[LLM] 422 内容审核拒绝（model={model} schema={schema_name} "
+                                f"prompt_chars={prompt_chars}）：不重试，该片段按跳过处理。"
+                                f"err={err_msg}"
+                            )
+                            raise LLMContentRejectedError(
+                                f"LLM HTTP 422: {err_msg}"
+                            )
                         raise RuntimeError(
                             f"LLM HTTP {resp.status_code}: {err_msg}"
                         )
@@ -311,88 +561,7 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                             stripped = stripped[4:]
                         stripped = stripped.strip()
 
-                    def _extract_json_blob(
-                        s: str,
-                        *,
-                        prefer_object: bool = False,
-                        required_keys: tuple[str, ...] = (),
-                    ) -> str | None:
-                        r"""用平衡花括号/方括号扫描，找第一个**合法可解析**的 JSON 对象或数组。
-                        比起 r'\{.*\}' 这种贪婪匹配，能避免 thinking 残留里包含
-                        单个 { 或 "xxx": "{" 这种导致的误匹配；同时会在多个平衡候选中
-                        逐个尝试 json.loads，跳过那些括号平衡但内容非法（缺逗号、引号）的片段。
-
-                        prefer_object=True（schema 期望 dict）时改变候选优先级：
-                          1) 含全部 required_keys 的对象
-                          2) 任意对象
-                          3) 兜底：数组 / 其它
-                        动机：模型偶尔把某个**内层数组**当成整个答案返回；或响应不完整时
-                        外层对象括号不平衡、扫描只能捞到内层数组。此时按"起点最早"返回会把
-                        数组交给 model_validate，报出误导性的 Pydantic 校验错（看起来像代码问题，
-                        实际是响应形状问题）。优先取对象可直接救回这类响应。
-                        """
-                        n = len(s)
-                        candidates: list[tuple[int, int, str]] = []  # (start, end, first_char)
-                        i = 0
-                        while i < n:
-                            ch = s[i]
-                            if ch not in "[{":
-                                i += 1
-                                continue
-                            open_ch = ch
-                            close_ch = "]" if open_ch == "[" else "}"
-                            depth = 0
-                            in_str = False
-                            escape_next = False
-                            j = i
-                            while j < n:
-                                c = s[j]
-                                if in_str:
-                                    if escape_next:
-                                        escape_next = False
-                                    elif c == "\\":
-                                        escape_next = True
-                                    elif c == '"':
-                                        in_str = False
-                                else:
-                                    if c == '"':
-                                        in_str = True
-                                    elif c == open_ch:
-                                        depth += 1
-                                    elif c == close_ch:
-                                        depth -= 1
-                                        if depth == 0:
-                                            candidates.append((i, j, open_ch))
-                                            break
-                                j += 1
-                            i += 1
-                        if not candidates:
-                            return None
-                        # 起点升序，同起点按长度升序（越短越可能是完整 JSON）
-                        candidates.sort(key=lambda t: (t[0], t[1] - t[0]))
-                        # 逐个尝试 json.loads，保留"可解析"的候选（顺序不变）
-                        parsed_cands: list[tuple[int, int, str, Any]] = []
-                        for start, end, _ in candidates:
-                            blob = s[start : end + 1]
-                            try:
-                                obj = json.loads(blob)  # 仅验证可解析性
-                            except (json.JSONDecodeError, ValueError):
-                                continue
-                            parsed_cands.append((start, end, blob, obj))
-                        if not parsed_cands:
-                            return None
-                        if prefer_object:
-                            objs = [c for c in parsed_cands if isinstance(c[3], dict)]
-                            if required_keys:
-                                full = [
-                                    c for c in objs
-                                    if all(k in c[3] for k in required_keys)
-                                ]
-                                if full:
-                                    return full[0][2]
-                            if objs:
-                                return objs[0][2]
-                        return parsed_cands[0][2]
+                    # （_extract_json_blob 已上移为模块级函数，H-24 抢救层复用其扫描）
 
                     # 4) 尝试解析 JSON
                     parsed: Any = None
@@ -424,6 +593,19 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                     if parsed is None:
                         blob = _extract_json_blob(stripped)
                         if blob is None:
+                            # H-24 S3：整体不可解析（截断/夹杂垃圾）→ 把所有平衡
+                            # 片段逐条按 item 抢救。语音指令批撞 8k token 上限被
+                            # 截断时，这里能保住截断点之前的全部完整条目（旧实现
+                            # 整批作废 × 重试 3 次全废，137k 字符 prompt 级浪费）。
+                            _sv = _salvage_from_unparseable(output_schema, stripped)
+                            if _sv is not None:
+                                _model, _kept_n = _sv
+                                logger.warning(
+                                    f"[LLM] salvage schema={schema_name} "
+                                    f"kept={_kept_n} items（响应整体不可解析，已按完整条目抢救，"
+                                    f"截断的尾巴条目丢弃）"
+                                )
+                                return _model
                             logger.error(
                                 f"[LLM] JSON parse failed, raw content (first 1000 chars): {raw_content[:1000]}"
                             )
@@ -441,7 +623,24 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                             )
                             raise
 
-                    validated = output_schema.model_validate(parsed)
+                    # H-24：校验 + 抢救（S1 形状归一化 / S2 逐条丢弃）。
+                    # 旧实现整体校验失败 → 整批作废 → 全量重试：对白批 200k 字符
+                    # prompt × 多轮重试，606~1188 条校验错里多数只是个别条目
+                    # 缺字段，全部章节陪葬。partial > total loss。
+                    validated, _kept_n, _dropped_n, _shape_fixed = (
+                        _validate_or_salvage(output_schema, parsed)
+                    )
+                    if _shape_fixed or _dropped_n:
+                        _why = (
+                            f"dropped={_dropped_n} 条非法条目已丢弃，kept={_kept_n}"
+                            if _dropped_n
+                            else "响应形状已归一化（裸数组/键名偏差），零损失"
+                        )
+                        logger.warning(
+                            f"[LLM] salvage schema={schema_name} "
+                            f"kept={_kept_n}/{_kept_n + _dropped_n}（{_why}，"
+                            f"避免整批作废全量重试）"
+                        )
                     elapsed = _time.perf_counter() - t0
                     total_elapsed = _time.perf_counter() - total_start
                     tok_str = (
@@ -455,9 +654,10 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                     )
                     return validated
 
-            except LLMQuotaExhaustedError:
-                # H-22：配额耗尽直接穿透 —— 不重试（窗口内必然再 402）、
-                # 不退避、不进 FAIL/exhausted 日志（上面 402 分支已记过一行）
+            except (LLMQuotaExhaustedError, LLMContentRejectedError):
+                # H-22：配额耗尽 / H-24：内容审核拒绝 —— 都直接穿透：不重试
+                # （窗口内必然再 402 / 同一段原文必然再 422）、不退避、不进
+                # FAIL/exhausted 日志（上面对应分支已各记过一行）
                 raise
             except (json.JSONDecodeError, ValidationError, ValueError, RuntimeError, httpx.HTTPError) as e:
                 last_err = e

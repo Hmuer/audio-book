@@ -143,8 +143,13 @@ if settings.LOG_FILE:
 
 logger = logging.getLogger("novel-tts")
 
-# 屏蔽 httpx 内部 INFO 级别的请求日志（我们自己会在 provider 层打更有上下文的日志）
-logging.getLogger("httpx").setLevel(logging.WARNING)
+# 屏蔽 httpx/httpcore 内部请求日志（我们自己会在 provider 层打更有上下文的日志）。
+# H-24：实测 383 章一次 prepare 约 3 万行日志里近 2.9 万行是 httpcore 的 DEBUG
+# 噪音——根 logger 被 setLevel(INFO) 后，第三方库里未显式 setLevel 的 logger
+# （httpcore 就是）会继承根级别并把 DEBUG/INFO 全放出来。显式抬到 WARNING 才能压住。
+for _noisy in ("httpx", "httpcore", "httpcore.http11", "httpcore.http2",
+               "httpcore.connection", "asyncio", "uvicorn.access"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 
 @asynccontextmanager
