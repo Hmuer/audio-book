@@ -612,9 +612,9 @@ function OverviewTab({
   const handlePrepare = async () => {
     setPrepareTip(null);
     try {
-      const res = await api.projectPrepare(project.project_id);
-      setPrepareTip(res.message || '已开始后台识别，请稍候刷新查看进度。');
-      setTimeout(() => setPrepareTip(null), 8000);
+      await api.projectPrepare(project.project_id);
+      // 不再弹「已开始后台识别」短时提醒框：onReload 后识别进度面板
+      // 会立即接管页面，提醒框纯属重复信息
       await onReload();
     } catch (e: any) {
       alert(`识别触发失败: ${e?.message || e}`);
