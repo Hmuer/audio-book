@@ -603,8 +603,12 @@ function OverviewTab({
   // 润色纠错：3 次重试仍失败 → 该章静默保留原文，必须让用户看见
   const polishFailedN = prog?.polish_failed_n ?? 0;
   const polishTotalN = prog?.polish_total ?? 0;
+  // H-26：422 审核拒绝章（输入含敏感词，重跑永远再被拒）≠ 可补跑失败，
+  // 单独展示，避免用户误以为重跑能救回
+  const polishContentRejectedN = prog?.polish_content_rejected_n ?? 0;
   const hasPartialFailures =
     failedCharSlicesN > 0 || failedDialogueBatchesN > 0 || polishFailedN > 0;
+  const hasContentRejected = polishContentRejectedN > 0;
 
   // 后端 tags 是逗号分隔字符串，展示前拆成数组（不能直接 .map）
   const tagList = splitTags(project.tags);
@@ -839,6 +843,16 @@ function OverviewTab({
               )}
             </div>
           )}
+
+          {/* H-26：审核拒绝章（422）单独提示——重跑不会自动补跑，避免用户误期待 */}
+          {hasContentRejected && !hasPrepareError && (
+            <div className="rounded-lg border border-ink-400/40 bg-ink-500/10 px-3 py-2 text-xs text-ink-300 flex items-start gap-1.5">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              <span>
+                {polishContentRejectedN} 章因内容审核被 LLM 拒绝（{polishContentRejectedN}/{polishTotalN}，已保留原文）。这些章重跑识别也不会重试——如需润色请更换 LLM 渠道后重新导入源文件。
+              </span>
+            </div>
+          )}
         </div>
       )}
 
@@ -905,6 +919,23 @@ function OverviewTab({
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
               重新识别（自动补跑失败部分）
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* H-26：审核拒绝章（422）在 ready 态也要单独说明，不混进「可补跑」 */}
+      {project.status === 'ready' && hasContentRejected && !isPreparing && (
+        <div className="glass-panel !border-ink-400/40 !bg-ink-500/[0.04]">
+          <div className="text-sm flex items-start gap-2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5 text-ink-500"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <span className="text-ink-600">
+              <span className="font-semibold text-ink-800">
+                内容审核拒绝 {polishContentRejectedN}/{polishTotalN} 章
+                {prog?.polish_content_rejected_chapters?.length ? `（第 ${prog.polish_content_rejected_chapters.slice(0, 8).join('、')}${polishContentRejectedN > 8 ? ' 等' : ''} 章）` : ''}
+                ：{' '}
+              </span>
+              这些章被 LLM 内容审核拦截、已保留原文，重跑识别不会重试（同样的文本会再次被拒）。如需润色这些章，请更换 LLM 渠道后重新导入源文件。
+            </span>
           </div>
         </div>
       )}

@@ -296,11 +296,12 @@ def apply_polish_diffs(text: str, result: PolishDiffResult) -> tuple[str, str]:
 
 
 # =====================================================================
-# 润色 checkpoint（sidecar）：v3 带章节指纹 + 人物提及名单
+# 润色 checkpoint（sidecar）：v3 带章节指纹 + 人物提及名单 + 审核拒绝集
 # =====================================================================
 # 语义（H-18）：
 # - 文件：data/polish_<pid>.json，格式 {"_version": 3, "_fingerprint": ...,
-#   "chapters": {idx_str: 润色后全文}, "mentions": {idx_str: [人物名]}}。
+#   "chapters": {idx_str: 润色后全文}, "mentions": {idx_str: [人物名]},
+#   "content_rejected": [idx_str, ...]}。
 #   changed 与 clean（LLM 认证无误）都记录；rejected / failed 不记录
 #   —— 重跑 prepare 时只有这些章会补跑 LLM，这就是「上次没润上的章」
 #   的补录路径（383 章实测 59 章未润上）。
@@ -308,6 +309,9 @@ def apply_polish_diffs(text: str, result: PolishDiffResult) -> tuple[str, str]:
 #   （锚点失配但 LLM 确实读过原文）的名单同样有效，照记；异常失败的章
 #   无名单。名单进 sidecar 而不是 progress_json：与润色文本共用同一指纹
 #   生命周期（源文件变化 → 名单随 chapters 一起作废，绝不跨内容串档）。
+# - H-26：content_rejected 记录 422 内容审核拒绝的章（输入含敏感词，重跑
+#   永远再被拒）。这些章重跑时直接跳过，不再浪费注定失败的 LLM 调用；
+#   文本保留原文。换 LLM 渠道想重试 → 重新导入文件（指纹重置）。
 # - 指纹 = 切分后各章文本的 sha256：源文件被替换 / 切分参数（CHAPTER_SPLIT_PATTERNS
 #   等）变化 → 指纹失配 → 整个 checkpoint 作废重跑，绝不跨内容串档。
 # - prepare 成功后**不再删除**（旧代码删，导致 rejected 章的补录只能全量重跑）；
@@ -327,32 +331,37 @@ def polish_sidecar_fingerprint(chapter_texts: list[str]) -> str:
 
 def load_polish_sidecar_full(
     path: Path, fingerprint: str
-) -> tuple[dict[str, str], dict[str, list[str]]]:
-    """加载 sidecar，返回 ({idx: 润色后文本}, {idx: 人物名单})。
+) -> tuple[dict[str, str], dict[str, list[str]], set[str]]:
+    """加载 sidecar，返回 ({idx: 润色后文本}, {idx: 人物名单}, {idx: 内容审核拒绝章})。
 
-    指纹失配 / 文件损坏 → 两个空表。v2/v1 旧格式 → 名单为空表。
+    指纹失配 / 文件损坏 → 三个空容器。v2/v1 旧格式 → 名单与拒绝集为空。
+    content_rejected（H-26）：LLM 422 内容审核拒绝的章（输入含敏感词，
+    同样的文本重跑永远再被拒）——重跑 prepare 时直接跳过不再调 LLM，
+    避免永远失败的补跑循环。
     """
     try:
         obj = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {}, {}
+        return {}, {}, set()
     if not isinstance(obj, dict):
-        return {}, {}
+        return {}, {}, set()
     if "_fingerprint" in obj:
         if obj.get("_fingerprint") != fingerprint:
             logger.info(
                 "润色 checkpoint 指纹失配（源文件或切分结果已变化），作废重跑: "
                 f"{path.name}"
             )
-            return {}, {}
+            return {}, {}, set()
         chapters = obj.get("chapters")
         raw_mentions = obj.get("mentions")
+        raw_rejected = obj.get("content_rejected")
     else:
         # v1（旧格式）：只可能是历史中断现场，无法校验指纹，按原样接受
         chapters = obj
         raw_mentions = None
+        raw_rejected = None
     if not isinstance(chapters, dict):
-        return {}, {}
+        return {}, {}, set()
     texts = {
         str(k): str(v)
         for k, v in chapters.items()
@@ -365,7 +374,10 @@ def load_polish_sidecar_full(
                 names = [str(n) for n in v if isinstance(n, str) and n.strip()]
                 if names:
                     mentions[str(k)] = names
-    return texts, mentions
+    rejected: set[str] = set()
+    if isinstance(raw_rejected, list):
+        rejected = {str(k) for k in raw_rejected if str(k).strip()}
+    return texts, mentions, rejected
 
 
 def load_polish_sidecar(path: Path, fingerprint: str) -> dict[str, str]:
@@ -378,8 +390,13 @@ def save_polish_sidecar(
     fingerprint: str,
     chapters: dict[str, str],
     mentions: dict[str, list[str]] | None = None,
+    content_rejected: set[str] | None = None,
 ) -> None:
-    """sidecar 落盘（OSError 不抛出 —— checkpoint 写失败绝不阻塞润色流程）。"""
+    """sidecar 落盘（OSError 不抛出 —— checkpoint 写失败绝不阻塞润色流程）。
+
+    content_rejected（H-26）：内容审核拒绝章的 idx 集合，与文本/名单共用
+    同一指纹生命周期。缺省 None = 不写该键（保持旧文件结构）。
+    """
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -389,6 +406,7 @@ def save_polish_sidecar(
                     "_fingerprint": fingerprint,
                     "chapters": chapters,
                     "mentions": mentions or {},
+                    **({"content_rejected": sorted(content_rejected)} if content_rejected else {}),
                 },
                 ensure_ascii=False,
             ),

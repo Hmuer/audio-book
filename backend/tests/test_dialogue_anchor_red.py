@@ -142,6 +142,120 @@ async def test_h12_single_chapter_api_backfills(_isolate_data_dir, monkeypatch):
     assert out[0].anchor.text == _Q1
 
 
+# =====================================================================
+# H-26：anchor 越界二次定位（798 角色实测：全书 496 条对白因 M3 偏移
+# 系统性不可靠被静默丢弃 = 有声书丢台词）。修复：pos 非法时用对白 text
+# 在正文中 find 重建 anchor，找不到才丢弃。
+# =====================================================================
+@pytest.mark.asyncio
+async def test_h26_relocates_out_of_range_anchor_by_text(_isolate_data_dir, monkeypatch):
+    """pos 越界但 text 可在正文找到（去引号形式 → 引号变体匹配）→ 重建不丢。"""
+    from backend.app.services import dialogue as dlg_mod
+    from backend.app.services.dialogue import attribute_dialogues_batch_with_llm
+    from backend.app.services.character import Character
+
+    s1, e1 = _find_quote_pos(_CH_TEXT, _Q1)
+    # 模拟 M3：start/end 完全错（越界），但 text（去引号）是对的
+    payload = {
+        "data": [
+            {
+                "chapter_idx": 0,
+                "dialogues": [
+                    {"anchor": {"start": 99999, "end": 100010}, "speaker": "李明",
+                     "confidence": 0.9, "text": "你怎么了？"},
+                    # end <= start + text 可定位 → 也要救回
+                    {"anchor": {"start": 5, "end": 5}, "speaker": "林若雪",
+                     "confidence": 0.8, "text": "没……没什么。"},
+                ],
+            }
+        ]
+    }
+    monkeypatch.setattr(dlg_mod, "get_llm", lambda: _FakeLLM(payload))
+
+    chars = [Character(name="李明", gender="男", age="青年", personality="沉稳"),
+             Character(name="林若雪", gender="女", age="青年", personality="文静")]
+    results = await attribute_dialogues_batch_with_llm([(0, _CH_TEXT)], chars)
+
+    dlgs = results[0].dialogues
+    assert len(dlgs) == 2, "text 可定位的越界条目应被重定位救回，不再丢弃"
+    # 重定位正确性：anchor 对齐正文的引号区间
+    assert dlgs[0].anchor.start == s1 and dlgs[0].anchor.end == e1
+    assert dlgs[0].anchor.text == _Q1
+    s2, e2 = _find_quote_pos(_CH_TEXT, _Q2)
+    assert dlgs[1].anchor.start == s2 and dlgs[1].anchor.end == e2
+    assert dlgs[1].anchor.text == _Q2
+
+
+@pytest.mark.asyncio
+async def test_h26_relocate_prefers_position_near_hint(_isolate_data_dir, monkeypatch):
+    """多处匹配时取离 LLM 原 start 最近的（M3 偏移常「接近正确」）。"""
+    from backend.app.services import dialogue as dlg_mod
+    from backend.app.services.dialogue import attribute_dialogues_batch_with_llm
+    from backend.app.services.character import Character
+
+    # 「好。」出现 3 次，hint 指向第 2 处附近
+    text = "他说好。「好。」她说。过了一会儿「好。」他又说。最后「好。」她叹气。"
+    q_positions = []
+    start = 0
+    while True:
+        p = text.find("「好。」", start)
+        if p < 0:
+            break
+        q_positions.append(p)
+        start = p + 1
+    assert len(q_positions) == 3
+
+    hint = q_positions[1] + 3  # 故意偏移几字符（模拟 M3 差一点点的偏移）
+    payload = {
+        "data": [
+            {
+                "chapter_idx": 0,
+                "dialogues": [
+                    {"anchor": {"start": hint, "end": -1}, "speaker": "路人",
+                     "confidence": 0.9, "text": "好。"},
+                ],
+            }
+        ]
+    }
+    monkeypatch.setattr(dlg_mod, "get_llm", lambda: _FakeLLM(payload))
+    chars = [Character(name="路人", gender="男", age="青年", personality="沉默")]
+    results = await attribute_dialogues_batch_with_llm([(0, text)], chars)
+
+    dlgs = results[0].dialogues
+    assert len(dlgs) == 1
+    assert dlgs[0].anchor.start == q_positions[1], (
+        f"应取离 hint 最近的匹配 {q_positions[1]}，实际 {dlgs[0].anchor.start}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_h26_unlocatable_still_dropped(_isolate_data_dir, monkeypatch):
+    """text 在正文中完全找不到（LLM 幻觉文本）→ 仍丢弃（宁缺勿错）。"""
+    from backend.app.services import dialogue as dlg_mod
+    from backend.app.services.dialogue import attribute_dialogues_batch_with_llm
+    from backend.app.services.character import Character
+
+    payload = {
+        "data": [
+            {
+                "chapter_idx": 0,
+                "dialogues": [
+                    {"anchor": {"start": 99999, "end": 100010}, "speaker": "李明",
+                     "confidence": 0.9, "text": "这句正文里根本没有"},
+                    # 连 text 都没有 → 无从定位 → 丢弃
+                    {"anchor": {"start": -5, "end": 8}, "speaker": "李明",
+                     "confidence": 0.9},
+                ],
+            }
+        ]
+    }
+    monkeypatch.setattr(dlg_mod, "get_llm", lambda: _FakeLLM(payload))
+    chars = [Character(name="李明", gender="男", age="青年", personality="沉稳")]
+    results = await attribute_dialogues_batch_with_llm([(0, _CH_TEXT)], chars)
+
+    assert results[0].dialogues == [], "无法定位的越界条目必须丢弃，不能落库脏 anchor"
+
+
 @pytest.mark.asyncio
 async def test_h12_end_to_end_db_anchor_text_nonempty(_isolate_data_dir, monkeypatch):
     """端到端：Mock LLM（省略 anchor.text 模式）跑 prepare → 落库 anchor_text 非空。

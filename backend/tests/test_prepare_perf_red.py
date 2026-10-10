@@ -68,11 +68,12 @@ def _parse_stage_ms(caplog_text: str) -> dict[str, int]:
     if m:
         out["voice_recs"] = int(m.group(2))
     m = re.search(
-        r"polish done: changed=\d+ reused=\d+ clean=\d+ rejected=\d+ failed=\d+ / total=\d+ ms=(\d+)",
+        r"polish done: changed=\d+ reused=\d+ clean=\d+ rejected=\d+ failed=\d+"
+        r"( content_rejected=\d+)? / total=\d+ ms=(\d+)",
         caplog_text,
     )
     if m:
-        out["polish"] = int(m.group(1))
+        out["polish"] = int(m.group(2))
     return out
 
 

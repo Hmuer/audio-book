@@ -653,8 +653,12 @@ export interface PrepareProgress {
   polish_changed_n?: number;
   polish_reused_n?: number;
   polish_rejected_n?: number;
-  /** 3 次重试仍失败、该章保留原文的章数 */
+  /** 3 次重试仍失败、该章保留原文的章数（可补跑：重跑 prepare 自动重试） */
   polish_failed_n?: number;
+  /** H-26：422 内容审核拒绝章数（重跑 prepare 不会自动补跑，文本保留原文） */
+  polish_content_rejected_n?: number;
+  /** H-26：被审核拒绝的章号列表（1-based） */
+  polish_content_rejected_chapters?: number[];
   /** H-3：LLM 调用量/耗时估算（prepare 开始后即有，前端显示「预计多久」） */
   llm_estimate?: LlmEstimate | null;
   /** H-13：各阶段耗时（started_ms 为 epoch ms；elapsed_ms 阶段完成时写死，

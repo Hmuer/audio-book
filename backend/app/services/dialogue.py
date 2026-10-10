@@ -57,13 +57,36 @@ class DialogueAttribution(BaseModel):
     text: str | None = None
 
 
+def _relocate_positions(chapter_text: str, needle: str, hint: int) -> list[int]:
+    """在 chapter_text 中找出 needle 的全部出现位置（防御上限 20 个）。
+
+    hint（LLM 给出的原 start，可能系统性偏移不准）用于调用方挑选
+    「离原偏移最近的匹配」——M3 的偏移经常是接近正确但差几个字符。
+    """
+    if not needle:
+        return []
+    out: list[int] = []
+    start = 0
+    while len(out) < 20:
+        pos = chapter_text.find(needle, start)
+        if pos < 0:
+            break
+        out.append(pos)
+        start = pos + 1
+    return out
+
+
+# 对白 text 通常是去引号形式，正文里带引号 → 二次定位时尝试常见引号包裹
+_QUOTE_PAIRS = (("「", "」"), ("『", "』"), ("“", "”"))
+
+
 def _backfill_anchor_text(
     dialogues: list[DialogueAttribution],
     chapter_text: str,
     *,
     chapter_idx: int | None = None,
 ) -> list[DialogueAttribution]:
-    """H-12：anchor.text 本地回填 + 越界过滤。
+    """H-12：anchor.text 本地回填 + 越界二次定位 + 丢弃过滤。
 
     M3 实测（app.log 2026-10-08）：对白归属批返回 anchor 只有 {start, end}，
     缺 text → 142 条 ValidationError → 344s/次的批调用整批作废重试 3 次。
@@ -73,11 +96,17 @@ def _backfill_anchor_text(
     回填后 chapter.py 的「anchor_text 精确定位修正」也恢复工作
     （此前空串落库会退化为裸 start/end 定位）。
 
-    过滤规则（宁缺勿错）：start/end 越界（负数 / end>章长 / end<=start）
-    的条目丢弃并计数 warning（一批一条汇总日志，不刷屏）。
+    H-26 越界二次定位（798 角色实测 app.log 2026-10-10）：M3 的字符偏移
+    系统性不可靠（数不准字符位置），全书 496 条对白（4.2%）因 start/end
+    非法被直接丢弃 = 有声书静默丢台词。但 LLM 返回的对白 text 本身
+    可信——用它在正文中 find 定位即可重建 anchor：
+    - 候选 needle：anchor.text → 对白 text 原样 → 常见引号包裹的 text
+    - LLM 偏移经常「接近正确」→ 多处匹配时取离原 start 最近的一个
+    - 全部 needle 都找不到才丢弃（此时确实无法定位）
     """
     kept: list[DialogueAttribution] = []
     dropped = 0
+    relocated = 0
     ch_len = len(chapter_text)
     where = f"chapter_idx={chapter_idx} " if chapter_idx is not None else ""
     for d in dialogues:
@@ -88,8 +117,43 @@ def _backfill_anchor_text(
             kept.append(d)
             continue
         if not pos_ok:
-            # 位置非法：无法回填也无法定位 → 丢弃
-            dropped += 1
+            # 位置非法 → 用文本在正文中二次定位重建 anchor
+            dt = (d.text or "").strip()
+            needles: list[str] = []
+            if dt:
+                # 引号包裹形式优先：命中即对齐正文完整引号区间；
+                # 原样（去引号）会命中引号内部，anchor 两端少引号
+                needles.extend(f"{o}{dt}{c}" for o, c in _QUOTE_PAIRS)
+            if text_ok:
+                at = (a.text or "").strip()
+                if at and at not in needles:
+                    needles.append(at)
+            if dt and dt not in needles:
+                needles.append(dt)
+            found = -1
+            for n in needles:
+                if not n:
+                    continue
+                positions = _relocate_positions(chapter_text, n, a.start)
+                if not positions:
+                    continue
+                # 偏移虽不可靠但常「接近正确」→ 取离原 start 最近的匹配
+                if 0 <= a.start < ch_len:
+                    found = min(positions, key=lambda p: abs(p - a.start))
+                else:
+                    found = positions[0]
+                break
+            if found < 0:
+                dropped += 1
+                continue
+            start = found
+            end = start + len(n)
+            d.anchor = Anchor(text=chapter_text[start:end], start=start, end=end)
+            if not (d.text and d.text.strip()):
+                stripped = chapter_text[start:end].strip().strip("「」『』“”\"'")
+                d.text = stripped
+            relocated += 1
+            kept.append(d)
             continue
         # text 缺失但位置合法 → 切片回填（并同时修正对白 text 缺引号场景）
         backfilled = chapter_text[a.start:a.end]
@@ -99,10 +163,11 @@ def _backfill_anchor_text(
             stripped = backfilled.strip().strip("「」『』“”\"'")
             d.text = stripped
         kept.append(d)
-    if dropped:
+    if dropped or relocated:
         logger.warning(
-            f"[dialogue] {where}anchor 越界/无效丢弃 {dropped} 条对白"
-            f"（start/end 不在 [0, {ch_len}) 区间或 end<=start）"
+            f"[dialogue] {where}anchor 越界/无效：{relocated} 条已按对白文本"
+            f"在正文中重定位修正，{dropped} 条无法定位丢弃"
+            f"（原 start/end 不在 [0, {ch_len}) 区间或 end<=start）"
         )
     return kept
 

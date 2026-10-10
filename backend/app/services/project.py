@@ -1202,9 +1202,12 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             # H-25：polish_src_fp / polish_sidecar_path 必须在**润色改写 ch.text 之前**
             # 计算好并提升到外层作用域 —— 角色名单阶段还要用同一指纹读 sidecar
             # 里的「人物提及名单」（润色后 ch.text 已变，重算必失配）。
-            polished_map, mention_map = load_polish_sidecar_full(polish_sidecar_path, polish_src_fp)
+            polished_map, mention_map, content_rejected_set = load_polish_sidecar_full(
+                polish_sidecar_path, polish_src_fp
+            )
 
             failed_chapters: list[int] = []
+            content_rejected_chapters: list[int] = []
 
             # H-17：润色并发化（此前逐章串行是 prepare 最大热点）。章与章完全
             # 独立、逐章 checkpoint，与 H-11 角色识别切片并发同构：
@@ -1219,14 +1222,22 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             polish_sem = asyncio.Semaphore(polish_concurrency)
             polish_lock = asyncio.Lock()
             # H-18：新增 clean（LLM 认证原文无误）计数，与 rejected 显式区分
-            counters = {"changed": 0, "reused": 0, "clean": 0, "rejected": 0, "failed": 0}
+            # H-26：content_rejected 单列——422 审核拒绝的章不可自动补跑（同样
+            # 的文本重跑永远再被拒），与可重试的 failed 必须分开统计/透出
+            counters = {
+                "changed": 0, "reused": 0, "clean": 0, "rejected": 0,
+                "failed": 0, "content_rejected": 0,
+            }
             use_diff_mode = str(
                 getattr(settings, "POLISH_MODE", "diff") or "diff"
             ).lower() != "rewrite"
 
             def _write_polish_sidecar() -> None:
-                """polished_map + mention_map → sidecar 落盘（锁内调用；OSError 不阻塞流程）。"""
-                save_polish_sidecar(polish_sidecar_path, polish_src_fp, polished_map, mention_map)
+                """polished_map + mention_map + content_rejected_set → sidecar 落盘。"""
+                save_polish_sidecar(
+                    polish_sidecar_path, polish_src_fp, polished_map, mention_map,
+                    content_rejected_set,
+                )
 
             async def _polish_heartbeat_locked() -> None:
                 """H-13b：polish 心跳 —— 每完成 10 章刷一次 updated_at/server_now_ms。
@@ -1249,6 +1260,15 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     ch.text = polished_map[str(ch.idx)]
                     async with polish_lock:
                         counters["reused"] += 1
+                        await _polish_heartbeat_locked()
+                    return
+                # H-26：内容审核拒绝章（sidecar 记录在案）直接跳过——同样的文本
+                # 重跑永远再被 422 拒，不浪费注定失败的 LLM 调用；文本保留原文。
+                # 想重试需换 LLM 渠道并重新导入文件（指纹重置）。
+                if str(ch.idx) in content_rejected_set:
+                    async with polish_lock:
+                        counters["content_rejected"] += 1
+                        content_rejected_chapters.append(ch.idx + 1)
                         await _polish_heartbeat_locked()
                     return
                 try:
@@ -1320,6 +1340,21 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                         )
                     quota_hit.set()
                     return
+                except LLMContentRejectedError as e:
+                    # H-26：422 内容审核拒绝（输入含敏感词）≠ 普通失败——同样的
+                    # 文本重跑永远再被拒，把它归进「可补跑失败」会让用户每次重跑
+                    # 都白烧几次注定失败的调用。记入 sidecar 拒绝集，重跑直接跳过。
+                    async with polish_lock:
+                        counters["content_rejected"] += 1
+                        content_rejected_chapters.append(ch.idx + 1)
+                        content_rejected_set.add(str(ch.idx))
+                        _write_polish_sidecar()
+                        await _polish_heartbeat_locked()
+                    logger.warning(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"polish ch {ch.idx + 1} 内容审核拒绝（422，保留原文，"
+                        f"重跑不再尝试）: {e}"
+                    )
                 except Exception as e:
                     async with polish_lock:
                         counters["failed"] += 1
@@ -1342,8 +1377,10 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             clean_n = counters["clean"]
             rejected_n = counters["rejected"]
             failed_n = counters["failed"]
+            content_rejected_n = counters["content_rejected"]
             # 并发完成顺序乱序，日志里按章号升序展示
             failed_chapters.sort()
+            content_rejected_chapters.sort()
             # 收尾兜底落一次盘（changed/clean 章已即时落过，这里保证极端中断后也一致）
             _write_polish_sidecar()
 
@@ -1353,13 +1390,22 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             polish_summary = (
                 f"[project_prepare] project_id={project_id[:8]}... polish done: "
                 f"changed={changed_n} reused={reused_n} clean={clean_n} "
-                f"rejected={rejected_n} failed={failed_n} / total={len(chapters)} "
+                f"rejected={rejected_n} failed={failed_n} "
+                f"content_rejected={content_rejected_n} / total={len(chapters)} "
                 f"ms={polish_elapsed_ms}"
             )
-            if failed_n:
-                logger.warning(
-                    f"{polish_summary}（{failed_n} 章未润色、已保留原文，章号={failed_chapters}）"
-                )
+            if failed_n or content_rejected_n:
+                parts = []
+                if failed_n:
+                    parts.append(
+                        f"{failed_n} 章未润色、已保留原文（可补跑），章号={failed_chapters}"
+                    )
+                if content_rejected_n:
+                    parts.append(
+                        f"{content_rejected_n} 章内容审核拒绝、保留原文"
+                        f"（重跑不会自动补跑），章号={content_rejected_chapters}"
+                    )
+                logger.warning(f"{polish_summary}（{'；'.join(parts)}）")
             else:
                 logger.info(polish_summary)
             try:
@@ -1375,6 +1421,9 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                             "polish_clean_n": clean_n,
                             "polish_rejected_n": rejected_n,
                             "polish_failed_n": failed_n,
+                            # H-26：审核拒绝章单独透出（不混进可补跑的 failed）
+                            "polish_content_rejected_n": content_rejected_n,
+                            "polish_content_rejected_chapters": content_rejected_chapters,
                             "updated_at": _fmt_time_now(),
                         })
                         _stamp_server_now(prog_p)
@@ -1430,6 +1479,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             for k in (
                 "polish_total", "polish_changed_n", "polish_reused_n",
                 "polish_clean_n", "polish_rejected_n", "polish_failed_n",
+                # H-26：审核拒绝章同样要跨 prog 重建存活（UI 区分可补跑/不可补跑）
+                "polish_content_rejected_n", "polish_content_rejected_chapters",
                 # H-23：restart_count 必须跨过下面两条 prog 重建路径存活——
                 # 它是恢复上限（PREPARE_RECOVERY_MAX_RESTARTS）的计数命脉；
                 # 被吞掉的话崩溃循环里每次恢复都从 0 数起，上限永远到不了，
@@ -1464,7 +1515,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         polish_mentions: dict[int, list[str]] = {}
         try:
             from .polish import load_polish_sidecar_full
-            _, _raw_mentions = load_polish_sidecar_full(polish_sidecar_path, polish_src_fp)
+            _, _raw_mentions, _ = load_polish_sidecar_full(polish_sidecar_path, polish_src_fp)
             polish_mentions = {
                 int(k): list(v)
                 for k, v in (_raw_mentions or {}).items()
@@ -2432,6 +2483,9 @@ _PREPARE_PROGRESS_PUBLIC_KEYS: tuple[str, ...] = (
     "polish_clean_n",
     "polish_rejected_n",
     "polish_failed_n",
+    # H-26：422 审核拒绝章（不可自动补跑）与可补跑失败章分开透出
+    "polish_content_rejected_n",
+    "polish_content_rejected_chapters",
     # H-3：LLM 调用量/耗时估算（prepare 开始后即可显示「预计多久」）
     "llm_estimate",
     # H-13：各阶段耗时（started_ms/elapsed_ms；正在执行的阶段 elapsed 由前端
