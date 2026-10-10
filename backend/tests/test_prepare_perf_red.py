@@ -369,7 +369,15 @@ async def test_h11_failed_slice_retried_on_rerun(_isolate_data_dir, monkeypatch)
     assert sorted(prog.get("char_slice_completed") or []) == list(range(8))
     raw = prog.get("char_extract_raw_list") or []
     names = [c["name"] for c in raw]
-    assert names == [f"角色{i}号" for i in range(1, 25)], f"补跑后结果应完整按序：{names}"
+    # H-25 前此断言依赖「char_slice_mode 丢键 → checkpoint 被重置 → 8 片全量
+    # 重跑」才成立（第 2 轮其实没走补跑）。H-25 修复口径标记后 checkpoint
+    # 真正命中：基底 = 第 1 轮完成的 7 片（角色1..12、16..24），
+    # 本轮新完成的片 4（角色13..15）按 idx 升序追加其后。
+    assert names == (
+        [f"角色{i}号" for i in range(1, 13)]
+        + [f"角色{i}号" for i in range(16, 25)]
+        + ["角色13号", "角色14号", "角色15号"]
+    ), f"补跑后结果应完整（基底+补跑片追加）：{names}"
 
 
 # =====================================================================
@@ -603,7 +611,8 @@ async def test_h17_polish_failure_keeps_original_and_changed_persisted(
     sidecar = _P(settings.DATA_DIR) / f"polish_{pid}.json"
     assert sidecar.exists(), "H-18 起 prepare 完成后 polish sidecar 应保留（补录路径依赖）"
     sc = json.loads(sidecar.read_text(encoding="utf-8"))
-    assert sc.get("_version") == 2
+    # H-25：sidecar v3（新增 mentions 人物名单字段，与润色文本同指纹生命周期）
+    assert sc.get("_version") == 3
     assert "2" not in sc.get("chapters", {}), "失败章不应进 sidecar"
     assert len(sc.get("chapters", {})) == 11
 
@@ -784,11 +793,11 @@ async def test_h18_diff_mode_e2e_counts_and_text(_isolate_data_dir, monkeypatch)
     assert "走进了教师" not in rows[4].text
     assert "心理" not in rows[5].text
 
-    # sidecar（v2）：changed + clean 共 5 章；rejected 章（idx=2）不进
+    # sidecar（H-25 起 v3：新增 mentions）：changed + clean 共 5 章；rejected 章（idx=2）不进
     sidecar = _P(settings.DATA_DIR) / f"polish_{pid}.json"
     assert sidecar.exists()
     sc = json.loads(sidecar.read_text(encoding="utf-8"))
-    assert sc.get("_version") == 2
+    assert sc.get("_version") == 3
     assert set(sc.get("chapters", {}).keys()) == {"0", "1", "3", "4", "5"}
 
 

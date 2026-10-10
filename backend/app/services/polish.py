@@ -16,8 +16,10 @@ FEW_SHOT = r"""
 2. 不要改写原意、不要润色文笔、不要增删情节
 3. 不要擅自更改引号风格（『』、「」、"" 都是合法的）、不要省略号乱删
 4. 修正后自我评估：本次改动是否"合理且必要"，如果你只是改了文风、改了引号风格等则必须 is_reasonable=false
-5. 只输出**一个** JSON 对象（以 { 开始、以 } 结束），且只包含 polished_text / is_reasonable / reason 三个字段。
+5. 只输出**一个** JSON 对象（以 { 开始、以 } 结束），且只包含 polished_text / is_reasonable / reason / characters_mentioned 四个字段。
    不要输出数组，不要只输出某个字段的内容，不要输出任何解释文字或 markdown 代码块。
+6. characters_mentioned：本段文本中出场或被提及的所有人物名字，按正文中出现的写法**原样抄录**（包括简称/昵称）。
+   不要列非人物、不要列纯代词；实在没有人物时输出 []。
 
 【示例 1】
 输入："林若雪走在回家的路上，心理想着明天的考试。"
@@ -25,7 +27,8 @@ FEW_SHOT = r"""
 {
   "polished_text": "林若雪走在回家的路上，心里想着明天的考试。",
   "is_reasonable": true,
-  "reason": "「心理」应为「心里」，属于常见错别字，修正合理。"
+  "reason": "「心理」应为「心里」，属于常见错别字，修正合理。",
+  "characters_mentioned": ["林若雪"]
 }
 
 【示例 2】
@@ -34,7 +37,8 @@ FEW_SHOT = r"""
 {
   "polished_text": "他推开门，走进了教室。",
   "is_reasonable": true,
-  "reason": "「教师」与上下文「走进」搭配不当，应为「教室」。"
+  "reason": "「教师」与上下文「走进」搭配不当，应为「教室」。",
+  "characters_mentioned": []
 }
 
 【示例 3】
@@ -44,7 +48,8 @@ FEW_SHOT = r"""
 {
   "polished_text": "他沉默了许久，终于开口说道：『我……我不知道。』",
   "is_reasonable": true,
-  "reason": "原文无语病，无需修改。"
+  "reason": "原文无语病，无需修改。",
+  "characters_mentioned": []
 }
 
 【示例 4】
@@ -53,7 +58,8 @@ FEW_SHOT = r"""
 {
   "polished_text": "夕阳西下，断肠人在天涯。",
   "is_reasonable": true,
-  "reason": "原文无语病，无需修改。"
+  "reason": "原文无语病，无需修改。",
+  "characters_mentioned": []
 }
 """
 
@@ -65,10 +71,13 @@ class PolishResult(BaseModel):
     它既是 required、形状又是数组，模型偶尔会把「这个数组」当成整个答案返回
     （顶层回数组 → Pydantic 校验失败 → 白跑一次重试、白烧 token）。故移除。
     reason 保留用于排查（is_reasonable=false 时说明理由），给默认值以降低校验失败面。
+    characters_mentioned（H-25 方案一）：与 diff 模式同款的人物名单副产品，
+    可选 + 默认 []，模型漏给不触发重试。
     """
     polished_text: str
     is_reasonable: bool
     reason: str = ""
+    characters_mentioned: list[str] = []
 
 
 async def polish_with_llm(raw_text: str) -> PolishResult:
@@ -114,19 +123,23 @@ DIFF_FEW_SHOT = r"""
 3. 不要更改引号风格（『』、「」、"" 都是合法的），不要动省略号。
 4. 每处修改输出一条：anchor 必须是原文中**逐字连续出现**的片段（把出错的那半句话原样抄下来，通常 10~30 字，在原文中能唯一定位），replacement 是修正后的同一片段。
 5. 没有任何错误时输出 {"data": []}。
-6. 只输出一个 JSON 对象（以 { 开始、以 } 结束），格式为 {"data": [{"anchor": "...", "replacement": "..."}]}，不要输出任何解释文字或 markdown 代码块。
+6. 只输出一个 JSON 对象（以 { 开始、以 } 结束），格式为 {"data": [{"anchor": "...", "replacement": "..."}], "characters_mentioned": ["名字1", "名字2"]}，不要输出任何解释文字或 markdown 代码块。
+7. characters_mentioned：本段文本中出场或被提及的所有人物名字，按正文中出现的写法**原样抄录**（包括简称/昵称，如「平安」「小平安」都照抄）。
+   - 不要列「天」「风」「街道」等非人物，不要列「他/她/我/你」等纯代词
+   - 只出现「师尊」「少年」等称呼而无姓名时，如上下文暗示是有台词的人物也可以列
+   - 实在没有人物时输出 []
 
 【示例 1】
 输入："林若雪走在回家的路上，心理想着明天的考试。"
-输出：{"data": [{"anchor": "心理想着明天的考试", "replacement": "心里想着明天的考试"}]}
+输出：{"data": [{"anchor": "心理想着明天的考试", "replacement": "心里想着明天的考试"}], "characters_mentioned": ["林若雪"]}
 
 【示例 2】
 输入："他推开门，走进了教师。"
-输出：{"data": [{"anchor": "走进了教师。", "replacement": "走进了教室。"}]}
+输出：{"data": [{"anchor": "走进了教师。", "replacement": "走进了教室。"}], "characters_mentioned": []}
 
 【示例 3】
 输入："夕阳西下，断肠人在天涯。"
-输出：{"data": []}
+输出：{"data": [], "characters_mentioned": []}
 """
 
 
@@ -141,8 +154,16 @@ class PolishDiffResult(BaseModel):
 
     data 是唯一字段且必填（required）——模型漏给会直接校验失败触发重试，
     而不是静默当成「原文无误」处理（那会把有错的章错误标记为已认证干净）。
+
+    H-25 方案一：characters_mentioned 顺带产出本章人物名单。设计要点：
+    - 带默认值 []（可选）——模型偶发漏给时**不能**让整章润色校验失败
+      重试（名单是零边际副产品，正文纠错才是主任务）
+    - list[str] 不是 list[BaseModel] —— H-24 抢救层按「唯一 list[BaseModel]
+      字段」识别包裹 schema，该字段不会破坏 data 的抢救路径
+    - 名单只给角色阶段做「聚合 + 补档案」用，质量兜底在对白开放词表
     """
     data: list[PolishDiffItem]
+    characters_mentioned: list[str] = []
 
 
 async def polish_diff_with_llm(raw_text: str) -> PolishDiffResult:
@@ -275,18 +296,24 @@ def apply_polish_diffs(text: str, result: PolishDiffResult) -> tuple[str, str]:
 
 
 # =====================================================================
-# 润色 checkpoint（sidecar）：v2 带章节指纹，prepare 成功后保留
+# 润色 checkpoint（sidecar）：v3 带章节指纹 + 人物提及名单
 # =====================================================================
 # 语义（H-18）：
-# - 文件：data/polish_<pid>.json，格式 {"_version": 2, "_fingerprint": ...,
-#   "chapters": {idx_str: 润色后全文}}。changed 与 clean（LLM 认证无误）都记录；
-#   rejected / failed 不记录 —— 重跑 prepare 时只有这些章会补跑 LLM，
-#   这就是「上次没润上的章」的补录路径（383 章实测 59 章未润上）。
+# - 文件：data/polish_<pid>.json，格式 {"_version": 3, "_fingerprint": ...,
+#   "chapters": {idx_str: 润色后全文}, "mentions": {idx_str: [人物名]}}。
+#   changed 与 clean（LLM 认证无误）都记录；rejected / failed 不记录
+#   —— 重跑 prepare 时只有这些章会补跑 LLM，这就是「上次没润上的章」
+#   的补录路径（383 章实测 59 章未润上）。
+# - H-25 方案一：mentions 记录润色时 LLM 顺带产出的人物名单。rejected 章
+#   （锚点失配但 LLM 确实读过原文）的名单同样有效，照记；异常失败的章
+#   无名单。名单进 sidecar 而不是 progress_json：与润色文本共用同一指纹
+#   生命周期（源文件变化 → 名单随 chapters 一起作废，绝不跨内容串档）。
 # - 指纹 = 切分后各章文本的 sha256：源文件被替换 / 切分参数（CHAPTER_SPLIT_PATTERNS
 #   等）变化 → 指纹失配 → 整个 checkpoint 作废重跑，绝不跨内容串档。
 # - prepare 成功后**不再删除**（旧代码删，导致 rejected 章的补录只能全量重跑）；
 #   项目删除时由 delete_project 清理。
-# - v1 兼容：无 _fingerprint 的裸 {idx: text} 只存在于旧版中断现场，按原样接受。
+# - v1/v2 兼容：v1 无 _fingerprint 的裸 {idx: text} 按原样接受（历史中断现场）；
+#   v2 有指纹无 mentions → 名单为空（角色阶段对这些章回退切片扫描）。
 
 def polish_sidecar_fingerprint(chapter_texts: list[str]) -> str:
     """以「切分后的章节文本序列」做 checkpoint 有效性指纹。"""
@@ -298,44 +325,70 @@ def polish_sidecar_fingerprint(chapter_texts: list[str]) -> str:
     return h.hexdigest()
 
 
-def load_polish_sidecar(path: Path, fingerprint: str) -> dict[str, str]:
-    """加载 sidecar，返回 {idx_str: 润色后文本}。指纹失配 / 文件损坏 → 空表。"""
+def load_polish_sidecar_full(
+    path: Path, fingerprint: str
+) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """加载 sidecar，返回 ({idx: 润色后文本}, {idx: 人物名单})。
+
+    指纹失配 / 文件损坏 → 两个空表。v2/v1 旧格式 → 名单为空表。
+    """
     try:
         obj = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {}
+        return {}, {}
     if not isinstance(obj, dict):
-        return {}
+        return {}, {}
     if "_fingerprint" in obj:
         if obj.get("_fingerprint") != fingerprint:
             logger.info(
                 "润色 checkpoint 指纹失配（源文件或切分结果已变化），作废重跑: "
                 f"{path.name}"
             )
-            return {}
+            return {}, {}
         chapters = obj.get("chapters")
+        raw_mentions = obj.get("mentions")
     else:
         # v1（旧格式）：只可能是历史中断现场，无法校验指纹，按原样接受
         chapters = obj
+        raw_mentions = None
     if not isinstance(chapters, dict):
-        return {}
-    return {
+        return {}, {}
+    texts = {
         str(k): str(v)
         for k, v in chapters.items()
         if isinstance(v, str) and v
     }
+    mentions: dict[str, list[str]] = {}
+    if isinstance(raw_mentions, dict):
+        for k, v in raw_mentions.items():
+            if isinstance(v, list):
+                names = [str(n) for n in v if isinstance(n, str) and n.strip()]
+                if names:
+                    mentions[str(k)] = names
+    return texts, mentions
 
 
-def save_polish_sidecar(path: Path, fingerprint: str, chapters: dict[str, str]) -> None:
+def load_polish_sidecar(path: Path, fingerprint: str) -> dict[str, str]:
+    """加载 sidecar，返回 {idx_str: 润色后文本}（H-18 原语义，兼容旧调用方）。"""
+    return load_polish_sidecar_full(path, fingerprint)[0]
+
+
+def save_polish_sidecar(
+    path: Path,
+    fingerprint: str,
+    chapters: dict[str, str],
+    mentions: dict[str, list[str]] | None = None,
+) -> None:
     """sidecar 落盘（OSError 不抛出 —— checkpoint 写失败绝不阻塞润色流程）。"""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(
                 {
-                    "_version": 2,
+                    "_version": 3,
                     "_fingerprint": fingerprint,
                     "chapters": chapters,
+                    "mentions": mentions or {},
                 },
                 ensure_ascii=False,
             ),

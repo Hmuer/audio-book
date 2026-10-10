@@ -57,7 +57,12 @@ export function computePrepareMetrics(prog: PrepareProgress | null | undefined, 
     if (prog.char_current_slice && typeof prog.char_current_slice.idx === 'number') {
       charText += `（#${prog.char_current_slice.idx + 1}）`;
     }
-  } else if (prog.stage === 'characters') charText = '角色识别中…';
+  } else if (prog.stage === 'characters') {
+    // H-25 方案一：无切片 = 润色名单全覆盖，角色识别退化为名单聚合 + 档案补全
+    charText = prog.char_source === 'polish_mentions'
+      ? `角色名单聚合${prog.char_mention_covered_n ? `（${prog.char_mention_covered_n} 章）` : ''}`
+      : '角色识别中…';
+  }
 
   let dialoguePct: number | null = null, dialogueText = '';
   const batchTotal = prog.dialogue_total_batches ?? 0;

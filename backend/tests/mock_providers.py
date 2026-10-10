@@ -41,6 +41,8 @@ class MockLLMProvider(BaseLLMProvider):
 
         # Polish: 默认 is_reasonable=true。测试 2 通过 "过度修改标记" 让其返回 false
         if schema_name == "PolishResult":
+            # H-25：顺带产出人物名单（扫描测试文本里的固定角色名 + 角色N号标记）
+            mentions = _mock_mentions_from_text(_extract_raw_from_prompt(prompt))
             if "__FORCE_UNREASONABLE__" in prompt:
                 # 模拟 LLM 过度修改了文风（把『』改成「」），自我评估 is_reasonable=false
                 raw = _extract_raw_from_prompt(prompt).replace("__FORCE_UNREASONABLE__", "")
@@ -49,6 +51,7 @@ class MockLLMProvider(BaseLLMProvider):
                     "polished_text": modified,
                     "is_reasonable": False,
                     "reason": "擅自修改引号风格，属于过度修改。",
+                    "characters_mentioned": mentions,
                 })
             if "『我……我不知道。』" in prompt:
                 # 原封不动回退，模拟没有错字
@@ -56,25 +59,32 @@ class MockLLMProvider(BaseLLMProvider):
                     "polished_text": _extract_raw_from_prompt(prompt),
                     "is_reasonable": True,
                     "reason": "无需修改",
+                    "characters_mentioned": mentions,
                 })
             raw = _extract_raw_from_prompt(prompt)
             return output_schema.model_validate({
                 "polished_text": raw,
                 "is_reasonable": True,
                 "reason": "无需修改",
+                "characters_mentioned": mentions,
             })
 
         # H-18 diff 模式润色：按测试文本里的标记/固定错字对生成修改清单。
         # - __BAD_ANCHOR__：返回无法命中的锚点 → apply 侧 rejected（原文保留）
         # - 常规：扫描固定错字对（走进教师/心理），带 ±4 字上下文做锚点，
         #   逼真还原「LLM 抄半句改错字」的输出形状；扫不到 → data=[]（clean）
+        # H-25：diff 模式同样顺带产出人物名单
         if schema_name == "PolishDiffResult":
             import re as _re
             raw = _extract_raw_from_prompt(prompt)
+            mentions = _mock_mentions_from_text(raw)
             if "__BAD_ANCHOR__" in raw:
-                return output_schema.model_validate({"data": [
-                    {"anchor": "原文里根本不存在的锚点片段xyz", "replacement": "随便改改"}
-                ]})
+                return output_schema.model_validate({
+                    "data": [
+                        {"anchor": "原文里根本不存在的锚点片段xyz", "replacement": "随便改改"}
+                    ],
+                    "characters_mentioned": mentions,
+                })
             items: list[dict] = []
             for pat, fix in (("走进了教师", "走进了教室"), ("心理", "心里")):
                 for m in _re.finditer(_re.escape(pat), raw):
@@ -84,7 +94,26 @@ class MockLLMProvider(BaseLLMProvider):
                         "anchor": raw[s:e],
                         "replacement": raw[s:e].replace(pat, fix),
                     })
-            return output_schema.model_validate({"data": items})
+            return output_schema.model_validate({
+                "data": items,
+                "characters_mentioned": mentions,
+            })
+
+        # H-25 方案一：名单档案补全（build_profiles_from_mentions_with_llm）。
+        # 必须放在 "Character" 宽匹配之前 —— _CharacterProfileWrapper 含
+        # "Character" 会被下方分支截胡，返回固定林若雪/李明 而不是名单里的名字。
+        if "从人物名单生成角色档案" in prompt:
+            import json as _json
+            import re as _re
+            m = _re.search(r"【人物名单】\s*(\[\[.*?\]\])", prompt, _re.DOTALL)
+            try:
+                pairs = _json.loads(m.group(1)) if m else []
+            except Exception:
+                pairs = []
+            return output_schema.model_validate({"data": [
+                {"name": str(n), "gender": "未知", "age": "未知", "personality": ""}
+                for n, _cnt in pairs
+            ]})
 
         if schema_name == "_ListWrapper" or "Character" in schema_name:
             # Character 识别：从 prompt 抓名字。测试 1 是短文本(<20字)也要返回。
@@ -242,6 +271,21 @@ class MockLLMProvider(BaseLLMProvider):
 
 def _extract_raw_from_prompt(p: str) -> str:
     return _extract_text_block(p, "---RAW TEXT START---", "---RAW TEXT END---")
+
+
+def _mock_mentions_from_text(text: str) -> list[str]:
+    """H-25：模拟润色 LLM 顺带产出的人物名单。
+
+    扫描测试文本里的固定角色名（林若雪/李明/王大爷）+ 「角色N号」标记，
+    模拟「LLM 读正文抄人名」的名单行为；没有人物 → []（自然回退切片路径）。
+    """
+    import re as _re
+    names: list[str] = []
+    for n in ("林若雪", "李明", "王大爷"):
+        if n in text:
+            names.append(n)
+    names.extend(sorted(set(_re.findall(r"角色\d+号", text))))
+    return names
 
 
 def _extract_text_block(p: str, start: str, end: str) -> str:

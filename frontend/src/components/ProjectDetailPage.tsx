@@ -788,6 +788,25 @@ function OverviewTab({
             <PipelineTimeline prog={prog} serverNowMs={serverNowMs} />
           </div>
 
+          {/* H-25 方案一：角色识别来源透出 —— 名单聚合时「角色识别」步骤几乎秒过，
+              不解释的话用户会疑惑步骤是否真的跑了 */}
+          {prog?.char_source && prog.char_source !== 'full_scan' && (
+            <div className="text-[11px] text-ink-600 flex items-center gap-1.5 flex-wrap">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-emerald-300"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+              {prog.char_source === 'polish_mentions' ? (
+                <span>
+                  角色识别复用润色的人物提及名单（覆盖 {prog.char_mention_covered_n ?? 0}/{project.chapter_count} 章），
+                  直接聚合生成档案，无需重读全文
+                </span>
+              ) : (
+                <span>
+                  角色识别：润色名单覆盖 {prog.char_mention_covered_n ?? 0}/{project.chapter_count} 章，
+                  其余 {Math.max(0, project.chapter_count - (prog.char_mention_covered_n ?? 0))} 章回退切片扫描
+                </span>
+              )}
+            </div>
+          )}
+
           {/* H-3：LLM 调用量/耗时估算（prepare 开始后即有） */}
           {prog?.llm_estimate && (
             <div className="text-[11px] text-ink-500 tabular-nums flex flex-wrap items-center gap-x-3">
@@ -902,6 +921,13 @@ function OverviewTab({
                   {st.label} <span className="text-ink-600 font-medium">{fmtElapsed(prog.stage_timings![st.key]!.elapsed_ms)}</span>
                 </span>
               ))}
+            {/* H-25：本次角色识别的来源（名单聚合 vs 切片扫描） */}
+            {prog?.char_source && prog.char_source !== 'full_scan' && (
+              <span className="text-emerald-300/90">
+                · 角色来自{prog.char_source === 'polish_mentions' ? '润色名单聚合' : '润色名单 + 切片扫描'}
+                {prog.char_mention_covered_n ? `（名单覆盖 ${prog.char_mention_covered_n} 章）` : ''}
+              </span>
+            )}
           </div>
         </div>
       )}

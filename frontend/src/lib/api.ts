@@ -630,6 +630,11 @@ export interface PrepareProgress {
   // 角色识别进度
   char_slice_total?: number;
   char_slice_completed_n?: number;
+  /** H-25 方案一：角色识别来源 —— polish_mentions=润色名单聚合（零切片）/
+   *  mixed=名单 + 未覆盖章切片回退 / full_scan=无名单全量切片（旧路径） */
+  char_source?: 'polish_mentions' | 'mixed' | 'full_scan';
+  /** 润色名单覆盖的章数（char_source != full_scan 时有值） */
+  char_mention_covered_n?: number;
   char_current_slice?: { idx: number; slice_len?: number } | null;
   char_failed_slices?: Record<string, { slice_idx: number; slice_len?: number; retries?: number; last_err?: string }>;
   char_failed_slices_n?: number;

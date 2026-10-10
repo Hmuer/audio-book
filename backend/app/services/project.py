@@ -41,6 +41,7 @@ from .character import (
     extract_characters_with_llm,
     deduplicate_characters_with_llm,
     apply_dedup,
+    build_profiles_from_mentions_with_llm,
 )
 from .dialogue import (
     attribute_dialogues_with_llm,
@@ -1000,7 +1001,17 @@ def _log_prepare_llm_estimate(project_id: str, chapters: list[Chapter], cfg) -> 
     dbatch = max(1, int(getattr(cfg, "DIALOGUE_BATCH_CHAPTERS", 0) or 14))
     ibatch = max(1, int(getattr(cfg, "VOICE_INSTRUCTION_BATCH_CHAPTERS", 0) or 6))
 
-    char_calls = _ceil_div(total_chars, slice_size)
+    if getattr(cfg, "POLISH_ENABLED", False):
+        # H-25 方案一：润色顺带产出人物名单 → 角色识别只剩「名单聚合 + 小批量
+        # 档案补全」+「润色未覆盖章的回退切片」。名单量章前不可知（383 章实测
+        # ~130 名 → 40 名/批 ≈ 4 批档案调用），按每 ~120 章累积 1 批粗估；
+        # 未覆盖章按 10% 粗估（422/失败章，通常 ≪10%）。
+        profile_calls = max(1, _ceil_div(n_ch, 120))
+        uncovered_est = _ceil_div(total_chars // 10, slice_size)
+        char_calls = profile_calls + uncovered_est
+    else:
+        # 无润色 → 无名单 → 全量切片扫描（旧口径）
+        char_calls = _ceil_div(total_chars, slice_size)
     dialogue_calls = _ceil_div(n_ch, dbatch)
     instruction_calls = _ceil_div(n_ch, ibatch)
     polish_calls = n_ch if getattr(cfg, "POLISH_ENABLED", False) else 0
@@ -1129,6 +1140,13 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         # 而不是悄悄跑；是否调高交给用户按自己的套餐决定（本函数不改任何配置）。
         # H-3：估算结果写入 progress_json（llm_estimate），前端可显示「预计多久」。
         llm_estimate = _log_prepare_llm_estimate(project_id, chapters, settings)
+
+        # H-25 方案一：润色 sidecar 路径与指纹在**切分完成后立即**计算（此时
+        # ch.text 还是原始切分文本；润色会原地改写 ch.text，之后再算指纹必失配）。
+        # 润色块（写文本+名单）与角色名单块（读名单）共用。
+        from .polish import polish_sidecar_fingerprint as _polish_fp
+        polish_sidecar_path = Path(settings.DATA_DIR) / f"polish_{project_id}.json"
+        polish_src_fp = _polish_fp([c.text or "" for c in chapters])
         try:
             async with factory() as s:
                 p_prog = await s.get(Project, project_id)
@@ -1175,9 +1193,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             # 注：track_llm 已在 polish_with_llm / polish_diff_with_llm 内统一计数
             from .polish import (
                 apply_polish_diffs,
-                load_polish_sidecar,
+                load_polish_sidecar_full,
                 polish_diff_with_llm,
-                polish_sidecar_fingerprint,
                 polish_with_llm,
                 save_polish_sidecar,
             )
@@ -1185,10 +1202,11 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             polish_t0 = _time.perf_counter()
             # H-13：polish 阶段计时（进行中不写 checkpoint，started_ms 供前端实时算）
             await _read_write_progress_timing(project_id, "polish", end=False)
-            sidecar_path = Path(settings.DATA_DIR) / f"polish_{project_id}.json"
-            # H-18：指纹以「切分后的章节文本」为准（prepare 每次都从源文件重新切分）
-            src_fp = polish_sidecar_fingerprint([c.text or "" for c in chapters])
-            polished_map: dict[str, str] = load_polish_sidecar(sidecar_path, src_fp)
+            # H-18：指纹以「切分后的章节文本」为准（prepare 每次都从源文件重新切分）。
+            # H-25：polish_src_fp / polish_sidecar_path 必须在**润色改写 ch.text 之前**
+            # 计算好并提升到外层作用域 —— 角色名单阶段还要用同一指纹读 sidecar
+            # 里的「人物提及名单」（润色后 ch.text 已变，重算必失配）。
+            polished_map, mention_map = load_polish_sidecar_full(polish_sidecar_path, polish_src_fp)
 
             failed_chapters: list[int] = []
 
@@ -1211,8 +1229,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             ).lower() != "rewrite"
 
             def _write_polish_sidecar() -> None:
-                """polished_map → sidecar 落盘（锁内调用；OSError 不阻塞流程）。"""
-                save_polish_sidecar(sidecar_path, src_fp, polished_map)
+                """polished_map + mention_map → sidecar 落盘（锁内调用；OSError 不阻塞流程）。"""
+                save_polish_sidecar(polish_sidecar_path, polish_src_fp, polished_map, mention_map)
 
             async def _polish_heartbeat_locked() -> None:
                 """H-13b：polish 心跳 —— 每完成 10 章刷一次 updated_at/server_now_ms。
@@ -1245,11 +1263,15 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                         # 避免熔断后 383 个任务空跑一圈
                         if quota_hit.is_set():
                             return
+                        # H-25 方案一：润色顺带收集本章人物名单（零边际副产品）
+                        ch_mentions: list[str] = []
                         if use_diff_mode:
                             diff_result = await polish_diff_with_llm(ch.text)
                             new_text, outcome = apply_polish_diffs(ch.text, diff_result)
+                            _raw_names = diff_result.characters_mentioned or []
                         else:
                             result = await polish_with_llm(ch.text)
+                            _raw_names = result.characters_mentioned or []
                             polished = (result.polished_text or "").strip()
                             if not polished:
                                 # 空响应：视为被拒（保留原文）
@@ -1264,7 +1286,18 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                             else:
                                 # 自评不合理（过度修改）或长度异常 → 保留原文
                                 new_text, outcome = ch.text, "rejected"
+                        # 名单规整：去空白、章内去重、保序（LLM 偶尔重复输出同一名字）
+                        _seen: set[str] = set()
+                        for _n in _raw_names:
+                            _n = (_n or "").strip()
+                            if _n and _n not in _seen:
+                                _seen.add(_n)
+                                ch_mentions.append(_n)
                     async with polish_lock:
+                        # H-25：只要 LLM 返回了结构化结果（含 rejected——锚点失配
+                        # 但 LLM 确实读过原文），名单就有效，与文本一起进 sidecar
+                        if ch_mentions:
+                            mention_map[str(ch.idx)] = ch_mentions
                         if outcome == "changed":
                             ch.text = new_text
                             polished_map[str(ch.idx)] = new_text
@@ -1426,13 +1459,46 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         prog["stage_timings"] = _keep_timings
         prog["char_slice_mode"] = _CHAR_SLICE_MODE
 
-        char_buckets = _bucket_chapters_by_chars(chapters, char_slice_size)
+        # ---- H-25 方案一：角色名单优先消费润色顺带产出的「人物提及名单」----
+        # 润色本来就逐句精读全文找错字，人物名单是零边际成本的副产品；名单
+        # 存在润色 sidecar（与润色文本同指纹，源文件变化自动作废）。有名单的章
+        # 不再切片扫描，角色识别从「60×50k 全文重读」退化为「名单聚合 + 小批量
+        # 档案补全」；只有润色未覆盖的章（POLISH_ENABLED=False / 旧版 sidecar /
+        # 润色异常失败章）才回退到原有的切片全量扫描，行为与旧版完全一致。
+        polish_mentions: dict[int, list[str]] = {}
+        try:
+            from .polish import load_polish_sidecar_full
+            _, _raw_mentions = load_polish_sidecar_full(polish_sidecar_path, polish_src_fp)
+            polish_mentions = {
+                int(k): list(v)
+                for k, v in (_raw_mentions or {}).items()
+                if v
+            }
+        except Exception:
+            polish_mentions = {}
+        uncovered_chapters = [c for c in chapters if not polish_mentions.get(c.idx)]
+        char_buckets = _bucket_chapters_by_chars(uncovered_chapters, char_slice_size)
         char_slices: list[tuple[int, str]] = [
             (i, b.text) for i, b in enumerate(char_buckets)
         ]
+        # 切片 checkpoint 的口径现在还绑定「未覆盖章集合」：sidecar 跨次运行新增
+        # 润色章后覆盖集变化，旧切片号指向的章集合不同 → 必须整体重置（否则
+        # 续跑会把没跑过的桶当已跑过的片跳过，静默漏识别）。
+        # 兼容：旧 checkpoint 无 char_bucket_chapters 键 —— 仅当未覆盖集=全部章
+        # （无任何名单，如 POLISH_ENABLED=False）时才可用（与旧版口径一致）。
+        _uncovered_key = [c.idx for c in uncovered_chapters]
+        _all_key = [c.idx for c in chapters]
+        _bucket_ckpt = prog.get("char_bucket_chapters")
+        _bucket_ckpt_ok = (
+            (_bucket_ckpt == _uncovered_key)
+            if _bucket_ckpt is not None
+            else (_uncovered_key == _all_key)
+        )
         completed_slice_idxs: set[int] = set(prog.get("char_slice_completed", []))
         failed_slice_idxs: dict[str, dict] = dict(prog.get("char_failed_slices", {}) or {})
         char_raw_list: list[dict] = list(prog.get("char_extract_raw_list", []) or [])
+        # 名单档案 checkpoint（与切片 checkpoint 同口径重置；命中时跨中断复用）
+        mention_profiles_raw: list[dict] = list(prog.get("char_mention_profiles") or [])
 
         # 写总 slice 数，前端用 completed_n / total_n 做进度条
         prog["char_slice_total"] = len(char_slices)
@@ -1440,29 +1506,50 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         prog["char_full_text_len"] = len(full_text)
         # H-3：char 阶段重建 prog 时保留本次估算（checkpoint 命中/不兼容重置两条路径都覆盖）
         prog["llm_estimate"] = llm_estimate
+        # H-25：名单来源透出给前端（polish_mentions=纯名单聚合 / mixed=名单+未覆盖切片
+        # 回退 / full_scan=无名单全量切片）+ 覆盖章数
+        prog["char_source"] = (
+            "polish_mentions" if not uncovered_chapters
+            else "mixed" if polish_mentions
+            else "full_scan"
+        )
+        prog["char_mention_covered_n"] = len(polish_mentions)
         await _write_progress(prog)
 
-        if prog.get("stage") in ("characters", "dedup", "dialogues", "instructions", "voice_recs", "done") and char_raw_list:
+        if (prog.get("stage") in ("characters", "dedup", "dialogues", "instructions", "voice_recs", "done")
+                and char_raw_list and _bucket_ckpt_ok):
             logger.info(
                 f"[project_prepare] project_id={project_id[:8]}... "
                 f"命中角色识别 checkpoint：已完成 {len(completed_slice_idxs)}/{len(char_slices)} 切片，"
-                f"失败 {len(failed_slice_idxs)} 切片"
+                f"失败 {len(failed_slice_idxs)} 切片，名单档案 {len(mention_profiles_raw)} 个，"
+                f"润色名单覆盖 {len(polish_mentions)}/{len(chapters)} 章"
             )
         else:
             # 从头开始，重置
             completed_slice_idxs = set()
             failed_slice_idxs = {}
             char_raw_list = []
+            mention_profiles_raw = []
             prog = {
                 "version": 1,
                 "stage": "characters",
                 # H-13：保留 split / polish 的阶段计时（fresh 起跑也会先经过 split）
                 "stage_timings": _keep_timings,
+                # 切片口径标记必须随 fresh prog 落库 —— 旧代码这里丢键，
+                # 完整跑完一次后 progress_json 里没有 char_slice_mode，
+                # 下次 prepare 必被误判「口径不兼容」而重置角色 checkpoint
+                # （H-25 的名单档案跨次复用依赖它存活）。
+                "char_slice_mode": _CHAR_SLICE_MODE,
                 "char_slice_total": len(char_slices),
                 "char_slice_completed": [],
                 "char_slice_completed_n": 0,
                 "char_failed_slices": {},
                 "char_extract_raw_list": [],
+                # H-25：切片/名单档案 checkpoint 的口径绑定（见上方 _bucket_ckpt_ok）
+                "char_bucket_chapters": _uncovered_key,
+                "char_mention_profiles": [],
+                "char_source": prog.get("char_source", "full_scan"),
+                "char_mention_covered_n": len(polish_mentions),
                 "char_full_text_len": len(full_text),
                 "dialogue_completed_chapters": [],
                 # H-3：全新起跑也要带上本次估算
@@ -1648,6 +1735,62 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             # 重跑只补未完成片）
             _raise_if_quota()
 
+        # ---- H-25 方案一：聚合润色名单 → 给「未被切片覆盖」的名字补档案 ----
+        # 名单按章去重后统计「出现章数」（频次给档案 LLM 做重要性参考）；
+        # 切片已产出同名角色的不再补（切片看过正文，档案质量更高）。
+        # 名单档案 checkpoint 命中（同一覆盖集的中断续跑）则直接复用不重调。
+        if polish_mentions:
+            from collections import Counter as _Counter
+            _name_ch_cnt: "_Counter[str]" = _Counter()
+            for _names in polish_mentions.values():
+                for _n in set(_names):
+                    _name_ch_cnt[_n] += 1
+            if not mention_profiles_raw and _name_ch_cnt:
+                _slice_names = {d.get("name") for d in char_raw_list}
+                _pending_profiles = [
+                    (n, cnt) for n, cnt in _name_ch_cnt.most_common()
+                    if n not in _slice_names
+                ]
+                if _pending_profiles:
+                    logger.info(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"润色名单聚合：覆盖 {len(polish_mentions)}/{len(chapters)} 章、"
+                        f"去重 {len(_name_ch_cnt)} 名，其中 {len(_pending_profiles)} 名需补档案"
+                        f"（其余已由切片扫描产出）"
+                    )
+                    try:
+                        _profiled = await build_profiles_from_mentions_with_llm(_pending_profiles)
+                        mention_profiles_raw = [c.model_dump() for c in _profiled]
+                        prog["char_mention_profiles"] = mention_profiles_raw
+                        await _write_progress(prog)
+                    except LLMQuotaExhaustedError:
+                        # 配额中止语义：不把「档案缺失」当成功 checkpoint 写下去
+                        quota_hit.set()
+                        _raise_if_quota()
+                    except LLMContentRejectedError as e:
+                        # 名单 prompt 只有名字，422 几乎不可能；真发生也按跳过处理
+                        logger.warning(
+                            f"[project_prepare] project_id={project_id[:8]}... "
+                            f"名单档案补全被内容审核拒绝（422），{len(_pending_profiles)} 名跳过"
+                            f"（对白开放词表兜底）：{e}"
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"[project_prepare] project_id={project_id[:8]}... "
+                            f"名单档案补全失败，{len(_pending_profiles)} 名跳过"
+                            f"（对白开放词表兜底，不影响 prepare）：{type(e).__name__}: {e}"
+                        )
+            # 名单档案并入 raw 列表（顺序确定性：切片结果在前、档案按频次序在后；
+            # 双保险去重：checkpoint 复用路径下 _pending_profiles 的过滤不重算）
+            if mention_profiles_raw:
+                _existing = {d.get("name") for d in char_raw_list}
+                char_raw_list[:] = list(char_raw_list) + [
+                    d for d in mention_profiles_raw
+                    if d.get("name") and d["name"] not in _existing
+                ]
+                characters_merged[:] = [Character(**d) for d in char_raw_list]
+                prog["char_extract_raw_list"] = char_raw_list
+
         # H-13：characters 阶段结束（含全部命中 checkpoint 直接跳过的情形；
         # setdefault 保历史起点 → elapsed 为该阶段累计耗时）
         _stage_timing_touch(prog, "characters", end=True)
@@ -1660,13 +1803,18 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 f"重跑 prepare 会自动补跑这些切片。"
             )
 
-        # 角色识别切片全部失败则抛业务异常，避免进入 dedup 阶段
-        if len(completed_slice_idxs) == 0 and len(char_slices) > 0:
+        # 角色识别完全无结果则抛业务异常，避免进入 dedup 阶段。
+        # H-25：旧条件「切片全失败」→ 新条件「最终角色列表为空」——名单档案
+        # 也能独立构成结果（纯名单路径下切片数本来就是 0），两者都空才算失败。
+        if not characters_merged and chapters:
             bad = "; ".join(
                 f"slice {int(k)+1}/{len(char_slices)}: {v.get('last_err')}"
                 for k, v in failed_slice_idxs.items()
             ) or "无详细错误"
-            raise RuntimeError(f"角色识别全部切片失败（{len(char_slices)} 片）：{bad}")
+            raise RuntimeError(
+                f"角色识别无结果（切片失败 {len(failed_slice_idxs)}/{len(char_slices)}，"
+                f"润色名单覆盖 {len(polish_mentions)} 章）：{bad}"
+            )
 
         # 4c. dedup（完成后 checkpoint 跳到 dedup=done）
         # H-13：dedup 阶段计时（命中 checkpoint 则 start+end 同刻，elapsed≈0）
@@ -2241,6 +2389,10 @@ _PREPARE_PROGRESS_PUBLIC_KEYS: tuple[str, ...] = (
     "char_current_slice",
     "char_failed_slices",
     "char_full_text_len",
+    # H-25 方案一：角色识别来源（polish_mentions=润色名单聚合 / mixed=名单+未覆盖
+    # 章切片回退 / full_scan=无名单全量切片）+ 名单覆盖章数
+    "char_source",
+    "char_mention_covered_n",
     "dedup_done",
     "dialogue_total_batches",
     "dialogue_completed_batches_count",

@@ -109,6 +109,77 @@ class DedupResult(BaseModel):
     canonical_name: str | None
 
 
+# =====================================================================
+# H-25 方案一：从「润色顺带产出的人物提及名单」批量生成角色档案。
+# 润色本来就逐句精读全文，名单是零边际成本的副产品；档案补全是
+# 名单驱动的小调用（只有名字+出现章数，不读正文），替代对全书
+# 60×50k 字符的切片全量扫描（383 章实测 ~3M 字符输入 → ~10k）。
+# =====================================================================
+
+PROFILE_FEW_SHOT = r"""
+你是一名小说人物档案管理员。给你一份从整本小说各章收集来的「人物提及名单」（名字 + 出现章数），请为每个名字生成一份简要档案。
+
+规则：
+- 你看不到正文，只有名字和出现频次——不确定的字段填「未知」，**不要编造**
+- gender 只填「男」「女」「未知」三选一
+- age 用年龄段描述（如 少年/青年/中年/老年），无法判断填「未知」
+- personality 无法从名字推断时填空字符串 ""，不要虚构
+- 名字里的信息可以用：如「王大爷」→ 男/老年；「小翠」→ 女/少女
+- 每个名字输出一条，name 必须与输入**完全一致**（简称/昵称原样保留，不要擅自改成全名——同一个人由后续去重阶段合并）
+
+【示例】
+名单：[["林若雪", 120], ["王大爷", 8], ["阿明", 30]]
+输出：
+{"data": [
+  {"name": "林若雪", "gender": "女", "age": "未知", "personality": ""},
+  {"name": "王大爷", "gender": "男", "age": "老年", "personality": ""},
+  {"name": "阿明", "gender": "未知", "age": "未知", "personality": ""}
+]}
+"""
+
+
+async def build_profiles_from_mentions_with_llm(
+    names_with_counts: list[tuple[str, int]],
+) -> list[Character]:
+    """H-25 方案一：为「未走切片扫描」的人物名字批量补档案。
+
+    与 extract_characters_with_llm（读全文）不同：这里只有名字+出现章数，
+    档案字段允许「未知」——档案只影响音色推荐与用户管理体验，
+    对白归属/去重不依赖它（归属按名字匹配、去重按名字字符串关系）。
+
+    分批：40 名/批（每名输出 ~60 token，8k max_tokens 内安全）。
+    """
+    if not names_with_counts:
+        return []
+    import json as _json
+
+    class _CharacterProfileWrapper(BaseModel):
+        data: list[Character]
+
+    llm = get_llm()
+    PROFILE_BATCH = 40
+    out: list[Character] = []
+    for i in range(0, len(names_with_counts), PROFILE_BATCH):
+        batch = names_with_counts[i : i + PROFILE_BATCH]
+        prompt = (
+            PROFILE_FEW_SHOT
+            + "\n从人物名单生成角色档案。"
+            + "\n【人物名单】"
+            + _json.dumps([[n, c] for n, c in batch], ensure_ascii=False)
+            + '\n\n⚠️输出格式必须是 {"data": [Character,...]}，顶层一定要有 data 字段!'
+        )
+        wrapped = await llm.chat_structured(
+            prompt=prompt,
+            output_schema=_CharacterProfileWrapper,
+            temperature=0.1,
+            max_tokens=8000,
+            use_fast_model=True,  # 名单→档案是结构化小任务，快速模型足够
+        )
+        track_llm(calls=1, chars=len(prompt), detail="character_profile")
+        out.extend(wrapped.data)
+    return out
+
+
 async def extract_characters_with_llm(text: str) -> list[Character]:
     """从文本中提取角色。短文本也调 LLM，不做短路。"""
     prompt = (

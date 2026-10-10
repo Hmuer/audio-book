@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 FEW_SHOT = r"""
 你是一名小说对白标注员。给定小说正文和已识别的角色列表，请找出文中每一段对白（引号内的说话内容），并判断说话人是谁。
 规则（非常重要）：
-1. **绝对禁止**使用 narrator/unknown/旁白/其他 作为 speaker，必须从给定角色列表中选一个最可能的。
+1. **绝对禁止**使用 narrator/unknown/旁白/其他 作为 speaker。优先从给定角色列表中选；若说话人明显是列表外的人物，按正文中出现的名字原样输出（从"XX 说/道"的提示词里抄名字）。
 2. 如果对白前有"XX 说/道/喊/回答/冷喝/喃喃"等提示词，优先用提示词。
 3. 如果没有提示词，根据上下文语境、角色性格、对话内容风格合理推断。
 4. anchor 的 start/end 是对白原文（包含引号）在**该章的 chapter_text 里**的 0-indexed **字符位置**（Python 字符串索引，不是字节位置）。即 `text[start:end]` 应严格等于 anchor.text。
@@ -124,7 +124,7 @@ async def attribute_dialogues_with_llm(
         + text
         + "\n---TEXT END---\n"
         + f"\n可用角色列表：{_json.dumps(names, ensure_ascii=False)}"
-        + "\n\nspeaker 必须是角色列表中的 name 之一，绝对不许 narrator/unknown/旁白！"
+        + "\n\nspeaker 优先从角色列表中选；说话人明显是列表外人物时按正文里的名字原样输出，绝对不许 narrator/unknown/旁白！"
         + "\n⚠️输出格式必须是 {\"data\": [DialogueAttribution,...]}，顶层一定要有 data 字段!"
     )
 
@@ -162,7 +162,7 @@ class DialogueBatchResponse(BaseModel):
 _BATCH_PROLOGUE = r"""
 你是一名小说对白标注员。**一次处理多个章节**，对每个章节分别输出对白归属结果。
 每个章节的规则完全相同（单章规则复述一遍）：
-1. **绝对禁止**使用 narrator/unknown/旁白/其他 作为 speaker，必须从给定角色列表里选。
+1. **绝对禁止**使用 narrator/unknown/旁白/其他 作为 speaker。优先从给定角色列表里选；说话人明显是列表外人物时，按正文中出现的名字原样输出（从"XX 说/道"的提示词里抄名字）。
 2. 如果对白前有"XX 说/道/喊/回答/冷喝/喃喃"等提示词，优先用提示词。
 3. anchor 的 start/end 是对白原文（含引号）**在该章 chapter_text 内部**的 0-indexed 字符位置——
    ⚠️ 不是整本书里的位置！必须是 `chapter_text[start:end] == anchor.text`。

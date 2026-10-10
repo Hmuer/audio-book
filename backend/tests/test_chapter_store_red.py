@@ -258,8 +258,11 @@ def test_cs7_polish_calls_counted_once_per_chapter(caplog):
     chapters = [Chapter(idx=i, title="t", text="字" * 100) for i in range(10)]
     with caplog.at_level("INFO"):
         est = _log_prepare_llm_estimate("pid12345", chapters, _Cfg)
-    # 1 片 + 1 批 + 2 批 + 1 推荐 + 10 润色
-    assert est["total_calls"] == 1 + 1 + 2 + 1 + 10
+    # H-25 方案一：POLISH_ENABLED 时角色识别 = 名单档案批（10 章 → 1 批）
+    #   + 未覆盖章回退切片粗估（10% 体量 → 1 桶），不再全量切片
+    # (1 档案 + 1 回退) + 1 对白批 + 2 指令批 + 1 推荐 + 10 润色
+    assert est["total_calls"] == 2 + 1 + 2 + 1 + 10
+    assert est["char_calls"] == 2
     assert est["polish_calls"] == 10
 
 
