@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
@@ -235,6 +235,18 @@ PREPARE_RECOVERY_CONCURRENCY: int = int(
     getattr(settings, "PREPARE_RECOVERY_CONCURRENCY", 1) or 1
 )
 _watchdog_started = False
+
+
+def _quota_retry_minutes() -> float:
+    """H-28：402 配额耗尽失败后的自动重试间隔（分钟）。<= 0 表示关闭。
+
+    动态读 settings（与 LLM_QUOTA_RETRY_SECS 同口径）：设置页/环境变量
+    修改后立即生效，无需重启。
+    """
+    try:
+        return float(getattr(settings, "PREPARE_QUOTA_RETRY_MINUTES", 5) or 0)
+    except Exception:
+        return 5.0
 
 
 # =====================================================================
@@ -667,6 +679,48 @@ async def _write_prepare_last_error(project_id: str, err_type: str, err_msg: str
         )
 
 
+async def _write_quota_exhausted_failure(project_id: str, err_msg: str) -> None:
+    """H-28：402 配额耗尽的失败收尾——failed + last_error + quota_retry 标记。
+
+    与普通失败的区别：progress 写 quota_retry{attempts, next_at}，看门狗每轮
+    扫描到期的项目自动重新触发 prepare（断点续跑），配额重置后无需人工。
+    若重试间隔被设为 0（关闭自动重试），则不写标记，行为与旧版一致。
+
+    原子写（单 session 单 commit，状态 + progress 一次落库），模式同
+    _recover_one_preparing_project 的 RecoveryLimit 收口。
+    """
+    factory = get_session_factory()
+    try:
+        async with factory() as sess:
+            proj = await sess.get(Project, project_id)
+            if not proj:
+                return
+            prog = _parse_progress(proj)
+            prog["last_error"] = f"LLMQuotaExhausted: {err_msg}"
+            prog["last_error_at"] = _fmt_time_now()
+            prog["last_error_type"] = "LLMQuotaExhausted"
+            prog["updated_at"] = _fmt_time_now()
+            minutes = _quota_retry_minutes()
+            if minutes > 0:
+                qr = prog.get("quota_retry") if isinstance(prog.get("quota_retry"), dict) else {}
+                qr["attempts"] = int(qr.get("attempts") or 0) + 1
+                qr["next_at"] = (
+                    datetime.now() + timedelta(minutes=minutes)
+                ).strftime("%Y-%m-%d %H:%M:%S")
+                prog["quota_retry"] = qr
+            else:
+                prog.pop("quota_retry", None)
+            if proj.status not in ("ready", "failed"):
+                proj.status = "failed"
+            proj.progress_json = json.dumps(prog, ensure_ascii=False)
+            await sess.commit()
+    except Exception as e:
+        logger.warning(
+            f"[project_prepare] project_id={project_id[:8]}... "
+            f"写配额失败状态到 DB 失败: {type(e).__name__}: {e}"
+        )
+
+
 async def _run_prepare_project_in_background(
     project_id: str, *, trigger: str = "api", info: dict | None = None
 ) -> None:
@@ -718,6 +772,20 @@ async def _run_prepare_project_in_background(
                 with llm_usage_scope(project_id):
                     await _do_prepare_project_async(project_id)
                 final_job_status = "success"
+            except LLMQuotaExhaustedError as e:
+                # H-28：402 配额耗尽是「可自愈」的预期失败（配额重置后断点
+                # 续跑即可完成），与真正的业务错误区分处理：
+                #   - 不打 ERROR/traceback（与 H-22 provider 层降噪口径一致，
+                #     熔断窗口内反复重试时避免刷屏）；
+                #   - 写 quota_retry 标记，看门狗到点自动重试拉起，而不是
+                #     置 failed 后干等用户手动触发（凌晨 402 → 整个配额窗口
+                #     无人值守浪费 5 小时的实测场景）。
+                logger.warning(
+                    f"[project_prepare] 配额耗尽中止 project_id={project_id[:8]}... {e}"
+                )
+                await _write_quota_exhausted_failure(project_id, str(e))
+                final_job_status = "failed"
+                final_error = f"LLMQuotaExhausted: {e}"
             except (ValueError, RuntimeError, ChapterSplitError) as e:
                 logger.error(
                     f"[project_prepare] 业务失败 project_id={project_id[:8]}... "
@@ -1170,10 +1238,19 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
 
         def _raise_if_quota() -> None:
             if quota_hit.is_set():
-                raise RuntimeError(
+                # H-28：改抛 LLMQuotaExhaustedError（RuntimeError 子类，对既有
+                # except RuntimeError 透明），让 _run_prepare_project_in_background
+                # 能按类型精确识别配额失败 → 写 quota_retry 标记，由看门狗
+                # 到点自动重试（而不是等用户手动触发）。
+                minutes = _quota_retry_minutes()
+                retry_hint = (
+                    f"系统将每 {minutes:g} 分钟自动重试，配额恢复后自动断点续跑，无需手动操作。"
+                    if minutes > 0
+                    else "等配额重置后重新触发 prepare 将自动断点续跑，无需重新导入。"
+                )
+                raise LLMQuotaExhaustedError(
                     "LLM 配额已耗尽（HTTP 402，套餐周期内额度用完，约每 5 小时重置）。"
-                    "prepare 已中止：已完成章节/切片有 checkpoint，"
-                    "等配额重置后重新触发 prepare 将自动断点续跑，无需重新导入。"
+                    "prepare 已中止：已完成章节/切片有 checkpoint。" + retry_hint
                 )
         # 3.5 LLM 润色纠错（可选，POLISH_ENABLED 控制；默认关闭）
         # - 按章润色（POLISH_MODE=diff：LLM 只输出「锚点→替换」错字清单，本地应用，
@@ -1486,6 +1563,10 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 # 被吞掉的话崩溃循环里每次恢复都从 0 数起，上限永远到不了，
                 # 「任务停了 token 还在烧」的死循环依旧无界。
                 "restart_count",
+                # H-28：prev_error（上次失败的归档，触发/恢复/配额重试时写入）
+                # 同样要跨重建存活——fresh 重跑把它吞掉的话，用户在 UI 上
+                # 永远看不到上一次为什么失败，「上次错误」一栏形同虚设。
+                "prev_error",
             )
             if k in prog
         }
@@ -2303,6 +2384,10 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             # 成功后若再遇崩溃，重新享有完整恢复额度）
             if "restart_count" in prog:
                 prog.pop("restart_count", None)
+            # H-28：配额自动重试标记一并清掉（自动重试只针对 failed 中的
+            # 402 项目；跑通即闭环，避免残留 attempts 误导前端展示）
+            if "quota_retry" in prog:
+                prog.pop("quota_retry", None)
             await _write_progress(prog)
 
         # 7. 落库：先清旧数据 → 写新数据
@@ -2453,6 +2538,10 @@ _PREPARE_PROGRESS_PUBLIC_KEYS: tuple[str, ...] = (
     "last_error_type",
     "prev_error",
     "restart_count",
+    # H-28：配额耗尽自动重试状态（last_error_type=LLMQuotaExhausted 时出现）
+    # {attempts: 累计 402 次数, next_at: 下次自动重试时刻}——前端可据此展示
+    # 「将于 XX 自动重试」，用户不必手动守着。
+    "quota_retry",
     # H-2：用户取消的时间戳（stage=cancelled 时出现）
     "cancelled_at",
     "char_slice_total",
@@ -2693,6 +2782,156 @@ async def _scan_preparing_and_recover(trigger: str) -> None:
         )
 
 
+# =====================================================================
+# H-28：402 配额耗尽自动重试
+# 背景（用户实测）：凌晨 3 点配额耗尽 → prepare 置 failed 后无人拉起——
+# 看门狗只扫 status=preparing（那是崩溃恢复的语义），failed 的 402 项目
+# 只能等用户手动触发。配额窗口约 5 小时，若发生在夜间等于整窗浪费。
+# 方案：402 失败时在 progress 写 quota_retry{attempts, next_at}，看门狗
+# 每轮（15s）扫描到期的 failed 项目自动重新触发 prepare（checkpoint 断点
+# 续跑）。配额仍耗尽时首个 LLM 调用重新 402 → 快速中止、再等下一轮：
+# 熔断窗口内不发 HTTP、探测 402 不耗 token，重试成本约等于零。
+# =====================================================================
+
+def _is_quota_failed_prog(prog: dict) -> bool:
+    """progress 是否是「402 配额耗尽」失败。
+
+    新代码写 last_error_type="LLMQuotaExhausted"；H-28 上线前的**存量项目**
+    是旧代码收尾的 last_error_type="RuntimeError" + 文案「LLM 配额已耗尽」
+    （_raise_if_quota 的话术，前后两版前缀一致）——一并识别，否则部署后
+    用户库里挂着的 402 项目（正是本需求的原案例）永远进不了自动重试。
+    """
+    if prog.get("last_error_type") == "LLMQuotaExhausted":
+        return True
+    return (
+        prog.get("last_error_type") == "RuntimeError"
+        and "LLM 配额已耗尽" in (prog.get("last_error") or "")
+    )
+
+
+async def _list_quota_retry_due_projects() -> list[tuple[Project, dict]]:
+    """扫描 status=failed 且配额自动重试到期的项目。
+
+    匹配条件（缺一不可）：
+      - status == "failed"（preparing 在跑 / ready 完成 / 其他终态都不碰）
+      - 402 配额失败（见 _is_quota_failed_prog；非 402 失败永不自动重试——
+        业务错误重试只会重复失败）
+      - quota_retry.next_at 已到期；**存量项目没有 quota_retry 标记 →
+        视为立即可重试**（重试若再 402 会补写规范标记进入正常循环）
+    """
+    import time as _time
+    factory = get_session_factory()
+    result: list[tuple[Project, dict]] = []
+    async with factory() as sess:
+        q = (
+            select(Project)
+            .where(Project.status == "failed")
+            .order_by(Project.updated_at.asc())
+        )
+        rows = (await sess.execute(q)).scalars().all()
+        for proj in rows:
+            if _is_prepare_running_for(proj.project_id):
+                continue
+            prog = _parse_progress(proj)
+            if not _is_quota_failed_prog(prog):
+                continue
+            qr = prog.get("quota_retry")
+            if isinstance(qr, dict) and qr.get("next_at"):
+                due_s = _seconds_since(str(qr["next_at"]), _time.time())
+                if due_s is None or due_s < 0:
+                    continue
+            result.append((proj, prog))
+    return result
+
+
+async def _retry_one_quota_failed_project(proj: Project, trigger: str) -> bool:
+    """把一个配额耗尽 failed 的项目重新拉起（断点续跑）。返回 True 表示已 enqueue。
+
+    与崩溃恢复（_recover_one_preparing_project）的关键区别：
+      - 不计 restart_count：402 重试在配额耗尽期间不发 HTTP（熔断快速失败），
+        不存在 H-23 的幽灵消耗，不该占用崩溃恢复的防死循环额度；
+      - 源文件丢失 → 改写 last_error_type 收口（不可能成功，避免永扫）。
+    """
+    pid = proj.project_id
+    if _is_prepare_running_for(pid):
+        return False
+    factory = get_session_factory()
+    async with factory() as sess:
+        p_latest = await sess.get(Project, pid)
+        if not p_latest or p_latest.status != "failed":
+            # 扫描到拉起之间用户可能已手动触发/删除，用最新状态收口
+            return False
+        prog = _parse_progress(p_latest)
+        if not _is_quota_failed_prog(prog):
+            return False
+        if not p_latest.source_file_path or not os.path.isfile(p_latest.source_file_path):
+            prog["last_error"] = (
+                "SourceFileMissing: 配额自动重试时发现源文件已丢失，"
+                "已停止自动重试。请删除项目后重新导入。"
+            )
+            prog["last_error_at"] = _fmt_time_now()
+            prog["last_error_type"] = "SourceFileMissing"
+            prog["updated_at"] = _fmt_time_now()
+            p_latest.progress_json = json.dumps(prog, ensure_ascii=False)
+            await sess.commit()
+            logger.warning(
+                f"[project_prepare][quota_retry] project_id={pid[:8]}... "
+                f"源文件缺失，已停止自动重试。"
+            )
+            return False
+        qr = prog.get("quota_retry") if isinstance(prog.get("quota_retry"), dict) else {}
+        attempts = int(qr.get("attempts") or 0)
+        prog.setdefault("prev_error", {}).update({
+            "at": prog.get("last_error_at"),
+            "msg": prog.get("last_error"),
+        })
+        prog.pop("last_error", None)
+        prog.pop("last_error_at", None)
+        prog["stage"] = "start"
+        prog["updated_at"] = _fmt_time_now()
+        p_latest.status = "preparing"
+        p_latest.progress_json = json.dumps(prog, ensure_ascii=False)
+        await sess.commit()
+    _enqueue_prepare_task(pid, trigger="quota_retry")
+    logger.info(
+        f"[project_prepare][quota_retry] project_id={pid[:8]}... "
+        f"配额耗尽自动重试 #{attempts}（trigger={trigger}），从 checkpoint 断点续跑。"
+    )
+    return True
+
+
+async def _scan_quota_failed_and_retry(trigger: str) -> None:
+    """扫一圈配额耗尽且到期的 failed 项目并自动重试拉起。"""
+    if _quota_retry_minutes() <= 0:
+        return  # 自动重试被配置关闭
+    try:
+        due = await _list_quota_retry_due_projects()
+        if not due:
+            return
+        logger.info(
+            f"[project_prepare][quota_retry] 扫描到 {len(due)} 个配额耗尽到期项目，"
+            f"trigger={trigger}，自动重试（并发上限={PREPARE_RECOVERY_CONCURRENCY}）。"
+        )
+        sem = asyncio.Semaphore(max(1, PREPARE_RECOVERY_CONCURRENCY))
+
+        async def _do_one(item):
+            async with sem:
+                try:
+                    await _retry_one_quota_failed_project(item[0], trigger)
+                except Exception as e:
+                    logger.warning(
+                        f"[project_prepare][quota_retry] 重试 "
+                        f"{item[0].project_id[:8]}... 失败: {type(e).__name__}: {e}"
+                    )
+
+        await asyncio.gather(*[_do_one(it) for it in due])
+    except Exception as e:
+        logger.warning(
+            f"[project_prepare][quota_retry] 扫描异常，跳过本轮: "
+            f"{type(e).__name__}: {e}"
+        )
+
+
 async def _watchdog_loop() -> None:
     """后台轮询：每 PREPARE_WATCHDOG_INTERVAL_SECONDS 扫一次 preparing 卡死的项目并恢复。"""
     logger.info(
@@ -2710,6 +2949,14 @@ async def _watchdog_loop() -> None:
         except Exception as e:
             logger.warning(
                 f"[project_prepare][watchdog] 轮询异常: {type(e).__name__}: {e}"
+            )
+        # H-28：同一轮里顺带扫配额耗尽到期的 failed 项目（自动重试）。
+        # 扫描本身在 _scan_quota_failed_and_retry 内部已全兜底，这里再保一层。
+        try:
+            await _scan_quota_failed_and_retry(trigger="watchdog")
+        except Exception as e:
+            logger.warning(
+                f"[project_prepare][watchdog] 配额重试轮询异常: {type(e).__name__}: {e}"
             )
 
 
@@ -2731,6 +2978,9 @@ def ensure_prepare_watchdog_started() -> None:
         except asyncio.CancelledError:
             return
         await _scan_preparing_and_recover(trigger="startup")
+        # H-28：服务重启后，重启前因 402 置 failed 的项目也纳入自动重试
+        # （quota_retry 标记持久在 progress_json 里，跨进程存活）。
+        await _scan_quota_failed_and_retry(trigger="startup")
 
     asyncio.create_task(_delayed_startup_scan(), name="prepare-startup-scan")
     asyncio.create_task(_watchdog_loop(), name="prepare-watchdog")
