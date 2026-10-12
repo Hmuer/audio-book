@@ -1,0 +1,256 @@
+2026-10-12 12:26:21 | INFO  | novel-tts:385 | [voice_recommender] 分批推荐完成：797 角色 / 20 批，成功推荐 797 条，失败 0 批
+2026-10-12 12:26:22 | INFO  | backend.app.services.project:2373 | [project_prepare] project_id=c5b87ec1... voice_recs=797 ms=407801
+2026-10-12 12:26:25 | ERROR | backend.app.services.project:2498 | [project_prepare] FAIL project_id=c5b87ec1... IntegrityError: (raised as a result of Query-invoked autoflush; consider using a session.no_autoflush block if this flush is occurring prematurely)
+(sqlite3.IntegrityError) NOT NULL constraint failed: project_characters.emotion
+[SQL: INSERT INTO project_characters (project_id, name, gender, age, personality, canonical_name, assigned_voice_id) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: ('c5b87ec19aa9413ca3ea80ee26d7fb70', '丁婴', '男', '老年', '老谋深算、亦正亦邪、童心未泯、狂傲不羁', '丁婴', 'doubao:zh_male_zhubajie_uranus_bigtts')]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+Traceback (most recent call last):
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 2127, in _exec_insertmany_context
+    dialect.do_execute(
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/default.py", line 952, in do_execute
+    cursor.execute(statement, parameters)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 213, in execute
+    self._adapt_connection._handle_exception(error)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 373, in _handle_exception
+    raise error
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 195, in execute
+    self.await_(_cursor.execute(operation, parameters))
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/cursor.py", line 48, in execute
+    await self._execute(self._cursor.execute, sql, parameters)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/cursor.py", line 40, in _execute
+    return await self._conn._execute(fn, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/core.py", line 132, in _execute
+    return await future
+           ^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/core.py", line 115, in run
+    result = function()
+             ^^^^^^^^^^
+sqlite3.IntegrityError: NOT NULL constraint failed: project_characters.emotion
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/opt/audio-book/audio-book/backend/app/services/project.py", line 2470, in _do_prepare_project_async
+    await save_chapters(session, project_id, chapters)
+  File "/opt/audio-book/audio-book/backend/app/services/chapter_store.py", line 68, in save_chapters
+    await session.execute(
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/ext/asyncio/session.py", line 449, in execute
+    result = await greenlet_spawn(
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 203, in greenlet_spawn
+    result = context.switch(value)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 2373, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 2250, in _execute_internal
+    ) = compile_state_cls.orm_pre_session_exec(
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/bulk_persistence.py", line 740, in orm_pre_session_exec
+    session._autoflush()
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 3073, in _autoflush
+    raise e.with_traceback(sys.exc_info()[2])
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 3062, in _autoflush
+    self.flush()
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 4353, in flush
+    self._flush(objects)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 4488, in _flush
+    with util.safe_reraise():
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/util/langhelpers.py", line 122, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 4449, in _flush
+    flush_context.execute()
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/unitofwork.py", line 465, in execute
+    rec.execute(self)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/unitofwork.py", line 641, in execute
+    util.preloaded.orm_persistence.save_obj(
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/persistence.py", line 94, in save_obj
+    _emit_insert_statements(
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/persistence.py", line 1144, in _emit_insert_statements
+    result = connection.execute(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1421, in execute
+    return meth(
+           ^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/sql/elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1643, in _execute_clauseelement
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_insertmany_context(dialect, context)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 2135, in _exec_insertmany_context
+    self._handle_dbapi_exception(
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 2365, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 2127, in _exec_insertmany_context
+    dialect.do_execute(
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/default.py", line 952, in do_execute
+    cursor.execute(statement, parameters)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 213, in execute
+    self._adapt_connection._handle_exception(error)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 373, in _handle_exception
+    raise error
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 195, in execute
+    self.await_(_cursor.execute(operation, parameters))
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/cursor.py", line 48, in execute
+    await self._execute(self._cursor.execute, sql, parameters)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/cursor.py", line 40, in _execute
+    return await self._conn._execute(fn, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/core.py", line 132, in _execute
+    return await future
+           ^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/core.py", line 115, in run
+    result = function()
+             ^^^^^^^^^^
+sqlalchemy.exc.IntegrityError: (raised as a result of Query-invoked autoflush; consider using a session.no_autoflush block if this flush is occurring prematurely)
+(sqlite3.IntegrityError) NOT NULL constraint failed: project_characters.emotion
+[SQL: INSERT INTO project_characters (project_id, name, gender, age, personality, canonical_name, assigned_voice_id) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: ('c5b87ec19aa9413ca3ea80ee26d7fb70', '丁婴', '男', '老年', '老谋深算、亦正亦邪、童心未泯、狂傲不羁', '丁婴', 'doubao:zh_male_zhubajie_uranus_bigtts')]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-10-12 12:26:25 | INFO  | novel-tts:63 | [usage] project_id=c5b87ec1... LLM 用量: 225 次调用 / 11943177 字符
+2026-10-12 12:26:25 | ERROR | backend.app.services.project:819 | [project_prepare] 未捕获异常 project_id=c5b87ec1... IntegrityError: (raised as a result of Query-invoked autoflush; consider using a session.no_autoflush block if this flush is occurring prematurely)
+(sqlite3.IntegrityError) NOT NULL constraint failed: project_characters.emotion
+[SQL: INSERT INTO project_characters (project_id, name, gender, age, personality, canonical_name, assigned_voice_id) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: ('c5b87ec19aa9413ca3ea80ee26d7fb70', '丁婴', '男', '老年', '老谋深算、亦正亦邪、童心未泯、狂傲不羁', '丁婴', 'doubao:zh_male_zhubajie_uranus_bigtts')]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+Traceback (most recent call last):
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 2127, in _exec_insertmany_context
+    dialect.do_execute(
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/default.py", line 952, in do_execute
+    cursor.execute(statement, parameters)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 213, in execute
+    self._adapt_connection._handle_exception(error)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 373, in _handle_exception
+    raise error
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 195, in execute
+    self.await_(_cursor.execute(operation, parameters))
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/cursor.py", line 48, in execute
+    await self._execute(self._cursor.execute, sql, parameters)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/cursor.py", line 40, in _execute
+    return await self._conn._execute(fn, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/core.py", line 132, in _execute
+    return await future
+           ^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/core.py", line 115, in run
+    result = function()
+             ^^^^^^^^^^
+sqlite3.IntegrityError: NOT NULL constraint failed: project_characters.emotion
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/opt/audio-book/audio-book/backend/app/services/project.py", line 773, in _run_prepare_project_in_background
+    await _do_prepare_project_async(project_id)
+  File "/opt/audio-book/audio-book/backend/app/services/project.py", line 2470, in _do_prepare_project_async
+    await save_chapters(session, project_id, chapters)
+  File "/opt/audio-book/audio-book/backend/app/services/chapter_store.py", line 68, in save_chapters
+    await session.execute(
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/ext/asyncio/session.py", line 449, in execute
+    result = await greenlet_spawn(
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 203, in greenlet_spawn
+    result = context.switch(value)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 2373, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 2250, in _execute_internal
+    ) = compile_state_cls.orm_pre_session_exec(
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/bulk_persistence.py", line 740, in orm_pre_session_exec
+    session._autoflush()
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 3073, in _autoflush
+    raise e.with_traceback(sys.exc_info()[2])
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 3062, in _autoflush
+    self.flush()
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 4353, in flush
+    self._flush(objects)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 4488, in _flush
+    with util.safe_reraise():
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/util/langhelpers.py", line 122, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 4449, in _flush
+    flush_context.execute()
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/unitofwork.py", line 465, in execute
+    rec.execute(self)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/unitofwork.py", line 641, in execute
+    util.preloaded.orm_persistence.save_obj(
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/persistence.py", line 94, in save_obj
+    _emit_insert_statements(
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/orm/persistence.py", line 1144, in _emit_insert_statements
+    result = connection.execute(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1421, in execute
+    return meth(
+           ^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/sql/elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1643, in _execute_clauseelement
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_insertmany_context(dialect, context)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 2135, in _exec_insertmany_context
+    self._handle_dbapi_exception(
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 2365, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 2127, in _exec_insertmany_context
+    dialect.do_execute(
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/engine/default.py", line 952, in do_execute
+    cursor.execute(statement, parameters)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 213, in execute
+    self._adapt_connection._handle_exception(error)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 373, in _handle_exception
+    raise error
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 195, in execute
+    self.await_(_cursor.execute(operation, parameters))
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/cursor.py", line 48, in execute
+    await self._execute(self._cursor.execute, sql, parameters)
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/cursor.py", line 40, in _execute
+    return await self._conn._execute(fn, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/core.py", line 132, in _execute
+    return await future
+           ^^^^^^^^^^^^
+  File "/root/.novel-tts/.venv/lib/python3.11/site-packages/aiosqlite/core.py", line 115, in run
+    result = function()
+             ^^^^^^^^^^
+sqlalchemy.exc.IntegrityError: (raised as a result of Query-invoked autoflush; consider using a session.no_autoflush block if this flush is occurring prematurely)
+(sqlite3.IntegrityError) NOT NULL constraint failed: project_characters.emotion
+[SQL: INSERT INTO project_characters (project_id, name, gender, age, personality, canonical_name, assigned_voice_id) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: ('c5b87ec19aa9413ca3ea80ee26d7fb70', '丁婴', '男', '老年', '老谋深算、亦正亦邪、童心未泯、狂傲不羁', '丁婴', 'doubao:zh_male_zhubajie_uranus_bigtts')]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-10-12 12:26:26 | INFO  | backend.app.services.job_tasks:186 | [job_task] finish kind=prepare task_id=prepare-f006745ca38348dab75ed52fb5ac720b status=failed err=IntegrityError: (raised as a result of Query-invoked autoflush; consider using a session.no_autoflush block if this flus

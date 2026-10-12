@@ -249,6 +249,42 @@ def _quota_retry_minutes() -> float:
         return 5.0
 
 
+class _QuotaProbeModel(BaseModel):
+    """配额探测用的最小响应 schema（H-28 探测降本）。"""
+    ok: bool = True
+
+
+async def _probe_llm_quota() -> bool:
+    """H-28 探测降本：用几十字符的 mini 调用测配额是否已恢复。
+
+    背景（用户账单实测）：H-28 每 5 分钟自动重试一次，重试间隔与 provider
+    熔断窗口（300s）对齐——拉起时熔断恰好到期，第一次调用**真实发出**。
+    旧实现这第一调是 prepare 的第一个正式调用（50k 字符级切片 prompt），
+    即使被 402 拒绝也按 input 计费：凌晨无任务的低谷时段账单仍有
+    ~1M 字符/小时的稳定消耗，全是他。改用本探测：402 → 不拉起 prepare、
+    只把 next_at 推迟到下一轮；探测本身几十字符，成本可忽略。
+    配额恢复时那次成功的探测调用（同样几十字符）是纯成本，可接受。
+
+    返回 False 仅当明确 402；其他异常（网络抖动/mock 不识别探测 schema 等）
+    一律返回 True 放行——误放行的代价只是 prepare 的第一次正式调用再撞
+    一次 402，而误拦截会让重试机制失效。
+    """
+    from ..ai.factory import get_llm
+    try:
+        await get_llm().chat_structured(
+            "ping",
+            _QuotaProbeModel,
+            max_tokens=8,
+            max_retries=1,
+            use_fast_model=True,
+        )
+        return True
+    except LLMQuotaExhaustedError:
+        return False
+    except Exception:
+        return True
+
+
 # =====================================================================
 # 内部工具
 # =====================================================================
@@ -449,6 +485,35 @@ async def trigger_prepare_project(project_id: str) -> ProjectPrepareTriggerResp:
             p.status = "failed"
             await session.commit()
             raise RuntimeError("项目尚未导入源文件，请先调用 /import")
+
+        # H-29：schema 残留 fail-fast——启动迁移删不掉的 NOT NULL 遗留列会让
+        # prepare 跑完一整轮（大书上千万字符 LLM 消耗）才在收尾写库时炸
+        # IntegrityError 全部报废。这里在烧任何 token 之前直接拒绝，错误
+        # 信息给出手动修复指引。
+        from ..db.session import schema_issues as _schema_issues
+        _issues = _schema_issues()
+        if _issues:
+            p.status = "failed"
+            try:
+                prog = json.loads(p.progress_json) if p.progress_json else {}
+                if not isinstance(prog, dict):
+                    prog = {}
+                prog["last_error"] = (
+                    f"SchemaIssues: 数据库表结构与代码不一致（{', '.join(_issues)}），"
+                    f"已阻止识别以免 LLM 消耗后写库报废。"
+                    f"请按启动日志中的 ALTER TABLE 指引手动修复后重试。"
+                )
+                prog["last_error_at"] = _fmt_time_now()
+                prog["last_error_type"] = "SchemaIssues"
+                prog["updated_at"] = _fmt_time_now()
+                p.progress_json = json.dumps(prog, ensure_ascii=False)
+            except Exception:
+                pass
+            await session.commit()
+            raise RuntimeError(
+                f"数据库表结构与代码不一致（{', '.join(_issues)}），已阻止识别。"
+                f"请按服务启动日志中的 ALTER TABLE 指引手动修复后重试。"
+            )
 
         # 防并发重复触发：若当前进程内已有该项目的后台任务，则先取消旧任务
         _cancel_running_prepare_task(project_id, reason="用户重新触发 prepare，取消旧任务")
@@ -816,10 +881,13 @@ async def _run_prepare_project_in_background(
                 final_error = f"task cancelled ({kind})"
                 raise
             except Exception as e:
+                # H-29 日志降噪：到这里的一切异常都已在 _do_prepare_project_async
+                # 最外层（FAIL 日志）打过一遍完整 traceback——这里再 exc_info=True
+                # 就把 150 行栈原样打第二遍（用户实测：日志被双份巨型 traceback
+                # 塞满）。这里只打一行摘要，完整栈看上一条 FAIL。
                 logger.error(
                     f"[project_prepare] 未捕获异常 project_id={project_id[:8]}... "
-                    f"{type(e).__name__}: {e}",
-                    exc_info=True,
+                    f"{type(e).__name__}: {e}（traceback 见上方 FAIL 日志）"
                 )
                 await _write_prepare_last_error(project_id, type(e).__name__, str(e))
                 await _mark_project_failed(project_id)
@@ -1133,6 +1201,20 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
     import time as _time
     t0 = _time.perf_counter()
     factory = get_session_factory()
+
+    # H-29：schema 残留 fail-fast（覆盖所有拉起路径：手动触发 / 看门狗崩溃
+    # 恢复 / H-28 配额自动重试）。启动迁移删不掉的 NOT NULL 遗留列会让本
+    # 函数跑完一整轮 LLM 流水线（大书上千万字符）才在收尾写库时炸
+    # IntegrityError → 事务回滚、全部成果报废 → 配额重试再全量烧一遍。
+    # 这里在烧任何 token 之前直接拒绝（trigger 入口已挡手动路径；此处
+    # 兜住绕过 trigger 的自动拉起路径）。
+    from ..db.session import schema_issues as _schema_issues
+    _issues = _schema_issues()
+    if _issues:
+        raise RuntimeError(
+            f"数据库表结构与代码不一致（{', '.join(_issues)}），已阻止识别以免 "
+            f"LLM 消耗后写库报废。请按服务启动日志中的 ALTER TABLE 指引手动修复后重试。"
+        )
 
     # 1. 取项目
     async with factory() as session:
@@ -2854,6 +2936,32 @@ async def _retry_one_quota_failed_project(proj: Project, trigger: str) -> bool:
     """
     pid = proj.project_id
     if _is_prepare_running_for(pid):
+        return False
+    # H-28 探测降本：拉起前先用几十字符的 mini 调用测配额——402 则根本
+    # 不启动 prepare（旧实现第一调是 50k 字符级正式调用，402 也按 input
+    # 计费，低谷时段账单 ~1M 字符/小时）。仅推迟 next_at 等下一轮。
+    if not await _probe_llm_quota():
+        factory0 = get_session_factory()
+        try:
+            async with factory0() as sess0:
+                p0 = await sess0.get(Project, pid)
+                if p0 and p0.status == "failed":
+                    prog0 = _parse_progress(p0)
+                    qr0 = prog0.get("quota_retry")
+                    if isinstance(qr0, dict):
+                        minutes = _quota_retry_minutes()
+                        qr0["next_at"] = (
+                            datetime.now() + timedelta(minutes=minutes)
+                        ).strftime("%Y-%m-%d %H:%M:%S")
+                        prog0["quota_retry"] = qr0
+                        p0.progress_json = json.dumps(prog0, ensure_ascii=False)
+                        await sess0.commit()
+        except Exception:
+            pass
+        logger.info(
+            f"[project_prepare][quota_retry] project_id={pid[:8]}... "
+            f"探测仍 402，本轮不拉起，等下一窗口。"
+        )
         return False
     factory = get_session_factory()
     async with factory() as sess:

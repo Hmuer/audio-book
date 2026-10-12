@@ -124,10 +124,96 @@ _NEW_INDEXES: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _drop_stale_notnull_columns_sync(conn, insp, tables) -> tuple[list[str], list[str]]:
+    """H-29：删除「表里有、ORM 没有、NOT NULL 且无默认值」的僵尸列。
+
+    返回 (已删列, 删不掉仍残留的列)。残留场景：SQLite < 3.35 不支持
+    DROP COLUMN（现在极罕见）或权限异常——此时把列名记进
+    _SCHEMA_ISSUES，prepare 入口会 fail-fast 拒跑（零 LLM 消耗），
+    绝不让「全量跑完才在写库时炸」的烧钱循环再发生。
+    """
+    dropped: list[str] = []
+    kept: list[str] = []
+    for table_name, orm_table in Base.metadata.tables.items():
+        if table_name not in tables:
+            continue
+        orm_cols = set(orm_table.columns.keys())
+        # PRAGMA table_info 行: (cid, name, type, notnull, dflt_value, pk)
+        for row in conn.execute(text(f'PRAGMA table_info("{table_name}")')):
+            col_name, notnull, dflt, pk = row[1], row[3], row[4], row[5]
+            if pk or col_name in orm_cols:
+                continue
+            if not notnull or dflt is not None:
+                continue  # 可空或带默认：INSERT 能成功，留着无害
+            try:
+                conn.execute(
+                    text(f'ALTER TABLE "{table_name}" DROP COLUMN "{col_name}"')
+                )
+                dropped.append(f"{table_name}.{col_name}")
+            except Exception as e:
+                kept.append(f"{table_name}.{col_name}")
+                logger.error(
+                    f"[migrate] H-29 无法删除遗留 NOT NULL 列 "
+                    f"{table_name}.{col_name}（{type(e).__name__}: {e}）。"
+                    f"prepare 将被阻止以免烧 LLM 配额后写库报废；"
+                    f"请升级 SQLite(≥3.35) 或手动执行: "
+                    f'ALTER TABLE "{table_name}" DROP COLUMN "{col_name}";'
+                )
+    return dropped, kept
+
+
+def _verify_schema_health_sync(conn, kept_stale: list[str]) -> None:
+    """H-29：迁移后校验核心表可写性，残留问题记入进程级 _SCHEMA_ISSUES。
+
+    prepare 入口（trigger_prepare_project）每次启动前调 schema_issues()
+    检查——有残留问题时直接 fail 项目，last_error 给出手动修复指引，
+    保证零 LLM 消耗（而不是烧完整轮配额后才在收尾写库时 IntegrityError）。
+    """
+    global _SCHEMA_ISSUES
+    issues: list[str] = list(kept_stale)
+    if issues:
+        _SCHEMA_ISSUES = issues
+        logger.error(
+            f"[migrate] H-29 检测到 {len(issues)} 个无法自动清理的 schema 残留列，"
+            f"prepare 将 fail-fast 拒跑: {issues}"
+        )
+    else:
+        _SCHEMA_ISSUES = []
+
+
+# 进程级 schema 残留问题（H-29 fail-fast 用；None=未检查，[]=健康）
+_SCHEMA_ISSUES: list[str] | None = None
+
+
+def schema_issues() -> list[str]:
+    """H-29：返回启动迁移后仍残留的 schema 问题（空列表 = 健康/未启用 DB）。"""
+    return list(_SCHEMA_ISSUES or [])
+
+
 def _migrate_existing_sync(conn) -> None:
     """检测旧 schema 的 jobs/projects/builds 表，自动 ALTER TABLE 补齐缺失字段。"""
     insp = inspect(conn)
     tables = insp.get_table_names()
+
+    # H-29：清理「ORM 已删除、表里残留」的 NOT NULL 无默认列。
+    #
+    # 背景（用户实测 2026-10-12）：旧版角色模型有 emotion 字段（角色绑定语气），
+    # 后来重构为「角色不绑语气、对白指令逐段生成」时 ORM 删掉了它——但旧库的
+    # project_characters 表里 emotion TEXT NOT NULL 还在（本迁移只补列、从不
+    # 删列）。后果：prepare 全流程跑完（大书一轮烧上千万字符 LLM）到最后
+    # 收尾写库时 INSERT 缺列 → IntegrityError → 事务回滚 → **全部成果报废**。
+    # 配额自动重试再拉起 → 又全量烧一遍 → 又炸 → 无限循环烧钱（用户账单
+    # 5 小时连续 7M/小时）。确定性失败烧光配额窗口比 402 本身危害大得多。
+    #
+    # 修复：启动迁移时把这类「僵尸列」直接 DROP（SQLite ≥ 3.35 支持）。
+    # 通用规则（不只针对 emotion）：ORM 没有且 NOT NULL 无默认的列 INSERT 必炸，
+    # 一律清理；可空列/带默认值列 INSERT 能成功，留着无害（兼容用户回滚代码）。
+    _dropped, _kept = _drop_stale_notnull_columns_sync(conn, insp, tables)
+    if _dropped:
+        logger.warning(
+            f"[migrate] H-29 已删除 ORM 不再使用且 NOT NULL 无默认的遗留列: {_dropped}"
+        )
+    _verify_schema_health_sync(conn, _kept)
 
     if "jobs" in tables:
         existing_cols = {c["name"] for c in insp.get_columns("jobs")}
