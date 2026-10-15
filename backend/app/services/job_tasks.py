@@ -169,7 +169,7 @@ async def finish_task(
     error_msg: str | None = None,
 ) -> None:
     """worker 终止：写终态 + finished_at + 失败时记 error_msg。"""
-    if status not in ("success", "failed", "cancelled"):
+    if status not in ("success", "failed", "cancelled", "paused"):
         raise ValueError(f"非法终态: {status}")
     factory = get_session_factory()
     now = _utcnow()
@@ -486,110 +486,43 @@ async def _recover_build_orphan(job: JobTask) -> bool:
     from .build import (
         _ACTIVE_BUILDS,
         _RUNNING_LOCK,
-        _run_build_inner,
-        _unregister_active_build,
+        _START_LOCKS,
+        _confirm_build_control,
+        _run_build_runner,
     )
     factory = get_session_factory()
     async with factory() as sess:
         from ..db.models import Build
         b = await sess.get(Build, job.target_id)
-        j_attached = await sess.merge(job)
         if not b:
-            j_attached.status = "cancelled"
-            j_attached.finished_at = _utcnow()
-            j_attached.error_msg = "Build 已不存在，无法恢复"
-            j_attached.updated_at = _utcnow()
-            await sess.commit()
+            await finish_task(job.task_id, status="cancelled", error_msg="Build 已不存在，无法恢复")
             return False
-        if b.status not in ("queued", "running"):
-            j_attached.status = "cancelled"
-            j_attached.finished_at = _utcnow()
-            j_attached.error_msg = (
-                f"Build 当前 status={b.status}，无需恢复（终态）"
-            )
-            j_attached.updated_at = _utcnow()
-            await sess.commit()
-            return False
-        # 复制所需字段，session 关闭后仍可用
-        build_snapshot = {
-            "build_id": b.build_id,
-            "project_id": b.project_id,
-            "narrator_voice_id": b.narrator_voice_id,
-            "speed": b.speed,
-            "voice_assignments_json": b.voice_assignments_json or "",
-        }
-        job_task_id = job.task_id
-
-    # 进程锁内已有同 build_id 的活跃 worker → 跳过（避免双跑）。
-    # 判断与注册必须在同一临界区，否则并发/频繁的看门狗仍可能双重 spawn（B-1）。
-    async with _RUNNING_LOCK:
-        if build_snapshot["build_id"] in _ACTIVE_BUILDS:
-            logger.info(
-                f"[job_task][build] 本进程已有 build_id={build_snapshot['build_id'][:8]}... 在跑，跳过恢复"
-            )
-            return False
-        _ACTIVE_BUILDS[build_snapshot["build_id"]] = build_snapshot["project_id"]
-
-    # 重新跑（已 done 的 BuildArtifact 会自动跳过；cancelled 标志继续生效）
-    try:
-        voice_assignments = json.loads(build_snapshot["voice_assignments_json"] or "{}")
-    except Exception:
-        voice_assignments = {}
-
-    async def _runner() -> None:
-        final_status = "failed"
-        final_error: str | None = None
+        project_id = b.project_id
+    async with _START_LOCKS.setdefault(project_id, asyncio.Lock()):
+        async with _RUNNING_LOCK:
+            if project_id in _ACTIVE_BUILDS.values():
+                return False
+            status = await _confirm_build_control(job.target_id)
+            if status not in ("queued", "running"):
+                terminal = "success" if status in ("success", "partial_success") else status
+                await finish_task(job.task_id, status=terminal or "cancelled")
+                return False
+            async with factory() as sess:
+                b = await sess.get(Build, job.target_id)
+                if not b:
+                    return False
+                snapshot = (b.build_id, b.project_id, b.voice_assignments_json,
+                            b.narrator_voice_id, b.speed)
+            _ACTIVE_BUILDS[job.target_id] = project_id
         try:
-            # B-1：恢复出的 runner 必须持续心跳，否则 JobTask 又被判为孤儿 → 反复 spawn
-            async with HeartbeatContext(job_task_id):
-                try:
-                    await _run_build_inner(
-                        build_id=build_snapshot["build_id"],
-                        project_id=build_snapshot["project_id"],
-                        voice_assignments=voice_assignments,
-                        narrator_voice_id=build_snapshot["narrator_voice_id"],
-                        speed=build_snapshot["speed"],
-                        only_chapter_idxs=None,
-                        source_build_id=None,
-                    )
-                    f1 = get_session_factory()
-                    async with f1() as s1:
-                        b_after = await s1.get(Build, build_snapshot["build_id"])
-                        if b_after and b_after.status in ("success", "partial_success"):
-                            final_status = "success"
-                        elif b_after and b_after.status == "cancelled":
-                            final_status = "cancelled"
-                        elif b_after and b_after.status == "failed":
-                            final_status = "failed"
-                except Exception as e:
-                    logger.error(
-                        f"[job_task][build][runner] FAIL build_id={build_snapshot['build_id'][:8]}...: "
-                        f"{type(e).__name__}: {e}",
-                        exc_info=True,
-                    )
-                    final_error = f"{type(e).__name__}: {e}"
-                    final_status = "failed"
-        except asyncio.CancelledError:
-            final_status = "cancelled"
-            final_error = "build recover worker cancelled"
-            raise
-        finally:
-            try:
-                await finish_task(job_task_id, status=final_status, error_msg=final_error)
-            except Exception as e:
-                logger.warning(
-                    f"[job_task][build][runner] 写 JobTask 终态失败 task_id={job_task_id}: {e}"
-                )
-            await _unregister_active_build(
-                build_snapshot["build_id"], build_snapshot["project_id"],
-            )
-
-    asyncio.create_task(_runner(), name=f"build_recover_{build_snapshot['build_id'][:8]}")
-    logger.info(
-        f"[job_task][build] 恢复孤儿 build_id={build_snapshot['build_id'][:8]}... "
-        f"restart_count={job.restart_count}"
-    )
-    return True
+            voices = json.loads(snapshot[2] or "{}")
+        except json.JSONDecodeError:
+            voices = {}
+        asyncio.create_task(_run_build_runner(
+            snapshot[0], snapshot[1], voices, snapshot[3], snapshot[4],
+            trigger="watchdog", job_task_id=job.task_id,
+        ), name=f"build_recover_{job.target_id[:8]}")
+        return True
 
 
 # ---------------------------------------------------------------------

@@ -22,6 +22,7 @@ import os
 import random
 import re
 import shutil
+import tempfile
 import time as _time
 import uuid
 import zipfile
@@ -33,7 +34,7 @@ from datetime import datetime, timedelta, UTC
 from pathlib import Path
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from ..core.config import settings
 from ..db.models import (
@@ -103,19 +104,37 @@ def _build_book_zip(
     first = max(0, int(start))
     last = total - 1 if end is None else min(int(end), total - 1)
     book_dir = _sanitize_zip_entry(job_title or job_id, f"小说_{job_id[:8]}")
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
-        for i in range(first, last + 1):
-            path, _dur = chapter_outputs[i]
-            raw_title = chapter_titles[i] if i < len(chapter_titles) else ""
-            clean_title = _sanitize_zip_entry(strip_chapter_prefix(raw_title), f"章节{i+1}")
-            base = f"第{i+1:03d}章_{clean_title}"
-            entry_name = f"{book_dir}/{base}.mp3"
-            if path and os.path.isfile(path):
-                zf.write(path, arcname=entry_name)
-            else:
-                zf.writestr(entry_name, make_silent_mp3(100, sample_rate=settings.DOUBAO_AUDIO_SAMPLE_RATE))
-            if chapter_lrcs and i < len(chapter_lrcs) and (chapter_lrcs[i] or "").strip():
-                zf.writestr(f"{book_dir}/{base}.lrc", chapter_lrcs[i])
+    with tempfile.NamedTemporaryFile(
+        dir=Path(zip_path).parent, prefix=f".{Path(zip_path).name}.", suffix=".tmp", delete=False,
+    ) as temp_file:
+        temp_path = temp_file.name
+    try:
+        with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_STORED) as zf:
+            for i in range(first, last + 1):
+                path, _dur = chapter_outputs[i]
+                raw_title = chapter_titles[i] if i < len(chapter_titles) else ""
+                clean_title = _sanitize_zip_entry(strip_chapter_prefix(raw_title), f"章节{i+1}")
+                base = f"第{i+1:03d}章_{clean_title}"
+                entry_name = f"{book_dir}/{base}.mp3"
+                if path and os.path.isfile(path):
+                    zf.write(path, arcname=entry_name)
+                else:
+                    zf.writestr(entry_name, make_silent_mp3(100, sample_rate=settings.DOUBAO_AUDIO_SAMPLE_RATE))
+                if chapter_lrcs and i < len(chapter_lrcs) and (chapter_lrcs[i] or "").strip():
+                    zf.writestr(f"{book_dir}/{base}.lrc", chapter_lrcs[i])
+        os.replace(temp_path, zip_path)
+    finally:
+        Path(temp_path).unlink(missing_ok=True)
+
+
+def _can_reuse_zip_shard(path: Path, size_bytes: int | None) -> bool:
+    try:
+        if size_bytes is not None and path.stat().st_size != size_bytes:
+            return False
+        with zipfile.ZipFile(path) as zf:
+            return bool(zf.namelist()) and zf.testzip() is None
+    except (OSError, zipfile.BadZipFile, RuntimeError, EOFError):
+        return False
 
 
 async def _archive_file(key: str, local_path: Path, content_type: str) -> bool:
@@ -664,8 +683,14 @@ _RUNNING_LOCK = asyncio.Lock()
 
 async def _ensure_project_not_running(project_id: str, action: str):
     async with _RUNNING_LOCK:
-        if any(pid == project_id for pid in _ACTIVE_BUILDS.values()):
-            raise ValueError(f"项目 {project_id[:8]} 正在合成（Build 运行中），无法{action}。请先取消当前 Build。")
+        active = project_id in _ACTIVE_BUILDS.values()
+    async with get_session_factory()() as session:
+        busy = await session.scalar(select(Build.build_id).where(
+            Build.project_id == project_id,
+            Build.status.in_(("queued", "running", "pausing", "paused", "stopping")),
+        ).limit(1))
+    if active or busy:
+        raise BuildControlConflict(f"项目正在合成、已暂停或控制中，无法{action}，请先继续或停止构建")
 
 
 async def _register_active_build(build_id: str, project_id: str) -> None:
@@ -708,16 +733,24 @@ def _with_build_usage(func):
     async def wrapped(*args, **kwargs):
         build_id = kwargs.get("build_id") or args[0]
         project_id = kwargs.get("project_id") or args[1]
+        async with get_session_factory()() as session:
+            build = await session.get(Build, build_id)
+            base_calls = int(build.tts_calls or 0) if build else 0
+            base_chars = int(build.tts_chars or 0) if build else 0
+            mode = build.mode if build else "classic"
+            if build and not build.resume_digest and build.status in ("queued", "running"):
+                build.resume_digest = await _calc_resume_digest(session, build)
+                await session.commit()
         with tts_usage_scope() as totals:
+            totals["base_calls"] = base_calls
+            totals["base_chars"] = base_chars
             try:
+                if build and await _control_requested(build_id):
+                    return
                 return await func(*args, **kwargs)
             finally:
                 if totals["calls"] or totals["chars"]:
                     try:
-                        factory = get_session_factory()
-                        async with factory() as session:
-                            build = await session.get(Build, build_id)
-                            mode = build.mode if build else "classic"
                         await _record_build_usage(
                             build_id, project_id, mode, totals["calls"], totals["chars"],
                         )
@@ -772,13 +805,16 @@ async def _record_build_usage(
     """
     if calls <= 0:
         return
+    scope = _tts_usage_scope.get() or {}
+    base_calls = int(scope.get("base_calls", 0))
+    base_chars = int(scope.get("base_chars", 0))
     try:
         factory = get_session_factory()
         async with factory() as s:
             b = await s.get(Build, build_id)
             if b:
-                b.tts_calls = calls
-                b.tts_chars = chars
+                b.tts_calls = base_calls + calls
+                b.tts_chars = base_chars + chars
                 await s.commit()
     except Exception as e:
         logger.warning(
@@ -1495,6 +1531,7 @@ async def _start_build_impl(
     """
     from ..core.config import settings as _settings_mod
 
+    await _ensure_no_controlled_build(project_id)
     _run_seg_cache_gc_if_needed(force=False)
 
 
@@ -1698,6 +1735,7 @@ async def _start_build_impl(
             narrator_emotion=narrator_emotion,
             narrator_instruction=narrator_instruction,
         )
+        b.resume_digest = await _calc_resume_digest(session, b)
         session.add(b)
         for ch in chapters:
             session.add(BuildArtifact(
@@ -1712,92 +1750,10 @@ async def _start_build_impl(
 
     await _register_active_build(build_id, project_id)
 
-    async def _runner() -> None:
-        """后台 worker：独立 session，完成后释放锁。"""
-        # P1 #7：用 JobTask 跟踪 build worker 生命周期（启动恢复 / 看门狗依赖）
-        from .job_tasks import register_task, HeartbeatContext, finish_task
-        job_task_id: str | None = None
-        try:
-            job = await register_task("build", build_id, trigger="api")
-            job_task_id = job.task_id
-        except Exception as e:
-            logger.warning(
-                f"[build_worker] 注册 JobTask 失败 build_id={build_id[:8]}... "
-                f"{type(e).__name__}: {e}"
-            )
-            job_task_id = None
-
-        final_status = "failed"
-        final_error: str | None = None
-        try:
-            async with HeartbeatContext(job_task_id):
-                try:
-                    await _run_build_inner(
-                        build_id=build_id,
-                        project_id=project_id,
-                        voice_assignments=voice_assignments,
-                        narrator_voice_id=narrator_voice_id,
-                        speed=speed,
-                        only_chapter_idxs=None,
-                        source_build_id=None,
-                    )
-                    # 终态由 _run_build_inner 写 Build.status；这里尝试把对应终态同步给 JobTask
-                    f1 = get_session_factory()
-                    async with f1() as s1:
-                        b_after = await s1.get(Build, build_id)
-                        if b_after and b_after.status in ("success", "partial_success"):
-                            final_status = "success"
-                        elif b_after and b_after.status == "cancelled":
-                            final_status = "cancelled"
-                        elif b_after and b_after.status == "failed":
-                            final_status = "failed"
-                except Exception as e:
-                    logger.error(
-                        f"[build_worker] FAIL build_id={build_id[:8]}... "
-                        f"{type(e).__name__}: {e}",
-                        exc_info=True,
-                    )
-                    final_error = f"{type(e).__name__}: {e}"
-                    try:
-                        f2 = get_session_factory()
-                        async with f2() as s:
-                            b2 = await s.get(Build, build_id)
-                            if b2:
-                                b2.status = "failed"
-                                b2.progress_msg = f"合成失败: {type(e).__name__}: {e}"[:200]
-                                b2.completed_at = datetime.now(UTC).replace(tzinfo=None)
-                                await s.commit()
-                    except Exception as e2:
-                        logger.error(f"[build_worker] final status write fail: {e2}")
-                    final_status = "failed"
-        except asyncio.CancelledError:
-            final_status = "cancelled"
-            final_error = "build worker cancelled"
-            try:
-                f2 = get_session_factory()
-                async with f2() as s:
-                    b2 = await s.get(Build, build_id)
-                    if b2:
-                        b2.status = "cancelled"
-                        b2.progress_msg = "build worker cancelled"
-                        b2.completed_at = datetime.now(UTC).replace(tzinfo=None)
-                        await s.commit()
-            except Exception:
-                pass
-            raise
-        finally:
-            if job_task_id:
-                try:
-                    await finish_task(
-                        job_task_id, status=final_status, error_msg=final_error,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"[build_worker] 写 JobTask 终态失败 task_id={job_task_id}: {e}"
-                    )
-            await _unregister_active_build(build_id, project_id)
-
-    asyncio.create_task(_runner(), name=f"build_{build_id[:8]}")
+    asyncio.create_task(
+        _run_build_runner(build_id, project_id, voice_assignments, narrator_voice_id, speed),
+        name=f"build_{build_id[:8]}",
+    )
     logger.info(
         f"[build_start] launched worker build_id={build_id[:8]}... "
         f"project_id={project_id[:8]}... chapters={len(chapters)}"
@@ -1807,6 +1763,196 @@ async def _start_build_impl(
 
 # B-2：对外暴露的 start_build 是「按 project 串行化」的包装版本。
 start_build = _serialize_start_per_project(_start_build_impl)
+
+
+class BuildControlConflict(ValueError):
+    pass
+
+
+async def _ensure_no_controlled_build(project_id: str) -> None:
+    async with get_session_factory()() as session:
+        controlled = await session.scalar(select(Build.build_id).where(
+            Build.project_id == project_id,
+            Build.status.in_(("pausing", "paused", "stopping")),
+        ).limit(1))
+        if controlled:
+            raise BuildControlConflict("项目构建已暂停或正在控制中，请先继续或停止现有构建")
+
+
+async def _calc_resume_digest(session, build: Build) -> str:
+    chapters = await load_chapters(session, build.project_id)
+    content = await _calc_content_digest(session, build.project_id, chapters)
+    characters = (await session.execute(select(ProjectCharacter).where(
+        ProjectCharacter.project_id == build.project_id,
+    ))).scalars().all()
+    voices = json.loads(build.voice_assignments_json or "{}")
+    config = _calc_config_digest(
+        build.narrator_voice_id, build.speed, voices,
+        mode=build.mode, tts_provider=build.tts_provider,
+        narrator_emotion=build.narrator_emotion,
+        narrator_instruction=build.narrator_instruction,
+        content_digest=content,
+        default_male_voice_id=build.default_male_voice_id,
+        default_female_voice_id=build.default_female_voice_id,
+    )
+    routed_voices = set(voices.values()) | {
+        build.narrator_voice_id, build.default_male_voice_id, build.default_female_voice_id,
+    }
+    models = sorted({
+        (_voice_id_provider_of(voice) or build.tts_provider,
+         _tts_model_param(_voice_id_provider_of(voice) or build.tts_provider),
+         _voice_model_lookup(voice))
+        for voice in routed_voices if voice
+    })
+    raw = json.dumps({
+        "config": config,
+        "characters": sorted((c.name or "", c.gender or "") for c in characters),
+        "models": models,
+    }, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def _control_requested(build_id: str) -> bool:
+    async with get_session_factory()() as session:
+        status = await session.scalar(select(Build.status).where(Build.build_id == build_id))
+        return status is None or status in ("pausing", "paused", "stopping", "cancelled")
+
+
+async def _confirm_build_control(build_id: str) -> str | None:
+    async with get_session_factory()() as session:
+        for intent, target, message in (
+            ("pausing", "paused", "已暂停"), ("stopping", "cancelled", "已停止"),
+        ):
+            await session.execute(update(Build).where(
+                Build.build_id == build_id, Build.status == intent,
+            ).values(
+                status=target, progress_msg=message,
+                completed_at=datetime.now(UTC).replace(tzinfo=None) if target == "cancelled" else None,
+            ))
+        await session.commit()
+        return await session.scalar(select(Build.status).where(Build.build_id == build_id))
+
+
+@_serialize_start_per_project
+async def pause_build(project_id: str, build_id: str) -> BuildResp:
+    async with get_session_factory()() as session:
+        b = await session.get(Build, build_id)
+        if not b or b.project_id != project_id:
+            raise ValueError("Build 不存在或不属于该项目")
+        if b.status not in ("queued", "running", "pausing", "paused"):
+            raise BuildControlConflict(f"status={b.status}，无法暂停")
+        if b.status in ("queued", "running"):
+            digest = b.resume_digest or await _calc_resume_digest(session, b)
+            await session.execute(update(Build).where(
+                Build.build_id == build_id, Build.status.in_(("queued", "running")),
+            ).values(status="pausing", progress_msg="暂停中", resume_digest=digest))
+            await session.commit()
+        async with _RUNNING_LOCK:
+            if build_id not in _ACTIVE_BUILDS:
+                await _confirm_build_control(build_id)
+        await session.refresh(b)
+        return _build_to_resp(b)
+
+
+@_serialize_start_per_project
+async def stop_build(project_id: str, build_id: str) -> BuildResp:
+    async with get_session_factory()() as session:
+        b = await session.get(Build, build_id)
+        if not b or b.project_id != project_id:
+            raise ValueError("Build 不存在或不属于该项目")
+        if b.status not in ("queued", "running", "pausing", "paused", "stopping", "cancelled"):
+            raise BuildControlConflict(f"status={b.status}，无法停止")
+        await session.execute(update(Build).where(
+            Build.build_id == build_id,
+            Build.status.in_(("queued", "running", "pausing", "paused")),
+        ).values(status="stopping", progress_msg="停止中"))
+        await session.commit()
+        async with _RUNNING_LOCK:
+            if build_id not in _ACTIVE_BUILDS:
+                await _confirm_build_control(build_id)
+        await session.refresh(b)
+        return _build_to_resp(b)
+
+
+@_serialize_start_per_project
+async def resume_build(project_id: str, build_id: str) -> BuildResp:
+    async with get_session_factory()() as session:
+        b = await session.get(Build, build_id)
+        if not b or b.project_id != project_id:
+            raise ValueError("Build 不存在或不属于该项目")
+        if b.status in ("queued", "running") and b.resume_digest:
+            return _build_to_resp(b)
+        if b.status != "paused":
+            raise BuildControlConflict(f"status={b.status}，无法继续")
+        async with _RUNNING_LOCK:
+            if project_id in _ACTIVE_BUILDS.values():
+                raise BuildControlConflict("项目仍有活跃 worker，暂时无法继续")
+            other = await session.scalar(select(Build.build_id).where(
+                Build.project_id == project_id, Build.build_id != build_id,
+                Build.status.in_(("queued", "running", "pausing", "paused", "stopping")),
+            ).limit(1))
+            if other:
+                raise BuildControlConflict("项目存在其他活跃构建")
+            digest = await _calc_resume_digest(session, b)
+            if not b.resume_digest or digest != b.resume_digest:
+                raise BuildControlConflict("构建输入或 TTS 模型已变化，无法继续原构建")
+            result = await session.execute(update(Build).where(
+                Build.build_id == build_id, Build.status == "paused",
+            ).values(status="queued", progress_msg="等待继续", completed_at=None))
+            await session.commit()
+            if not getattr(result, "rowcount", 0):
+                raise BuildControlConflict("构建状态已变化")
+            _ACTIVE_BUILDS[build_id] = project_id
+        await session.refresh(b)
+        asyncio.create_task(_run_build_runner(
+            build_id, project_id, json.loads(b.voice_assignments_json or "{}"),
+            b.narrator_voice_id, b.speed, trigger="resume",
+        ), name=f"build_resume_{build_id[:8]}")
+        return _build_to_resp(b)
+
+
+async def _run_build_runner(
+    build_id: str, project_id: str, voice_assignments: dict[str, str],
+    narrator_voice_id: str, speed: float, *,
+    only_chapter_idxs: list[int] | None = None, source_build_id: str | None = None,
+    trigger: str = "api", job_task_id: str | None = None,
+) -> None:
+    from .job_tasks import HeartbeatContext, finish_task, register_task
+
+    final_error = None
+    try:
+        if job_task_id is None:
+            try:
+                job_task_id = (await register_task("build", build_id, trigger=trigger)).task_id
+            except Exception as exc:
+                logger.warning("[build_worker] 注册 JobTask 失败: %s", type(exc).__name__, exc_info=True)
+        async with HeartbeatContext(job_task_id):
+            await _run_build_inner(
+                build_id=build_id, project_id=project_id, voice_assignments=voice_assignments,
+                narrator_voice_id=narrator_voice_id, speed=speed,
+                only_chapter_idxs=only_chapter_idxs, source_build_id=source_build_id,
+            )
+    except (Exception, asyncio.CancelledError) as exc:
+        final_error = f"{type(exc).__name__}: {exc}"
+        target = "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
+        async with get_session_factory()() as session:
+            await session.execute(update(Build).where(
+                Build.build_id == build_id, Build.status.in_(("queued", "running")),
+            ).values(status=target, progress_msg=final_error[:200],
+                     completed_at=datetime.now(UTC).replace(tzinfo=None)))
+            await session.commit()
+        logger.exception("[build_worker] worker 退出: %s", final_error)
+    finally:
+        lock = _START_LOCKS.setdefault(project_id, asyncio.Lock())
+        async with lock:
+            await _unregister_active_build(build_id, project_id)
+            status = await _confirm_build_control(build_id)
+            final_status = "success" if status in ("success", "partial_success") else status
+            if job_task_id:
+                try:
+                    await finish_task(job_task_id, status=final_status or "failed", error_msg=final_error)
+                except Exception as exc:
+                    logger.warning("[build_worker] 写 JobTask 终态失败: %s", type(exc).__name__, exc_info=True)
 
 
 async def cancel_build(project_id: str, build_id: str, reason: str | None = None) -> BuildResp:
@@ -1841,7 +1987,7 @@ async def cancel_build(project_id: str, build_id: str, reason: str | None = None
     return _build_to_resp(b)
 
 
-async def retry_failed_build(
+async def _retry_failed_build_impl(
     source_build_id: str,
     force_restart_failed_only: bool = True,
     chapters: list[int] | None = None,
@@ -1858,6 +2004,7 @@ async def retry_failed_build(
         if not source_build:
             raise ValueError(f"Build 不存在: {source_build_id}")
         project_id = source_build.project_id
+        await _ensure_no_controlled_build(project_id)
 
         _validate_tts_namespace(
             source_build.tts_provider, source_build.mode,
@@ -1971,6 +2118,7 @@ async def retry_failed_build(
             narrator_emotion=(source_build.narrator_emotion or ""),
             narrator_instruction=(source_build.narrator_instruction or ""),
         )
+        new_b.resume_digest = await _calc_resume_digest(session, new_b)
         session.add(new_b)
 
         new_completed = 0
@@ -2022,95 +2170,31 @@ async def retry_failed_build(
 
     await _register_active_build(new_build_id, project_id)
 
-    async def _runner() -> None:
-        # P1 #7：retry 路径同样注册 JobTask
-        from .job_tasks import register_task, HeartbeatContext, finish_task
-        job_task_id: str | None = None
-        try:
-            job = await register_task("build", new_build_id, trigger="retry")
-            job_task_id = job.task_id
-        except Exception as e:
-            logger.warning(
-                f"[retry_worker] 注册 JobTask 失败 build_id={new_build_id[:8]}... "
-                f"{type(e).__name__}: {e}"
-            )
-            job_task_id = None
-
-        final_status = "failed"
-        final_error: str | None = None
-        try:
-            async with HeartbeatContext(job_task_id):
-                try:
-                    await _run_build_inner(
-                        build_id=new_build_id,
-                        project_id=project_id,
-                        voice_assignments=voice_assignments,
-                        narrator_voice_id=narrator_voice_id,
-                        speed=speed,
-                        only_chapter_idxs=failed_ch_idxs,
-                        source_build_id=source_build_id,
-                    )
-                    f1 = get_session_factory()
-                    async with f1() as s1:
-                        b_after = await s1.get(Build, new_build_id)
-                        if b_after and b_after.status in ("success", "partial_success"):
-                            final_status = "success"
-                        elif b_after and b_after.status == "cancelled":
-                            final_status = "cancelled"
-                        elif b_after and b_after.status == "failed":
-                            final_status = "failed"
-                except Exception as e:
-                    logger.error(
-                        f"[retry_worker] FAIL build_id={new_build_id[:8]}... "
-                        f"{type(e).__name__}: {e}",
-                        exc_info=True,
-                    )
-                    final_error = f"{type(e).__name__}: {e}"
-                    try:
-                        f2 = get_session_factory()
-                        async with f2() as s:
-                            b2 = await s.get(Build, new_build_id)
-                            if b2:
-                                b2.status = "failed"
-                                b2.progress_msg = f"合成失败: {type(e).__name__}: {e}"[:200]
-                                b2.completed_at = datetime.now(UTC).replace(tzinfo=None)
-                                await s.commit()
-                    except Exception as e2:
-                        logger.error(f"[retry_worker] final status write fail: {e2}")
-                    final_status = "failed"
-        except asyncio.CancelledError:
-            final_status = "cancelled"
-            final_error = "retry worker cancelled"
-            try:
-                f2 = get_session_factory()
-                async with f2() as s:
-                    b2 = await s.get(Build, new_build_id)
-                    if b2:
-                        b2.status = "cancelled"
-                        b2.progress_msg = "retry worker cancelled"
-                        b2.completed_at = datetime.now(UTC).replace(tzinfo=None)
-                        await s.commit()
-            except Exception:
-                pass
-            raise
-        finally:
-            if job_task_id:
-                try:
-                    await finish_task(
-                        job_task_id, status=final_status, error_msg=final_error,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"[retry_worker] 写 JobTask 终态失败 task_id={job_task_id}: {e}"
-                    )
-            await _unregister_active_build(new_build_id, project_id)
-
-    asyncio.create_task(_runner(), name=f"retry_{new_build_id[:8]}")
+    asyncio.create_task(
+        _run_build_runner(
+            new_build_id, project_id, voice_assignments, narrator_voice_id, speed,
+            only_chapter_idxs=failed_ch_idxs, source_build_id=source_build_id, trigger="retry",
+        ),
+        name=f"retry_{new_build_id[:8]}",
+    )
     logger.info(
         f"[retry_build] launched worker build_id={new_build_id[:8]}... "
         f"project_id={project_id[:8]}... retry_chapters={len(failed_ch_idxs)}"
     )
     return cur_resp
+
+
+async def retry_failed_build(
+    source_build_id: str, force_restart_failed_only: bool = True,
+    chapters: list[int] | None = None,
+) -> BuildResp:
+    async with get_session_factory()() as session:
+        source = await session.get(Build, source_build_id)
+        if not source:
+            raise ValueError(f"Build 不存在: {source_build_id}")
+        project_id = source.project_id
+    async with _START_LOCKS.setdefault(project_id, asyncio.Lock()):
+        return await _retry_failed_build_impl(source_build_id, force_restart_failed_only, chapters)
 
 
 def _write_chapter_timings(
@@ -2241,6 +2325,10 @@ async def _run_build_inner(
         b = await s.get(Build, build_id)
         if not b:
             raise RuntimeError(f"Build 不存在: {build_id}")
+        existing_zip_shards = {
+            (shard["filename"], shard["start"], shard["end"]): shard
+            for shard in _parse_zip_shards(b)
+        }
         build_mode = (b.mode or "classic").lower()
         tts_provider_label = b.tts_provider or "doubao"
         # 情感/语气配置快照（build 启动时写入，这里只读快照）
@@ -2302,11 +2390,17 @@ async def _run_build_inner(
     completed = 0
     failed_count = 0
     chapter_ok_flag: dict[int, bool] = {}
+    regenerated_chapters: set[int] = set()
     # TTS 用量计数（真实供应商调用；缓存命中不计 calls）
     tts_calls_used = 0
     tts_chars_used = 0
+    usage_totals = _tts_usage_scope.get() or {}
+    base_calls = usage_totals.get("base_calls", 0)
+    base_chars = usage_totals.get("base_chars", 0)
 
     for ch_idx, ch in enumerate(chapters):
+        if await _control_requested(build_id):
+            return
         cancelled_now = False
         async with factory() as s:
             b_check = await s.get(Build, build_id)
@@ -2383,10 +2477,6 @@ async def _run_build_inner(
                     f"ch {ch_idx+1}/{total} 从 source_build 复用 → skip"
                 )
                 continue
-            else:
-                chapter_outputs[ch_idx] = (None, None)
-                chapter_ok_flag[ch_idx] = True
-                continue
 
         skip_this_chapter = False
         ch_ok_path = None
@@ -2398,10 +2488,21 @@ async def _run_build_inner(
             )
             art = (await s.execute(stmt_art)).scalar_one_or_none()
 
-            if art and art.status == "done" and art.audio_filename:
-                p = audio_dir / art.audio_filename
-                if p.is_file():
-                    ch_ok_path = p
+            if art and art.status in ("done", "failed") and art.audio_filename:
+                artifact_path = audio_dir / art.audio_filename
+                if not artifact_path.is_file():
+                    await _restore_from_object_storage(project_id, build_id, art.audio_filename, artifact_path)
+                if art.status == "failed":
+                    if not artifact_path.is_file():
+                        regenerated_chapters.add(ch_idx)
+                        artifact_path.write_bytes(make_silent_mp3(1000, sample_rate=settings.DOUBAO_AUDIO_SAMPLE_RATE))
+                    chapter_outputs[ch_idx] = (str(artifact_path), art.duration_ms or 1000)
+                    failed_count += 1
+                    chapter_ok_flag[ch_idx] = False
+                    processed += 1
+                    continue
+                if artifact_path.is_file():
+                    ch_ok_path = artifact_path
                     ch_ok_duration_ms = art.duration_ms
             if ch_ok_path is None:
                 p_normal = audio_dir / _audio_filename(build_id, ch_idx, failed=False)
@@ -2457,6 +2558,7 @@ async def _run_build_inner(
                 await s.commit()
             continue
 
+        regenerated_chapters.add(ch_idx)
         async with factory() as s:
             stmt_art = select(BuildArtifact).where(
                 BuildArtifact.build_id == build_id,
@@ -2615,8 +2717,8 @@ async def _run_build_inner(
                     # B-8：每章结束就把当前 TTS 用量落库，这样即便后续打包/DB
                     # 抛异常导致 worker 异常退出，Build 行也已保留到最近一章的
                     # 真实用量（不再只有正常走完全程才写一次）。
-                    b.tts_calls = tts_calls_used
-                    b.tts_chars = tts_chars_used
+                    b.tts_calls = base_calls + tts_calls_used
+                    b.tts_chars = base_chars + tts_chars_used
                     if b.status == "cancelled":
                         logger.warning(f"[build_worker] cancelled after done ch {ch_idx+1}")
                         b.progress_msg = f"已取消：已完成 {completed}/{total} 章"
@@ -2708,6 +2810,9 @@ async def _run_build_inner(
                     break
             continue
 
+    if await _control_requested(build_id):
+        return
+
     was_cancelled = False
     async with factory() as s:
         b_check2 = await s.get(Build, build_id)
@@ -2749,6 +2854,8 @@ async def _run_build_inner(
             f"ZIP 将不含 .lrc: {type(e).__name__}: {e}"
         )
         lrc_by_chapter = {}
+    if await _control_requested(build_id):
+        return
     chapter_lrcs: list[str] = [lrc_by_chapter.get(c.idx, "") for c in chapters]
 
     # G-3：每章 LRC 作为独立交付物归档（决策 4 明确 LRC 属于交付物）。
@@ -2757,6 +2864,8 @@ async def _run_build_inner(
     # 归档的 .lrc 主要用于「直接给外部玩家/脚本一个稳定直链」。
     if get_storage().archives_remotely:
         for _c in chapters:
+            if await _control_requested(build_id):
+                return
             _lrc_text = lrc_by_chapter.get(_c.idx, "")
             if not (_lrc_text or "").strip():
                 continue
@@ -2801,24 +2910,35 @@ async def _run_build_inner(
             )
             await s.commit()
 
-    for _s, _e in shard_ranges:
-        shard_name = _zip_shard_filename(build_id, _s, _e, total)
+    for shard_start, shard_end in shard_ranges:
+        if await _control_requested(build_id):
+            return
+        shard_name = _zip_shard_filename(build_id, shard_start, shard_end, total)
         shard_path = str(audio_dir / shard_name)
-        try:
-            _build_book_zip(
-                shard_path,
-                job_id=build_id,
-                job_title=job_title,
-                chapter_outputs=chapter_outputs,
-                chapter_titles=chapter_titles,
-                chapter_lrcs=chapter_lrcs,
-                start=_s,
-                end=_e,
+        existing_shard = existing_zip_shards.get((shard_name, shard_start, shard_end))
+        reuse_shard = (
+            existing_shard is not None
+            and not regenerated_chapters.intersection(range(shard_start, shard_end + 1))
+            and await asyncio.to_thread(
+                _can_reuse_zip_shard, Path(shard_path), existing_shard.get("size_bytes"),
             )
+        )
+        try:
+            if not reuse_shard:
+                await asyncio.to_thread(
+                    _build_book_zip, shard_path,
+                    job_id=build_id,
+                    job_title=job_title,
+                    chapter_outputs=chapter_outputs,
+                    chapter_titles=chapter_titles,
+                    chapter_lrcs=chapter_lrcs,
+                    start=shard_start,
+                    end=shard_end,
+                )
         except Exception as e:
             logger.error(
                 f"[build_worker] build_id={build_id[:8]}... 打包分片失败 "
-                f"ch{_s + 1}-{_e + 1}: {type(e).__name__}: {e}",
+                f"ch{shard_start + 1}-{shard_end + 1}: {type(e).__name__}: {e}",
                 exc_info=True,
             )
             raise
@@ -2828,8 +2948,8 @@ async def _run_build_inner(
             _size = None
         zip_shards.append({
             "filename": shard_name,
-            "start": _s,
-            "end": _e,
+            "start": shard_start,
+            "end": shard_end,
             "size_bytes": _size,
         })
         # H-4：每打完一片更新分片进度（仅 running 时写；已被取消则不动）
@@ -2849,6 +2969,12 @@ async def _run_build_inner(
                     completed_timings=_h13_completed_timings,
                 )
                 await s.commit()
+        async with factory() as s:
+            await s.execute(update(Build).where(Build.build_id == build_id).values(
+                zip_filename=zip_shards[0]["filename"],
+                zip_filenames_json=json.dumps(zip_shards, ensure_ascii=False),
+            ))
+            await s.commit()
         # G-3：分片 ZIP 归档（在本地 MP3 清理之前 —— 打包必须读本地文件）
         if await _archive_file(
             media_key(project_id, build_id, shard_name),
@@ -2856,6 +2982,8 @@ async def _run_build_inner(
             "application/zip",
         ):
             archived_files.add(shard_name)
+        if await _control_requested(build_id):
+            return
     # zip_filename 保留为首个分片（旧代码路径 / 媒体签名兜底都依赖它）
     zip_fname = zip_shards[0]["filename"] if zip_shards else _zip_filename(build_id)
     if len(zip_shards) > 1:
@@ -2930,8 +3058,8 @@ async def _run_build_inner(
         total_duration_ms=total_ms,
         failed_chapters=this_retry_failed,
         # TTS 用量：真实供应商调用（缓存命中不计次）
-        tts_calls=tts_calls_used,
-        tts_chars=tts_chars_used,
+        tts_calls=base_calls + tts_calls_used,
+        tts_chars=base_chars + tts_chars_used,
         zip_shards=zip_shards,
         # H-4：终态 meta 保留最终速率（remaining=0、eta=null、phase=done）
         # H-5：附带质检摘要
@@ -3024,6 +3152,7 @@ async def get_build_status(build_id: str) -> BuildStatusResp:
         return _build_to_status_resp(b, arts)
 
 
+@_serialize_start_per_project
 async def delete_build(project_id: str, build_id: str) -> None:
     """删除 build + 磁盘 MP3 / ZIP 文件。"""
     await _ensure_project_not_running(project_id, "删除 Build")

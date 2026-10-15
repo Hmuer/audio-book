@@ -402,6 +402,12 @@ export const api = {
   // build 轮询状态
   buildStatus: (projectId: string, buildId: string) =>
     _fetch<BuildStatusResp>(`/api/projects/${projectId}/builds/${buildId}/status`),
+  buildPause: (projectId: string, buildId: string) =>
+    _fetch<BuildResp>(`/api/projects/${projectId}/builds/${buildId}/pause`, { method: 'POST' }),
+  buildResume: (projectId: string, buildId: string) =>
+    _fetch<BuildResp>(`/api/projects/${projectId}/builds/${buildId}/resume`, { method: 'POST' }),
+  buildStop: (projectId: string, buildId: string) =>
+    _fetch<BuildResp>(`/api/projects/${projectId}/builds/${buildId}/stop`, { method: 'POST' }),
   // 删除 build
   buildDelete: (projectId: string, buildId: string) =>
     _fetch<{ ok: boolean }>(`/api/projects/${projectId}/builds/${buildId}`, {

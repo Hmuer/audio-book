@@ -17,6 +17,7 @@ project.py 在底部 re-export 这些名字，避免破坏既有 import。
 """
 from __future__ import annotations
 
+import functools
 import logging
 import re as _re
 from datetime import datetime
@@ -28,6 +29,20 @@ from ..db.models import ProjectPronunciationRule
 from ..db.session import get_session_factory
 
 logger = logging.getLogger(__name__)
+
+
+def _serialize_project_edit(func):
+    @functools.wraps(func)
+    async def wrapped(*args, **kwargs):
+        from .build import _ensure_project_not_running, _serialize_start_per_project
+
+        async def edit(project_id, *rest, **options):
+            await _ensure_project_not_running(project_id, "修改项目内容")
+            return await func(project_id, *rest, **options)
+
+        return await _serialize_start_per_project(edit)(*args, **kwargs)
+
+    return wrapped
 
 
 # =====================================================================
@@ -73,6 +88,7 @@ async def list_pronunciation_rules(project_id: str) -> list[PronunciationRule]:
         return [PronunciationRule.model_validate(r, from_attributes=True) for r in rows]
 
 
+@_serialize_project_edit
 async def create_pronunciation_rule(
     project_id: str, inp: PronunciationRuleInput
 ) -> PronunciationRule:
@@ -103,6 +119,7 @@ async def create_pronunciation_rule(
         return PronunciationRule.model_validate(r, from_attributes=True)
 
 
+@_serialize_project_edit
 async def update_pronunciation_rule(
     project_id: str, rule_id: int, inp: PronunciationRuleInput
 ) -> PronunciationRule:
@@ -128,6 +145,7 @@ async def update_pronunciation_rule(
         return PronunciationRule.model_validate(r, from_attributes=True)
 
 
+@_serialize_project_edit
 async def delete_pronunciation_rule(project_id: str, rule_id: int) -> None:
     factory = get_session_factory()
     async with factory() as session:

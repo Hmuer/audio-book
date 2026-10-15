@@ -8,7 +8,7 @@ import {
   ProjectDetailResp,
   BuildListItem,
   BuildDetailResp,
-  BuildStatusResp,
+  BuildResp,
   BuildEstimateResp,
   ProjectUsageResp,
   DialogueLine,
@@ -19,6 +19,7 @@ import {
 } from '@/lib/api';
 import { parseTime, relativeTime, fmtElapsed } from '@/lib/time';
 import { normalizeGender, defaultVoiceForGender, characterDefaultGender } from '@/lib/voiceUtils';
+import { BuildControlAction, isBuildRunning, isBuildBlocking, canControlBuild, buildControlMessage, BUILD_STOP_CONFIRMATION } from '@/lib/buildState';
 import VoicePicker from './VoicePicker';
 import WaveformPlayer from './WaveformPlayer';
 import { StatusBadge } from './ProjectListPage';
@@ -106,6 +107,7 @@ export default function ProjectDetailPage({
   const [builds, setBuilds] = useState<BuildListItem[]>([]);
   const [tab, setTab] = useState<Tab>('overview');
   const [err, setErr] = useState<string | null>(null);
+  const reloadRequestRef = useRef(0);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playingKey, setPlayingKey] = useState<string | null>(null);
@@ -120,12 +122,14 @@ export default function ProjectDetailPage({
   );
 
   const reload = async () => {
+    const request = ++reloadRequestRef.current;
     setErr(null);
     try {
       const [detail, bl] = await Promise.all([
         api.projectGet(projectId),
         api.buildList(projectId),
       ]);
+      if (request !== reloadRequestRef.current) return;
       setProject(detail);
       setBuilds(
         [...bl].sort(
@@ -134,23 +138,30 @@ export default function ProjectDetailPage({
         )
       );
     } catch (e: any) {
-      setErr(String(e?.message || e));
+      if (request === reloadRequestRef.current) setErr(String(e?.message || e));
     }
+  };
+
+  const onBuildUpdated = (updated: BuildResp) => {
+    reloadRequestRef.current++;
+    setBuilds(current => current.map(b => b.build_id === updated.build_id ? { ...b, ...updated } : b));
   };
 
   useEffect(() => {
     reload();
+    return () => { reloadRequestRef.current++; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
+  const pollingBuildIds = builds.filter(b => isBuildRunning(b.status)).map(b => b.build_id).join(',');
   const preparing = project?.status === 'preparing';
   useEffect(() => {
-    if (!preparing) return;
+    if (!preparing && !pollingBuildIds) return;
     const timer = setInterval(() => {
       reload();
     }, 2000);
     return () => clearInterval(timer);
-  }, [preparing, projectId]);
+  }, [preparing, pollingBuildIds, projectId]);
 
   const playingKeyRef = useRef<string | null>(null);
   // 音色试听走 Blob URL（/media 需鉴权头，而 <audio src> 带不上）—— 需手动释放
@@ -369,6 +380,7 @@ export default function ProjectDetailPage({
               projectId={projectId}
               project={project!}
               builds={builds}
+              onBuildUpdated={onBuildUpdated}
               voices={voices}
               narratorDefault={narratorDefault}
               playingKey={playingKey}
@@ -377,7 +389,7 @@ export default function ProjectDetailPage({
             />
           )}
           {tab === 'settings' && (
-            <SettingsTab project={project!} voices={voices} onReload={reload} />
+            <SettingsTab project={project!} voices={voices} onReload={reload} buildBlocked={builds.some(b => isBuildBlocking(b.status))} />
           )}
         </div>
       </div>
@@ -1175,13 +1187,7 @@ const EMOTION_PRESETS = [
   { value: 'gentle', label: '温柔' },
   { value: 'cold', label: '冷漠' },
 ];
-// Build 级运行态判定：后端 Build.status ∈ {queued, running, success, partial_success, failed, cancelled}
-// （'synthesizing'/'preparing' 是项目级响应层映射，不用于 build 判断）
-const BUILD_RUNNING_STATES = ['queued', 'running', 'synthesizing', 'preparing'];
 const BUILD_DONE_STATES = ['done', 'success', 'partial_success'];
-function isBuildRunning(status: string): boolean {
-  return BUILD_RUNNING_STATES.includes(status);
-}
 const CHARACTER_COLORS: { bg: string; fg: string; border: string }[] = [
   { bg: 'rgba(var(--palette-purple-bg), 0.14)', fg: 'rgb(var(--palette-purple-fg))', border: 'rgba(var(--palette-purple-bg), 0.30)' },   // 紫
   { bg: 'rgba(var(--palette-pink-bg), 0.14)',   fg: 'rgb(var(--palette-pink-fg))',   border: 'rgba(var(--palette-pink-bg), 0.30)' },    // 粉
@@ -1870,11 +1876,12 @@ function VoicesTab({
 
 // =================== Builds Tab ===================
 function BuildsTab({
-  projectId, project, builds, voices, narratorDefault, playingKey, onTogglePlay, onReload,
+  projectId, project, builds, voices, narratorDefault, playingKey, onTogglePlay, onReload, onBuildUpdated,
 }: {
   projectId: string;
   project: ProjectDetailResp;
   builds: BuildListItem[];
+  onBuildUpdated: (updated: BuildResp) => void;
   voices: Voice[];
   narratorDefault: Voice | undefined;
   playingKey: string | null;
@@ -1886,21 +1893,14 @@ function BuildsTab({
   // 项目累计供应商用量（LLM prepare + TTS build）
   const [usage, setUsage] = useState<ProjectUsageResp | null>(null);
 
-  const hasRunning = builds.some(b => isBuildRunning(b.status));
+  const hasPaused = builds.some(b => b.status === 'paused');
+  const buildBlocked = builds.some(b => isBuildBlocking(b.status));
 
   useEffect(() => {
     api.projectUsage(projectId)
       .then(setUsage)
       .catch(() => { /* 静默：用量仅展示用 */ });
   }, [projectId]);
-
-  useEffect(() => {
-    if (!hasRunning) return;
-    const timer = setInterval(() => {
-      onReload();
-    }, 2000);
-    return () => clearInterval(timer);
-  }, [hasRunning, onReload]);
 
   const onCreateSuccess = async () => {
     setShowCreate(false);
@@ -1931,13 +1931,17 @@ function BuildsTab({
         <button
           className="btn-primary shrink-0 relative"
           onClick={() => setShowCreate(true)}
-          disabled={project.chapter_count === 0}
-          title={project.chapter_count === 0 ? '请先识别章节' : '启动一次构建'}
+          disabled={project.chapter_count === 0 || buildBlocked}
+          title={hasPaused ? '请继续或停止现有构建后再开始生成' : buildBlocked ? '请等待现有构建完成或停止' : project.chapter_count === 0 ? '请先识别章节' : '启动一次构建'}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.29-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z"/></svg>
           开始生成
         </button>
       </div>
+
+      {hasPaused && (
+        <p className="text-sm text-ink-500" role="status">已有暂停构建，请继续或停止现有构建后再开始生成。</p>
+      )}
 
       {builds.length === 0 ? (
         <div className="glass-panel text-center py-16 text-ink-500">
@@ -1956,6 +1960,8 @@ function BuildsTab({
               key={b.build_id}
               projectId={projectId}
               item={b}
+              projectBlocked={buildBlocked}
+              onBuildUpdated={onBuildUpdated}
               expanded={expandedId === b.build_id}
               onToggleExpand={() =>
                 setExpandedId(prev => (prev === b.build_id ? null : b.build_id))
@@ -1968,7 +1974,7 @@ function BuildsTab({
         </div>
       )}
 
-      {showCreate && (
+      {showCreate && !buildBlocked && (
         <CreateBuildModal
           projectId={projectId}
           project={project}
@@ -1983,10 +1989,12 @@ function BuildsTab({
 }
 
 function BuildRow({
-  projectId, item, expanded, onToggleExpand, playingKey, onTogglePlay, onReload,
+  projectId, item, expanded, onToggleExpand, playingKey, onTogglePlay, onReload, onBuildUpdated, projectBlocked,
 }: {
   projectId: string;
   item: BuildListItem;
+  projectBlocked: boolean;
+  onBuildUpdated: (updated: BuildResp) => void;
   expanded: boolean;
   onToggleExpand: () => void;
   playingKey: string | null;
@@ -1997,31 +2005,37 @@ function BuildRow({
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [confirmStop, setConfirmStop] = useState(false);
+  const [pendingAction, setPendingAction] = useState<BuildControlAction | 'delete' | 'retry' | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const requestPendingRef = useRef(false);
+  const detailRequestRef = useRef(0);
 
   const pct =
     item.total_chapters > 0
       ? Math.round((item.completed_chapters / item.total_chapters) * 100)
       : 0;
   const isRunning = isBuildRunning(item.status);
+  const controlMessage = buildControlMessage(item.status);
+  const deleteDisabled = isRunning || projectBlocked || pendingAction !== null;
 
   const loadDetail = async () => {
+    const request = ++detailRequestRef.current;
     setLoadingDetail(true);
     try {
       const d = await api.buildGet(projectId, item.build_id);
-      setDetail(d);
+      if (request === detailRequestRef.current) setDetail(d);
     } catch (e: any) {
       console.error('load build detail:', errToLog(e));
     } finally {
-      setLoadingDetail(false);
+      if (request === detailRequestRef.current) setLoadingDetail(false);
     }
   };
 
   useEffect(() => {
-    if (expanded && !detail && !loadingDetail) {
-      loadDetail();
-    }
+    if (expanded) loadDetail();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expanded]);
+  }, [expanded, item.status, item.build_id, projectId]);
 
   useEffect(() => {
     if (!expanded || !isRunning) return;
@@ -2030,14 +2044,40 @@ function BuildRow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded, isRunning]);
 
+  const onControl = async (action: BuildControlAction) => {
+    if (requestPendingRef.current || !canControlBuild(item.status, action)) return;
+    if (action === 'stop' && !confirmStop) return;
+    requestPendingRef.current = true;
+    setPendingAction(action);
+    setActionError(null);
+    try {
+      const updated = await (action === 'pause' ? api.buildPause : action === 'resume' ? api.buildResume : api.buildStop)(projectId, item.build_id);
+      onBuildUpdated(updated);
+      setConfirmStop(false);
+      await onReload();
+    } catch (e: any) {
+      setActionError(`${action === 'pause' ? '暂停' : action === 'resume' ? '继续' : '停止'}失败: ${e?.message || e}`);
+    } finally {
+      requestPendingRef.current = false;
+      setPendingAction(null);
+    }
+  };
+
   const onDelete = async () => {
+    if (requestPendingRef.current || isRunning || projectBlocked) return;
+    requestPendingRef.current = true;
+    setPendingAction('delete');
+    setActionError(null);
     try {
       await api.buildDelete(projectId, item.build_id);
       setConfirmDelete(false);
       await onReload();
     } catch (e: any) {
-      alert(`删除失败: ${e?.message || e}`);
+      setActionError(`删除失败: ${e?.message || e}`);
       setConfirmDelete(false);
+    } finally {
+      requestPendingRef.current = false;
+      setPendingAction(null);
     }
   };
 
@@ -2047,13 +2087,19 @@ function BuildRow({
     (item.status === 'failed' || item.status === 'partial_success') &&
     (detail?.failed_chapters?.length ?? 0) + (item.total_chapters - item.completed_chapters) > 0;
   const onRetryFailed = async () => {
+    if (requestPendingRef.current || projectBlocked) return;
+    requestPendingRef.current = true;
+    setPendingAction('retry');
+    setActionError(null);
     setRetrying(true);
     try {
       await api.buildRetryFailed(projectId, item.build_id);
       await onReload();
     } catch (e: any) {
-      alert(`重试失败: ${e?.message || e}`);
+      setActionError(`重试失败: ${e?.message || e}`);
     } finally {
+      requestPendingRef.current = false;
+      setPendingAction(null);
       setRetrying(false);
     }
   };
@@ -2092,7 +2138,7 @@ function BuildRow({
             TTS {item.tts_calls} 次
           </span>
         )}
-        {isRunning && item.started_at && (
+        {item.status === 'running' && item.started_at && (
           <span className="chip"
             style={{
               background: 'rgba(var(--status-warn-bg), 0.18)',
@@ -2138,10 +2184,20 @@ function BuildRow({
         <span className="text-xs text-ink-500 ml-auto tabular-nums shrink-0">
           {relativeTime(item.created_at)}
         </span>
+        {(['pause', 'resume', 'stop'] as BuildControlAction[]).filter(action => canControlBuild(item.status, action)).map(action => (
+          <button
+            key={action}
+            className={action === 'stop' ? 'btn-danger !py-1.5 !px-3 text-xs' : 'btn-ghost !py-1.5 !px-3 text-xs'}
+            disabled={pendingAction !== null}
+            onClick={() => action === 'stop' ? setConfirmStop(true) : onControl(action)}
+          >
+            {pendingAction === action ? '请求中…' : action === 'pause' ? '暂停' : action === 'resume' ? '继续' : '停止'}
+          </button>
+        ))}
         {hasFailedChapters && (
           <button
             onClick={onRetryFailed}
-            disabled={retrying}
+            disabled={retrying || pendingAction !== null || projectBlocked}
             className="inline-flex items-center justify-center shrink-0 rounded-md
               border border-amber-500/30 bg-amber-500/10 text-amber-300
               hover:border-amber-500/50 hover:bg-amber-500/20
@@ -2158,12 +2214,13 @@ function BuildRow({
         )}
         <button
           onClick={() => setConfirmDelete(true)}
+          disabled={deleteDisabled}
           className="inline-flex items-center justify-center shrink-0 rounded-md
             border border-ink-300/70 bg-ink-200 text-ink-500
             hover:border-red-500/40 hover:bg-red-500/15 hover:text-red-300
             transition-all duration-150"
           style={{ width: 34, height: 34 }}
-          title="删除 build"
+          title={isRunning || projectBlocked ? '运行、暂停或控制中不能删除构建' : '删除 build'}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
         </button>
@@ -2176,6 +2233,20 @@ function BuildRow({
         />
       </div>
 
+      {controlMessage && <p className="text-xs text-ink-500" role="status">{controlMessage}</p>}
+      {actionError && <p className="text-sm text-red-400" role="alert">{actionError}</p>}
+      {confirmStop && canControlBuild(item.status, 'stop') && (
+        <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 space-y-3" role="alertdialog" aria-label="确认停止构建">
+          <p className="text-sm text-ink-700">{BUILD_STOP_CONFIRMATION}</p>
+          <div className="flex gap-2">
+            <button className="btn-ghost !py-1.5 text-xs" disabled={pendingAction !== null} onClick={() => setConfirmStop(false)}>取消</button>
+            <button className="btn-danger !py-1.5 !px-3 text-xs" disabled={pendingAction !== null} onClick={() => onControl('stop')}>
+              {pendingAction === 'stop' ? '请求中…' : '确认停止'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {expanded && (
         <div className="pt-1 mt-1 border-t border-ink-300/70">
           {loadingDetail && !detail ? (
@@ -2186,6 +2257,7 @@ function BuildRow({
           ) : detail ? (
             <BuildDetailContent
               detail={detail}
+              projectBlocked={projectBlocked}
               projectId={projectId}
               playingKey={playingKey}
               onTogglePlay={onTogglePlay}
@@ -2197,14 +2269,14 @@ function BuildRow({
         </div>
       )}
 
-      {confirmDelete && (
+      {confirmDelete && !isRunning && !projectBlocked && (
         <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 flex items-center justify-between gap-3 flex-wrap">
           <span className="text-sm text-red-200">确认删除该构建？删除后所有音频产物不可恢复。</span>
           <div className="flex gap-2">
-            <button className="btn-ghost !py-1.5 text-xs" onClick={() => setConfirmDelete(false)}>
+            <button className="btn-ghost !py-1.5 text-xs" disabled={pendingAction !== null} onClick={() => setConfirmDelete(false)}>
               取消
             </button>
-            <button className="btn-danger !py-1.5 !px-3 text-xs" onClick={onDelete}>
+            <button className="btn-danger !py-1.5 !px-3 text-xs" disabled={deleteDisabled} onClick={onDelete}>
               确认删除
             </button>
           </div>
@@ -2215,9 +2287,10 @@ function BuildRow({
 }
 
 function BuildDetailContent({
-  detail, projectId, playingKey, onTogglePlay, onReload,
+  detail, projectId, playingKey, onTogglePlay, onReload, projectBlocked,
 }: {
   detail: BuildDetailResp;
+  projectBlocked: boolean;
   projectId: string;
   playingKey: string | null;
   onTogglePlay: (key: string, url: string | null) => void;
@@ -2230,14 +2303,16 @@ function BuildDetailContent({
   const zipShards = detail.zip_shards ?? [];
   // F-5：分批渲染 + 只签发可见区间
   const [visibleCount, setVisibleCount] = useState(ARTIFACTS_PAGE_SIZE);
-  const signedUntilRef = useRef(0);
+  const signedChaptersRef = useRef<Record<number, string>>({});
+  const visibleArtifactsKey = (detail.artifacts ?? []).slice(0, visibleCount).map(a => `${a.chapter_idx}:${a.status}`).join(',');
+  const zipShardsKey = zipShards.map(s => `${s.idx}:${s.filename}:${s.start_chapter}:${s.end_chapter}`).join(',');
   // H-5：质检可疑章重跑（单章 / 全部）
   const [rerunning, setRerunning] = useState(false);
   const quality = detail.quality_report ?? null;
   const isDoneState = BUILD_DONE_STATES.includes(detail.status);
 
   const onRerunChapters = async (chapters: number[]) => {
-    if (!chapters.length) return;
+    if (!chapters.length || projectBlocked || rerunning) return;
     if (!window.confirm(`确定重跑 ${chapters.map(c => c + 1).join('、')} 章？其余章节将复用现有音频。`)) return;
     setRerunning(true);
     try {
@@ -2251,40 +2326,40 @@ function BuildDetailContent({
   };
 
   useEffect(() => {
+    signedChaptersRef.current = {};
+    setSignedUrls({});
+    setZipUrls({});
+    setVisibleCount(ARTIFACTS_PAGE_SIZE);
+  }, [detail.build_id, projectId]);
+
+  useEffect(() => {
     let cancelled = false;
     const signAll = async () => {
-      // F-5：只为「当前可见的产物」签发（分批渲染 + 批量签发），
-      // 否则数千章时是数千次串行请求，且会超过签名 TTL。
       const arts = (detail.artifacts ?? []).slice(0, visibleCount);
-      const end = arts.length;
       const CHUNK = 120;
-      const updates: Record<number, string> = {};
-      let okUntil = signedUntilRef.current;
-      for (let s0 = signedUntilRef.current; s0 < end; s0 += CHUNK) {
-        const cnt = Math.min(CHUNK, end - s0);
+      for (let offset = 0; offset < arts.length; offset += CHUNK) {
+        const missing = arts.slice(offset, offset + CHUNK).filter(a => a.status === 'done' && !signedChaptersRef.current[a.chapter_idx]);
+        if (!missing.length) continue;
+        const start = Math.min(...missing.map(a => a.chapter_idx));
+        const count = Math.max(...missing.map(a => a.chapter_idx)) - start + 1;
         try {
-          Object.assign(
-            updates,
-            await api.buildChapterSigns(projectId, detail.build_id, s0, cnt)
-          );
-          okUntil = s0 + cnt;
+          const updates = await api.buildChapterSigns(projectId, detail.build_id, start, count);
+          if (cancelled) return;
+          Object.assign(signedChaptersRef.current, updates);
+          setSignedUrls(prev => ({ ...prev, ...updates }));
         } catch (e) {
-          console.warn('batch sign chapters failed', s0, e);
+          console.warn('batch sign chapters failed', start, e);
           break;
         }
       }
-      signedUntilRef.current = okUntil;
-      if (!cancelled && Object.keys(updates).length) {
-        setSignedUrls(prev => ({ ...prev, ...updates }));
-      }
 
-      // F-7：ZIP 分片（单包时数组长度为 1）——逐个签发下载 URL
       const shards = detail.zip_shards ?? [];
       if (shards.length > 0) {
         const zUpdates: Record<number, string> = {};
         for (const s of shards) {
           try {
             zUpdates[s.idx] = await api.buildDownloadAll(projectId, detail.build_id, s.idx);
+            if (cancelled) return;
           } catch (e) {
             console.warn('sign zip url failed', s.idx, e);
           }
@@ -2296,7 +2371,7 @@ function BuildDetailContent({
     };
     signAll();
     return () => { cancelled = true; };
-  }, [detail.build_id, projectId, visibleCount, (detail.artifacts ?? []).length, (detail.zip_shards ?? []).length]);
+  }, [detail.build_id, projectId, visibleCount, visibleArtifactsKey, zipShardsKey]);
 
   return (
     <div className="space-y-3">
@@ -2309,14 +2384,16 @@ function BuildDetailContent({
             TTS {detail.tts_calls} 次 / {detail.tts_chars?.toLocaleString()} 字
           </span>
         )}
-        {zipShards.length === 1 && zipUrls[0] && (
+        {zipShards.length === 1 && zipUrls[zipShards[0].idx] && (
           <a
             className="btn-primary !py-1.5 !px-3 text-xs ml-auto"
-            href={zipUrls[0]}
+            href={zipUrls[zipShards[0].idx]}
             download
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="mr-1"><rect x="2" y="7" width="13" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V18a2 2 0 0 1-2 2"/></svg>
-            下载全部 ZIP
+            {zipShards[0].start_chapter === 1 && zipShards[0].end_chapter === detail.total_chapters
+              ? '下载全部 ZIP'
+              : `下载第${String(zipShards[0].start_chapter).padStart(3, '0')}-${String(zipShards[0].end_chapter).padStart(3, '0')}章 ZIP`}
           </a>
         )}
         {zipShards.length > 1 && (
@@ -2371,7 +2448,7 @@ function BuildDetailContent({
             {quality.suspicious.length > 0 && (
               <button
                 onClick={() => onRerunChapters(quality.suspicious.map(s => s.chapter_idx))}
-                disabled={rerunning}
+                disabled={rerunning || projectBlocked}
                 className="inline-flex items-center gap-1 rounded-md border border-amber-500/50 bg-amber-500/20
                   px-2.5 py-1 text-xs text-amber-100 hover:bg-amber-500/30
                   transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
@@ -2405,7 +2482,7 @@ function BuildDetailContent({
               </span>
               <button
                 onClick={() => onRerunChapters([s.chapter_idx])}
-                disabled={rerunning}
+                disabled={rerunning || projectBlocked}
                 className="ml-auto rounded-md border border-amber-500/40 bg-amber-500/15
                   px-2 py-0.5 text-[11px] text-amber-100 hover:bg-amber-500/25
                   transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
@@ -2884,8 +2961,9 @@ function CreateBuildModal({
 
 // =================== Settings Tab ===================
 function SettingsTab({
-  project, voices, onReload,
+  project, voices, onReload, buildBlocked,
 }: {
+  buildBlocked: boolean;
   project: ProjectDetailResp;
   voices: Voice[];
   onReload: () => void;
@@ -2937,6 +3015,7 @@ function SettingsTab({
   };
 
   const doDelete = async () => {
+    if (buildBlocked || deleting) return;
     setDeleting(true);
     try {
       await api.projectDelete(project.project_id);
@@ -3078,6 +3157,8 @@ function SettingsTab({
           <button
             className="btn-danger relative"
             onClick={() => setConfirmDelete(true)}
+            disabled={buildBlocked}
+            title={buildBlocked ? '请先完成或停止现有构建' : '删除项目'}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
             删除该项目
@@ -3091,14 +3172,14 @@ function SettingsTab({
               <button
                 className="btn-ghost"
                 onClick={() => setConfirmDelete(false)}
-                disabled={deleting}
+                disabled={deleting || buildBlocked}
               >
                 取消
               </button>
               <button
                 className="btn-danger"
                 onClick={doDelete}
-                disabled={deleting}
+                disabled={deleting || buildBlocked}
               >
                 {deleting ? '删除中…' : '确认删除'}
               </button>

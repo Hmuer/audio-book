@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import functools
 import logging
 import os
 import uuid
@@ -53,6 +54,20 @@ from .voice_recommender import VoiceRecommendation, recommend_voices_with_llm
 from .voice_instruction import generate_dialogue_instructions
 
 logger = logging.getLogger(__name__)
+
+
+def _serialize_project_edit(func):
+    @functools.wraps(func)
+    async def wrapped(*args, **kwargs):
+        from .build import _ensure_project_not_running, _serialize_start_per_project
+
+        async def edit(project_id, *rest, **options):
+            await _ensure_project_not_running(project_id, "修改项目内容")
+            return await func(project_id, *rest, **options)
+
+        return await _serialize_start_per_project(edit)(*args, **kwargs)
+
+    return wrapped
 
 # 项目封面 6 个预设色（按 project_id hash 分配，避免用户选色负担）
 COVER_COLOR_PRESETS: list[str] = [
@@ -362,6 +377,7 @@ async def create_project(name: str, owner_user_id: int | None = None) -> Project
         return _to_project_resp(p)
 
 
+@_serialize_project_edit
 async def import_file(project_id: str, file_content: bytes, filename: str) -> ProjectResp:
     """
     上传/替换项目源文件。
@@ -427,6 +443,7 @@ async def import_file(project_id: str, file_content: bytes, filename: str) -> Pr
         return _to_project_resp(p)
 
 
+@_serialize_project_edit
 async def import_text(
     project_id: str,
     text: str,
@@ -471,6 +488,7 @@ async def import_text(
         return _to_project_resp(p)
 
 
+@_serialize_project_edit
 async def trigger_prepare_project(project_id: str) -> ProjectPrepareTriggerResp:
     """
     触发项目识别（202 Accepted 模式）：校验项目状态 → 把项目置为 preparing →
@@ -1192,6 +1210,7 @@ def _log_prepare_llm_estimate(project_id: str, chapters: list[Chapter], cfg) -> 
     }
 
 
+@_serialize_project_edit
 async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
     """
     prepare 真正执行逻辑（HTTP 后台任务模式下被 _run_prepare_project_in_background 调用；
@@ -3218,7 +3237,7 @@ async def get_project(project_id: str) -> ProjectDetailResp:
 
         # 存在活跃构建（queued/running）时，响应层把 status 映射为 synthesizing
         # （DB 中构建期间项目 status 保持 ready，不改状态机）
-        has_active_build = last_build_row is not None and last_build_row.status in ("queued", "running")
+        has_active_build = last_build_row is not None and last_build_row.status in ("queued", "running", "pausing", "stopping")
 
         # prepare_progress：从 progress_json 解析出的白名单 dict（前端渲染 角色/对白 子阶段进度）
         prog_dict: dict | None = None
@@ -3240,7 +3259,7 @@ async def get_project(project_id: str) -> ProjectDetailResp:
             project_id=p.project_id,
             name=p.name,
             book_title=p.book_title,
-            status="synthesizing" if has_active_build else p.status,
+            status="paused" if last_build_row and last_build_row.status == "paused" else "synthesizing" if has_active_build else p.status,
             source_filename=p.source_filename,
             source_file_size=p.source_file_size,
             chapter_count=p.chapter_count,
@@ -3290,7 +3309,7 @@ async def list_projects(
         if rows:
             stmt_ab = select(Build).where(
                 Build.project_id.in_([p.project_id for p in rows]),
-                Build.status.in_(("queued", "running")),
+                Build.status.in_(("queued", "running", "pausing", "paused", "stopping")),
             )
             for b in (await session.execute(stmt_ab)).scalars().all():
                 active_builds[b.project_id] = b
@@ -3316,7 +3335,7 @@ async def list_projects(
                 project_id=p.project_id,
                 name=p.name,
                 book_title=p.book_title,
-                status="synthesizing" if ab else p.status,
+                status="paused" if ab and ab.status == "paused" else "synthesizing" if ab else p.status,
                 source_filename=p.source_filename,
                 chapter_count=p.chapter_count,
                 cover_color=p.cover_color,
@@ -3330,6 +3349,7 @@ async def list_projects(
         return result
 
 
+@_serialize_project_edit
 async def update_project(
     project_id: str,
     *,
@@ -3363,6 +3383,7 @@ async def update_project(
         return _to_project_resp(p)
 
 
+@_serialize_project_edit
 async def delete_project(project_id: str) -> None:
     """
     级联删除：DB（Project + Builds + BuildArtifacts + ProjectCharacters + ProjectDialogues）
@@ -3499,6 +3520,7 @@ async def get_project_chapter_detail(
         )
 
 
+@_serialize_project_edit
 async def update_dialogue_speaker(
     project_id: str, dialogue_id: int, speaker: str
 ) -> DialogueLine:
@@ -3556,6 +3578,7 @@ async def get_project_characters(project_id: str) -> list[CharacterWithVoice]:
         ]
 
 
+@_serialize_project_edit
 async def update_character_voice(
     project_id: str, character_id: int, voice_id: str | None,
 ) -> CharacterResp:

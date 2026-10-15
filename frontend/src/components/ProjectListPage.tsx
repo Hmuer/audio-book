@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, PrepareProgress, ProjectListItem } from '@/lib/api';
 import { parseTime, relativeTime } from '@/lib/time';
+import { isBuildRunning, isBuildBlocking } from '@/lib/buildState';
 import CreateAudiobookDialog from './CreateAudiobookDialog';
 
 // ===== 常量 =====
@@ -17,13 +18,16 @@ const STATUS_DEFS: Record<string, { label: string; bg: string; color: string; do
   // Build 级状态（后端 Build.status：queued/running/…）
   queued:          { label: '排队中',    bg: 'rgba(var(--status-info-bg), 0.12)',     color: 'rgb(var(--status-info-fg))',     dot: 'rgb(var(--status-info-dot))', pulse: true },
   running:         { label: '合成中',    bg: 'rgba(var(--status-synth-bg), 0.14)',    color: 'rgb(var(--status-synth-fg))',    dot: 'rgb(var(--status-synth-dot))', pulse: true },
+  pausing:         { label: '暂停中',    bg: 'rgba(var(--status-warn-bg), 0.14)',     color: 'rgb(var(--status-warn-fg))',     dot: 'rgb(var(--status-warn-dot))', pulse: true },
+  paused:          { label: '已暂停',    bg: 'rgba(var(--status-muted-bg), 0.12)',    color: 'rgb(var(--status-muted-fg))',    dot: 'rgb(var(--status-muted-dot))' },
+  stopping:        { label: '停止中',    bg: 'rgba(var(--status-warn-bg), 0.14)',     color: 'rgb(var(--status-warn-fg))',     dot: 'rgb(var(--status-warn-dot))', pulse: true },
   ready:           { label: '就绪',      bg: 'rgba(var(--status-ready-bg), 0.12)',    color: 'rgb(var(--status-ready-fg))',    dot: 'rgb(var(--status-ready-dot))' },
   synthesizing:    { label: '合成中',    bg: 'rgba(var(--status-synth-bg), 0.14)',    color: 'rgb(var(--status-synth-fg))',    dot: 'rgb(var(--status-synth-dot))', pulse: true },
   done:            { label: '已完成',    bg: 'rgba(var(--status-success-bg), 0.12)',  color: 'rgb(var(--status-success-fg))',  dot: 'rgb(var(--status-success-dot))' },
   success:         { label: '已完成',    bg: 'rgba(var(--status-success-bg), 0.12)',  color: 'rgb(var(--status-success-fg))',  dot: 'rgb(var(--status-success-dot))' },
   partial_success: { label: '部分成功',  bg: 'rgba(var(--status-partial-bg), 0.12)',  color: 'rgb(var(--status-partial-fg))',  dot: 'rgb(var(--status-partial-dot))' },
   failed:          { label: '失败',      bg: 'rgba(var(--status-error-bg), 0.12)',    color: 'rgb(var(--status-error-fg))',    dot: 'rgb(var(--status-error-dot))' },
-  cancelled:       { label: '已取消',    bg: 'rgba(var(--status-muted-bg), 0.12)',    color: 'rgb(var(--status-muted-fg))',    dot: 'rgb(var(--status-muted-dot))' },
+  cancelled:       { label: '已停止',    bg: 'rgba(var(--status-muted-bg), 0.12)',    color: 'rgb(var(--status-muted-fg))',    dot: 'rgb(var(--status-muted-dot))' },
 };
 
 const STAGE_LABELS: Record<string, string> = {
@@ -183,12 +187,12 @@ export function PrepareProgressInline({
 // ===== 全局运行中任务条 =====
 export function RunningTasksBar({ items }: { items: ProjectListItem[] }) {
   const running = useMemo(
-    () => items.filter(p => p.status === 'preparing' || p.status === 'synthesizing'),
+    () => items.filter(p => p.status === 'preparing' || p.status === 'synthesizing' || isBuildRunning(p.status)),
     [items],
   );
   if (running.length === 0) return null;
   const preparing = running.filter(p => p.status === 'preparing');
-  const synthesizing = running.filter(p => p.status === 'synthesizing');
+  const synthesizing = running.filter(p => p.status === 'synthesizing' || isBuildRunning(p.status));
   const summary: string[] = [];
   if (preparing.length) summary.push(`${preparing.length} 个识别任务进行中`);
   if (synthesizing.length) summary.push(`${synthesizing.length} 个合成任务进行中`);
@@ -412,6 +416,8 @@ export default function ProjectListPage() {
   }, []);
 
   const onDelete = async (id: string) => {
+    const item = items?.find(p => p.project_id === id);
+    if (item && (isBuildBlocking(item.status) || ['preparing', 'synthesizing', 'importing'].includes(item.status))) return;
     try {
       await api.projectDelete(id);
       setConfirmDeleteId(null);
@@ -548,7 +554,7 @@ export default function ProjectListPage() {
             </thead>
             <tbody>
               {items.map((p, i) => {
-                const isRunning = ['preparing', 'synthesizing', 'importing'].includes(p.status);
+                const isRunning = ['preparing', 'synthesizing', 'importing'].includes(p.status) || isBuildRunning(p.status);
                 const detailHref = `#/audiobooks/${p.project_id}`;
                 return (
                   <tr
@@ -678,7 +684,8 @@ export default function ProjectListPage() {
                           className="btn-ghost !px-2.5 !py-1 text-xs"
                           style={{ color: 'rgba(var(--status-error-fg), 0.85)' }}
                           onClick={() => setConfirmDeleteId(p.project_id)}
-                          title="删除"
+                          disabled={isRunning || p.status === 'paused'}
+                          title={isRunning || p.status === 'paused' ? '请先完成或停止现有构建' : '删除'}
                         >
                           删除
                         </button>

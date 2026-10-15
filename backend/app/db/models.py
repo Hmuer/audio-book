@@ -169,6 +169,7 @@ class Build(Base):
     # 可直接返回已存在的 build_id（Synthesize 幂等第一层去重）；
     # 细粒度的段级缓存走段级 sha256，不在这里比。
     config_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    resume_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # 情感/语气配置快照：narrator 的 emotion/instruction。角色不绑定语气——
     # 对白语气由每句 ProjectDialogue.instruction（按对白内容生成）自动决定。

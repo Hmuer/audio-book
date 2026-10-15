@@ -94,6 +94,7 @@ _PROJECT_NEW_COLUMNS = {
     "owner_user_id": "INTEGER REFERENCES users(id) ON DELETE SET NULL",
 }
 _BUILD_NEW_COLUMNS = {
+    "resume_digest": "VARCHAR(64)",
     "default_male_voice_id": "VARCHAR(128)",
     "default_female_voice_id": "VARCHAR(128)",
     # 注意：必须保留 SQL 级默认值，旧行自动补齐 classic / minimax（符合 T-TR3 向后兼容）

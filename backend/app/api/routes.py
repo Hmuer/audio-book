@@ -3,7 +3,7 @@ import logging
 import time as _time
 import urllib.parse
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -76,6 +76,10 @@ from ..services.build import (
     get_build_status,
     delete_build,
     cancel_build,
+    pause_build,
+    resume_build,
+    stop_build,
+    BuildControlConflict,
     retry_failed_build,
     _ensure_project_not_running,
     _parse_zip_shards,
@@ -635,6 +639,10 @@ async def api_update_project(
             default_speed=req.default_speed,
             cover_color=req.cover_color,
         )
+    except HTTPException:
+        raise
+    except BuildControlConflict as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(404, str(e))
     except Exception as e:
@@ -660,6 +668,10 @@ async def api_delete_project(
         await _ensure_project_not_running(project_id, action="删除项目")
         await delete_project(project_id)
         return {"ok": True, "project_id": project_id}
+    except HTTPException:
+        raise
+    except BuildControlConflict as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         # 来自 _ensure_project_not_running 的"项目正在运行"错误 → 409 冲突
         raise HTTPException(409, str(e))
@@ -717,6 +729,10 @@ async def api_project_import(
             f"[HTTP] 200 /api/projects/{project_id[:8]}.../import total_ms={elapsed_ms}"
         )
         return resp
+    except HTTPException:
+        raise
+    except BuildControlConflict as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(404, str(e))
     except Exception as e:
@@ -761,6 +777,10 @@ async def api_project_import_text(
             f"[HTTP] 200 /api/projects/{project_id[:8]}.../import-text total_ms={elapsed_ms}"
         )
         return resp
+    except HTTPException:
+        raise
+    except BuildControlConflict as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(404, str(e))
     except Exception as e:
@@ -812,6 +832,10 @@ async def api_project_prepare(
             f"triggered total_ms={elapsed_ms}"
         )
         return resp
+    except HTTPException:
+        raise
+    except BuildControlConflict as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(404, str(e))
     except RuntimeError as e:
@@ -971,6 +995,10 @@ async def api_update_character_voice(
         await assert_project_writable(s, project_id, current)
     try:
         return await update_character_voice(project_id, char_id, req.voice_id)
+    except HTTPException:
+        raise
+    except BuildControlConflict as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(404, str(e))
     except Exception as e:
@@ -1003,6 +1031,10 @@ async def api_update_dialogue_speaker(
         await assert_project_writable(s, project_id, current)
     try:
         return await update_dialogue_speaker(project_id, dialogue_id, req.speaker)
+    except HTTPException:
+        raise
+    except BuildControlConflict as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(404, str(e))
     except Exception as e:
@@ -1043,6 +1075,10 @@ async def api_create_pronunciation_rule(
         await assert_project_writable(s, project_id, current)
     try:
         return await create_pronunciation_rule(project_id, body)
+    except HTTPException:
+        raise
+    except BuildControlConflict as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -1062,6 +1098,10 @@ async def api_update_pronunciation_rule(
         await assert_project_writable(s, project_id, current)
     try:
         return await update_pronunciation_rule(project_id, rule_id, body)
+    except HTTPException:
+        raise
+    except BuildControlConflict as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         msg = str(e)
         if "不存在" in msg:
@@ -1081,6 +1121,10 @@ async def api_delete_pronunciation_rule(
     try:
         await delete_pronunciation_rule(project_id, rule_id)
         return {"ok": True}
+    except HTTPException:
+        raise
+    except BuildControlConflict as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(404, str(e))
 
@@ -1361,6 +1405,10 @@ async def api_start_build(
             f"build_id={resp.build_id[:8]}... status={resp.status} total_ms={elapsed_ms}"
         )
         return resp
+    except HTTPException:
+        raise
+    except BuildControlConflict as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(404, str(e))
     except RuntimeError as e:
@@ -1736,6 +1784,10 @@ async def api_delete_build(
         await _ensure_project_not_running(project_id, action="删除 build")
         await delete_build(project_id, build_id)
         return {"ok": True, "build_id": build_id}
+    except HTTPException:
+        raise
+    except BuildControlConflict as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(404, str(e))
     except Exception as e:
@@ -1745,6 +1797,32 @@ async def api_delete_build(
             exc_info=True,
         )
         raise HTTPException(500, f"删除 build 失败: {type(e).__name__}: {e}")
+
+
+async def _api_control_build(project_id: str, build_id: str, current: User, control):
+    async with get_session_factory()() as session:
+        await assert_project_writable(session, project_id, current)
+    try:
+        return await control(project_id, build_id)
+    except BuildControlConflict as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@router.post("/projects/{project_id}/builds/{build_id}/pause", response_model=BuildResp)
+async def api_pause_build(project_id: str, build_id: str, current: Annotated[User, Depends(get_current_user)]):
+    return await _api_control_build(project_id, build_id, current, pause_build)
+
+
+@router.post("/projects/{project_id}/builds/{build_id}/resume", response_model=BuildResp)
+async def api_resume_build(project_id: str, build_id: str, current: Annotated[User, Depends(get_current_user)]):
+    return await _api_control_build(project_id, build_id, current, resume_build)
+
+
+@router.post("/projects/{project_id}/builds/{build_id}/stop", response_model=BuildResp)
+async def api_stop_build(project_id: str, build_id: str, current: Annotated[User, Depends(get_current_user)]):
+    return await _api_control_build(project_id, build_id, current, stop_build)
 
 
 @router.post("/projects/{project_id}/builds/{build_id}/cancel", response_model=BuildResp)
@@ -1796,6 +1874,9 @@ async def api_retry_failed_build(
     factory = get_session_factory()
     async with factory() as s:
         await assert_project_writable(s, project_id, current)
+        b = await s.get(Build, build_id)
+        if not b or b.project_id != project_id:
+            raise HTTPException(404, "Build 不存在或不属于该项目")
     t0 = _time.perf_counter()
     remote = request.client.host if request.client else "?"
     logger.info(
@@ -1816,6 +1897,10 @@ async def api_retry_failed_build(
             f"new_build_id={resp.build_id[:8]}... total_ms={elapsed_ms}"
         )
         return resp
+    except HTTPException:
+        raise
+    except BuildControlConflict as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         msg = str(e)
         if "没有失败章可重试" in msg or "无失败章" in msg:
