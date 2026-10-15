@@ -3,7 +3,6 @@
 T-RF1 retry-failed 必须继承源 Build 的 mode/tts_provider（原 Critical：
 Build 重试会静默退化为 classic+MiniMax）。
 T-RF4 DoubaoTTSProvider 端点读 settings.DOUBAO_TTS_BASE_URL（.env 覆写生效）。
-T-RF5 ICL create reqid 每次唯一（不再用 id(self)）。
 """
 from __future__ import annotations
 
@@ -48,34 +47,7 @@ def test_doubao_tts_endpoint_reads_settings(monkeypatch):
 
 
 # ---------------------------------------------------------------------
-# T-RF5：ICL create reqid 唯一
 # ---------------------------------------------------------------------
-@pytest.mark.asyncio
-async def test_icl_create_reqid_unique(monkeypatch):
-    from backend.app.ai.providers.doubao.icl import DoubaoICLClient
-
-    captured: list[dict] = []
-
-    async def _fake_post(url, payload, **_kwargs):
-        captured.append(payload)
-        return {"code": 0, "data": {"speaker_id": f"icl_88_{len(captured)}"}}
-
-    monkeypatch.setattr(
-        "backend.app.core.config.settings.DOUBAO_AK", "test-ak", raising=False
-    )
-    client = DoubaoICLClient()
-    client._http_post_json = _fake_post  # type: ignore[method-assign]
-
-    fake_mp3 = b"\xff\xfb\x90\x64\x00" + (b"\x00" * 2048)
-    await client.create_training("声线A", fake_mp3)
-    await client.create_training("声线B", fake_mp3)
-
-    reqids = [p["custom_speaker_id"] for p in captured]
-    assert len(reqids) == 2 and reqids[0] != reqids[1], (
-        f"ICL create custom_speaker_id 必须每次唯一，实际 {reqids}"
-    )
-    # speaker_id 是固定字面值（V3 后付费音色协议），唯一性由 custom_speaker_id 承担
-    assert {p["speaker_id"] for p in captured} == {"custom_speaker_id"}
 
 
 # ---------------------------------------------------------------------
@@ -106,6 +78,7 @@ async def test_retry_failed_inherits_provider_and_mode(_isolate_data_dir):
     # mock TTS 标 provider='doubao'（让 factory.get_tts('doubao') 命中 mock），
     # 第一次合成失败触发 retry；后续正常 → 最终 success。
     class _FailFirstCallDoubaoTTS:
+        supports_instruction = True
         provider = "doubao"
         name = "mock_tts_doubao_fail_first"
 

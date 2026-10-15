@@ -18,7 +18,8 @@ from typing import NamedTuple
 from pydantic import BaseModel
 from sqlalchemy import select, delete
 
-from ..core.config import settings
+from ..core.config import settings, get_active
+from ..ai.factory import get_tts
 import re as _re
 
 from ..db.models import (
@@ -1231,7 +1232,6 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         source_path = p.source_file_path
         charset = p.source_charset or "utf-8"
         original_filename = p.source_filename or ""
-        # 读取项目归属（音色推荐时把该用户的 ICL 复刻音色纳入候选池）
         owner_user_id_for_recommend: int | None = p.owner_user_id
 
     # 2. 读文件
@@ -2329,12 +2329,20 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         # H-13：instructions 阶段计时（命中 checkpoint / 整段跳过则 start+end 同刻）
         _stage_timing_touch(prog, "instructions")
         instruction_map: dict[tuple[int, int], str] = {}
-        if not bool(getattr(settings, "VOICE_INSTRUCTION_ENABLED", True)):
+        active_tts_provider, _, _ = get_active("tts")
+        tts = get_tts(active_tts_provider)
+        supports_instruction = bool(tts.supports_instruction)
+        if not bool(getattr(settings, "VOICE_INSTRUCTION_ENABLED", True)) or not supports_instruction:
+            prog["instructions_done"] = False
+            prog["instructions_skipped"] = True
+            prog["instructions_status"] = "skipped"
+            prog.pop("instructions_raw", None)
+            await _write_progress(prog)
             logger.info(
                 f"[project_prepare] project_id={project_id[:8]}... "
-                f"VOICE_INSTRUCTION_ENABLED=False，逐段语音指令整段跳过（按空串落库）"
+                f"逐段语音指令跳过 provider={active_tts_provider}（按空串落库）"
             )
-        elif prog.get("stage") in ("instructions", "voice_recs", "done") and prog.get("instructions_done"):
+        elif prog.get("instructions_done") and not prog.get("instructions_skipped") and prog.get("instructions_status") != "skipped":
             raw_instr = prog.get("instructions_raw", {}) or {}
             if isinstance(raw_instr, dict):
                 for k, v in raw_instr.items():
@@ -2380,6 +2388,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 instruction_map = {}
             prog["stage"] = "instructions"
             prog["instructions_done"] = True
+            prog["instructions_skipped"] = False
+            prog["instructions_status"] = "done"
             prog["instructions_raw"] = {
                 f"{k[0]}:{k[1]}": v for k, v in instruction_map.items()
             }
@@ -2402,7 +2412,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         # 有角色却 0 条推荐的 done checkpoint 视为未完成，强制重试
         _vr_raw = prog.get("voice_recs_raw", []) or []
         _vr_hit = (
-            prog.get("stage") in ("voice_recs", "done")
+            prog.get("voice_recs_provider") == active_tts_provider
             and prog.get("voice_recs_done")
             and (bool(_vr_raw) or not characters)
         )
@@ -2422,7 +2432,6 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 )
             voice_recs = []
             try:
-                # 透传 user_id → 把该用户的 ICL 复刻音色纳入候选池
                 voice_recs = await recommend_voices_with_llm(
                     characters,
                     user_id=owner_user_id_for_recommend,
@@ -2435,6 +2444,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             except Exception as e:
                 logger.warning(f"[project_prepare] project_id={project_id[:8]}... voice_rec failed: {e}")
             prog["stage"] = "voice_recs"
+            prog["voice_recs_provider"] = active_tts_provider
             # 有角色却 0 条推荐 → 判定本阶段失败：**不写 voice_recs_done**，
             # 否则重跑 prepare 永远跳过音色推荐（真实案例：798 角色单批输出超限
             # 全废，写成 done=True 后所有角色永远无自动音色）。
@@ -2646,6 +2656,10 @@ _PREPARE_PROGRESS_PUBLIC_KEYS: tuple[str, ...] = (
     "dialogue_failed_batches",
     "dialogue_total_dialogues",
     "voice_recs_done",
+    "voice_recs_provider",
+    "instructions_done",
+    "instructions_skipped",
+    "instructions_status",
     "voice_recs_count",
     # 润色纠错（POLISH_ENABLED）：把"未润色章数"透出，避免失败静默
     "polish_total",

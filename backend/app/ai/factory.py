@@ -52,23 +52,23 @@ def _factory_doubao() -> BaseTTSProvider:
     return DoubaoTTSProvider()
 
 
-# 前缀命名空间 -> (provider 标识, 工厂函数)
-# icl: 前缀使用同一个 DoubaoTTSProvider（合成接口一致，provider 参数内剥离 icl:）
-# MiniMax TTS 已弃用，不再注册 "minimax" 前缀。
+def _factory_minimax() -> BaseTTSProvider:
+    from .providers.minimax.tts import MiniMaxTTSProvider
+    return MiniMaxTTSProvider()
+
+
 TTSRegistry: dict[str, tuple[str, Callable[[], BaseTTSProvider]]] = {
     "doubao": ("doubao", _factory_doubao),
-    "icl": ("doubao", _factory_doubao),
+    "minimax": ("minimax", _factory_minimax),
 }
 
 
 def _resolve_provider_name(provider: Optional[str]) -> str:
-    """解析用户给出的 provider 名称。
-    None → 读 settings.TTS_PROVIDER；小写化处理。
-    """
     if provider:
-        return provider.lower()
-    from ..core.config import settings
-    return (settings.TTS_PROVIDER or "doubao").lower()
+        return provider.split(":", 1)[0].lower()
+    from ..core.config import get_active, settings
+    pid, _, _ = get_active("tts")
+    return (pid or settings.TTS_PROVIDER or "doubao").lower()
 
 
 def _tts_config_fingerprint() -> str:
@@ -85,16 +85,8 @@ def _tts_config_fingerprint() -> str:
 
     parts: list[str] = []
     for name in sorted(dir(settings)):
-        if not (
-            name.startswith("DOUBAO_")
-            or name.startswith("TTS_")
-            or name.startswith("ACTIVE_TTS_")
-        ):
-            continue
-        try:
+        if name.startswith(("DOUBAO_", "MINIMAX_TTS_", "LLM_API_KEY", "LLM_BASE_URL", "TTS_", "ACTIVE_TTS_")):
             parts.append(f"{name}={getattr(settings, name)}")
-        except Exception:
-            continue
     parts.append(f"PROVIDERS_CONFIG={settings.PROVIDERS_CONFIG or ''}")
     raw = "|".join(parts)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
@@ -106,18 +98,7 @@ def invalidate_tts_cache() -> None:
 
 
 def get_tts(provider: Optional[str] = None) -> BaseTTSProvider:
-    """按厂商名获取 TTS 实例（按 provider 名缓存单例）。
-
-    provider=None 时读全局 settings.TTS_PROVIDER；实例按 provider 名缓存：
-    不同前缀但同 provider 标识（如 doubao:/icl: 都对应 "doubao"）共享一个实例。
-
-    当 `_tts_instance` 被显式设置（如 conftest.monkeypatch 注入 MockTTSProvider）时：
-      - provider=None → 直接返回 _tts_instance（经典行为）
-      - provider=pname → 若 _tts_instance.provider 与目标 provider 标识匹配，则优先返回 mock
-        （保证测试注入在显式指定 provider 时也生效）
-    任何显式指定 provider（doubao/icl）最终都会走 Registry 正常路由或 mock 路由。
-    """
-    global _tts_default_instance, _tts_instances
+    global _tts_default_instance
     # 若存在注入 mock：匹配 provider 标签时直接返回
     if _tts_instance is not None:
         if provider is None:
@@ -129,11 +110,9 @@ def get_tts(provider: Optional[str] = None) -> BaseTTSProvider:
             return _tts_instance
     pname = _resolve_provider_name(provider)
 
-    # 在 Registry 里找一个能匹配到该 provider 标识的入口（当前仅 doubao/icl）
     if pname in TTSRegistry:
         key, factory_fn = TTSRegistry[pname]
     else:
-        # 未知厂商名：兜底 doubao（MiniMax TTS 已弃用，不再兜底到它）
         key, factory_fn = TTSRegistry["doubao"]
 
     # C-3：缓存键附带配置指纹 → 配置变更后自动重建实例（不必重启后端）
@@ -151,19 +130,8 @@ def get_tts(provider: Optional[str] = None) -> BaseTTSProvider:
 
 
 def get_tts_by_voice_id(voice_id: str) -> BaseTTSProvider:
-    """通过音色 ID 的命名空间前缀选择 provider；无前缀/未知前缀按全局默认。
-
-    `minimax:` 前缀**显式报错而不静默兜底**：老项目/老 build 里存的是
-    `minimax:male-qn-jingying` 这类 id，静默当成豆包 speaker 发出去只会换回一个
-    更难懂的上游错误；这里直接给出可操作的迁移提示。
-    """
     if voice_id and ":" in voice_id:
         prefix = voice_id.split(":", 1)[0].lower()
-        if prefix == "minimax":
-            raise RuntimeError(
-                "MiniMax 语音合成已弃用：本项目只支持豆包音色（doubao: / icl: 前缀）。"
-                "请重新推荐音色或改用豆包 2.0 音色（*_uranus_bigtts）"
-            )
         if prefix in TTSRegistry:
             pname, _ = TTSRegistry[prefix]
             return get_tts(pname)
@@ -187,8 +155,6 @@ def get_tts_sem() -> asyncio.Semaphore:
 
 
 # =====================================================================
-# 豆包 TTS / ICL 共享 RPM 限流桶（固定间隔 token bucket）
-# 与 MiniMax 同款算法，保证任意两个请求最小间隔 60/RPM_LIMIT 秒。
 # 实现一个通用工厂以避免在每个 provider 内重复代码。
 # =====================================================================
 
@@ -229,41 +195,33 @@ class _RPMBucket:
         self._next_allowed = 0.0
 
 
-# 两个独立桶（豆包 TTS / ICL 的 RPM 限制可能独立）
 def _doubao_tts_rpm() -> int:
     from ..core.config import settings
     return max(1, int(settings.DOUBAO_TTS_RPM_LIMIT))
 
 
-def _doubao_icl_rpm() -> int:
-    # ICL 查询被 worker 轮询 + 前端详情轮询双路触发（单任务约 24/min），
-    # 默认 60/min 可配置（DOUBAO_ICL_RPM_LIMIT）
+def _minimax_tts_rpm() -> int:
     from ..core.config import settings
-    return max(1, int(settings.DOUBAO_ICL_RPM_LIMIT))
+    return max(1, int(settings.MINIMAX_TTS_RPM_LIMIT))
 
 
 _doubao_tts_bucket = _RPMBucket(_doubao_tts_rpm)
-_doubao_icl_bucket = _RPMBucket(_doubao_icl_rpm)
+_minimax_tts_bucket = _RPMBucket(_minimax_tts_rpm)
+
+
+async def _minimax_rpm_wait_acquire() -> None:
+    await _minimax_tts_bucket.acquire()
 
 
 async def _doubao_rpm_wait_acquire(bucket: str = "tts") -> None:
-    """豆包 RPM 限流统一入口。bucket ∈ {'tts', 'icl'}。"""
-    if bucket == "icl":
-        await _doubao_icl_bucket.acquire()
-    else:
+    if bucket == "tts":
         await _doubao_tts_bucket.acquire()
 
 
 def _doubao_rpm_remaining_secs(bucket: str = "tts") -> float:
-    """距离下一次放行还剩多少秒（429 兜底等待用）。"""
-    if bucket == "icl":
-        return _doubao_icl_bucket.remaining_secs()
-    return _doubao_tts_bucket.remaining_secs()
+    return _doubao_tts_bucket.remaining_secs() if bucket == "tts" else 0.0
 
 
 def _reset_doubao_rpm_bucket_for_tests(bucket: str | None = None) -> None:
-    """pytest 用：重置豆包 RPM 桶（避免单测串扰）。"""
     if bucket is None or bucket == "tts":
         _doubao_tts_bucket.reset()
-    if bucket is None or bucket == "icl":
-        _doubao_icl_bucket.reset()

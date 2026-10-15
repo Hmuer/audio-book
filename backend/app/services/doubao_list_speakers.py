@@ -1,7 +1,7 @@
 """P2-1：豆包 ListSpeakers 官方接口客户端。
 
 对接 [ListSpeakers - 大模型音色列表(新接口)](https://www.volcengine.com/docs/6561/2160690?lang=zh)，
-按 ResourceID 分别拉取 seed-tts-2.0 / seed-icl-2.0 的全部官方音色，
+按 ResourceID 拉取 seed-tts-2.0 的全部官方音色，
 转成与 `_BUILTIN_VOICES` 兼容的 dict，写到 `data/voices_doubao_remote.json`。
 
 鉴权：
@@ -42,7 +42,7 @@ _LIST_SPEAKERS_ACTION = "ListSpeakers"
 # 我们要拉取的 model（与 provider 的 ResourceID 一致）。
 # 不再拉取 seed-tts-1.0：1.0 小模型音色已整表下线，且当前账号未开通该资源
 # （v3 请求会 403 resource not granted）。
-_RESOURCE_IDS: tuple[str, ...] = ("seed-tts-2.0", "seed-icl-2.0")
+_RESOURCE_IDS: tuple[str, ...] = ("seed-tts-2.0",)
 
 # 单页最大 30（官方示例值；Limit 字段必须 string，与示例对齐）
 _PAGE_SIZE = "30"

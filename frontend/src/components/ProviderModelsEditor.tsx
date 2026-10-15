@@ -171,11 +171,8 @@ export default function ProviderModelsEditor() {
   const [showKey, setShowKey] = useState<Record<string, boolean>>({});
   // [本地编辑草稿，与远端分离；保存时整体替换
   const [draft, setDraft] = useState<ProvidersConfig | null>(null);
-  // 豆包模型选项（设置页 TTS id 下拉 + ICL 上传 model_type 下拉 共用）
   const [doubaoOptions, setDoubaoOptions] = useState<{
-    train_model_types: { id: string; label: string; description: string }[];
     tts_resource_ids: { id: string; label: string; description: string }[];
-    icl_expressive_models: { id: string; label: string; description: string }[];
   } | null>(null);
 
   const load = async () => {
@@ -272,7 +269,7 @@ export default function ProviderModelsEditor() {
     const next = [...draft.providers];
     const p = { ...next[pIdx] };
     const newModel: ProviderModel = {
-      id: '',
+      id: kind === 'tts' && p.id.toLowerCase().includes('minimax') ? 'speech-2.8-hd' : '',
       label: kind === 'tts' ? '新语音模型' : '新语言模型',
       kind,
     };
@@ -460,7 +457,6 @@ export default function ProviderModelsEditor() {
 
 // =====================================================================
 // 子组件：敏感字段输入
-// 后端 GET 对 api_key / secret / app_id / icl_api_key / icl_access_key
 // 一律返回 "***LAST4" 占位（或空串）。本组件统一处理三种状态：
 //  - 未改动 → 原样提交占位符，后端保留旧值
 //  - 点「重写」→ 清空，等待用户填入新值
@@ -539,6 +535,8 @@ function ProviderCard({
   const isDoubao = p.id.toLowerCase().includes('doubao');
   // 是否启用 TTS id 下拉：豆包厂商且选项已就绪
   const useDoubaoTtsSelect = isDoubao && !!doubaoTtsOptions;
+  const isMiniMax = p.id.toLowerCase().includes('minimax');
+  const minimaxTtsOptions = [{ id: 'speech-2.8-hd', label: 'MiniMax Speech 2.8 HD', description: 'MiniMax 高清语音合成模型' }];
   const ttsModels = getModelsOfKind(p, 'tts');
   const llmModels = getModelsOfKind(p, 'llm');
 
@@ -555,7 +553,7 @@ function ProviderCard({
   };
 
   const secretField = (
-    field: 'api_key' | 'secret' | 'app_id' | 'icl_api_key' | 'icl_access_key',
+    field: 'api_key' | 'secret' | 'app_id',
     title: string,
     placeholder: string,
     hint?: string,
@@ -584,7 +582,7 @@ function ProviderCard({
   };
 
   const endpointField = (
-    field: 'icl_endpoint' | 'tts_v3_endpoint',
+    field: 'tts_v3_endpoint',
     title: string,
     placeholder: string,
   ) => (
@@ -676,15 +674,6 @@ function ProviderCard({
             'app_id', '豆包 APP_ID', '纯数字 APP_ID',
             '纯数字 → 走旧版鉴权（X-Api-App-Id / X-Api-Access-Key）',
           )}
-          {secretField(
-            'icl_api_key', 'ICL API Key（声音复刻）', '新版控制台 ICL key',
-            '留空时回退到上面的 API Key',
-          )}
-          {secretField(
-            'icl_access_key', 'ICL Access Key（声音复刻·旧版）', '旧版 ICL access key',
-            '留空则仅使用新版 key',
-          )}
-          {endpointField('icl_endpoint', 'ICL 训练端点', '/api/v1/voice_clone')}
           {endpointField('tts_v3_endpoint', 'TTS v3 端点', '/api/v3/tts/unidirectional')}
         </>)}
       </div>
@@ -705,8 +694,8 @@ function ProviderCard({
             onRemoveModel(pIdx, gIdx);
           }}
           allModels={p.models}
-          idAsSelect={useDoubaoTtsSelect}
-          selectOptions={useDoubaoTtsSelect ? doubaoTtsOptions : undefined}
+          idAsSelect={useDoubaoTtsSelect || isMiniMax}
+          selectOptions={useDoubaoTtsSelect ? doubaoTtsOptions : isMiniMax ? minimaxTtsOptions : undefined}
         />
         <ModelSection
           title="语言模型（LLM）"
@@ -844,6 +833,7 @@ function ModelSection({
                   className="input-base !py-1 !text-xs font-mono"
                   title={selectOptions.find(o => o.id === m.id)?.description ?? m.id}
                 >
+                  {!selectOptions.some(o => o.id === m.id) && <option value={m.id}>{m.id || '（未选择）'}</option>}
                   {selectOptions.map(o => (
                     <option key={o.id} value={o.id} title={o.description}>
                       {o.id}（{o.label}）
@@ -854,7 +844,7 @@ function ModelSection({
                 <input
                   value={m.id}
                   onChange={e => onUpdate(globalIdx, { id: e.target.value })}
-                  placeholder="model-id（如 speech-01、M3）"
+                  placeholder="model-id（如 speech-2.8-hd、M3）"
                   className="input-base !py-1 !text-xs font-mono"
                   spellCheck={false}
                 />

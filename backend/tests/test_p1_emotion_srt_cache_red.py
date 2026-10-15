@@ -5,9 +5,7 @@
   P1-2  T-E2  音色 supports_emotion=False → 降级打 warning 并跳过下发
   P1-4  T-SR  audio_params.sample_rate/loudness_rate 来自 settings
   P1-5  T-I1  v3 payload instruction_text → req_params.context_texts=[...]
-  P1-5  T-I2  v3 复刻音色（icl_ 前缀）忽略 instruction_text 并 warning
   P1-7  T-K1  _seg_cache_key 切 model / context_texts 后键变化
-  P1-7  T-K2  _voice_model_lookup 把 ICL/S_ 前缀映射到 seed-icl-2.0
 """
 from __future__ import annotations
 
@@ -115,19 +113,6 @@ def test_p1_5_i1_v3_instruction_text_to_context_texts():
     assert rp.get("context_texts") == ["语气欢快，像老朋友"]
 
 
-def test_p1_5_i2_v3_clone_speaker_ignores_instruction_text():
-    """v3 复刻音色（icl_ 前缀）忽略 instruction_text，不下发 context_texts。"""
-    from backend.app.ai.providers.doubao.tts import DoubaoTTSProviderV3
-
-    p = DoubaoTTSProviderV3()
-    payload = p._build_v3_payload(
-        "你好", "icl:icl_abc123",
-        instruction_text="语气欢快",
-    )
-    rp = payload["req_params"]
-    assert "context_texts" not in rp
-
-
 # =====================================================================
 # P1-7 — 段缓存键
 # =====================================================================
@@ -168,12 +153,9 @@ def test_p1_7_k2_cache_key_backward_compat_when_all_empty():
     assert old_key == new_key
 
 
-def test_p1_7_k3_voice_model_lookup_icl_returns_seed_icl():
-    """ICl 复刻音色 → seed-icl-2.0。"""
+def test_p1_7_k3_voice_model_lookup_official_and_unknown():
     from backend.app.services.build import _voice_model_lookup
 
-    assert _voice_model_lookup("icl:icl_abc123") == "seed-icl-2.0"
-    assert _voice_model_lookup("S_xxxxx") == "seed-icl-2.0"
     # 内置大模型音色（实际表里的 id）
     assert _voice_model_lookup("doubao:zh_female_vv_uranus_bigtts") == "seed-tts-2.0"
     # 兜底：内置表已无 1.0 音色，未知 id 统一按 2.0 处理
@@ -292,3 +274,16 @@ async def test_a1_seg_cache_sample_rate_isolated():
         sample_rate=24000,
     )
     assert hit is not None
+
+
+@pytest.mark.parametrize("voice_id", ["icl:voice", "S_voice", "doubao:S_voice", "icl_voice", "iclvoice"])
+def test_removed_clone_aliases_do_not_select_clone_model(voice_id):
+    from backend.app.services.build import (
+        _PREFIX_TO_PROVIDER,
+        _voice_id_provider_of,
+        _voice_model_lookup,
+    )
+
+    assert set(_PREFIX_TO_PROVIDER) == {"doubao", "minimax"}
+    assert _voice_id_provider_of("icl:voice") is None
+    assert _voice_model_lookup(voice_id) == "seed-tts-2.0"

@@ -305,8 +305,10 @@ async def test_p2_1_ls3_fetch_remote_voices_paginates(monkeypatch):
     monkeypatch.setattr(cfgmod.settings, "DOUBAO_SK", "sk")
 
     page_calls: list[int] = []
+    assert mod._RESOURCE_IDS == ("seed-tts-2.0",)
 
     async def _fake_one_page(client, *, ak, sk, page, resource_id):
+        assert resource_id == "seed-tts-2.0"
         page_calls.append(page)
         if page == 1:
             return {
@@ -344,7 +346,7 @@ async def test_p2_1_ls3_fetch_remote_voices_paginates(monkeypatch):
         raise AssertionError(f"不应再翻页：page={page}")
 
     monkeypatch.setattr(mod, "_fetch_one_page", _fake_one_page)
-    voices = await mod.fetch_remote_voices(resource_ids=("seed-tts-2.0",))
+    voices = await mod.fetch_remote_voices()
     assert page_calls == [1, 2, 3]
     assert len(voices) == 70
     # 第三页数量不足时停止
@@ -362,3 +364,22 @@ async def test_p2_1_ls3_fetch_raises_when_no_credentials(monkeypatch):
 
     with pytest.raises(RuntimeError, match="DOUBAO_AK"):
         await mod.fetch_remote_voices()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", ["v1", "v3"])
+async def test_official_icl_uranus_id_survives_voice_merge(tmp_path, monkeypatch, version):
+    from backend.app.ai.providers.doubao.tts import (
+        DoubaoTTSProvider,
+        DoubaoTTSProviderV3,
+    )
+    from backend.app.services import doubao_list_speakers as mod
+
+    speaker = "ICL_uranus_zh_female_shuangkuaisisi_tob"
+    monkeypatch.setattr(mod.settings, "DATA_DIR", tmp_path)
+    mod.save_remote_voices([mod._speaker_to_builtin_entry({"VoiceType": speaker, "ResourceID": "seed-tts-2.0"})])
+    provider = DoubaoTTSProvider() if version == "v1" else DoubaoTTSProviderV3()
+    voices = await provider.list_voices()
+    voice = next(v for v in voices if v["id"] == f"doubao:{speaker}")
+    assert voice["provider"] == "doubao"
+    assert voice["model"] == "seed-tts-2.0"

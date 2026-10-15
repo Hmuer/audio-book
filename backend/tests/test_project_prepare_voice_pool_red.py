@@ -4,7 +4,7 @@
   T-VR-E1  prepare_project(project_id) 内部调用 recommend_voices_with_llm 时
            user_id == project.owner_user_id，project_id == project_id
   T-VR-E2  当 owner_user_id 为 0（admin 孤儿池）时，user_id 也透传为 0，
-           让 voice_recommender 拿到后端状态（admin 看到所有项目时该看到所有 ICL）
+           让 voice_recommender 拿到后端状态
   T-VR-E3  recommend_voices_with_llm 拿到 user_id 后实际调了
            _aggregate_voice_pool(user_id=...)
   T-VR-E4  有角色却 0 条推荐 → 不写 voice_recs_done 投毒 checkpoint，
@@ -106,7 +106,7 @@ async def test_prepare_passes_user_id_to_recommend(stub_recommend):
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_prepare_passes_zero_user_id_when_orphan(stub_recommend):
-    """project.owner_user_id = 0 时透传 0；pool 也应收到 0（看到所有 ICL）。"""
+    """project.owner_user_id = 0 时透传 0；pool 也应收到 0。"""
     from backend.app.db.session import init_db
     from backend.app.services.project import create_project, import_file, prepare_project
 
@@ -200,3 +200,52 @@ async def test_prepare_retries_voice_rec_after_total_failure(monkeypatch):
     assert state["calls"] == 3, "历史投毒 checkpoint（done=True + 0 推荐）应自愈并重试推荐"
     rows3 = await _char_rows()
     assert rows3 and all(r.assigned_voice_id for r in rows3), "自愈重试后所有角色应有自动音色"
+
+@pytest.mark.asyncio
+async def test_prepare_skipped_instructions_resume_and_refresh_provider(monkeypatch, stub_recommend):
+    import json
+    from types import SimpleNamespace
+
+    from backend.app.db.models import Project
+    from backend.app.db.session import get_session_factory, init_db
+    from backend.app.services import project as service
+
+    state = {"provider": "minimax", "supports": False, "calls": 0}
+    monkeypatch.setattr(service, "get_active", lambda kind: (state["provider"], None, None))
+    monkeypatch.setattr(service, "get_tts", lambda provider: SimpleNamespace(supports_instruction=state["supports"]))
+    monkeypatch.setattr(service.settings, "VOICE_INSTRUCTION_ENABLED", True)
+
+    async def generate(*args):
+        state["calls"] += 1
+        return {(0, 0): "轻声说"}
+
+    monkeypatch.setattr(service, "generate_dialogue_instructions", generate)
+    await init_db()
+    pid = (await service.create_project("capability", owner_user_id=0)).project_id
+    await service.import_file(pid, SAMPLE_BOOK.encode(), "book.txt")
+
+    async def progress():
+        async with get_session_factory()() as session:
+            project = await session.get(Project, pid)
+            return json.loads(project.progress_json)
+
+    await service.prepare_project(pid)
+    checkpoint = await progress()
+    assert checkpoint["instructions_status"] == "skipped"
+    assert checkpoint["instructions_done"] is False
+    assert state["calls"] == 0
+    assert checkpoint["voice_recs_provider"] == "minimax"
+    await service.prepare_project(pid)
+    assert len(stub_recommend["recommend"]) == 1
+    state.update(provider="doubao", supports=True)
+    await service.prepare_project(pid)
+    checkpoint = await progress()
+    assert checkpoint["instructions_status"] == "done"
+    assert checkpoint["instructions_skipped"] is False
+    assert checkpoint["instructions_raw"] == {"0:0": "轻声说"}
+    assert state["calls"] == 1
+    assert len(stub_recommend["recommend"]) == 2
+    assert checkpoint["voice_recs_provider"] == "doubao"
+    await service.prepare_project(pid)
+    assert state["calls"] == 1
+    assert len(stub_recommend["recommend"]) == 2

@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Any, TypeVar, Type, Optional
+from contextvars import ContextVar
+from typing import Any, Optional, Type, TypeVar
+
 from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
@@ -54,7 +56,27 @@ class BaseLLMProvider(ABC):
 
 class BaseTTSProvider(ABC):
     name: str = "base"
-    provider: str = "base"  # minimax / doubao / icl / ... 命名空间标识
+    provider: str = "base"
+    supports_instruction: bool = True
+
+    def _usage_context(self) -> ContextVar[dict[str, Any] | None]:
+        context = self.__dict__.get("_call_usage")
+        if context is None:
+            context = ContextVar(f"tts_usage_{id(self)}", default=None)
+            self.__dict__["_call_usage"] = context
+        return context
+
+    def _set_usage(self, usage: dict[str, Any] | None) -> None:
+        self._usage_context().set(dict(usage) if usage is not None else None)
+
+    def get_last_usage(self) -> dict[str, Any] | None:
+        usage = self._usage_context().get()
+        return dict(usage) if usage is not None else None
+
+    def consume_usage(self) -> dict[str, Any] | None:
+        usage = self.get_last_usage()
+        self._set_usage(None)
+        return usage
 
     @abstractmethod
     async def list_voices(self) -> list[dict[str, Any]]:
@@ -74,7 +96,7 @@ class BaseTTSProvider(ABC):
     ) -> tuple[bytes, int]:
         """同步合成音频，返回 (MP3 bytes, duration_ms)。
 
-        - instruction_text: 风格/情绪描述指令（豆包 TTS 2.0 支持，MiniMax 可选）
+        - instruction_text: 风格/情绪描述指令（由 supports_instruction 标识是否支持）
         - speaker_style: 官方音色预置风格 id（部分豆包音色支持，如"亲切""热情"）
         """
         ...

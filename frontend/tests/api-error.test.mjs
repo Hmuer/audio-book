@@ -115,3 +115,82 @@ test('[TDD-fallback] 500 with detail={message, logid} extracts message not "[obj
 });
 
 console.log('✅ All TDD assertions passed.');
+
+const { readFileSync } = await import('node:fs');
+const { createRequire } = await import('node:module');
+const require = createRequire(import.meta.url);
+const ts = require('typescript');
+const utilsSource = readFileSync(new URL('../src/lib/voiceUtils.ts', import.meta.url), 'utf8');
+const utilsModule = { exports: {} };
+new Function('exports', ts.transpileModule(utilsSource, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText)(utilsModule.exports);
+const voiceUtils = utilsModule.exports;
+const pool = [
+  { id: 'doubao:m1', gender: 'male', name: '旁白' },
+  { id: 'doubao:f1', gender: 'female', name: '女一' },
+  { id: 'doubao:m2', gender: '男', name: '男二' },
+  { id: 'minimax:f2', gender: '女声', name: '女二' },
+];
+
+test('默认音色按池顺序预填，遇旁白顺延，无候选返回空', () => {
+  deepStrictEqual(voiceUtils.defaultVoiceForGender(pool, '男声', 'doubao:m1'), 'doubao:m2');
+  deepStrictEqual(voiceUtils.defaultVoiceForGender(pool, '女声', 'doubao:f1'), 'minimax:f2');
+  deepStrictEqual(voiceUtils.defaultVoiceForGender([], '男声', ''), '');
+  deepStrictEqual(voiceUtils.defaultVoiceForGender([pool[0]], '男声', pool[0].id), '');
+});
+
+test('未分配角色按性别默认，未知性别使用男声', () => {
+  for (const gender of ['female', '女', '女声']) deepStrictEqual(voiceUtils.characterDefaultGender(gender), '女声');
+  for (const gender of ['male', '男', '男声', 'neutral', '未知', '']) deepStrictEqual(voiceUtils.characterDefaultGender(gender), '男声');
+});
+
+test('MiniMax 命名空间、无前缀音色和来源筛选', () => {
+  deepStrictEqual(voiceUtils.voiceProvider(pool[3]), 'minimax');
+  deepStrictEqual(voiceUtils.voiceProvider({ id: 'male-qn-jingying' }), 'minimax');
+  deepStrictEqual(voiceUtils.filterVoices(pool, { provider: 'minimax' }).map(v => v.id), ['minimax:f2']);
+});
+
+test('buildCreate 提交 nullable 默认男女音色与 classic 模式', async () => {
+  const source = readFileSync(new URL('../src/lib/api.ts', import.meta.url), 'utf8');
+  const apiModule = { exports: {} };
+  new Function('exports', ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText)(apiModule.exports);
+  const originalFetch = globalThis.fetch;
+  let submitted;
+  globalThis.fetch = async (url, init) => {
+    submitted = { url, body: JSON.parse(init.body) };
+    return { ok: true, status: 200, json: async () => ({ build_id: 'test' }) };
+  };
+  try {
+    await apiModule.exports.api.buildCreate('project', {
+      voice_assignments: {}, narrator_voice_id: 'doubao:m1', mode: 'classic',
+      default_male_voice_id: null, default_female_voice_id: 'minimax:f2',
+    });
+    deepStrictEqual(submitted.url, '/api/projects/project/builds');
+    deepStrictEqual(submitted.body.default_male_voice_id, null);
+    deepStrictEqual(submitted.body.default_female_voice_id, 'minimax:f2');
+    deepStrictEqual(submitted.body.mode, 'classic');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('音色 API 使用激活池，保留 MiniMax 并过滤非支持来源', async () => {
+  const source = readFileSync(new URL('../src/lib/api.ts', import.meta.url), 'utf8');
+  const apiModule = { exports: {} };
+  new Function('exports', ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText)(apiModule.exports);
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async url => {
+    calls.push(url);
+    return { ok: true, status: 200, json: async () => ({ voices: [
+      { id: 'minimax:m', provider: 'minimax', name: '男声', gender: 'male' },
+      { id: 'other:custom', provider: 'other' },
+    ] }) };
+  };
+  try {
+    const voices = await apiModule.exports.api.voices();
+    deepStrictEqual(voices.map(v => v.id), ['minimax:m']);
+    deepStrictEqual(calls, ['/api/voices']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

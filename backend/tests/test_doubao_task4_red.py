@@ -1,7 +1,7 @@
 """Task 4 RED — /api/voices 聚合 + start_build 命名空间校验（升级版 P-2.5）。
 
 T-VA1 /api/voices 聚合豆包音色；每条 voice['provider'] == 'doubao'（MiniMax TTS 已弃用）。
-T-VA2 [P-2.5] 混用 doubao:/icl: 音色 → **不抛错**，允许按 voice_id 自动路由。
+T-VA2 [P-2.5] 混用 doubao: 音色 → **不抛错**，允许按 voice_id 自动路由。
 T-VA3 [P-2.5] narrator 与角色音色来源不一致 → 不报错。
 T-VA4 前缀合法（mode/provider 在白名单）→ 通过。
 """
@@ -38,16 +38,9 @@ def test_list_voices_aggregates_providers():
 # 直接测 build.py 中的 _validate_tts_namespace 函数。
 # ---------------------------------------------------------------------
 def test_namespace_allows_mixed_voice_sources():
-    """[P-2.5] doubao:/icl: 音色混用不再抛错：合成时按 voice_id 前缀自动路由。"""
+    """[P-2.5] doubao: 音色混用不再抛错：合成时按 voice_id 前缀自动路由。"""
     from backend.app.services.build import _validate_tts_namespace
 
-    # doubao 旁白 + icl 角色：允许
-    _validate_tts_namespace(
-        tts_provider="doubao",
-        mode="classic",
-        narrator_voice_id="doubao:zh_female_qingxin",
-        voice_assignments={"角色A": "icl:custom_clone_001"},
-    )
     # 未显式指定 provider（空串）：同样允许
     _validate_tts_namespace(
         tts_provider="",
@@ -93,26 +86,6 @@ def test_namespace_allows_matching_prefixes():
         narrator_voice_id="doubao:zh_female_qingxin",
         voice_assignments={"角色A": "doubao:zh_male_qingnianqingche"},
     )
-    # icl 前缀 + tts_provider=doubao → OK
-    _validate_tts_namespace(
-        tts_provider="doubao",
-        mode="classic",
-        narrator_voice_id="icl:custom_clone_001",
-        voice_assignments={"角色A": "doubao:zh_male_qingnianqingche"},
-    )
-
-
-def test_namespace_allows_icl_prefix_for_doubao():
-    """icl:* → 属于豆包 ICL；tts_provider=doubao 时通过（混用也允许）。"""
-    from backend.app.services.build import _validate_tts_namespace
-    _validate_tts_namespace(
-        tts_provider="doubao",
-        mode="classic",
-        narrator_voice_id="doubao:zh_female_qingxin",
-        voice_assignments={"角色A": "icl:custom_clone_id_123"},
-    )
-
-
 # ---------------------------------------------------------------------
 # T-VA4：config_digest 扩展为包含 tts_provider / mode
 # ---------------------------------------------------------------------
@@ -122,7 +95,7 @@ def test_calc_config_digest_differs_by_tts_provider():
         "doubao:zh_male_qingcang_uranus_bigtts", 1.0, {}, mode="classic", tts_provider="doubao",
     )
     d2 = _calc_config_digest(
-        "doubao:zh_male_qingcang_uranus_bigtts", 1.0, {}, mode="classic", tts_provider="icl",
+        "doubao:zh_male_qingcang_uranus_bigtts", 1.0, {}, mode="classic", tts_provider="minimax",
     )
     assert d1 != d2, "相同 narrator/VA，不同 tts_provider 必须产生不同 digest"
 
@@ -135,3 +108,60 @@ def test_calc_config_digest_backward_compatible_no_mode_provider():
     )
     d_no = _calc_config_digest("zh_male_qingcang_uranus_bigtts", 1.0, {})
     assert d_kw == d_no
+
+
+@pytest.mark.asyncio
+async def test_list_voices_uses_active_tts_even_with_legacy_query(monkeypatch):
+    from types import SimpleNamespace
+
+    from backend.app.api import routes
+    from backend.app.core import config
+
+    monkeypatch.setattr(config.settings, "PROVIDERS_CONFIG", '{"active":{"tts":{"provider_id":"minimax"}}}')
+    called = []
+
+    async def voices():
+        return [{"id": "minimax:a", "provider": "minimax"}, {"id": "minimax:a", "provider": "minimax"}]
+
+    def tts(provider):
+        called.append(provider)
+        return SimpleNamespace(list_voices=voices)
+
+    monkeypatch.setattr(routes, "get_tts", tts)
+    result = await routes.list_voices("doubao")
+    assert called == ["minimax"]
+    assert result == {"voices": [{"id": "minimax:a", "provider": "minimax"}], "count": 1}
+
+
+def test_icl_routes_are_removed():
+    from backend.app.api.routes import router
+
+    assert not any("/icl/" in route.path for route in router.routes)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("male,female", [(None, None), ("minimax:male", "doubao:female"), ("", None)])
+async def test_build_defaults_are_nullable_and_forwarded(monkeypatch, male, female):
+    from types import SimpleNamespace
+
+    from backend.app.api import routes
+    from backend.app.db.session import init_db
+    from backend.app.services import rate_limit
+
+    await init_db()
+    captured = {}
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def build(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(build_id="build", status="queued")
+
+    monkeypatch.setattr(routes, "assert_project_writable", noop)
+    monkeypatch.setattr(rate_limit, "enforce_build_rate_limit", noop)
+    monkeypatch.setattr(routes, "start_build", build)
+    req = routes.StartBuildRequest(default_male_voice_id=male, default_female_voice_id=female)
+    await routes.api_start_build("project", req, SimpleNamespace(client=None), SimpleNamespace(id=1, username="user"))
+    assert captured["default_male_voice_id"] == male
+    assert captured["default_female_voice_id"] == female

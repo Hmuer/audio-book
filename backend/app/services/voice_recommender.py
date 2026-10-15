@@ -1,13 +1,6 @@
-"""音色推荐（基于 LLM 的特征匹配）。
-
-聚合所有可用音色 + 当前用户的 ICL 复刻音色，按 id 去重；
-prompt 给 LLM 看到每个音色的 `provider` 字段，让它能在豆包官方音色与复刻音色间选择。
-
-历史：MiniMax TTS 已弃用，音色池不再包含 minimax 音色（仅 doubao + icl）。
-"""
+"""音色推荐（基于当前 TTS 厂商的特征匹配）。"""
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Any
@@ -16,6 +9,7 @@ from pydantic import BaseModel
 
 from ..ai.base import LLMQuotaExhaustedError
 from ..ai.factory import get_tts
+from ..core.config import get_active
 
 logger = logging.getLogger("novel-tts")
 
@@ -48,12 +42,8 @@ PROMPT_BASE = r"""
 4. 多个角色尽量不要选同一个音色，保证辨识度；若 prompt 里有【旁白音色】，该音色旁白专用，**任何角色都不得使用**
 5. 返回 reason 简要说明匹配点
 
-⚠️ 音色列表里每个音色带有 `provider` 字段（doubao / icl）：
-- doubao:  豆包官方音色（带 model 字段，2.0 大模型）
-- icl:     当前用户上传训练的声音复刻音色（专属该用户）
-
-你可以跨类选择：建议优先看音色特征是否匹配角色，不局限音色来源；但请在
-reason 里简明说明选择理由。
+音色列表来自当前启用的 TTS 厂商，每个音色带有 provider 字段。
+请根据音色特征匹配角色，并在 reason 里简明说明选择理由。
 
 输出格式：
 {
@@ -62,7 +52,7 @@ reason 里简明说明选择理由。
   ]
 }
 ⚠️输出必须是 JSON，顶层一定有 data 字段，每个角色一条。
-⚠️suggested_voice_id 必须是音色列表里出现的 id（含命名空间前缀，如 "doubao:zh_female_vv_uranus_bigtts" 或 "icl:clone_xxx"），不要自创。
+⚠️suggested_voice_id 必须是音色列表里出现的 id（含命名空间前缀，如 "doubao:zh_female_vv_uranus_bigtts"），不要自创。
 """
 
 
@@ -71,8 +61,7 @@ reason 里简明说明选择理由。
 # ----------------------------------------------------------------------
 
 
-async def _fetch_provider_voices(provider: str) -> list[dict]:
-    """并发拉取单个 provider 的音色，异常降级返回空列表。"""
+async def _fetch_provider_voices(provider: str | None) -> list[dict]:
     try:
         tts = get_tts(provider)
         return await tts.list_voices()
@@ -84,59 +73,16 @@ async def _fetch_provider_voices(provider: str) -> list[dict]:
         return []
 
 
-async def _fetch_icl_voices(user_id: int | None) -> list[dict]:
-    """拉取当前用户可用的 ICL 复刻音色；user_id 为 None 时跳过。"""
-    if user_id is None:
-        return []
-    try:
-        from .icl import icl_voices_for_user
-        return await icl_voices_for_user(user_id)
-    except Exception as e:
-        logger.warning(
-            f"[voice_recommender] ICL 音色聚合失败 user_id={user_id}: "
-            f"{type(e).__name__}: {e}"
-        )
-        return []
-
-
 async def _aggregate_voice_pool(user_id: int | None = None) -> list[dict]:
-    """聚合多厂商音色 + 当前用户 ICL 复刻音色，按 id 去重。
-
-    返回 list[dict]，每个 dict 至少含 id/name/gender/description/provider 字段。
-    """
-    # 并发拉 doubao + ICL（MiniMax TTS 已弃用，不再拉 minimax 音色）
-    tasks = [
-        _fetch_provider_voices("doubao"),
-        _fetch_icl_voices(user_id),
-    ]
-    results = await asyncio.gather(*tasks)
-    merged: dict[str, dict] = {}
-    for voices in results:
-        for v in voices:
-            vid = v.get("id")
-            if not vid:
-                continue
-            # 后到的同 id（理论上不应该出现）覆盖前者；保留 provider 信息
-            merged[vid] = v
-    pool = list(merged.values())
-    before = len(pool)
-    pool = [v for v in pool if _is_usable_voice(v)]
-    if len(pool) != before:
-        logger.info(
-            f"[voice_recommender] 剔除 v3 走不通的豆包 1.0 音色 "
-            f"{before - len(pool)} 个（剩余 {len(pool)}）"
-        )
-    logger.info(
-        f"[voice_recommender] 聚合音色池 user_id={user_id} count={len(pool)} "
-        f"providers={sorted({v.get('provider', '?') for v in pool})}"
-    )
-    return pool
+    provider, _, _ = get_active("tts")
+    voices = await _fetch_provider_voices(provider)
+    merged = {v["id"]: v for v in voices if v.get("id")}
+    return [v for v in merged.values() if _is_usable_voice(v)]
 
 
 def _is_usable_voice(voice: dict) -> bool:
     """推荐池只保留当前豆包链路真能合成的音色。
 
-    豆包走 v3（默认）时，v3 端点官方只支持 seed-tts-2.0 / seed-icl-2.0 两类资源；
     声明 model=seed-tts-1.0 的音色（远程同步 / 用户自定义表里可能仍有 BV* 小模型）
     会被要求 1.0 资源（volc.service_type.10029），账号未开通时合成必然 403 +
     code=45000030 —— 推荐给用户等于保证 Build 失败。内置表已不含 1.0 音色。
@@ -254,7 +200,6 @@ async def recommend_voices_with_llm(
 
     Args:
         characters: 角色列表（Character pydantic）
-        user_id: 当前用户 id；非 None 时把该用户的 ICL 复刻音色纳入候选池
         project_id: 项目 id；用于读取项目偏好与项目旁白音色
         narrator_voice_id: 旁白音色 id；显式传入时优先于项目设置
 
@@ -395,7 +340,6 @@ async def recommend_voices_with_llm(
 def _norm_gender_for_prompt(gender: str) -> str:
     """统一音色 gender 字符串为"男声/女声/中性"。
 
-    doubao 是 male/female/neutral；icl 是中性；同时兼容中文写法。
     """
     g = (gender or "").strip().lower()
     if g in ("male", "男", "男声", "m"):

@@ -81,7 +81,7 @@ class DoubaoAsyncTTSClient:
         """
         from backend.app.core.config import doubao_field
         self.api_key = api_key or doubao_field("api_key")
-        self.access_key = access_key or doubao_field("icl_access_key") or doubao_field("api_key")
+        self.access_key = access_key or doubao_field("api_key")
         self.app_id = app_id or doubao_field("app_id")
         self.timeout_s = timeout_s
 
@@ -131,7 +131,7 @@ class DoubaoAsyncTTSClient:
         Args:
             text: 待合成文本（最长 10万字符）
             voice_id: 音色 ID（不含 "doubao:" 前缀）
-            resource_id: 模型版本（默认 seed-tts-2.0；ICL 复刻请传 seed-icl-2.0）
+            resource_id: 模型版本（默认 seed-tts-2.0）
             sample_rate: 8000 / 16000 / 24000 / ...
             speech_rate: -50~100
             loudness_rate: -50~100

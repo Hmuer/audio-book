@@ -3,7 +3,7 @@
 覆盖范围（按 P1-1 checklist）：
   T-V3-1  Payload 嵌套结构（user/req_params/audio_params）正确
   T-V3-2  鉴权头：新版 X-Api-Key；旧版（纯数字）走 X-Api-App-Id + X-Api-Access-Key
-  T-V3-3  X-Api-Resource-Id 按 model 选（seed-tts-2.0 / seed-icl-2.0；
+  T-V3-3  X-Api-Resource-Id 按 model 选（seed-tts-2.0；
           显式 1.0 入参仍如实映射，交由 is_voice_usable_on_v3 过滤）
   T-V3-4  HTTP chunked 响应：多段 base64 audio 拼接 + duration_ms 估算
   T-V3-5  业务错（code != 0）抛 DoubaoTTSResponseV3Error + 不重试
@@ -62,9 +62,6 @@ def test_v3_payload_structure_has_nested_req_params():
     assert ap["enable_subtitle"] is False
     # emotion="calm 是默认占位，不应塞进 audio_params
     assert "emotion" not in ap
-    # icl: 前缀同样剥掉
-    payload_icl = p._build_v3_payload("hi", "icl:S_abc123")
-    assert payload_icl["req_params"]["speaker"] == "S_abc123"
 
 
 def test_v3_payload_speed_mapping_to_speech_rate():
@@ -126,9 +123,6 @@ def test_v3_resource_id_per_model():
     assert _resolve_resource_id_for_v3("seed-tts-1.0-concurr") == "seed-tts-1.0"
     # 2.0 音色
     assert _resolve_resource_id_for_v3("seed-tts-2.0") == "seed-tts-2.0"
-    # ICL 系列
-    assert _resolve_resource_id_for_v3("seed-icl-2.0") == "seed-icl-2.0"
-    assert _resolve_resource_id_for_v3("seed-icl-1.0") == "seed-icl-1.0"
     # 未知 → 兜底 2.0（1.0 已整表下线）
     assert _resolve_resource_id_for_v3("") == "seed-tts-2.0"
     assert _resolve_resource_id_for_v3("garbage") == "seed-tts-2.0"
@@ -139,9 +133,6 @@ def test_v3_resource_id_per_model():
     assert p._resolve_model_for_speaker("zh_female_vv_uranus_bigtts") == "seed-tts-2.0"
     # 1.0 内置音色已删除 → 查不到，走兜底 2.0
     assert p._resolve_model_for_speaker("BV001_streaming") == "seed-tts-2.0"
-    # ICL 复刻 speaker_id
-    assert p._resolve_model_for_speaker("S_abc123") == "seed-icl-2.0"
-    assert p._resolve_model_for_speaker("icl_xyz") == "seed-icl-2.0"
     # 未知 speaker → 兜底 seed-tts-2.0
     assert p._resolve_model_for_speaker("not_a_real_voice") == "seed-tts-2.0"
 
@@ -461,3 +452,36 @@ async def test_v3_list_voices_reuses_builtin_with_protocol_marker():
     vv = next((v for v in voices if v["id"] == "doubao:zh_female_vv_uranus_bigtts"), None)
     assert vv is not None, "zh_female_vv_uranus_bigtts 必须在 v3 列表里"
     assert vv["model"] == "seed-tts-2.0"
+
+@pytest.mark.parametrize("speaker", ["ICL_uranus_zh_female_shuangkuaisisi_tob", "S_old", "icl_old", "iclvoice_old"])
+def test_speaker_has_no_clone_routing_or_payload_gating(monkeypatch, speaker):
+    from backend.app.ai.providers.doubao import tts
+    from backend.app.core.config import settings
+
+    monkeypatch.setattr(settings, "DOUBAO_TTS_MODEL", "seed-tts-2.0-expressive")
+    monkeypatch.setattr(tts, "_BUILTIN_VOICES", [
+        *tts._BUILTIN_VOICES,
+        {"id": speaker, "model": "seed-tts-2.0", "supports_emotion": True},
+    ])
+    v1 = tts.DoubaoTTSProvider()
+    v3 = tts.DoubaoTTSProviderV3()
+    monkeypatch.setattr(v3, "_resolve_api_key", lambda: "test-key")
+    voice_id = f"doubao:{speaker}"
+    assert v1._build_payload("你好", voice_id)["app"]["cluster"] == "volcano_tts"
+    assert v3._auth_headers(speaker_id=speaker)["X-Api-Resource-Id"] == "seed-tts-2.0"
+    req = v3._build_v3_payload("你好", voice_id, emotion="happy", instruction_text="温柔")["req_params"]
+    assert req["speaker"] == speaker
+    assert req["model"] == "seed-tts-2.0-expressive"
+    assert req["context_texts"] == ["温柔"]
+    assert req["audio_params"]["emotion"] == "happy"
+    assert not hasattr(tts, "_is_icl_cloned_speaker")
+
+
+def test_removed_namespace_is_not_stripped():
+    from backend.app.ai.providers.doubao.tts import (
+        DoubaoTTSProvider,
+        _strip_voice_id_for_api_v3,
+    )
+
+    assert DoubaoTTSProvider._strip_voice_id_for_api("icl:old") == "icl:old"
+    assert _strip_voice_id_for_api_v3("icl:old") == "icl:old"

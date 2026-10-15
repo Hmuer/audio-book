@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, errToLog, fetchMediaObjectUrl, Voice, IclTask } from '@/lib/api';
+import { api, errToLog, fetchMediaObjectUrl, Voice } from '@/lib/api';
 import {
   GenderKey,
   normalizeGender,
@@ -16,15 +16,6 @@ import {
   DIALECT_LABELS,
   dialectLabel,
 } from '@/lib/voiceUtils';
-
-/**
- * 音色库页面（#/audiobooks/voices）
- *  Tab 1 音色库：豆包 2.0 + 我的 ICL 复刻音色，多维筛选 + 试听
- *  Tab 2 声音复刻：上传参考音频创建 ICL 训练任务，轮询训练状态，管理我的音色
- *
- * 注：原「小模型免费」Tab 已下线 —— 1.0 小模型音色（seed-tts-1.0）整表删除，
- * 该 Tab 必然为空，保留即成死入口。
- */
 
 const PREVIEW_TEXT_ZH = '夜色渐深，风穿过巷口，远处传来零星的犬吠声。';
 // 纯外语音色（如 Stokie / Dacey / Tim，音色表声明语种只有 en）拿到中文文本时，
@@ -84,8 +75,6 @@ function VoiceAvatar({ voice, size = 40 }: { voice: Voice; size?: number }) {
 // 主组件
 // =====================================================================
 export default function VoiceLibraryPage({ voices }: { voices: Voice[] }) {
-  const [tab, setTab] = useState<'library' | 'icl'>('library');
-
   return (
     <section className="animate-fade-in space-y-5">
       {/* 页头 */}
@@ -101,34 +90,14 @@ export default function VoiceLibraryPage({ voices }: { voices: Voice[] }) {
           <div className="min-w-0 flex-1">
             <h1 className="headline text-xl">音色库</h1>
             <p className="text-xs text-ink-500 mt-1">
-              共 {voices.length} 个音色 · 豆包官方 / 自定义声音复刻
+              共 {voices.length} 个音色 · 豆包官方 / MiniMax
             </p>
           </div>
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              onClick={() => setTab('library')}
-              className={`px-3.5 py-1.5 rounded-md text-[13px] font-medium border transition-all
-                ${tab === 'library'
-                  ? 'bg-brand-500/15 border-brand-500/40 text-brand-300'
-                  : 'bg-ink-100 border-ink-300/70 text-ink-600 hover:bg-ink-200 hover:text-ink-700'}`}
-            >
-              音色库
-            </button>
-            <button
-              onClick={() => setTab('icl')}
-              className={`px-3.5 py-1.5 rounded-md text-[13px] font-medium border transition-all
-                ${tab === 'icl'
-                  ? 'bg-brand-500/15 border-brand-500/40 text-brand-300'
-                  : 'bg-ink-100 border-ink-300/70 text-ink-600 hover:bg-ink-200 hover:text-ink-700'}`}
-            >
-              声音复刻
-            </button>
-          </div>
+
         </div>
       </div>
 
-      {tab === 'library' && <LibraryTab voices={voices} />}
-      {tab === 'icl' && <IclTab />}
+      <LibraryTab voices={voices} />
     </section>
   );
 }
@@ -273,7 +242,7 @@ function LibraryTab({ voices }: { voices: Voice[] }) {
           {([
             ['all', '全部'],
             ['doubao', PROVIDER_LABELS.doubao],
-            ['icl', PROVIDER_LABELS.icl],
+            ['minimax', PROVIDER_LABELS.minimax],
           ] as [ProviderKey | 'all', string][]).map(([key, label]) => {
             const count = key === 'all'
               ? voices.length
@@ -388,7 +357,7 @@ function LibraryTab({ voices }: { voices: Voice[] }) {
                   </span>
                 ))}
                 <span className="text-[10px] text-ink-500 font-mono ml-auto opacity-60 hidden md:inline">
-                  {v.id.replace(/^(minimax|doubao|icl):/, '')}
+                  {v.id.replace(/^(minimax|doubao):/, '')}
                 </span>
               </div>
               <button
@@ -426,348 +395,5 @@ function LibraryTab({ voices }: { voices: Voice[] }) {
         </div>
       )}
     </>
-  );
-}
-
-// =====================================================================
-// Tab 2：ICL 声音复刻
-// =====================================================================
-function IclTab() {
-  const [tasks, setTasks] = useState<IclTask[]>([]);
-  const [loadErr, setLoadErr] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
-
-  const [voiceName, setVoiceName] = useState('');
-  const [file, setFile] = useState<File | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [createErr, setCreateErr] = useState<string | null>(null);
-  const [okTip, setOkTip] = useState<string | null>(null);
-  // 从豆包控制台同步已有复刻音色（BatchListMegaTTSTrainStatus）
-  const [syncing, setSyncing] = useState(false);
-  // 训练模型算法下拉（ICL2.0 / ICL1.0 / DiT）
-  const [trainModelType, setTrainModelType] = useState<string>('ICL2.0');
-  const [trainOptions, setTrainOptions] = useState<{ id: string; label: string; description: string }[] | null>(null);
-
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const refresh = async () => {
-    try {
-      setTasks(await api.iclListTasks());
-      setLoadErr(null);
-    } catch (e) {
-      setLoadErr(String((e as Error)?.message || e));
-    } finally {
-      setLoaded(true);
-    }
-  };
-
-  useEffect(() => { refresh(); }, []);
-
-  // 进入页面时拉一次训练 model_type 选项（3 项；失败也不影响主流程）
-  useEffect(() => {
-    api.doubaoModelOptions()
-      .then(o => setTrainOptions(o.train_model_types))
-      .catch(e => console.warn('训练模型选项加载失败:', e));
-  }, []);
-
-  // 有排队/训练中任务时 5s 轮询：逐个打详情接口（会触发后端刷新豆包侧状态，
-  // 服务重启后 worker 丢失也能恢复），再拉全量列表
-  const runningTaskIds = tasks
-    .filter(t => t.status === 0 || t.status === 1)
-    .map(t => t.task_id)
-    .join(',');
-  const hasRunning = runningTaskIds !== '';
-  useEffect(() => {
-    if (!hasRunning) return;
-    let cancelled = false;
-    const ids = runningTaskIds.split(',').filter(Boolean);
-    const poll = async () => {
-      // 详情接口失败静默（后端出站查询已按任务节流，堆积属预期）
-      await Promise.all(ids.map(async id => {
-        try { await api.iclGetTask(id); } catch {}
-      }));
-      if (!cancelled) await refresh();
-    };
-    const timer = setInterval(poll, 5000);
-    return () => { cancelled = true; clearInterval(timer); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runningTaskIds]);
-
-  // 轮询到新可用的音色 → 通知 HomePage 重拉 /api/voices
-  const usableCount = tasks.filter(t => t.usable).length;
-  const prevUsableRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (prevUsableRef.current === null) {
-      prevUsableRef.current = usableCount;
-      return;
-    }
-    if (usableCount > prevUsableRef.current) {
-      window.dispatchEvent(new CustomEvent('app:voices-refreshed'));
-    }
-    prevUsableRef.current = usableCount;
-  }, [usableCount]);
-
-  const submit = async () => {
-    setCreateErr(null);
-    setOkTip(null);
-    if (!voiceName.trim()) {
-      setCreateErr('请填写音色名称');
-      return;
-    }
-    if (!file) {
-      setCreateErr('请选择 3~10 秒的参考音频文件（mp3/wav/m4a）');
-      return;
-    }
-    if (file.size > 10 * 1024 * 1024) {
-      setCreateErr('参考音频过大：请上传 10MB 以内的录音片段');
-      return;
-    }
-    setCreating(true);
-    try {
-      await api.iclCreateVoice(voiceName.trim(), file, trainModelType);
-      setVoiceName('');
-      setFile(null);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-      setOkTip('训练任务已创建，训练通常需要几十秒到几分钟');
-      await refresh();
-    } catch (e) {
-      setCreateErr(String((e as Error)?.message || e));
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  // 同步豆包控制台已有的复刻音色（只读、幂等）：解决「控制台做的音色平台看不到」
-  const syncFromConsole = async () => {
-    setCreateErr(null);
-    setOkTip(null);
-    setSyncing(true);
-    try {
-      const r = await api.iclSyncVoices();
-      setOkTip(
-        `同步完成：控制台返回 ${r.total} 个音色，其中可用 ${r.usable} 个` +
-        `（新增 ${r.created} / 更新 ${r.updated}）`
-      );
-      await refresh();
-    } catch (e) {
-      setCreateErr(String((e as Error)?.message || e));
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  const doDelete = async (taskId: string) => {
-    setDeletingId(taskId);
-    try {
-      await api.iclDeleteTask(taskId);
-      window.dispatchEvent(new CustomEvent('app:voices-refreshed'));
-      await refresh();
-    } catch (e) {
-      setLoadErr(String((e as Error)?.message || e));
-    } finally {
-      setDeletingId(null);
-      setConfirmDeleteId(null);
-    }
-  };
-
-  return (
-    <div className="space-y-5">
-      {/* 创建训练任务 */}
-      <div className="glass-panel p-5 sm:p-6 space-y-4">
-        <div className="flex items-start gap-3">
-          <div className="w-10 h-10 rounded-md grid place-items-center shrink-0 bg-brand-600 text-white">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 2v10" />
-              <path d="m7.5 7.5 9 9" />
-              <path d="M2 12h10" />
-              <path d="m16.5 16.5 4.5 4.5" />
-            </svg>
-          </div>
-          <div>
-            <h3 className="text-base font-semibold text-ink-800">创建复刻音色</h3>
-            <p className="text-xs text-ink-500 mt-0.5">
-              上传 3~10 秒清晰人声录音（建议无背景音），基于豆包 ICL 2.0 复刻专属音色；
-              训练完成后可在构建时为角色选择 <code className="text-brand-300">icl:</code> 音色。
-            </p>
-          </div>
-        </div>
-
-        <div className="grid sm:grid-cols-[1fr_1.2fr_1fr_auto] gap-2.5 items-end">
-          <div className="space-y-1">
-            <label className="text-xs text-ink-600">音色名称</label>
-            <input
-              className="input !py-2"
-              placeholder="如：温柔女声·小雅"
-              value={voiceName}
-              maxLength={64}
-              onChange={e => setVoiceName(e.target.value)}
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs text-ink-600">参考音频（mp3 / wav / m4a）</label>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".mp3,.wav,.m4a,audio/mpeg,audio/wav,audio/mp4"
-              className="input !py-1.5 !text-[12px] file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:bg-ink-200 file:text-ink-700"
-              onChange={e => setFile(e.target.files?.[0] || null)}
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs text-ink-600" title="训练用模型算法（合成走对应通道）">
-              训练模型算法
-            </label>
-            <select
-              className="input !py-2 !text-[13px]"
-              value={trainModelType}
-              onChange={e => setTrainModelType(e.target.value)}
-              title={trainOptions?.find(o => o.id === trainModelType)?.description ?? trainModelType}
-            >
-              {(trainOptions ?? [{ id: 'ICL2.0', label: 'ICL 2.0（推荐）', description: '' }]).map(o => (
-                <option key={o.id} value={o.id} title={o.description}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <button className="btn-primary h-[38px]" onClick={submit} disabled={creating}>
-            {creating ? (
-              <>
-                <span className="inline-block w-4 h-4 border-2 border-ink-400/70 border-t-white rounded-full animate-spin" />
-                创建中…
-              </>
-            ) : (
-              '开始训练'
-            )}
-          </button>
-        </div>
-
-        {createErr && (
-          <div className="rounded-lg px-4 py-3 text-sm text-red-200 border border-red-500/40 bg-red-500/10">
-            {createErr}
-          </div>
-        )}
-        {okTip && (
-          <div className="rounded-lg px-4 py-3 text-sm text-emerald-200 border border-emerald-500/40 bg-emerald-500/10">
-            {okTip}
-          </div>
-        )}
-      </div>
-
-      {/* 任务列表 */}
-      <div className="glass-panel p-5 sm:p-6 space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-base font-semibold text-ink-800">我的复刻音色</h3>
-          <div className="flex items-center gap-2">
-            <button
-              className="btn-ghost !py-1 !px-2.5 text-xs"
-              onClick={syncFromConsole}
-              disabled={syncing}
-              title="从豆包控制台拉取已购买/已训练的复刻音色（只读同步，不会改动上游音色）。需要设置页填好「豆包 APP_ID」与「豆包 SK」。"
-            >
-              {syncing ? '同步中…' : '同步控制台音色'}
-            </button>
-            <button className="btn-ghost !py-1 !px-2.5 text-xs" onClick={refresh}>
-              刷新
-            </button>
-          </div>
-        </div>
-
-        {loadErr && (
-          <div className="rounded-lg px-4 py-3 text-sm text-red-200 border border-red-500/40 bg-red-500/10">
-            {loadErr}
-          </div>
-        )}
-
-        {loaded && tasks.length === 0 && !loadErr && (
-          <div className="text-center py-12 text-sm text-ink-500">
-            还没有复刻音色，上传参考音频开始训练
-          </div>
-        )}
-
-        <div className="space-y-2.5">
-          {tasks.map(t => {
-            const running = t.status === 0 || t.status === 1;
-            const failed = t.status === 3;
-            // 以 cloned_voice_id（voice_id）判断"音色可选"，与 /api/voices 聚合口径一致
-            const ready = !!t.voice_id;
-            return (
-              <div
-                key={t.task_id}
-                className="rounded-lg border border-ink-300/70 bg-ink-100 p-3.5 flex items-center gap-3 hover:border-ink-400 transition-all"
-              >
-                <div
-                  className={`w-9 h-9 rounded-lg grid place-items-center shrink-0 text-white text-sm font-bold
-                    ${failed ? 'bg-red-500/60' : running ? 'bg-brand-500/60' : 'bg-emerald-500/60'}`}
-                >
-                  {t.voice_name?.trim()?.[0] || '音'}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-medium text-ink-800 truncate">{t.voice_name}</span>
-                    <span
-                      className={`chip-soft !px-1.5 !py-0.5 !text-[11px]
-                        ${failed ? '!text-red-300' : ready ? '!text-emerald-300' : ''}`}
-                    >
-                      {running && (
-                        <span className="inline-block w-2 h-2 border-2 border-brand-400/50 border-t-brand-300 rounded-full animate-spin mr-1 align-middle" />
-                      )}
-                      {t.status_label}
-                    </span>
-                    {ready && t.voice_id && (
-                      <code className="text-[10px] text-ink-500 truncate">{t.voice_id}</code>
-                    )}
-                  </div>
-                  <div className="text-[11px] text-ink-500 mt-0.5 truncate">
-                    {failed && t.error_msg
-                      ? t.error_msg
-                      : ready
-                        ? '训练完成 · 可在构建时为旁白或角色选择该音色'
-                        : running
-                          ? '正在豆包侧训练，完成后自动出现在音色库…'
-                          : '排队等待训练…'}
-                  </div>
-                </div>
-                <div className="shrink-0">
-                  {confirmDeleteId === t.task_id ? (
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        className="btn-primary !py-1 !px-2.5 text-xs"
-                        disabled={deletingId === t.task_id}
-                        onClick={() => doDelete(t.task_id)}
-                      >
-                        {deletingId === t.task_id ? '删除中…' : '确认删除'}
-                      </button>
-                      <button
-                        className="btn-ghost !py-1 !px-2.5 text-xs"
-                        onClick={() => setConfirmDeleteId(null)}
-                      >
-                        取消
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      className="btn-ghost !py-1 !px-2.5 text-xs hover:!text-red-300"
-                      onClick={() => setConfirmDeleteId(t.task_id)}
-                      title="删除训练任务与参考音频"
-                    >
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M3 6h18" />
-                        <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6" />
-                        <path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2" />
-                      </svg>
-                      删除
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
   );
 }

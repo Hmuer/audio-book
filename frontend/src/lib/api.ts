@@ -163,49 +163,14 @@ export interface Voice {
   id: string;
   name: string;
   gender: string;
-  /** 部分音色带 description；豆包/ICL 用 zh_tags/scene 兜底（见 voiceUtils.voiceDescription） */
   description?: string;
-  /** 命名空间：doubao / icl（icl: 为用户复刻音色，走豆包合成通道；minimax 已弃用） */
   provider?: string;
-  /** doubao/icl 音色字段：child / teen / youth / middle / old */
+  model?: string;
   age?: string;
-  /** doubao/icl 音色字段：适用场景（如 有声书、新闻） */
   scene?: string[];
-  /** doubao 音色字段：方言（如 sichuan） */
   dialect?: string;
-  /** doubao 音色字段：支持语种（如 ["zh"] / ["en"] / ["zh","en"]）。
-   *  试听文案要按它选语种 —— 纯外语音色读中文时上游返回「成功但无音频」。 */
   languages?: string[];
-  /** doubao/icl 音色字段：中文标签 */
   zh_tags?: string[];
-  /** icl 音色字段：来源训练任务 id */
-  task_id?: string;
-}
-
-/** ICL 声音复刻训练任务（/api/icl/voices 返回结构） */
-export interface IclTask {
-  task_id: string;
-  user_id: number;
-  voice_name: string;
-  status: number;
-  status_label: string;
-  progress: number;
-  cloned_voice_id: string | null;
-  voice_id: string | null;
-  usable: boolean;
-  doubao_task_id: string | null;
-  error_msg: string | null;
-  created_at: string | null;
-  updated_at: string | null;
-}
-
-/** POST /api/icl/sync 返回：从豆包控制台同步进来的复刻音色统计 */
-export interface IclSyncResp {
-  total: number;
-  created: number;
-  updated: number;
-  usable: number;
-  items: { speaker_id: string; name: string; state: string; status: number }[];
 }
 
 export interface Character {
@@ -241,7 +206,10 @@ export const api = {
     if (opts?.tts_provider) qs.set('tts_provider', opts.tts_provider);
     if (opts?.free_only) qs.set('free_only', 'true');
     const url = qs.toString() ? `/api/voices?${qs}` : '/api/voices';
-    return _fetch<{ voices: Voice[]; count: number }>(url).then(r => r.voices);
+    return _fetch<{ voices: Voice[]; count: number }>(url).then(r => r.voices.filter(v =>
+      (!v.provider || v.provider === 'doubao' || v.provider === 'minimax')
+      && (!v.id.includes(':') || v.id.startsWith('doubao:') || v.id.startsWith('minimax:'))
+    ));
   },
   // ---------- Auth ----------
   authLogin: (username: string, password: string) =>
@@ -264,48 +232,8 @@ export const api = {
       body: JSON.stringify({ text, voice_id, speed: speed ?? 1.0 }),
     }),
 
-  // ---------- ICL 声音复刻（豆包 ICL 2.0） ----------
-  // 上传 3~10 秒参考音频，创建训练任务（multipart/form-data）
-  iclCreateVoice: (voiceName: string, file: File, modelType?: string) => {
-    const fd = new FormData();
-    fd.append('voice_name', voiceName);
-    fd.append('file', file);
-    if (modelType) {
-      fd.append('model_type', modelType);
-    }
-    const token = getToken();
-    return fetch(`${BASE}/api/icl/voices`, {
-      method: 'POST',
-      body: fd,
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    }).then(async r => {
-      if (r.status === 401) {
-        clearToken();
-        if (_onAuthFail) _onAuthFail();
-        throw new Error('登录已失效，请重新登录');
-      }
-      if (!r.ok) {
-        let msg = `HTTP ${r.status}`;
-        try { const j = await r.json(); if (j.detail) msg += `: ${j.detail}`; } catch {}
-        throw new Error(msg);
-      }
-      return r.json() as Promise<IclTask>;
-    });
-  },
-
-  // ---------- 豆包模型选项（设置页 + ICL 上传页下拉） ----------
   doubaoModelOptions: () =>
     _fetch<DoubaoModelOptions>('/api/doubao/models/options'),
-  // 我的训练任务列表（含进行中/成功/失败）
-  iclListTasks: () =>
-    _fetch<{ tasks: IclTask[] }>('/api/icl/voices').then(r => r.tasks),
-  // 任务详情（进行中会刷新豆包侧状态）
-  iclGetTask: (taskId: string) => _fetch<IclTask>(`/api/icl/voices/${taskId}`),
-  // 删除训练任务（含参考音频）
-  iclDeleteTask: (taskId: string) =>
-    _fetch<{ ok: boolean; task_id: string }>(`/api/icl/voices/${taskId}`, { method: 'DELETE' }),
-  // 同步豆包控制台已有的复刻音色（只读、幂等）
-  iclSyncVoices: () => _fetch<IclSyncResp>('/api/icl/sync', { method: 'POST' }),
 
   // ---------- Project 制（项目工作台：唯一入口） ----------
 
@@ -451,8 +379,10 @@ export const api = {
       voice_assignments: Record<string, string>;
       narrator_voice_id: string;
       speed?: number;
-      /** TTS 厂商：doubao（MiniMax TTS 已弃用） */
-      tts_provider?: 'doubao';
+      tts_provider?: 'doubao' | 'minimax';
+      mode?: 'classic';
+      default_male_voice_id?: string | null;
+      default_female_voice_id?: string | null;
       /** 旁白情感（英文枚举风格值，空串 = provider 默认） */
       narrator_emotion?: string;
       /** 旁白风格指令（自由文本，豆包支持） */
@@ -829,8 +759,7 @@ export interface BuildListItem {
   created_at: string;
   /** 构建模式（多播剧 Seed-Audio 已下线，当前恒为 classic） */
   mode?: 'classic' | null;
-  /** TTS 厂商：doubao（MiniMax TTS 已弃用） */
-  tts_provider?: 'doubao' | null;
+  tts_provider?: 'doubao' | 'minimax' | null;
   /** TTS 用量（真实供应商调用，不含缓存命中） */
   tts_calls?: number;
   tts_chars?: number;
@@ -868,7 +797,7 @@ export interface BuildDetailResp {
   completed_at: string | null;
   created_at: string;
   mode?: 'classic' | null;
-  tts_provider?: 'doubao' | null;
+  tts_provider?: 'doubao' | 'minimax' | null;
   failed_chapters?: number[] | null;
   is_retry?: boolean;
   tts_calls?: number;
@@ -933,7 +862,7 @@ export interface BuildStatusResp {
   completed_chapters: number;
   total_chapters: number;
   mode?: 'classic' | null;
-  tts_provider?: 'doubao' | null;
+  tts_provider?: 'doubao' | 'minimax' | null;
   failed_chapters?: number[] | null;
   /** H-4：结构化进度（phase / rate / eta / 分片进度） */
   meta?: BuildProgressMeta | null;
@@ -949,7 +878,7 @@ export interface BuildResp {
   completed_chapters: number;
   created_at: string;
   mode?: 'classic' | null;
-  tts_provider?: 'doubao' | null;
+  tts_provider?: 'doubao' | 'minimax' | null;
 }
 
 // ---------- 系统设置 ----------
@@ -978,17 +907,12 @@ export interface ProviderConfig {
   // 豆包专用凭据（其余厂商可忽略）。GET 时敏感字段一律为 "***LAST4" 占位或空。
   secret?: string;
   app_id?: string;
-  icl_api_key?: string;
-  icl_access_key?: string;
   // 豆包专用端点：可填 path（以 / 开头，自动拼 base_url）或完整 URL。
-  icl_endpoint?: string;
   tts_v3_endpoint?: string;
   // 敏感字段的「是否已配置」标记（GET 时后端附带；值为真表示库里已有非空值）
   api_key_configured?: boolean;
   secret_configured?: boolean;
   app_id_configured?: boolean;
-  icl_api_key_configured?: boolean;
-  icl_access_key_configured?: boolean;
   extra_headers?: Record<string, string>;
   models: ProviderModel[];
 }
@@ -1013,7 +937,5 @@ export interface ModelOption {
   doc_url: string;
 }
 export interface DoubaoModelOptions {
-  train_model_types: ModelOption[];
   tts_resource_ids: ModelOption[];
-  icl_expressive_models: ModelOption[];
 }

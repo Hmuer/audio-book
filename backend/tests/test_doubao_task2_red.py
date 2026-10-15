@@ -1,13 +1,5 @@
-"""Task 2 RED tests — Factory Registry + get_tts(provider) + get_tts_by_voice_id + 限流桶。
-
-T-TR1: get_tts('doubao') 返回 DoubaoTTSProvider（未配置凭据仅初始化可创建，synthesize 抛错）。
-T-TR2: get_tts_by_voice_id 按前缀返回对应 provider 实例；minimax: 前缀已弃用 → 显式报错。
-
-历史：MiniMax TTS 已弃用，get_tts('minimax') / minimax: 前缀路由用例随 provider 删除。
-"""
 from __future__ import annotations
 
-import os
 import sys
 import time as _time
 from pathlib import Path
@@ -45,21 +37,20 @@ def test_get_tts_by_voice_id_prefix_mapping():
     p_db = get_tts_by_voice_id("doubao:zh_female_qingxin")
     assert p_db.provider == "doubao"
 
-    p_icl = get_tts_by_voice_id("icl:custom_voice_a")
-    # icl 走 DoubaoTTSProvider
-    assert p_icl.provider == "doubao"
-
     # 无前缀 → 按全局默认 provider（doubao）
     p_any = get_tts_by_voice_id("some-legacy-id")
     assert p_any.provider == "doubao"
 
 
-def test_get_tts_by_voice_id_minimax_prefix_raises():
-    """minimax: 前缀已弃用 → 显式报错（不静默兜底成豆包）。"""
-    from backend.app.ai.factory import get_tts_by_voice_id
+def test_get_tts_by_voice_id_minimax_prefix_routes(monkeypatch):
+    from backend.app.ai import factory as aifact
+    from backend.app.ai.providers.minimax.tts import MiniMaxTTSProvider
 
-    with pytest.raises(RuntimeError, match="MiniMax 语音合成已弃用"):
-        get_tts_by_voice_id("minimax:male-qn-jingying")
+    monkeypatch.setattr(aifact, "_tts_instance", None)
+    aifact.invalidate_tts_cache()
+    provider = aifact.get_tts_by_voice_id("minimax:male-qn-jingying")
+    assert isinstance(provider, MiniMaxTTSProvider)
+    assert provider is aifact.get_tts("minimax")
 
 
 def test_get_tts_by_voice_id_unknown_prefix_still_returns_default():

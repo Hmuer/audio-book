@@ -200,3 +200,17 @@ def test_put_providers_requires_provider_id(client_and_state):
     r = client.put("/api/providers", headers=_auth(token), json=cfg)
     assert r.status_code == 400
     assert "id" in r.json()["detail"]
+
+def test_put_providers_cleans_old_icl_credentials_from_response(client_and_state):
+    client, _ = client_and_state
+    token = _login(client)
+    cfg = client.get("/api/providers", headers=_auth(token)).json()
+    doubao = next(p for p in cfg["providers"] if p["id"] == "doubao")
+    doubao.update(api_key="test-new-key", icl_api_key="old-key", icl_access_key="old-access", icl_endpoint="/old")
+    response = client.put("/api/providers", headers=_auth(token), json=cfg)
+    assert response.status_code == 200
+    for body in (response.json(), client.get("/api/providers", headers=_auth(token)).json()):
+        provider = next(p for p in body["providers"] if p["id"] == "doubao")
+        assert not any(key.startswith("icl_") for key in provider)
+        assert provider["api_key"] == "***-key"
+        assert provider["api_key_configured"] is True

@@ -4,9 +4,7 @@ T-DV1 list_voices() 合并：
     a) 官方内置 ≥14 条音色（豆包官方 2.0 音色库 uranus 系列，
        每条带 name/zh_tags/gender/age/scene/dialect 等属性，且 provider=doubao），
     b) 本地 voices_doubao.json（若存在）加载的自定义条目，
-    c) icl: < 官方音色，ID 前缀为 "doubao:"。
     注：1.0 小模型 BV* 音色（seed-tts-1.0）已整表删除，不再内置。
-T-DV2 synthesize_to_bytes 走 HTTP API，voice_id 必须剥离前缀（icl:* 原样保留）。
 T-DV3 指令参数：instruction_text / speaker_style / emotion / speed 正确加入请求体。
 T-DV4 重试策略：遇到 429 至少重试一次，指数退避；遇到 5xx 重试 N 次，最后抛 RuntimeError。
 

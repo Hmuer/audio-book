@@ -73,10 +73,10 @@ def test_p2_2_at3_legacy_auth_headers_for_pure_numeric_app_id():
     c = DoubaoAsyncTTSClient(
         api_key="new-ak", access_key="legacy-ak", app_id="1234567890",
     )
-    headers = c._headers("seed-icl-2.0", "req-456")
+    headers = c._headers("seed-tts-2.0", "req-456")
     assert headers["X-Api-App-Id"] == "1234567890"
     assert headers["X-Api-Access-Key"] == "legacy-ak"
-    assert headers["X-Api-Resource-Id"] == "seed-icl-2.0"
+    assert headers["X-Api-Resource-Id"] == "seed-tts-2.0"
     assert "X-Api-Key" not in headers
 
 
@@ -470,3 +470,20 @@ async def test_p2_2_at12_on_progress_exception_swallowed(monkeypatch):
         "t1", poll_interval_s=0.001, poll_max_times=5, on_progress=_bad_on_progress,
     )
     assert result.status == mod.AsyncTaskStatus.SUCCESS
+
+
+def test_async_credentials_use_only_tts_fields(monkeypatch):
+    from backend.app.ai.providers.doubao.tts_async import DoubaoAsyncTTSClient
+    from backend.app.core import config
+
+    fields = []
+
+    def field(name):
+        fields.append(name)
+        return {"api_key": "tts-key", "app_id": "12345"}[name]
+
+    monkeypatch.setattr(config, "doubao_field", field)
+    client = DoubaoAsyncTTSClient()
+    assert fields == ["api_key", "api_key", "app_id"]
+    assert client.access_key == "tts-key"
+    assert client._headers("seed-tts-2.0", "test")["X-Api-Access-Key"] == "tts-key"

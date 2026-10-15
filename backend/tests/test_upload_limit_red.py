@@ -3,7 +3,6 @@ P1 #8 — 流式上传限制回归测试。
 
 覆盖：
 - _read_upload_with_limit 在超 max_bytes 时立即抛 413（不读全文件）；
-- /api/icl/voices 上传超大参考音频 → 413；
 - /api/projects/{pid}/import 上传超大文件 → 413；
 - /api/projects/{pid}/import 上传正常大小文件 → 200。
 
@@ -63,34 +62,6 @@ async def test_helper_chunk_size_smaller_than_limit():
     uf = StarletteUploadFile(filename="x.txt", file=spooled)
     out = await _read_upload_with_limit(uf, max_bytes=8 * 1024, chunk_size=2 * 1024)
     assert out == data
-
-
-@pytest.mark.asyncio
-async def test_icl_route_rejects_oversize(_isolate_data_dir):
-    """ICL /api/icl/voices 上传超限文件 → 413。"""
-    from backend.app.db.session import init_db
-    from backend.app.services.auth import seed_admin_user, create_access_token
-    from backend.app.main import app
-    from backend.app.core.config import settings
-    from httpx import AsyncClient, ASGITransport
-
-    await init_db()
-    await seed_admin_user()
-    tok, _ = create_access_token("admin")
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # 构造刚好超过 ICL_MAX_AUDIO_BYTES 的 multipart
-        big = b"X" * (settings.ICL_MAX_AUDIO_BYTES + 1024)
-        files = {"file": ("ref.wav", big, "audio/wav")}
-        r = await client.post(
-            "/api/icl/voices",
-            data={"voice_name": "too-big"},
-            files=files,
-            headers={"Authorization": f"Bearer {tok}"},
-        )
-        # 流式超限 → 413
-        assert r.status_code == 413, r.text
 
 
 @pytest.mark.asyncio

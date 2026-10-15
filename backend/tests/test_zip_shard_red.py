@@ -179,6 +179,8 @@ def test_zs5_build_to_detail_exposes_shards_1_based():
         tts_chars=0,
     )
     detail = _build_to_detail(b, [])
+    assert detail.default_male_voice_id is None
+    assert detail.default_female_voice_id is None
     assert detail.zip_url == "/media/build_b_ch0001-0050.zip"
     assert [(s.idx, s.start_chapter, s.end_chapter) for s in detail.zip_shards] == [
         (0, 1, 50),

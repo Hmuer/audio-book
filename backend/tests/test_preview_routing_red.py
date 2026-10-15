@@ -1,6 +1,6 @@
 """Review 回归 — /api/tts/preview 必须按音色 ID 前缀路由 TTS 厂商。
 
-B1：preview 路由此前固定 get_tts()（全局默认 minimax），导致 doubao:/icl: 音色试听
+B1：preview 路由此前固定 get_tts()（全局默认 minimax），导致 doubao: 音色试听
 必然失败（音色 id 原样传给 MiniMax API 报错）。修复后走 get_tts_by_voice_id。
 """
 from __future__ import annotations
@@ -46,8 +46,8 @@ async def test_preview_uses_voice_id_routing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_preview_routes_doubao_and_icl_prefix_to_doubao_provider(monkeypatch):
-    """doubao:/icl: 前缀在 factory 层路由到豆包 provider（v1 或 v3 均可；preview 依赖该行为）。"""
+async def test_preview_routes_doubao_prefix_to_doubao_provider(monkeypatch):
+    """doubao: 前缀在 factory 层路由到豆包 provider（v1 或 v3 均可；preview 依赖该行为）。"""
     from backend.app.ai.factory import get_tts_by_voice_id
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider, DoubaoTTSProviderV3
     from backend.app.core import config as cfgmod
@@ -62,4 +62,3 @@ async def test_preview_routes_doubao_and_icl_prefix_to_doubao_provider(monkeypat
     # 「必须落到豆包 provider，而不是 minimax」。
     doubao_providers = (DoubaoTTSProvider, DoubaoTTSProviderV3)
     assert isinstance(get_tts_by_voice_id("doubao:zh_female_qingxin"), doubao_providers)
-    assert isinstance(get_tts_by_voice_id("icl:clone_x"), doubao_providers)

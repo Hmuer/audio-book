@@ -67,11 +67,8 @@ def env(monkeypatch):
     async def _fake_provider(p: str) -> list[dict]:
         return list(state.get(p, []))
 
-    async def _fake_icl(_user_id):
-        return []
 
     monkeypatch.setattr(vr, "_fetch_provider_voices", _fake_provider)
-    monkeypatch.setattr(vr, "_fetch_icl_voices", _fake_icl)
 
     llm = _FakeLLM()
     import backend.app.ai.factory as _factory

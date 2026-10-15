@@ -99,15 +99,6 @@ export default function HomePage() {
     return () => window.removeEventListener('app:projects-refreshed', onRefresh as EventListener);
   }, []);
 
-  // 自定义事件：ICL 训练任务出现新可用音色时，重拉音色列表
-  useEffect(() => {
-    const onVoicesRefresh = () => {
-      api.voices().then(setVoices).catch(e => console.error('voices 重拉失败:', errToLog(e)));
-    };
-    window.addEventListener('app:voices-refreshed', onVoicesRefresh);
-    return () => window.removeEventListener('app:voices-refreshed', onVoicesRefresh);
-  }, []);
-
   if (authLoading) {
     return (
       <div className="min-h-[60vh] grid place-items-center text-ink-500">
@@ -142,13 +133,13 @@ export default function HomePage() {
       ];
     }
     if (R.name === 'ab-voices') {
-      const iclCount = voices.filter(v => voiceProvider(v) === 'icl').length;
+      const minimaxCount = voices.filter(v => voiceProvider(v) === 'minimax').length;
       const doubaoCount = voices.filter(v => voiceProvider(v) === 'doubao').length;
       return [
         { label: '音色',   value: String(voices.length).padStart(2, '0'), tone: 'brand' as const },
         { label: '豆包',   value: String(doubaoCount).padStart(2, '0'),   tone: 'cold' as const },
-        ...(iclCount > 0 ? [
-          { label: '复刻', value: String(iclCount).padStart(2, '0'), tone: 'ok' as const },
+        ...(minimaxCount > 0 ? [
+          { label: 'MiniMax', value: String(minimaxCount).padStart(2, '0'), tone: 'ok' as const },
         ] : []),
       ];
     }

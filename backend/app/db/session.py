@@ -1,6 +1,7 @@
 import logging
 
 from sqlalchemy import event, inspect, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
     AsyncEngine,
@@ -93,6 +94,8 @@ _PROJECT_NEW_COLUMNS = {
     "owner_user_id": "INTEGER REFERENCES users(id) ON DELETE SET NULL",
 }
 _BUILD_NEW_COLUMNS = {
+    "default_male_voice_id": "VARCHAR(128)",
+    "default_female_voice_id": "VARCHAR(128)",
     # 注意：必须保留 SQL 级默认值，旧行自动补齐 classic / minimax（符合 T-TR3 向后兼容）
     "mode": "VARCHAR(32) DEFAULT 'classic'",
     "tts_provider": "VARCHAR(32) DEFAULT 'minimax'",
@@ -208,7 +211,16 @@ def _migrate_existing_sync(conn) -> None:
     # 修复：启动迁移时把这类「僵尸列」直接 DROP（SQLite ≥ 3.35 支持）。
     # 通用规则（不只针对 emotion）：ORM 没有且 NOT NULL 无默认的列 INSERT 必炸，
     # 一律清理；可空列/带默认值列 INSERT 能成功，留着无害（兼容用户回滚代码）。
+    stale_tables: list[str] = []
+    if "icl_training_tasks" in tables:
+        try:
+            conn.execute(text("DROP TABLE IF EXISTS icl_training_tasks"))
+            tables.remove("icl_training_tasks")
+        except SQLAlchemyError as e:
+            stale_tables.append("icl_training_tasks")
+            logger.error(f"[migrate] H-29 无法删除遗留 ICL 表: {type(e).__name__}: {e}")
     _dropped, _kept = _drop_stale_notnull_columns_sync(conn, insp, tables)
+    _kept.extend(stale_tables)
     if _dropped:
         logger.warning(
             f"[migrate] H-29 已删除 ORM 不再使用且 NOT NULL 无默认的遗留列: {_dropped}"

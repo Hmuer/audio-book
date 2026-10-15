@@ -279,3 +279,465 @@ async def test_us6_start_build_persists_fallback_voices(_mock_providers):
     except Exception:
         pass
 
+
+
+@pytest.mark.asyncio
+async def test_default_voices_normalize_gender_and_preserve_assignments():
+    from backend.app.db.models import ProjectCharacter
+    from backend.app.db.session import get_session_factory
+    from backend.app.services.build import _with_unknown_speaker_voices
+
+    pid = await _seed_dialogues(["女子", "男子", "未知", "有人", ""])
+    async with get_session_factory()() as session:
+        session.add_all([
+            ProjectCharacter(project_id=pid, name=name, gender=gender)
+            for name, gender in [("女子", "女"), ("男子", "男"), ("未知", " FEMALE "), ("简称", " F "), ("已选", "女")]
+        ])
+        await session.commit()
+        assigned = {"已选": "custom"}
+        voices = await _with_unknown_speaker_voices(
+            session, pid, assigned, _NARRATOR,
+            default_male_voice_id="minimax:male", default_female_voice_id="minimax:female",
+        )
+    assert voices == {"女子": "minimax:female", "男子": "minimax:male", "未知": "minimax:female", "简称": "minimax:female", "有人": "minimax:male", "": "minimax:male", "已选": "custom"}
+    assert assigned == {"已选": "custom"}
+
+
+@pytest.mark.parametrize("gender,expected", [("女", "female"), ("男", "male"), ("未知", "male"), (None, "male"), ("female", "female"), (" FEMALE ", "female"), ("f", "female"), (" F ", "female"), (" 女 ", "female"), ("女性", "male"), ("m", "male")])
+def test_default_segment_voice_gender(gender, expected):
+    from types import SimpleNamespace
+
+    from backend.app.services.chapter import Chapter, _build_segments_for_chapter
+
+    dialogue = SimpleNamespace(speaker="角色", anchor_start=0, anchor_end=2, text="你好")
+    segments, _ = _build_segments_for_chapter(
+        Chapter(idx=0, title="正文", text="你好"), [dialogue], "narrator", {}, None, 0,
+        default_male_voice_id="male", default_female_voice_id="female",
+        character_genders={"角色": gender},
+    )
+    assert [s.voice_id for s in segments if s.kind == "dialogue"] == [expected]
+
+
+@pytest.mark.parametrize("assignments,expected", [({}, "narrator"), ({" 角色 ": "custom"}, "custom"), ({" 角色 ": ""}, "")])
+def test_null_defaults_preserve_legacy_segment_lookup(assignments, expected):
+    from types import SimpleNamespace
+
+    from backend.app.services.chapter import Chapter, _build_segments_for_chapter
+
+    dialogue = SimpleNamespace(speaker=" 角色 ", anchor_start=0, anchor_end=2, text="你好")
+    segments, _ = _build_segments_for_chapter(
+        Chapter(idx=0, title="正文", text="你好"), [dialogue], "narrator", assignments, None, 0,
+    )
+    assert [s.voice_id for s in segments if s.kind == "dialogue"] == [expected]
+
+
+def test_default_voice_digest_null_compatibility_and_changes():
+    from backend.app.services.build import _calc_config_digest
+
+    args = ("narrator", 1.0, {})
+    legacy = _calc_config_digest(*args)
+    assert legacy == _calc_config_digest(*args, default_male_voice_id=None, default_female_voice_id=None)
+    male = _calc_config_digest(*args, default_male_voice_id="male")
+    female = _calc_config_digest(*args, default_female_voice_id="female")
+    both = _calc_config_digest(*args, default_male_voice_id="male", default_female_voice_id="female")
+    assert len({legacy, male, female, both}) == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("defaults", [(None, None), ("minimax:male", "minimax:female")])
+async def test_start_and_retry_inherit_nullable_voice_snapshots(monkeypatch, defaults):
+    import asyncio
+
+    from backend.app.db.models import Build
+    from backend.app.db.session import get_session_factory
+    from backend.app.services import build as build_mod
+
+    gate = asyncio.Event()
+
+    async def blocked(**kwargs):
+        await gate.wait()
+
+    monkeypatch.setattr(build_mod, "_run_build_inner", blocked)
+    pid = await _seed_prepared_project()
+    resp = await build_mod.start_build(
+        pid, {}, _NARRATOR, tts_provider="minimax",
+        default_male_voice_id=defaults[0], default_female_voice_id=defaults[1],
+    )
+    try:
+        async with get_session_factory()() as session:
+            row = await session.get(Build, resp.build_id)
+            assert (row.default_male_voice_id, row.default_female_voice_id) == defaults
+            assert (resp.default_male_voice_id, resp.default_female_voice_id) == defaults
+            digest = row.config_digest
+            snapshot = row.voice_assignments_json
+            narrator = row.narrator_voice_id
+            row.narrator_emotion = "happy"
+            row.narrator_instruction = "平静叙述"
+            row.status = "failed"
+            row.failed_chapters_json = "[0]"
+            await session.commit()
+        build_mod._ACTIVE_BUILDS.clear()
+        from backend.app.core.config import settings
+
+        monkeypatch.setattr(settings, "PROVIDERS_CONFIG", json.dumps({"active": {"tts": {"provider_id": "doubao", "model_id": "volcano_tts"}}}))
+        retry = await build_mod.retry_failed_build(resp.build_id)
+        async with get_session_factory()() as session:
+            row = await session.get(Build, retry.build_id)
+            assert (row.default_male_voice_id, row.default_female_voice_id) == defaults
+            assert row.config_digest == digest
+            assert row.tts_provider == "minimax"
+            assert row.voice_assignments_json == snapshot
+            assert row.narrator_voice_id == narrator
+            assert row.narrator_emotion == "happy"
+            assert row.narrator_instruction == "平静叙述"
+            detail = build_mod._build_to_detail(row, [])
+            assert (detail.default_male_voice_id, detail.default_female_voice_id) == defaults
+    finally:
+        gate.set()
+        await asyncio.sleep(0.15)
+
+
+@pytest.mark.asyncio
+async def test_active_tts_controls_default_provider_and_narrator(monkeypatch):
+    import asyncio
+
+    from backend.app.core.config import settings
+    from backend.app.services import build as build_mod
+
+    settings.PROVIDERS_CONFIG = json.dumps({"active": {"tts": {"provider_id": "minimax", "model_id": "speech-2.8-hd"}}, "providers": []})
+    providers = []
+
+    class Voices:
+        async def list_voices(self):
+            return [{"id": "minimax:first"}, {"id": "minimax:male-qn-jingying"}]
+
+    def get_tts(provider):
+        providers.append(provider)
+        return Voices()
+
+    async def no_worker(**kwargs):
+        return None
+
+    monkeypatch.setattr(build_mod, "get_tts", get_tts)
+    monkeypatch.setattr(build_mod, "_run_build_inner", no_worker)
+    pid = await _seed_prepared_project()
+    resp = await build_mod.start_build(pid, {}, "")
+    assert resp.tts_provider == "minimax"
+    assert resp.narrator_voice_id == "minimax:male-qn-jingying"
+    assert providers == ["minimax"]
+    await asyncio.sleep(0.15)
+
+
+def test_minimax_model_cache_matches_provider(monkeypatch):
+    from backend.app.ai.providers.minimax.tts import MiniMaxTTSProvider
+    from backend.app.core.config import settings
+    from backend.app.services.build import (
+        _seg_cache_key,
+        _tts_model_param,
+        _validate_tts_namespace,
+        _voice_model_lookup,
+    )
+
+    _validate_tts_namespace("minimax", "classic", "minimax:male", {"女子": "doubao:female"})
+    settings.PROVIDERS_CONFIG = json.dumps({"active": {"tts": {"provider_id": "minimax", "model_id": "speech-2.8-hd"}}})
+    first = _tts_model_param("minimax")
+    assert first == MiniMaxTTSProvider()._model() == _voice_model_lookup("minimax:male")
+    settings.PROVIDERS_CONFIG = json.dumps({"active": {"tts": {"provider_id": "minimax", "model_id": "speech-2.8-turbo"}}})
+    second = _tts_model_param("minimax")
+    assert second == MiniMaxTTSProvider()._model()
+    assert _seg_cache_key("minimax:male", 1.0, "文本", model=first, sample_rate=32000) != _seg_cache_key("minimax:male", 1.0, "文本", model=second, sample_rate=32000)
+    settings.PROVIDERS_CONFIG = json.dumps({"active": {"tts": {"provider_id": "doubao", "model_id": "volcano_tts"}}})
+    assert _tts_model_param("minimax") == MiniMaxTTSProvider()._model()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("billed,error,expected", [(None, False, 2), (7, False, 7), (0, False, 0), (7, True, 7), (None, True, 0)])
+async def test_provider_context_usage_consumed_even_on_failure(billed, error, expected):
+    import asyncio
+
+    from backend.app.services.build import _synthesize_with_usage, tts_usage_scope
+    from backend.tests.mock_providers import MockTTSProvider
+
+    class Provider(MockTTSProvider):
+        async def synthesize_to_bytes(self, text, voice_id, **kwargs):
+            self._set_usage(None if billed is None else {"usage_characters": billed})
+            if error:
+                raise RuntimeError("audio failed")
+            return b"audio", 100
+
+    provider = Provider()
+    provider._set_usage({"usage_characters": 999})
+    with tts_usage_scope() as usage:
+        if error:
+            with pytest.raises(RuntimeError, match="audio failed"):
+                await _synthesize_with_usage(provider, "你好", "voice", asyncio.Semaphore(1))
+        else:
+            await _synthesize_with_usage(provider, "你好", "voice", asyncio.Semaphore(1))
+    assert usage["chars"] == expected
+    assert usage["calls"] == (1 if billed is not None or not error else 0)
+    assert provider.consume_usage() is None
+
+
+@pytest.mark.asyncio
+async def test_usage_concurrent_scopes_and_direct_retry_reporting():
+    import asyncio
+
+    from backend.app.services.build import (
+        _synthesize_with_usage,
+        _tts_usage_scope,
+        track_tts_usage,
+        tts_usage_scope,
+    )
+    from backend.tests.mock_providers import MockTTSProvider
+
+    class Provider(MockTTSProvider):
+        async def synthesize_to_bytes(self, text, voice_id, **kwargs):
+            self._set_usage({"usage_characters": len(text) * 10})
+            await asyncio.sleep(0.01)
+            return b"audio", 100
+
+    provider = Provider()
+
+    async def run(text):
+        with tts_usage_scope() as usage:
+            await _synthesize_with_usage(provider, text, "voice", asyncio.Semaphore(1))
+        assert _tts_usage_scope.get() is None
+        return usage["chars"]
+
+    assert await asyncio.gather(run("甲"), run("甲乙")) == [10, 20]
+
+    class ReportingProvider(MockTTSProvider):
+        async def synthesize_to_bytes(self, text, voice_id, **kwargs):
+            track_tts_usage(calls=2, chars=15)
+            self._set_usage({"usage_characters": 999})
+            return b"audio", 100
+
+    with tts_usage_scope() as usage:
+        await _synthesize_with_usage(ReportingProvider(), "文本", "voice", asyncio.Semaphore(1))
+    assert (usage["calls"], usage["chars"]) == (2, 15)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_worker_finally_records_usage_without_masking_original_error(monkeypatch, cancelled):
+    import asyncio
+
+    from backend.app.db.session import init_db
+    from backend.app.services import build as build_mod
+
+    await init_db()
+    records = []
+
+    async def record(*args):
+        records.append(args)
+        raise RuntimeError("record failed")
+
+    monkeypatch.setattr(build_mod, "_record_build_usage", record)
+
+    @build_mod._with_build_usage
+    async def worker(build_id, project_id):
+        build_mod.track_tts_usage(calls=2, chars=17)
+        if cancelled:
+            raise asyncio.CancelledError
+        raise ValueError("packaging failed")
+
+    with pytest.raises(asyncio.CancelledError if cancelled else ValueError):
+        await worker(build_id="missing", project_id="project")
+    assert records == [("missing", "project", "classic", 2, 17)]
+    assert build_mod._tts_usage_scope.get() is None
+
+
+@pytest.mark.asyncio
+async def test_build_migration_nullable_defaults_and_icl_drop():
+    import sqlite3
+
+    from backend.app.core.config import settings
+    from backend.app.db.models import Base
+    from backend.app.db.session import init_db, schema_issues
+
+    path = settings.DATABASE_URL.split("///")[-1]
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE builds (build_id VARCHAR(64) PRIMARY KEY)")
+        conn.execute("INSERT INTO builds VALUES ('legacy')")
+        conn.execute("CREATE TABLE icl_training_tasks (task_id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO icl_training_tasks VALUES ('old')")
+    await init_db()
+    await init_db()
+    with sqlite3.connect(path) as conn:
+        columns = {r[1]: r for r in conn.execute("PRAGMA table_info(builds)")}
+        for name in ("default_male_voice_id", "default_female_voice_id"):
+            assert columns[name][3] == 0
+            assert columns[name][4] is None
+        assert conn.execute("SELECT default_male_voice_id, default_female_voice_id FROM builds").fetchone() == (None, None)
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name='icl_training_tasks'").fetchone() is None
+    assert "icl_training_tasks" not in Base.metadata.tables
+    assert schema_issues() == []
+
+
+@pytest.mark.asyncio
+async def test_icl_drop_failure_enters_h29_schema_issues(monkeypatch):
+    import sqlite3
+
+    from sqlalchemy import event
+    from sqlalchemy.exc import OperationalError
+
+    from backend.app.core.config import settings
+    from backend.app.db.session import get_engine, init_db, schema_issues
+
+    path = settings.DATABASE_URL.split("///")[-1]
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE icl_training_tasks (task_id TEXT)")
+
+    def fail_drop(conn, cursor, statement, parameters, context, executemany):
+        if statement == "DROP TABLE IF EXISTS icl_training_tasks":
+            raise OperationalError(statement, parameters, RuntimeError("denied"))
+
+    engine = get_engine().sync_engine
+    event.listen(engine, "before_cursor_execute", fail_drop)
+    try:
+        await init_db()
+        assert schema_issues() == ["icl_training_tasks"]
+    finally:
+        event.remove(engine, "before_cursor_execute", fail_drop)
+    await init_db()
+    assert schema_issues() == []
+
+
+@pytest.mark.asyncio
+async def test_worker_minimax_usage_cache_hit_and_model_change(monkeypatch):
+    import asyncio
+
+    from sqlalchemy import select
+
+    from backend.app.ai import factory as ai_factory
+    from backend.app.core.config import settings
+    from backend.app.db.models import Build, UsageEvent
+    from backend.app.db.session import get_session_factory
+    from backend.app.services import build as build_mod
+    from backend.tests.mock_providers import MockTTSProvider
+
+    pid = await _seed_prepared_project()
+    settings.PROVIDERS_CONFIG = json.dumps({"active": {"tts": {"provider_id": "minimax", "model_id": "speech-2.8-hd"}}})
+    records = []
+    requests = []
+
+    class Provider(MockTTSProvider):
+        provider = "minimax"
+
+        async def synthesize_to_bytes(self, text, voice_id, **kwargs):
+            self._set_usage({"usage_characters": 7})
+            requests.append((text, voice_id))
+            return await super().synthesize_to_bytes(text, voice_id, **kwargs)
+
+    provider = Provider()
+    monkeypatch.setattr(ai_factory, "get_tts", lambda name=None: provider)
+    monkeypatch.setattr(ai_factory, "get_tts_by_voice_id", lambda voice: provider)
+    original = build_mod._record_build_usage
+
+    async def record(*args):
+        await original(*args)
+        records.append(args)
+
+    monkeypatch.setattr(build_mod, "_record_build_usage", record)
+
+    async def run(overwrite_status, cached=False):
+        before = len(records)
+        response = await build_mod.start_build(pid, {}, "minimax:male-qn-jingying")
+        for _ in range(200):
+            if response.build_id not in build_mod._ACTIVE_BUILDS:
+                break
+            await asyncio.sleep(0.025)
+        assert len(records) == before + (0 if cached else 1)
+        async with get_session_factory()() as session:
+            row = await session.get(Build, response.build_id)
+            assert row.status == "success"
+            totals = (row.tts_calls, row.tts_chars)
+            if overwrite_status:
+                row.status = "failed"
+                await session.commit()
+        for _ in range(100):
+            if response.build_id not in build_mod._ACTIVE_BUILDS:
+                break
+            await asyncio.sleep(0.01)
+        return response, totals
+
+    first, totals = await run(True)
+    count = len(requests)
+    assert count > 0
+    assert totals == (count, count * 7)
+    second, totals = await run(False, cached=True)
+    assert second.build_id != first.build_id
+    assert len(requests) == count
+    assert totals == (0, 0)
+    settings.PROVIDERS_CONFIG = json.dumps({"active": {"tts": {"provider_id": "minimax", "model_id": "speech-2.8-turbo"}}})
+    third, totals = await run(False)
+    assert third.build_id != second.build_id
+    assert len(requests) == count * 2
+    assert totals == (count, count * 7)
+    await asyncio.sleep(0.1)
+    async with get_session_factory()() as session:
+        events = list((await session.execute(select(UsageEvent).where(UsageEvent.project_id == pid))).scalars())
+    assert sum(e.chars for e in events) == count * 14
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("billed,error", [(None, False), (7, False), (0, False), (7, True), (None, True), (True, False), (-1, False), ("7", False)])
+async def test_minimax_usage_requires_real_characters(billed, error):
+    import asyncio
+
+    from backend.app.services.build import _synthesize_with_usage, tts_usage_scope
+    from backend.tests.mock_providers import MockTTSProvider
+
+    class Provider(MockTTSProvider):
+        provider = "minimax"
+
+        async def synthesize_to_bytes(self, text, voice_id, **kwargs):
+            self._set_usage({"usage_characters": billed, "word_count": 999})
+            if error:
+                raise RuntimeError("audio failed")
+            return b"audio", 100
+
+    provider = Provider()
+    provider._set_usage({"usage_characters": 999})
+    with tts_usage_scope() as usage:
+        if error:
+            with pytest.raises(RuntimeError, match="audio failed"):
+                await _synthesize_with_usage(provider, "你好", "minimax:voice", asyncio.Semaphore(1))
+        else:
+            await _synthesize_with_usage(provider, "你好", "minimax:voice", asyncio.Semaphore(1))
+    valid = isinstance(billed, int) and not isinstance(billed, bool) and billed >= 0
+    assert (usage["calls"], usage["chars"]) == ((1, billed) if valid else (0 if error else 1, 0))
+    assert provider.consume_usage() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_name,voice_id,expected", [("minimax", "voice", (1, 0)), ("base", "minimax:voice", (1, 0)), ("doubao", "doubao:voice", (1, 2))])
+async def test_usage_without_consume_method(provider_name, voice_id, expected):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from backend.app.services.build import _synthesize_with_usage, tts_usage_scope
+
+    provider = SimpleNamespace(provider=provider_name, synthesize_to_bytes=AsyncMock(return_value=(b"audio", 100)))
+    with tts_usage_scope() as usage:
+        await _synthesize_with_usage(provider, "你好", voice_id, asyncio.Semaphore(1))
+    assert (usage["calls"], usage["chars"]) == expected
+
+
+@pytest.mark.asyncio
+async def test_minimax_segment_cache_roundtrip_and_model_invalidation(monkeypatch):
+    from backend.app.core.config import settings
+    from backend.app.services.build import (
+        _tts_model_param,
+        tts_segment_cache_get,
+        tts_segment_cache_put,
+    )
+
+    monkeypatch.setattr(settings, "PROVIDERS_CONFIG", json.dumps({"active": {"tts": {"provider_id": "minimax", "model_id": "speech-2.8-hd"}}}))
+    params = {"model": _tts_model_param("minimax"), "tts_model": _tts_model_param("minimax"), "sample_rate": 32000}
+    await tts_segment_cache_put("minimax:voice", 1.0, "你好", b"audio", 100, **params)
+    assert await tts_segment_cache_get("minimax:voice", 1.0, "你好", **params) == (b"audio", 100)
+    monkeypatch.setattr(settings, "PROVIDERS_CONFIG", json.dumps({"active": {"tts": {"provider_id": "minimax", "model_id": "speech-2.8-turbo"}}}))
+    changed = dict(params, model=_tts_model_param("minimax"), tts_model=_tts_model_param("minimax"))
+    assert await tts_segment_cache_get("minimax:voice", 1.0, "你好", **changed) is None

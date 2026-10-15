@@ -155,6 +155,10 @@ class _Segment(BaseModel):
     instruction: str = ""
 
 
+def _normalize_gender(gender: str | None) -> str:
+    return "女" if str(gender or "").strip().lower() in {"女", "female", "f"} else "男"
+
+
 def _build_segments_for_chapter(
     ch: Chapter,
     dialogues: list,  # 本章的对白（已按 anchor_start 排序；DbDialogue 或 ProjectDialogue 均可，字段兼容）
@@ -165,6 +169,9 @@ def _build_segments_for_chapter(
     *,
     narrator_emotion: str = "",
     narrator_instruction: str = "",
+    default_male_voice_id: str | None = None,
+    default_female_voice_id: str | None = None,
+    character_genders: dict[str, str] | None = None,
 ) -> tuple[list[_Segment], int]:
     """
     把一章切成：title(+1.5s静音) + 对白/旁白交替段 + 段间短静音
@@ -271,7 +278,16 @@ def _build_segments_for_chapter(
 
         # dialogue 段：对白文本（去掉引号的 text）
         speaker = getattr(dlg, "speaker", None)
-        seg_voice_id = voice_assignments.get(speaker or "", narrator_voice_id)
+        if default_male_voice_id is None and default_female_voice_id is None:
+            seg_voice_id = voice_assignments.get(speaker or "", narrator_voice_id)
+        else:
+            speaker_key = (speaker or "").strip()
+            default_voice = (
+                default_female_voice_id
+                if _normalize_gender((character_genders or {}).get(speaker_key)) == "女"
+                else default_male_voice_id
+            )
+            seg_voice_id = voice_assignments.get(speaker_key) or default_voice or narrator_voice_id
         dlg_pieces = _split_long_text(getattr(dlg, "text", ""), max_seg_chars)
         # 逐段语音指令：对白语气**只**来自对白自身的 instruction（prepare 阶段
         # LLM 按每句对白内容生成），不与角色绑定；为空 = 不下发指令，用 provider

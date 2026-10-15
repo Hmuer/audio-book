@@ -273,7 +273,7 @@ export default function VoicePicker({
             {([
               ['all', `全部 ${voices.length}`],
               ['doubao', PROVIDER_LABELS.doubao],
-              ['icl', PROVIDER_LABELS.icl],
+              ['minimax', PROVIDER_LABELS.minimax],
             ] as [ProviderKey | 'all', string][]).map(([key, label]) => {
               const count = key === 'all'
                 ? voices.length

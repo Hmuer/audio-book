@@ -2,7 +2,6 @@
 
 验证：
   T-TR1: 未设置 DOUBAO_AK 时 settings 无 ValidationError，可访问新增字段。
-  T-TR2: Project/Build 新字段与 IclTrainingTask 可持久化。
   T-TR3: 升级对存量项目/构建向后兼容（mode 默认 classic、tts_provider 默认 minimax）。
 """
 from __future__ import annotations
@@ -40,22 +39,16 @@ def test_settings_new_fields_without_doubao_env(monkeypatch):
     assert s.DOUBAO_APP_ID == ""
     assert s.DOUBAO_TTS_RPM_LIMIT == 60
     assert s.DOUBAO_TTS_BASE_URL  # 应非空，有默认地址
-    assert s.DOUBAO_ICL_BASE_URL
 
 
 # ---------------------------------------------------------------------
-# T-TR2: Project / Build 新字段 + IclTrainingTask 可持久化
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_project_build_new_fields_and_icl_task_persist(db_session):
-    """新字段写入 + 读回；IclTrainingTask 结构齐全。"""
+async def test_project_build_new_fields_persist(db_session):
     from backend.app.db.models import (
         Project,
         Build,
-        IclTrainingTask,
-        User,
     )
-    from sqlalchemy import select
 
     s = db_session
 
@@ -81,30 +74,6 @@ async def test_project_build_new_fields_and_icl_task_persist(db_session):
     )
     s.add(b)
 
-    # ICL 训练任务
-    u = User(
-        id=9999,
-        username="tester",
-        password_hash="x",
-        is_active=True,
-        must_change_password=False,
-    )
-    s.add(u)
-    await s.flush()  # 让 user.id 可用（autoincrement）并与关联对齐
-
-    icl = IclTrainingTask(
-        task_id="icl-001",
-        user_id=9999,  # 显式用户 id
-        voice_name="我的专属声线",
-        reference_audio_path="/tmp/icl/ref.wav",
-        reference_audio_size_bytes=12345,
-        status=4,
-        progress=100,
-        doubao_task_id="doubao-icl-abc",
-        cloned_voice_id="icl:custom_a",
-        error_msg=None,
-    )
-    s.add(icl)
     await s.commit()
 
     # 读回 Project
@@ -116,16 +85,6 @@ async def test_project_build_new_fields_and_icl_task_persist(db_session):
     b2 = await s.get(Build, "build-xyz")
     assert b2.mode == "classic"
     assert b2.tts_provider == "doubao"
-
-    # 读回 ICL 任务
-    icl2 = (await s.execute(
-        select(IclTrainingTask).where(IclTrainingTask.task_id == "icl-001")
-    )).scalar_one()
-    assert icl2.user_id == 9999
-    assert icl2.status == 4
-    assert icl2.cloned_voice_id == "icl:custom_a"
-    assert icl2.voice_name == "我的专属声线"
-
 
 # ---------------------------------------------------------------------
 # T-TR3: 存量数据迁移（无 mode/tts_provider 列的项目启动可补齐）
