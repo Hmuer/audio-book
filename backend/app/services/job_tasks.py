@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from typing import Any
 
 from sqlalchemy import select
@@ -283,8 +283,9 @@ async def list_orphans() -> list[JobTask]:
     """
     factory = get_session_factory()
     now = _utcnow()
-    cutoff = now.timestamp() - JOB_TASK_ORPHAN_THRESHOLD_SECONDS
-    cutoff_dt = datetime.fromtimestamp(cutoff, UTC).replace(tzinfo=None)
+    # _utcnow 返回无时区的 UTC；naive datetime.timestamp() 会按本地时区解释，
+    # 使非 UTC 部署的孤儿判定阈值偏移数小时。
+    cutoff_dt = now - timedelta(seconds=JOB_TASK_ORPHAN_THRESHOLD_SECONDS)
     async with factory() as s:
         q = select(JobTask).where(
             JobTask.status == "running",
@@ -312,8 +313,8 @@ async def list_pending_tasks() -> list[JobTask]:
 
 async def mark_orphans_failed(err_prefix: str) -> int:
     """
-    把 status=running 但已超过 ORPHAN_THRESHOLD 的孤儿直接置为 failed。
-    兜底：万一目标 kind 不在 RECOVERY_KINDS 内（没有恢复逻辑），也保证不卡 UI。
+    把已超过 ORPHAN_THRESHOLD 且没有恢复逻辑的孤儿置为 failed，
+    避免未知 kind 的任务在 UI 中一直显示运行中。
 
     返回置为 failed 的数量。
     """
@@ -325,9 +326,9 @@ async def mark_orphans_failed(err_prefix: str) -> int:
     n = 0
     async with factory() as s:
         for r in orphans:
-            # 调用方先在外部尝试恢复；如果走不到这里说明恢复了 -> 这里其实是"恢复后被标 running 的孤儿"
-            # 为避免重复处理，仅当 restart_count 仍为 0 且已经孤儿 → 直接 failed
-            if r.restart_count == 0:
+            # recover_orphans 会先把 restart_count 加一；未知 kind 没有恢复流程，
+            # 不能因此跳过兜底，否则它会永久保持 running。
+            if r.kind not in RECOVERY_KINDS:
                 # r 是 list_orphans() 的另一个 session 取出来的对象，本 session 不知情；
                 # 用 merge 把它 attach 进来再改属性，否则 s.commit() 不会写库。
                 r_attached = await s.merge(r)
@@ -371,17 +372,17 @@ async def recover_orphans() -> dict[str, int]:
 
     async with factory() as s:
         # 标记 restart_count++ 并保持 running（直到 enqueue 内部真正接手）
-        attached: list[JobTask] = []
         for o in orphans:
+            if o.kind not in RECOVERY_KINDS:
+                # 交给紧随其后的 mark_orphans_failed；不要刷新心跳，
+                # 否则未知任务要再等一个孤儿阈值周期才能退出 running。
+                continue
             o_attached = await s.merge(o)
             o_attached.restart_count = int(o_attached.restart_count or 0) + 1
             # 更新一次 heartbeat，避免恢复函数还没启动就被二次判为孤儿
             o_attached.last_heartbeat_at = _utcnow()
             o_attached.updated_at = _utcnow()
-            attached.append(o_attached)
         await s.commit()
-        # 后续恢复函数用 attached 版本（已 merge → 本 session 知道，改属性会写库）
-        orphans = attached
 
     for kind, rows in by_kind.items():
         n_re = 0
@@ -406,7 +407,7 @@ async def recover_orphans() -> dict[str, int]:
                         f"{type(e).__name__}: {e}"
                     )
         else:
-            # 不在 RECOVERY_KINDS → 走 mark_orphans_failed 兜底
+            # 不在 RECOVERY_KINDS → 启动扫描/看门狗随后走 mark_orphans_failed 兜底
             n_re = 0
         if n_re:
             re_counts[kind] = n_re

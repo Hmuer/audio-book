@@ -735,7 +735,7 @@ function OverviewTab({
             ref={fileInputRef}
             type="file"
             accept=".txt,.md,.epub"
-            onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(f); }}
+            onChange={e => { const f = e.target.files?.[0]; e.currentTarget.value = ''; if (f) handleUpload(f); }}
             className="hidden"
           />
           {uploadBusy ? (

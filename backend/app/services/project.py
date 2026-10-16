@@ -301,7 +301,9 @@ def _pick_cover_color(project_id: str) -> str:
 
 def _detect_encoding(raw_bytes: bytes) -> str:
     """尝试常见中文编码，返回第一个能成功解码的编码名。"""
-    for enc in ("utf-8-sig", "utf-8", "gbk", "gb18030", "big5", "utf-16"):
+    if raw_bytes.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return "utf-16"
+    for enc in ("utf-8-sig", "utf-8", "gbk", "gb18030", "big5"):
         try:
             raw_bytes.decode(enc)
             return enc
@@ -370,6 +372,10 @@ async def import_file(project_id: str, file_content: bytes, filename: str) -> Pr
     """
     factory = get_session_factory()
     ext = Path(filename).suffix.lower() or ".txt"
+    if ext not in {".txt", ".md", ".epub"}:
+        raise ValueError("仅支持 TXT、Markdown 和 EPUB 文件")
+    if not file_content:
+        raise ValueError("文件内容为空")
     saved_path_ext = ext
 
     book_title_hint = Path(filename).stem if filename else None
@@ -380,6 +386,8 @@ async def import_file(project_id: str, file_content: bytes, filename: str) -> Pr
         logger.info(f"[project_import] 检测到 EPUB，开始解析 project_id={project_id[:8]}...")
         try:
             book = _read_epub(file_content)
+            if not book.chapters:
+                raise ValueError("EPUB 中没有可导入的正文")
             # 直接拼章节文本，章节间用两个空行分隔。
             # bs4 提取 EPUB 时已把 h1 标题（如「第一章 下山」）保留在每章开头，
             # split_book_chapters 的 ^第.+章 正则能完美识别。
@@ -392,13 +400,18 @@ async def import_file(project_id: str, file_content: bytes, filename: str) -> Pr
                 f"[project_import] EPUB 解析完成 chapters={len(book.chapters)} "
                 f"title={book.title!r} author={book.author!r} → 已转为 .txt 落盘"
             )
-        except ValueError as e:
-            logger.warning(f"[project_import] EPUB 解析失败（会尝试按 TXT 解读）: {e}")
+        except ValueError:
+            raise
         except Exception as e:
-            logger.warning(
-                f"[project_import] EPUB 解析异常（会尝试按 TXT 解读）"
-                f": {type(e).__name__}: {e}"
-            )
+            raise ValueError(f"EPUB 解析失败: {e}") from e
+
+    charset = _detect_encoding(file_content)
+    try:
+        source_text = file_content.decode(charset)
+    except UnicodeDecodeError as e:
+        raise ValueError("文件编码无法识别，请转换为 UTF-8 后重试") from e
+    if not source_text.strip() or "\x00" in source_text:
+        raise ValueError("文件没有可读取的文本内容")
 
     async with factory() as session:
         p = await session.get(Project, project_id)
@@ -407,8 +420,6 @@ async def import_file(project_id: str, file_content: bytes, filename: str) -> Pr
 
         saved_path = _project_source_path(project_id, saved_path_ext)
         Path(saved_path).write_bytes(file_content)
-
-        charset = _detect_encoding(file_content)
 
         p.source_file_path = saved_path
         p.source_filename = filename or f"proj_{project_id[:8]}{saved_path_ext}"

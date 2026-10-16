@@ -923,7 +923,7 @@ async def api_project_import(
         )
         return resp
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404 if str(e).startswith("项目不存在") else 400, str(e))
     except Exception as e:
         logger.error(
             f"[HTTP] 500 /api/projects/{project_id[:8]}.../import -> "
@@ -946,7 +946,7 @@ async def api_project_import_text(
         await assert_project_writable(s, project_id, current)
     t0 = _time.perf_counter()
     remote = request.client.host if request.client else "?"
-    text_len = len(req.text)
+    text_len = len(req.text.encode("utf-8"))
     logger.info(
         f"[HTTP] POST /api/projects/{project_id[:8]}.../import-text "
         f"client={remote} user={current.username!r} text_len={text_len} hint={req.filename_hint!r}"
@@ -954,7 +954,7 @@ async def api_project_import_text(
     # 大小限制：50MB UTF-8 上限 = ~1700 万字（对中文 txt 绰绰有余）
     MAX_LEN = 50 * 1024 * 1024
     if text_len > MAX_LEN:
-        raise HTTPException(413, f"粘贴内容过大: {text_len} 字 > {MAX_LEN}（约 50MB）")
+        raise HTTPException(413, f"粘贴内容过大: {text_len} 字节 > {MAX_LEN} 字节（50MB）")
     try:
         resp = await project_import_text(
             project_id,
@@ -967,7 +967,7 @@ async def api_project_import_text(
         )
         return resp
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404 if str(e).startswith("项目不存在") else 400, str(e))
     except Exception as e:
         logger.error(
             f"[HTTP] 500 /api/projects/{project_id[:8]}.../import-text -> "

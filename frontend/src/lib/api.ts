@@ -332,23 +332,9 @@ export const api = {
   projectImport: (id: string, file: File) => {
     const fd = new FormData();
     fd.append('file', file);
-    const token = getToken();
-    return fetch(`${BASE}/api/projects/${id}/import`, {
+    return _fetch<ProjectResp>(`/api/projects/${id}/import`, {
       method: 'POST',
       body: fd,
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    }).then(async r => {
-      if (r.status === 401) {
-        clearToken();
-        if (_onAuthFail) _onAuthFail();
-        throw new Error('登录已失效，请重新登录');
-      }
-      if (!r.ok) {
-        let msg = `HTTP ${r.status}`;
-        try { const j = await r.json(); if (j.detail) msg += `: ${j.detail}`; } catch {}
-        throw new Error(msg);
-      }
-      return r.json() as Promise<ProjectResp>;
     });
   },
   // 粘贴文本到项目（直接 POST JSON，浏览器粘贴场景）

@@ -208,10 +208,10 @@ async def test_recover_orphans_skips_in_process_running(_isolate_data_dir):
 
 @pytest.mark.asyncio
 async def test_mark_orphans_failed_for_unknown_kind(_isolate_data_dir):
-    """未实现恢复逻辑的 kind 走 mark_orphans_failed 兜底。"""
+    """恢复扫描后，未知 kind 应立即由兜底置为失败。"""
     from backend.app.db.session import init_db, get_session_factory
     from backend.app.services.job_tasks import (
-        register_task, mark_orphans_failed,
+        register_task, recover_orphans, mark_orphans_failed,
     )
     from backend.app.db.models import JobTask
     from sqlalchemy import update, select
@@ -224,10 +224,11 @@ async def test_mark_orphans_failed_for_unknown_kind(_isolate_data_dir):
         await s.execute(
             update(JobTask)
             .where(JobTask.task_id == job.task_id)
-            .values(last_heartbeat_at=long_ago)
+            .values(last_heartbeat_at=long_ago, restart_count=1)
         )
         await s.commit()
 
+    await recover_orphans()
     n = await mark_orphans_failed(err_prefix="test")
     assert n >= 1
     async with factory() as s:

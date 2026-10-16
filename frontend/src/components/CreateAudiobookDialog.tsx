@@ -24,6 +24,8 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
   // false（用户手动输入过）时不再自动覆盖。需要在用户每次输入 name 时手动 set 回 false。
   // 用 ref 而非 state：仅用作内部决策标记，不影响 UI。
   const nameAutoFilledRef = useRef(false);
+  // 创建成功后导入失败时，重试应复用同一个空项目，避免列表里留下多个草稿。
+  const createdProjectIdRef = useRef<string | null>(null);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -36,8 +38,11 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
     setBusy(true);
     try {
       // 1. 创建项目
-      const project = await api.projectCreate(name.trim());
-      const id = project.project_id;
+      if (createdProjectIdRef.current) {
+        await api.projectUpdate(createdProjectIdRef.current, { name: name.trim() });
+      }
+      const id = createdProjectIdRef.current ?? (await api.projectCreate(name.trim())).project_id;
+      createdProjectIdRef.current = id;
 
       // 2. 导入内容
       if (mode === 'file' && file) {
@@ -48,7 +53,8 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
 
       onCreated(id);
     } catch (e: any) {
-      setErr(String(e?.message || e));
+      const message = String(e?.message || e);
+      setErr(createdProjectIdRef.current ? `${message}。项目已创建，请修改内容后重试导入。` : message);
     } finally {
       setBusy(false);
     }
@@ -76,7 +82,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
   return (
     <div className="fixed inset-0 z-50 grid place-items-center p-4"
       style={{ background: 'rgba(0,0,0,0.72)' }}
-      onClick={onClose}>
+      onClick={() => { if (!busy) onClose(); }}>
       <div
         className="bg-ink-100 border border-ink-300 w-full max-w-lg max-h-[88vh] overflow-hidden flex flex-col animate-scale-in shadow-[0_30px_80px_-20px_rgba(0,0,0,0.9)]"
         style={{ borderRadius: 'var(--radius-md)' }}
@@ -97,6 +103,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
             <button
               type="button"
               onClick={onClose}
+              disabled={busy}
               aria-label="关闭"
               className="w-7 h-7 grid place-items-center transition-all text-ink-600 hover:text-ink-900 hover:bg-ink-200"
               style={{ borderRadius: 'var(--radius-xs)' }}
@@ -235,7 +242,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                     <div className="text-xs text-ink-500 mt-1">{(file.size / 1024).toFixed(1)} KB</div>
                     <button
                       type="button"
-                      onClick={e => { e.stopPropagation(); setFile(null); }}
+                      onClick={e => { e.stopPropagation(); setFile(null); if (fileInputRef.current) fileInputRef.current.value = ''; }}
                       className="mt-3 text-xs text-ink-500 hover:text-ink-600"
                     >
                       重新选择
@@ -302,7 +309,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
               disabled={busy}
               className="btn-primary"
             >
-              {busy ? '创建中…' : '创建并进入'}
+              {busy ? '处理中…' : createdProjectIdRef.current ? '重试导入' : '创建并进入'}
             </button>
           </div>
         </form>
