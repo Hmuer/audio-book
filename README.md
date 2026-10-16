@@ -315,6 +315,15 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 ```
 
 ### 升级流程（推荐）
+
+代码提交并推送到 `main` 后，运行中的服务不会自动更新。这台服务器由用户在准备好时手动执行：
+
+```bash
+bash /opt/audio-book/reinstall.sh
+```
+
+其他部署环境可在项目目录中运行：
+
 ```bash
 cd /path/to/audio-book
 ./deploy.sh
