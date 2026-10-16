@@ -7,7 +7,7 @@
   T-OS4  S3Storage 配置缺失提示（列出缺哪些键）
   T-OS5  配置指纹变化 → get_storage() 重建实例
   T-OS6  归档失败不抛异常（对象存储不可用时不能让整次合成失败）
-  T-OS7  /media/sign 在对象存储（公有读）下返回**直链**，不落 token
+  T-OS7  /media/sign 在对象存储下返回 COS 下载链接，不落媒体 token
   T-OS8  delete_build 在「没有 ZIP 的 build」上不得抛异常（回归 NameError）
 """
 from __future__ import annotations
@@ -63,23 +63,28 @@ async def test_os2_local_backend_is_noop(monkeypatch, tmp_path):
 # =====================================================================
 def test_os3_public_base_derivation(monkeypatch):
     from backend.app.services import storage as st
+    from urllib.parse import urlsplit, parse_qs
 
     monkeypatch.setattr(st.settings, "S3_ENDPOINT", "https://cos.ap-guangzhou.myqcloud.com")
     monkeypatch.setattr(st.settings, "S3_BUCKET", "mybucket")
     monkeypatch.setattr(st.settings, "S3_PATH_STYLE", False)
+    monkeypatch.setattr(st.settings, "S3_ACCESS_KEY", "test-key")
+    monkeypatch.setattr(st.settings, "S3_SECRET_KEY", "test-secret")
 
     # 未配置 public base → 按 COS 虚拟主机风格推导
     monkeypatch.setattr(st.settings, "S3_PUBLIC_BASE_URL", "")
     be = st.S3Storage()
     assert be.public_base() == "https://mybucket.cos.ap-guangzhou.myqcloud.com"
-    assert be.url("novel-tts/p1/b1/ch0001.mp3") == (
-        "https://mybucket.cos.ap-guangzhou.myqcloud.com/novel-tts/p1/b1/ch0001.mp3"
-    )
+    signed = urlsplit(be.url("novel-tts/p1/b1/ch0001.mp3"))
+    assert signed.netloc == "mybucket.cos.ap-guangzhou.myqcloud.com"
+    assert signed.path == "/novel-tts/p1/b1/ch0001.mp3"
+    assert parse_qs(signed.query)["X-Amz-Expires"] == ["3600"]
 
     # path-style（自建 MinIO 场景）
     monkeypatch.setattr(st.settings, "S3_PATH_STYLE", True)
     be2 = st.S3Storage()
     assert be2.public_base() == "https://cos.ap-guangzhou.myqcloud.com/mybucket"
+    assert urlsplit(be2.url("a/b.mp3")).path == "/mybucket/a/b.mp3"
 
     # 显式配置的 CDN/自定义域名优先
     monkeypatch.setattr(st.settings, "S3_PUBLIC_BASE_URL", "https://cdn.example.com/")
@@ -96,7 +101,9 @@ def test_os3_public_base_derivation(monkeypatch):
     monkeypatch.setattr(st.settings, "S3_PATH_STYLE", False)
     be4 = st.S3Storage()
     assert be4.public_base() == "https://mybucket.cos.ap-guangzhou.myqcloud.com"
-    signed = be4._ensure_client().generate_presigned_url(
+    client = be4._ensure_client()
+    assert client.meta.config.request_checksum_calculation == "when_required"
+    signed = client.generate_presigned_url(
         "get_object", Params={"Bucket": "mybucket", "Key": "a/b.mp3"},
     )
     assert signed.startswith("https://mybucket.cos.ap-guangzhou.myqcloud.com/a/b.mp3?")

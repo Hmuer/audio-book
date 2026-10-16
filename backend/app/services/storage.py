@@ -3,7 +3,7 @@
 后端（由 `STORAGE_BACKEND` 选择）
 - **local**（默认）：产物只落本地盘，行为与接入前**完全一致** → 可随时回滚。
 - **s3**：腾讯云 COS，走 S3 兼容协议（boto3）。上传/回源/删除都丢到线程池执行，
-  不阻塞事件循环；**下载走公有读直链**（不经过后端转发，省服务器带宽）。
+  不阻塞事件循环；下载使用 COS 签名直链（配置了公开 CDN 域名时用该域名）。
 
 设计前提（很关键）：对象存储在这里是「产物归档 + 分发」，**不是**实时随机读写后端。
 合成期的 MP3 拼接（`concat_mp3_files`）、时长探测、预告片截取都需要**本地可读**文件，
@@ -70,7 +70,7 @@ class StorageBackend(ABC):
 
     @abstractmethod
     def url(self, key: str) -> str | None:
-        """公有读直链；local 后端返回 None（调用方回落到签名 URL）。"""
+        """远端下载直链；local 后端返回 None（调用方回落到媒体 token）。"""
 
 
 class LocalStorage(StorageBackend):
@@ -157,6 +157,10 @@ class S3Storage(StorageBackend):
                 signature_version="s3v4",
                 s3={"addressing_style": "path" if self._path_style else "virtual"},
                 retries={"max_attempts": 3, "mode": "standard"},
+                # botocore 新版本默认给 UploadPart 加可选校验和并改用 aws-chunked。
+                # COS 会拒绝这种不带 Content-Length 的分片请求。
+                request_checksum_calculation="when_required",
+                response_checksum_validation="when_required",
             ),
         )
         return self._client
@@ -212,7 +216,7 @@ class S3Storage(StorageBackend):
         except Exception as e:
             logger.warning(f"[storage] 删除失败 key={key}: {type(e).__name__}: {e}")
 
-    # ---------- 公有读直链 ----------
+    # ---------- 远端下载链接 ----------
     def public_base(self) -> str:
         """公网访问前缀。未显式配置时按 endpoint 推导（COS 虚拟主机风格）。"""
         if self._public_base:
@@ -227,10 +231,16 @@ class S3Storage(StorageBackend):
         return f"{scheme}://{self._bucket}.{host}"
 
     def url(self, key: str) -> str | None:
-        base = self.public_base()
-        if not base or not key:
+        if not key:
             return None
-        return f"{base}/{key.lstrip('/')}"
+        if self._public_base:
+            return f"{self._public_base}/{key.lstrip('/')}"
+        # 默认使用私有桶签名链接，避免依赖公有读 ACL；签名在本地计算，无网络调用。
+        return self._ensure_client().generate_presigned_url(
+            "get_object",
+            Params={"Bucket": self._bucket, "Key": key.lstrip("/")},
+            ExpiresIn=3600,
+        )
 
 
 # ---------------------------------------------------------------------

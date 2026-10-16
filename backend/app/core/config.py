@@ -300,8 +300,7 @@ class Settings(BaseSettings):
     S3_ACCESS_KEY: str = ""
     S3_SECRET_KEY: str = ""
     S3_PREFIX: str = ""            # key 前缀（可为空）
-    # 公有读下载域名：可填 COS 默认访问域名或绑定的 CDN/自定义域名。
-    # 留空则用 {endpoint 主机}/{bucket} 拼（仅当桶是公有读时可用）。
+    # 公开 CDN 下载域名；留空时使用 COS 私有桶签名链接。
     S3_PUBLIC_BASE_URL: str = ""
     S3_PATH_STYLE: bool = False
     # 归档成功后删除本地副本（决策 6）。关掉可保留本地双份以便回滚排查。

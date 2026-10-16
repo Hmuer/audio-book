@@ -556,7 +556,7 @@ class RetryFailedBuildRequest(BaseModel):
 
 
 def _direct_object_url(project_id: str, build_id: str, filename: str | None) -> str | None:
-    """G-4/G-5：对象存储（公有读）下产物名的公网直链；local 后端返回 None。
+    """G-4/G-5：对象存储产物的签名下载链接；local 后端返回 None。
 
     用于「本地副本已按决策 6 清理」的场景：此时本地文件不存在是**正常状态**，
     应把请求重定向到对象存储，而不是报 404。
@@ -1138,8 +1138,8 @@ async def api_media_sign(
     - kind=all_zip       idx 可选 = ZIP 分片下标（F-7 分片打包；不传 = 第 0 片）
     - ttl_seconds        1~600（默认 300 = 5 分钟）
 
-    G-4：存储为对象存储（公有读）时直接返回**直链** —— 不占用后端带宽、也不需要
-    落 token；本地存储时回落到一次性签名 token（TTL 内可重复使用，见 B-6）。
+    G-4：远端产物返回 COS 签名直链 —— 不占用后端带宽；本地产物回落到
+    媒体 token（TTL 内可重复使用，见 B-6）。
     """
     if kind == "chapter_mp3":
         if idx is None:
@@ -1182,7 +1182,7 @@ async def api_media_sign(
             if filename and not (Path(settings.AUDIO_DIR) / filename).is_file():
                 direct = st.url(media_key(b.project_id, build_id, filename))
                 if direct:
-                    # 对象存储为公有读 → 不需要 token 记录，直接给 URL
+                    # COS 链接已签名，不需要媒体 token 记录。
                     return {"token": None, "expires_at": None, "url": direct, "direct": True}
 
         token_info = await issue_media_token(
@@ -1312,7 +1312,7 @@ async def api_media_stream(
     audio_dir = Path(settings.AUDIO_DIR)
     fpath = audio_dir / audio_filename
     if not fpath.is_file():
-        # G-5：对象存储 + 本地已清理 → 重定向到公有直链（本地缺失是正常状态）
+        # G-5：对象存储 + 本地已清理 → 重定向到 COS 签名链接。
         direct = _direct_object_url(b.project_id, build_id, audio_filename)
         if direct:
             return RedirectResponse(url=direct, status_code=307)
@@ -1520,7 +1520,7 @@ async def api_build_chapter_download(
     audio_dir = Path(settings.AUDIO_DIR)
     fpath = audio_dir / audio_filename
     if not fpath.is_file():
-        # G-5：对象存储 + 本地已清理 → 重定向到公有直链
+        # G-5：对象存储 + 本地已清理 → 重定向到 COS 签名链接。
         direct = _direct_object_url(project_id, build_id, audio_filename)
         if direct:
             return RedirectResponse(url=direct, status_code=307)
@@ -1629,7 +1629,7 @@ async def api_build_download_all(
     audio_dir = Path(settings.AUDIO_DIR)
     zip_path = audio_dir / zip_filename
     if not zip_path.is_file():
-        # G-5：对象存储 + 本地已清理时，本地文件不存在是正常状态 → 302 到公有直链
+        # G-5：对象存储 + 本地已清理时，本地文件不存在是正常状态 → 重定向到签名链接。
         direct = _direct_object_url(project_id, build_id, zip_filename)
         if direct:
             return RedirectResponse(url=direct, status_code=307)
@@ -1922,11 +1922,11 @@ _EDITABLE_SETTINGS = {
     "STORAGE_BACKEND": ("str", "对象存储", "存储后端：local（仅本地盘）/ s3（腾讯云 COS）"),
     "S3_ENDPOINT": ("str", "对象存储", "COS 地域端点或桶访问域名，例：https://cos.ap-guangzhou.myqcloud.com"),
     "S3_REGION": ("str", "对象存储", "地域，例：ap-guangzhou"),
-    "S3_BUCKET": ("str", "对象存储", "存储桶名（权限需设为公有读私有写）"),
+    "S3_BUCKET": ("str", "对象存储", "存储桶名（支持私有桶）"),
     "S3_ACCESS_KEY": ("str", "对象存储", "访问密钥 SecretId"),
     "S3_SECRET_KEY": ("str", "对象存储", "访问密钥 SecretKey"),
     "S3_PREFIX": ("str", "对象存储", "key 前缀（可留空），例：novel-tts"),
-    "S3_PUBLIC_BASE_URL": ("str", "对象存储", "公有读下载域名（可留空，按 endpoint 推导）"),
+    "S3_PUBLIC_BASE_URL": ("str", "对象存储", "公开 CDN 下载域名（可留空，使用 COS 一小时签名链接）"),
     "S3_PATH_STYLE": ("bool", "对象存储", "是否用 path-style 寻址（COS 默认 false，MinIO 需 true）"),
     "STORAGE_CLEANUP_LOCAL": ("bool", "对象存储", "归档成功后删除本地副本（省磁盘；关掉可留双份便于排查）"),
     # 日志
