@@ -107,9 +107,16 @@ class S3Storage(StorageBackend):
     archives_remotely = True
 
     def __init__(self) -> None:
-        self._endpoint = (settings.S3_ENDPOINT or "").strip()
-        self._region = (settings.S3_REGION or "").strip() or "ap-guangzhou"
         self._bucket = (settings.S3_BUCKET or "").strip()
+        endpoint = (settings.S3_ENDPOINT or "").strip().rstrip("/")
+        parsed = urlparse(endpoint)
+        # COS 控制台给出的访问域名通常已含桶名；boto3 的 virtual 模式会再加一次。
+        # 统一为地域端点，供上传、回源和公网直链共用。
+        bucket_prefix = f"{self._bucket}.cos."
+        if self._bucket and (parsed.hostname or "").startswith(bucket_prefix):
+            endpoint = parsed._replace(netloc=parsed.netloc[len(self._bucket) + 1:]).geturl()
+        self._endpoint = endpoint
+        self._region = (settings.S3_REGION or "").strip() or "ap-guangzhou"
         self._access_key = (settings.S3_ACCESS_KEY or "").strip()
         self._secret_key = (settings.S3_SECRET_KEY or "").strip()
         self._public_base = (settings.S3_PUBLIC_BASE_URL or "").strip().rstrip("/")

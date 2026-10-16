@@ -294,7 +294,7 @@ class Settings(BaseSettings):
     # 交付物（章节 MP3 / 每章 LRC / 分片 ZIP）镜像到对象存储并直连下载。
     # local：默认，产物只落本地盘（行为与接入前完全一致，便于回滚）。
     STORAGE_BACKEND: str = "local"
-    S3_ENDPOINT: str = ""          # 例：https://cos.ap-guangzhou.myqcloud.com
+    S3_ENDPOINT: str = ""          # 地域端点或含桶名的访问域名（会归一化）
     S3_REGION: str = ""            # 例：ap-guangzhou
     S3_BUCKET: str = ""
     S3_ACCESS_KEY: str = ""

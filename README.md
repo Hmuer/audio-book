@@ -102,6 +102,12 @@ cp .env.example "${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.env"
 
 豆包保留逐段语音指令生成；激活 MiniMax 时，识别流程跳过该 LLM 阶段，合成使用 MiniMax 的音色与情绪参数。
 
+### 对象存储与下载
+
+在「设置 → 对象存储」选用腾讯云 COS 时，`S3_BUCKET` 填完整桶名，`S3_REGION` 填地域（例如 `ap-beijing`）。`S3_ENDPOINT` 可以填地域端点 `https://cos.ap-beijing.myqcloud.com`，也可以填控制台给出的含桶名访问域名 `https://<桶名>.cos.ap-beijing.myqcloud.com`；程序会统一处理，避免下载地址重复拼接桶名。`S3_PUBLIC_BASE_URL` 仅在使用自定义下载域名或 CDN 时填写。
+
+章节 MP3 和 ZIP 下载优先使用仍在服务器上的本地文件；本地副本清理后再使用 COS 公有读直链。COS 归档失败时本地文件会保留，可继续下载。已有构建无需重新合成。
+
 ---
 
 ## 目录结构

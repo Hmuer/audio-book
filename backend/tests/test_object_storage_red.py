@@ -87,6 +87,20 @@ def test_os3_public_base_derivation(monkeypatch):
     assert be3.public_base() == "https://cdn.example.com"
     assert be3.url("a/b.mp3") == "https://cdn.example.com/a/b.mp3"
 
+    # COS 控制台常给出已包含桶名的访问域名；不能再拼出 bucket.bucket.cos...。
+    monkeypatch.setattr(st.settings, "S3_PUBLIC_BASE_URL", "")
+    monkeypatch.setattr(st.settings, "S3_ENDPOINT", "https://mybucket.cos.ap-guangzhou.myqcloud.com")
+    monkeypatch.setattr(st.settings, "S3_REGION", "ap-guangzhou")
+    monkeypatch.setattr(st.settings, "S3_ACCESS_KEY", "test-key")
+    monkeypatch.setattr(st.settings, "S3_SECRET_KEY", "test-secret")
+    monkeypatch.setattr(st.settings, "S3_PATH_STYLE", False)
+    be4 = st.S3Storage()
+    assert be4.public_base() == "https://mybucket.cos.ap-guangzhou.myqcloud.com"
+    signed = be4._ensure_client().generate_presigned_url(
+        "get_object", Params={"Bucket": "mybucket", "Key": "a/b.mp3"},
+    )
+    assert signed.startswith("https://mybucket.cos.ap-guangzhou.myqcloud.com/a/b.mp3?")
+
 
 # =====================================================================
 # T-OS4 配置缺失
@@ -246,6 +260,36 @@ async def test_os7_sign_returns_direct_url_when_remote(build_for_sign, monkeypat
         )
         assert r2.status_code == 200, r2.text
         assert r2.json()["url"] == f"https://cdn.example.com/{pid}/{bid}/build_{bid}_all.zip"
+
+
+@pytest.mark.asyncio
+async def test_os7_sign_uses_local_file_when_remote_archive_failed(build_for_sign, monkeypatch):
+    from pathlib import Path
+    from httpx import AsyncClient, ASGITransport
+    from backend.app.main import app
+    from backend.app.api import routes as _routes
+
+    pid, bid, token = build_for_sign
+
+    class _FakeRemote:
+        archives_remotely = True
+
+        def url(self, key: str) -> str:
+            return f"https://cdn.example.com/{key}"
+
+    monkeypatch.setattr(_routes, "get_storage", lambda: _FakeRemote())
+    audio = Path(_routes.settings.AUDIO_DIR) / f"build_{bid}_ch0000.mp3"
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    audio.write_bytes(b"ID3")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get(
+            "/api/media/sign",
+            params={"build_id": bid, "kind": "chapter_mp3", "idx": 0},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["url"].startswith("/api/media/stream?token=")
+    assert r.json().get("direct") is not True
 
 
 @pytest.mark.asyncio

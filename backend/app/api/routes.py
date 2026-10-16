@@ -1177,7 +1177,9 @@ async def api_media_sign(
                 if shards:
                     si = 0 if idx is None else max(0, min(int(idx), len(shards) - 1))
                     filename = shards[si]["filename"]
-            if filename:
+            # 归档失败时本地副本仍在；此时直链可能指向根本不存在的对象。
+            # 优先用本地签名下载，仅在本地已清理时返回 COS 直链。
+            if filename and not (Path(settings.AUDIO_DIR) / filename).is_file():
                 direct = st.url(media_key(b.project_id, build_id, filename))
                 if direct:
                     # 对象存储为公有读 → 不需要 token 记录，直接给 URL
@@ -1918,7 +1920,7 @@ _EDITABLE_SETTINGS = {
     "ZIP_SHARD_CHAPTERS": ("int", "合成质量", "每个 ZIP 分片包含的章节数（默认 50；<=0 表示不分片）"),
     # 对象存储（腾讯云 COS，走 S3 兼容协议）
     "STORAGE_BACKEND": ("str", "对象存储", "存储后端：local（仅本地盘）/ s3（腾讯云 COS）"),
-    "S3_ENDPOINT": ("str", "对象存储", "COS 访问域名，例：https://cos.ap-guangzhou.myqcloud.com"),
+    "S3_ENDPOINT": ("str", "对象存储", "COS 地域端点或桶访问域名，例：https://cos.ap-guangzhou.myqcloud.com"),
     "S3_REGION": ("str", "对象存储", "地域，例：ap-guangzhou"),
     "S3_BUCKET": ("str", "对象存储", "存储桶名（权限需设为公有读私有写）"),
     "S3_ACCESS_KEY": ("str", "对象存储", "访问密钥 SecretId"),
