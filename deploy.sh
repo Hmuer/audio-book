@@ -15,5 +15,16 @@ git pull --ff-only origin main
 (cd frontend && npm ci --no-audit --no-fund --loglevel=error && npm run build)
 
 bash ./start.sh --restart
-curl --fail --silent --show-error --max-time 10 http://127.0.0.1:28000/api/health
+APP_ENV_FILE="${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.env"
+if [ -f "$APP_ENV_FILE" ]; then
+  # 与 start.sh 使用同一份配置，健康检查应跟随自定义端口。
+  set -a
+  # shellcheck disable=SC1090
+  source "$APP_ENV_FILE"
+  set +a
+fi
+HEALTH_HOST="${BIND_HOST:-127.0.0.1}"
+if [ "$HEALTH_HOST" = "0.0.0.0" ]; then HEALTH_HOST="127.0.0.1"; fi
+if [ "$HEALTH_HOST" = "::" ]; then HEALTH_HOST="[::1]"; fi
+curl --fail --silent --show-error --max-time 10 "http://${HEALTH_HOST}:${PORT:-28000}/api/health"
 echo

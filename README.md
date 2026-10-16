@@ -13,7 +13,7 @@
 | Python | **3.11+**（推荐 3.11 / 3.12，本地用 pyenv 安装最稳） |
 | Node.js | **18+**（只用于构建前端静态产物，运行时无 Node 进程） |
 | OS | macOS / Linux（Windows 可用 WSL2） |
-| AI 服务 | 至少 1 个 LLM/TTS 厂商 API Key（M2 / 豆包 Doubao / OpenAI 兼容 / 自定义 OpenAI） |
+| AI 服务 | 至少配置可用的 LLM 与 TTS 厂商凭据（MiniMax / 豆包 Doubao / OpenAI 兼容端点） |
 
 ---
 
@@ -22,7 +22,7 @@
 ### 1. 一键启动
 
 ```bash
-cd novel-tts-app
+cd audio-book
 ./start.sh
 ```
 
@@ -33,7 +33,7 @@ cd novel-tts-app
 - 最后启动 **单进程 uvicorn**（1 worker）
 - 把 PID 写到 `$NOVEL_TTS_HOME/data/uvicorn.pid`；日志在 `$NOVEL_TTS_HOME/data/logs/`
 
-> 升级请直接 `git pull && ./start.sh`，**不要** `rm -rf` 项目目录 —— 详见下文「升级与数据迁移」。
+> 更新已有部署请运行 `./deploy.sh`。`start.sh` 仅在前端产物不存在时自动构建；`deploy.sh` 会在拉取代码后重建前端，再重启服务。详见下文「升级与数据迁移」。
 
 ### 2. 打开浏览器
 
@@ -48,9 +48,10 @@ cd novel-tts-app
 ### 3. 跑测试
 
 ```bash
-cd novel-tts-app
-backend/.venv/bin/python -m pytest backend/tests -q
-# 当前：123 passed
+cd audio-book
+VENV_PY="${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.venv/bin/python"
+"$VENV_PY" -m pip install -r backend/requirements-dev.txt
+"$VENV_PY" -m pytest backend/tests -q
 ```
 
 测试覆盖：鉴权 / 资源归属 / 媒体鉴权（一次性签名 URL）/ 后台任务持久化（启动恢复+看门狗）/ 速率限制（login/prepare/build）/ 配置持久化（providers + settings 重启回填）/ 厂商 API 脱敏 / 上传限制 / Build 取消竞态 / 修复合重 等。
@@ -64,10 +65,11 @@ CI / 依赖：
 
 ## `.env` 配置说明
 
-复制 `.env.example` → `.env`：
+`start.sh` 首次启动时会把 `.env.example` 复制到 `$NOVEL_TTS_HOME/.env`（默认 `~/.novel-tts/.env`）。也可以在启动前手动创建：
 
 ```bash
-cp .env.example .env
+mkdir -p "${NOVEL_TTS_HOME:-$HOME/.novel-tts}"
+cp .env.example "${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.env"
 ```
 
 ### 必填 / 推荐字段
@@ -79,11 +81,12 @@ cp .env.example .env
 | `SEED_ADMIN_PASS` | | `admin` | 默认管理员密码。**生产环境必须改成强密码**，否则启动直接失败 |
 | `ENV` | | `dev` | `prod` 时启动会强制校验 `JWT_SECRET` / 默认密码 / `DISABLE_AUTH` |
 | `DISABLE_AUTH` | | `false` | **生产环境严禁 `true`**，否则启动直接失败 |
-| `BIND_HOST` | | `127.0.0.1` | 强制只绑定本地环回，不要改 0.0.0.0 |
+| `BIND_HOST` | | `127.0.0.1` | 默认只监听本机；需要从其他设备访问时再按部署环境调整 |
 | `PORT` | | `28000` | 监听端口 |
-| `DATA_DIR` | | `./data` | DB + audio 根目录（**已被 `.gitignore` 完全排除**） |
-| `AUDIO_DIR` | | `./data/audio` | MP3 / ZIP 存放位置 |
-| `DATABASE_URL` | | `sqlite+aiosqlite:///./data/app.db` | SQLite URL |
+| `NOVEL_TTS_HOME` | | `~/.novel-tts` | `start.sh` 使用的运行时根目录，可在启动前通过环境变量覆盖 |
+| `DATA_DIR` | | `$NOVEL_TTS_HOME/data` | `start.sh` 启动时设置的数据库和上传文件根目录 |
+| `AUDIO_DIR` | | `$NOVEL_TTS_HOME/data/audio` | `start.sh` 启动时设置的 MP3 / ZIP 目录 |
+| `DATABASE_URL` | | 指向 `$NOVEL_TTS_HOME/data/app.db` | `start.sh` 启动时设置的 SQLite URL |
 
 ### 多厂商配置
 
@@ -96,7 +99,7 @@ cp .env.example .env
 ## 目录结构
 
 ```
-novel-tts-app/
+audio-book/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py                 # FastAPI 入口 + StaticFiles 挂载前端 + /media 鉴权
@@ -112,6 +115,7 @@ novel-tts-app/
 │   │   │   ├── ownership.py        # Project/Build 资源归属守卫
 │   │   │   ├── project.py          # 项目 CRUD + 章节/对白/角色识别（status checkpoint 可中断恢复）
 │   │   │   ├── build.py            # 构建任务（Build + BuildArtifact 三级结构）
+│   │   │   ├── job_tasks.py        # 后台任务心跳、孤儿检测与恢复
 │   │   │   ├── chapter.py          # 章节切分 + 合成编排
 │   │   │   ├── character.py        # 角色提取 + LLM 消歧（去重）
 │   │   │   ├── dialogue.py         # 对白归属（每段 speaker + confidence）
@@ -123,12 +127,13 @@ novel-tts-app/
 │   │   │   ├── models.py           # users / projects / builds / build_artifacts / project_characters / project_dialogues / project_pronunciation_rules / icl_training_tasks
 │   │   │   └── session.py          # aiosqlite + SQLAlchemy 2.0 async
 │   │   └── core/config.py          # pydantic-settings
-│   ├── tests/                      # 99 个 pytest（鉴权 + 归属 + 上传 + 修复合重）
+│   ├── tests/                      # pytest（鉴权 + 归属 + 上传 + 任务恢复）
 │   │   ├── conftest.py             # 隔离 data 目录 + Mock LLM/TTS
 │   │   ├── mock_providers.py       # 离线 mock，不依赖真实 API
 │   │   ├── test_auth.py            # 登录 / token / 改密 / 401 链路
 │   │   ├── test_ownership_red.py   # P1 #5：跨用户归属隔离
 │   │   ├── test_upload_limit_red.py # P1 #8：流式上传 413
+│   │   ├── test_import_validation.py # 无效文件拒绝与导入重试
 │   │   ├── test_media_auth_red.py  # /media 静态资源鉴权
 │   │   ├── test_providers_api_red.py # P0 #4：API Key 脱敏
 │   │   ├── test_cancel_race_red.py # Build 取消竞态
@@ -138,28 +143,20 @@ novel-tts-app/
 │   └── requirements.txt
 ├── frontend/
 │   ├── next.config.js              # output: 'export'
-│   ├── tailwind.config.js          # darkMode: 'class'（深/浅切换）
+│   ├── tailwind.config.js          # 主题样式配置（当前界面固定深色）
 │   ├── src/
 │   │   ├── app/{layout,page,globals.css}
 │   │   ├── lib/api.ts              # fetch 封装（含 token 注入）
 │   │   └── components/             # ProviderModelsEditor（多厂商卡片）/ ToggleSwitch / ...
 │   └── out/                        # 构建产物，被 FastAPI StaticFiles 挂载
-├── data/                           # **运行时生成；完全 .gitignored**
-│   ├── app.db                      # SQLite
-│   ├── app.db-*                    # SQLite WAL/SHM
-│   ├── audio/*.mp3                 # 生成的 MP3
-│   ├── audio/*.zip                 # 打包下载的整本 ZIP
-│   ├── audio/_seg_cache/           # 段级 TTS 缓存
-│   └── uploads/*.txt               # 上传的小说源文件
+├── deploy.sh                       # 快进拉取 main、重建前端、重启并检查健康状态
 ├── start.sh                        # 一键启动（带 --stop / --restart / --paths 子命令）
 ├── .env.example
 ├── .gitignore
 └── README.md
 ```
 
-> ⚠️ **`data/` 现在默认在 `$NOVEL_TTS_HOME/data/`（项目目录外）**。
-> 这里的 `data/` 只是旧部署残留 —— 新部署里项目目录**完全没有** data/，
-> 见下文「升级与数据迁移」。
+> 数据库、音频、上传文件和日志默认位于仓库外的 `$NOVEL_TTS_HOME/data/`。旧部署可能在仓库内留有 `data/`，升级前请确认实际路径，见下文「升级与数据迁移」。
 
 ---
 
@@ -207,12 +204,12 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 | Step | 关键组件 |
 |---|---|
 | **项目列表** | ProjectCard（封面 / 章节数 / 上次构建状态 / 删除按钮） |
-| **Step 1 输入** | 上传 .txt 或粘贴文本 + 字数统计（上限 50MB / 流式读取，超限立即 413） + 「开始识别」按钮 |
+| **Step 1 输入** | 上传 TXT / Markdown / EPUB 或粘贴文本；文件按 50MB 流式限额读取，粘贴内容按 UTF-8 字节数限制为 50MB。无效文件在保存前返回 400，可在原项目中重试导入 |
 | **Step 2 角色+音色** | diff 对比面板 + polish_warning 黄色警告条 + 角色卡片（性格/标签 + LLM 推荐理由 + 试听） + 内置音色搜索 |
 | **Step 3 生成+试听** | 对白卡片列表（橙色边框高亮 confidence<0.7） + 每段独立改音色覆盖 + 旁白折叠区 + 总音频播放器 + MP3 / ZIP 下载按钮 |
 | **设置** | ProviderModelsEditor（多厂商卡片化：厂商开关 ToggleSwitch / API Key 输入（脱敏显示 + 「重写」）/ 模型列表） + LLM / TTS 激活厂商 + 模型指针 |
 
-**深色默认**，右上角可切浅色。
+界面当前固定使用深色主题。
 
 ---
 
@@ -247,7 +244,7 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 - ✅ Build 取消幂等：重复取消不会破坏状态
 - ✅ 生成 MP3 / ZIP 可下载：`/media/build_<id>_ch<NNNN>.mp3` 或 `_all.zip`
 - ✅ `data/**` 完全 `.gitignored`（含 db / 上传文本 / ZIP / cache）
-- ✅ **99 个 pytest 通过**
+- ✅ 后端测试覆盖文件导入校验与后台任务恢复；运行命令见「启动步骤」
 
 ---
 
@@ -256,10 +253,10 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 1. **TTS 音频拼接纯 MP3 帧直拼**：大多数 HTML5 `<audio>` 兼容。如果你要最严格的 ID3 + 无缝拼接，可以后续加 `pydub` + ffmpeg。
 2. **LLM JSON mode 鲁棒性**：LLM + 3 次重试 + 温度递增，在 100+ 测试中成功率约 97%；极端失败时会抛 HTTP 500（前端弹窗），无自动降级。
 3. **不做流式合成**：所有段 TTS 完成后才返回最终 MP3（单请求 600s 超时足够）。如需体验更好可以加 WebSocket / SSE，本 v1 不做。
-4. **后台任务在内存里**：restart 用 `asyncio.create_task`，进程崩溃 / 多实例部署会丢失锁。生产场景建议引入队列（Celery / Arq）+ 幂等键 + 心跳。
+4. **后台任务仍按单进程部署**：`JobTask` 在数据库中记录心跳，重启后会检测过期任务并尝试从 checkpoint 恢复；当前没有跨多实例共享的任务队列。
 5. **角色去重只两两组合**：N 个角色产生 N(N-1)/2 对。超过 30 角色时单次调用 token 会较大，可以后续拆批。
 6. **Doubao / MiniMax `voice_id` 合法性**：内置音色 ID 列表见 `backend/app/ai/providers/{doubao,minimax}/`。如果官方实际可用 ID 不同，请在对应文件替换（保持 id 字段）。
-7. **依赖策略**：Python 依赖 `requirements.txt` 已固定主版本。CI / Dependabot / pip-audit / npm audit 暂未接入。
+7. **依赖策略**：运行依赖见 `requirements.txt` 和 `requirements.lock`，开发测试依赖见 `requirements-dev.txt`；CI、Dependabot 与依赖审计配置位于 `.github/`。
 
 ---
 
@@ -293,17 +290,16 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 
 ## 升级与数据迁移（不会丢数据）
 
-`start.sh` 默认把 **所有运行时产物** 放在项目目录**外**的 `$NOVEL_TTS_HOME`
-（默认 `~/.novel-tts/`），所以 `git pull` / `git reset --hard` / `rm -rf` 项目目录
-**都不会**丢失数据、配置或 Python 依赖。
+`start.sh` 默认把运行时产物放在项目目录外的 `$NOVEL_TTS_HOME`
+（默认 `~/.novel-tts/`）。`git pull` 不会覆盖该目录中的数据和配置；旧部署若仍把数据放在仓库内，请先按下文迁移。
 
 ```
-项目目录（可随时 rm -rf）             运行时产物（保留）
-├── start.sh                          ~/.novel-tts/
-├── backend/                          ├── .env               ← API Key、JWT_SECRET
-├── frontend/                         ├── .venv/             ← Python 依赖（venv）
-└── ...                               └── data/
-                                          ├── app.db         ← SQLite 主库
+项目目录                              运行时产物（保留）
+├── deploy.sh                         ~/.novel-tts/
+├── start.sh                          ├── .env               ← API Key、JWT_SECRET
+├── backend/                          ├── .venv/             ← Python 依赖（venv）
+├── frontend/                         └── data/
+└── ...                                   ├── app.db          ← SQLite 主库
                                           ├── audio/         ← 生成的有声书
                                           ├── logs/          ← app.log / stdout
                                           └── icl_refs/      ← ICL 训练样本
@@ -320,14 +316,21 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 
 ### 升级流程（推荐）
 ```bash
-cd /path/to/novel-tts
-./start.sh --stop     # 停服（仅停后台 uvicorn；不动数据）
-git pull
-./start.sh            # 后台启动；会自动 pip install / npm install / build
+cd /path/to/audio-book
+./deploy.sh
 ```
 
-任何时候 `git pull` 都不会覆盖你的 `.env`、数据库、音频、训练样本 —— 它们全在
-`~/.novel-tts/` 下。
+`deploy.sh` 要求工作区没有未提交修改，只接受 `origin/main` 的快进更新；随后执行 `npm ci`、`npm run build`、`start.sh --restart`（安装后端依赖并以后台模式启动），最后按 `.env` 中的监听地址和端口检查 `/api/health`。这台服务器的 `/opt/audio-book/reinstall.sh` 是调用仓库内 `deploy.sh` 的本地入口。
+
+手动升级时也要重建前端：
+
+```bash
+git pull --ff-only origin main
+(cd frontend && npm ci && npm run build)
+./start.sh --restart
+```
+
+`.env`、数据库、音频和训练样本默认在 `$NOVEL_TTS_HOME` 下，不受仓库内的快进拉取影响。
 
 ### 把数据放到别的盘
 ```bash
@@ -352,20 +355,17 @@ mkdir -p "$NOVEL_TTS_HOME"
 
 # 一次性搬运
 mv ./data "$NOVEL_TTS_HOME/data"
-mv ./.env "$NOVEL_TTS_HOME/.env"   # 如果旧版把 .env 放在项目根
+if [ -f .env ]; then mv .env "$NOVEL_TTS_HOME/.env"; fi
 
-# 以后升级就只是：git pull + ./start.sh
-git pull
-./start.sh
+# 数据迁移完成后，后续升级运行：
+./deploy.sh
 ```
 
 > 搬运前**务必**先 `./start.sh --stop` 停服，避免数据库写入中移动文件。
 > 数据库文件 `data/app.db` 正在被写时 `mv` 可能导致 SQLite 损坏。
 
 ### 旧版"先删项目目录再 git clone"的危险操作
-升级**不需要**也不应该 `rm -rf` 项目目录。新流程是：
-- ❌  `rm -rf novel-tts && git clone ... && ./start.sh`（会丢数据库、API Key、训练样本）
-- ✅  `git pull && ./start.sh`（默认什么都不丢）
+升级不需要删除项目目录。直接运行 `./deploy.sh`，既能保留当前仓库的 SSH 远端设置，也能重建前端。旧部署若将数据保存在项目目录内，删除目录还会丢失数据库、API Key 和训练样本。
 
 如果只是想换部署位置（机器迁移、换硬盘），用上面"把数据放到别的盘"那一段。
 
@@ -379,15 +379,15 @@ git pull
 ./start.sh              # 后台启动（默认）
 ./start.sh --foreground # 前台启动（Ctrl+C 停止）
 ./start.sh --stop       # 停后台进程
-./start.sh --restart    # 重启
-./start.sh --status     # 看 PID / 端口 / 日志位置
+./start.sh --restart    # 停止旧进程并在后台启动；不会自动重建已有前端产物
+./start.sh --status     # 看运行状态、PID 和日志位置
 ./start.sh --paths      # 看所有路径
 ./start.sh --help       # 帮助
 ```
 
 > ⚠️ 不要在外层 `nohup ... &` 套娃跑 `start.sh`（会留下僵尸脚本进程）。
 > 直接 `./start.sh` 默认就是后台模式，启动后立刻退出，PID 写到
-> `$NOVEL_TTS_HOME/data/uvicorn.pid`。
+> `$NOVEL_TTS_HOME/data/uvicorn.pid`。Linux 上使用 `setsid` 将进程与调用终端分离。
 
 ---
 
@@ -403,16 +403,13 @@ git pull
 → 当前为多用户隔离设计。`admin` 可见所有；普通用户只能看到自己 own 的项目。如需分享，请创建独立账号或开放 admin。
 
 **Q: voices 列表变少了 / Doubao 音色不全**
-→ 内置音色列表见 `backend/app/ai/providers/doubao/tts.py` 的 `_BUILTIN_VOICES`；可以补全。也可在「设置」页用 ICL 训练自定义音色。
+→ 启动时会尝试同步豆包远程音色；若上游返回 401 等错误，会降级使用 `backend/app/ai/providers/doubao/tts.py` 中的内置列表。请检查豆包凭据和模型配置；也可以在「设置」页管理 ICL 复刻音色。
 
 **Q: 前端打开 404**
-→ `frontend/out/index.html` 不存在。先 `cd frontend && npm install && npm run build`，或重跑 `start.sh`。
+→ 若 `frontend/out/index.html` 不存在，首次运行 `./start.sh` 会自动构建。升级后前端显示旧版本时运行 `./deploy.sh`，它会重新安装依赖并构建静态产物。
 
 **Q: 升级后数据没了 / API Key 失效 / 数据库被重建**
-→ 大概率是按老习惯 `rm -rf 项目目录 && git clone` 重新部署了。新版把所有运行时产物
-→ （`data/` `.venv/` `.env`）放在 `$NOVEL_TTS_HOME`（默认 `~/.novel-tts/`），项目
-→ 目录本身不再存任何状态，所以**升级不需要删项目目录**。正确流程见上文
-→ 「升级与数据迁移」一节：`./start.sh --stop && git pull && ./start.sh`。
+→ 先运行 `./start.sh --paths`，核对 `$NOVEL_TTS_HOME` 是否指向原来的数据目录。新部署将数据库、音频和配置放在仓库外；旧部署若仍使用仓库内的 `data/`，请按「升级与数据迁移」迁移。后续升级运行 `./deploy.sh`。
 
 **Q: 怎么把数据库 / 音频挪到别的盘**
 → `export NOVEL_TTS_HOME=/mnt/ssd/.novel-tts && ./start.sh --stop && mv ~/.novel-tts/* /mnt/ssd/.novel-tts/ && ./start.sh`。
