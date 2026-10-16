@@ -115,17 +115,6 @@ def test_p1_5_i1_v3_instruction_text_to_context_texts():
     assert rp.get("context_texts") == ["语气欢快，像老朋友"]
 
 
-def test_p1_5_i2_v3_clone_speaker_ignores_instruction_text():
-    """v3 复刻音色（icl_ 前缀）忽略 instruction_text，不下发 context_texts。"""
-    from backend.app.ai.providers.doubao.tts import DoubaoTTSProviderV3
-
-    p = DoubaoTTSProviderV3()
-    payload = p._build_v3_payload(
-        "你好", "icl:icl_abc123",
-        instruction_text="语气欢快",
-    )
-    rp = payload["req_params"]
-    assert "context_texts" not in rp
 
 
 # =====================================================================
@@ -168,16 +157,6 @@ def test_p1_7_k2_cache_key_backward_compat_when_all_empty():
     assert old_key == new_key
 
 
-def test_p1_7_k3_voice_model_lookup_icl_returns_seed_icl():
-    """ICl 复刻音色 → seed-icl-2.0。"""
-    from backend.app.services.build import _voice_model_lookup
-
-    assert _voice_model_lookup("icl:icl_abc123") == "seed-icl-2.0"
-    assert _voice_model_lookup("S_xxxxx") == "seed-icl-2.0"
-    # 内置大模型音色（实际表里的 id）
-    assert _voice_model_lookup("doubao:zh_female_vv_uranus_bigtts") == "seed-tts-2.0"
-    # 兜底：内置表已无 1.0 音色，未知 id 统一按 2.0 处理
-    assert _voice_model_lookup("doubao:unknown_xyz") == "seed-tts-2.0"
 
 
 def test_p1_7_k4_context_texts_hash_empty_for_blank():

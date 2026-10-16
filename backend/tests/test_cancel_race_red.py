@@ -60,7 +60,7 @@ async def test_cancel_then_restart_old_worker_finally_does_not_release_new(_isol
         # 1) 启动 Build A
         resp_a = await start_build(
             project_id=pid, voice_assignments={},
-            narrator_voice_id="doubao:zh_female_qingxin",
+            narrator_voice_id="doubao:zh_female_vv_uranus_bigtts",
             tts_provider="doubao", mode="classic",
         )
         bid_a = resp_a.build_id
@@ -78,7 +78,7 @@ async def test_cancel_then_restart_old_worker_finally_does_not_release_new(_isol
         # 3) 立即重新启动新 Build B
         resp_b = await start_build(
             project_id=pid, voice_assignments={},
-            narrator_voice_id="doubao:zh_female_qingxin",
+            narrator_voice_id="doubao:zh_female_vv_uranus_bigtts",
             tts_provider="doubao", mode="classic",
         )
         bid_b = resp_b.build_id
@@ -150,7 +150,7 @@ async def test_ensure_project_not_running_releases_after_cancel(_isolate_data_di
 
         resp = await start_build(
             project_id=pid, voice_assignments={},
-            narrator_voice_id="doubao:zh_female_qingxin",
+            narrator_voice_id="doubao:zh_female_vv_uranus_bigtts",
             tts_provider="doubao", mode="classic",
         )
         bid = resp.build_id

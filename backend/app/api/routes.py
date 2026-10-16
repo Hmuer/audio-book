@@ -92,7 +92,7 @@ logger = logging.getLogger(__name__)
 
 # =====================================================================
 # P1-6: X-Tt-Logid 全链路透传
-# 豆包 TTS / ICL 异常对象可能带 `logid` 属性（DoubaoTTSResponseError /
+# 豆包 TTS 异常对象可能带 `logid` 属性（DoubaoTTSResponseError /
 # DoubaoTTSResponseV3Error / RuntimeError 子类）。routes.py 在 5xx 响应里
 # 附上 logid 字段，方便前端/日志按 logid 反查。
 # =====================================================================
@@ -383,80 +383,31 @@ async def api_list_voices(
     free_only: bool = False,
     current: User = Depends(get_current_user),
 ):
-    """列出可用音色（当前用户视角：含其可用 ICL 克隆音色）。
-
-    - tts_provider: 限定厂商（doubao / icl；MiniMax TTS 已弃用）
-    - free_only=True: 只返回豆包 (provider=doubao) 且 free=True 的音色（P2-5）
-    """
-    user_id = getattr(current, "id", None)
-    return await list_voices(tts_provider, icl_user_id=user_id, free_only=free_only)
+    """只列出设置页激活 TTS 的官方音色。"""
+    try:
+        return await list_voices(tts_provider, free_only=free_only)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 async def list_voices(
     tts_provider: str | None = None,
     *,
-    icl_user_id: int | None = None,
     free_only: bool = False,
 ):
-    """列出可用音色（服务层，可直接调用）。
-    - tts_provider 未给：返回 doubao 音色（MiniMax TTS 已弃用）。
-    - tts_provider ∈ {doubao, icl}：仅返回对应厂商音色。
-    - icl_user_id 给出时：附带该用户已训练可用的 ICL 克隆音色（icl:<clone_id>）。
-    - free_only=True：只保留豆包 (provider=doubao) 且 free=True 的音色（P2-5）。
-    每条音色都带有 provider 字段，前端可据此分组。
-    """
-    import asyncio as _as_nc
+    """服务层音色池；不接受与激活 TTS 不一致的厂商。"""
+    from ..core.config import get_active
+    from ..ai.factory import get_tts
 
-    requested_providers: list[str]
-    if tts_provider:
-        requested_providers = [tts_provider.lower()]
-    else:
-        requested_providers = ["doubao"]
-
-    # ICL 音色只在请求 doubao/icl 或全量聚合时附带（icl: 走豆包合成通道）
-    want_icl = icl_user_id is not None and (
-        not tts_provider or tts_provider.lower() in ("doubao", "icl")
-    )
-
-    # 并发 list_voices（加速响应）
-    async def _fetch(p: str) -> list[dict]:
-        # 修复：原来用 `from backend.app.ai.factory import get_tts as _get_tts`，
-        # 该写法依赖 PYTHONPATH 包含项目根目录，导致直接 `cd backend && uvicorn ...`
-        # 启动后 GET /api/voices 抛 ModuleNotFoundError: No module named 'backend'。
-        # 改用包内相对导入，避免对启动 cwd 的隐式依赖。
-        from ..ai.factory import get_tts as _get_tts
-        tts_inst = _get_tts(p)
-        try:
-            return await tts_inst.list_voices()
-        except Exception as e:
-            # 若某 provider 临时不可用（例如 Doubao 未填 AK，但 list_voices 是读 JSON，通常不报错）
-            # 吞异常保证另一个仍可返回；真实请求再抛
-            logger.warning(f"[voices] provider={p} list_voices 失败: {type(e).__name__}: {e}")
-            return []
-
-    tasks = [_fetch(p) for p in requested_providers]
-    results = await _as_nc.gather(*tasks)
-    merged: dict[str, dict] = {}
-    for voices in results:
-        for v in voices:
-            vid = v.get("id")
-            if not vid:
-                continue
-            merged[vid] = v
-
-    if want_icl:
-        try:
-            from ..services.icl import icl_voices_for_user
-            for v in await icl_voices_for_user(icl_user_id):  # type: ignore[arg-type]
-                merged[v["id"]] = v
-        except Exception:
-            logger.exception("ICL 音色聚合失败（忽略）")
-
-    final = list(merged.values())
+    active, _, _ = get_active("tts")
+    active = active or "doubao"
+    if active not in ("doubao", "minimax"):
+        raise ValueError("请先在设置页激活豆包或 MiniMax TTS")
+    if tts_provider and tts_provider.lower() != active:
+        raise ValueError(f"当前激活 TTS 为 {active}，不能请求 {tts_provider} 音色")
+    final = await get_tts(active).list_voices()
 
     # P2-5：free_only 过滤。只保留豆包 (provider=doubao) 且 free=True 的音色。
-    # 注：1.0 小模型免费白名单已随音色表下线，这里不再约束 model（远程/自定义
-    # 音色仍可能声明 free=True）；ICL 复刻音色不在此范畴。
     if free_only:
         final = [
             v for v in final
@@ -467,154 +418,11 @@ async def list_voices(
     return {"voices": final, "count": len(final)}
 
 
-# ---------- ICL 声音复刻（豆包 ICL 2.0） ----------
-
-
-@router.post("/icl/voices")
-async def api_icl_create_voice(
-    request: Request,
-    voice_name: str = Form(...),
-    file: UploadFile = File(...),
-    model_type: str | None = Form(None),
-    current: User = Depends(get_current_user),
-):
-    """上传 3~10 秒参考音频，创建 ICL 声音复刻训练任务。P1 #8：流式读取。
-
-    Args:
-        model_type: 训练算法，可选。None / 缺省 = ICL2.0；合法值见
-                    /api/doubao/models/options.train_model_types。
-    """
-    t0 = _time.perf_counter()
-    remote = request.client.host if request.client else "?"
-    # P1 #8：不再一次性 await file.read()，改为分块累加；超出立即 413。
-    content = await _read_upload_with_limit(file, settings.ICL_MAX_AUDIO_BYTES)
-    logger.info(
-        f"[HTTP] POST /api/icl/voices client={remote} user={current.username} "
-        f"name={voice_name!r} filename={file.filename} size={len(content)} model_type={model_type!r}"
-    )
-    if not content:
-        raise HTTPException(400, "参考音频为空")
-    try:
-        from ..services.icl import start_icl_training
-        resp = await start_icl_training(
-            user_id=current.id,
-            voice_name=voice_name,
-            audio_bytes=content,
-            filename=file.filename,
-            model_type=model_type,
-        )
-        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
-        logger.info(f"[HTTP] 200 /api/icl/voices task={resp['task_id'][:12]}... total_ms={elapsed_ms}")
-        return resp
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        logger.error(f"[HTTP] 500 /api/icl/voices -> {type(e).__name__}: {e}", exc_info=True)
-        raise _http_exc_with_logid(500, f"创建训练任务失败: {type(e).__name__}: {e}", e)
-
-
 @router.get("/doubao/models/options")
-async def api_doubao_model_options(
-    current: User = Depends(get_current_user),
-):
-    """返回豆包模型的静态清单（供前端设置页 + ICL 上传页下拉用）。
-
-    三组：
-    - train_model_types: 训练 model_type（3 项：ICL2.0/ICL1.0/DiT）
-    - tts_resource_ids: 合成 X-Api-Resource-Id（6 项）
-    - icl_expressive_models: ICL 2.0 增强 model（2 项，可选）
-
-    来源：官方文档（训练接口 / v3 HTTP 单向流式接口）
-    注意：火山引擎未提供"模型列表"接口，只能静态枚举。
-    """
+async def api_doubao_model_options(current: User = Depends(get_current_user)):
+    """豆包官方系统 TTS 模型选项。"""
     from ..ai.providers.doubao.models import get_all_options
     return get_all_options()
-
-
-@router.get("/icl/voices")
-async def api_icl_list_voices(
-    current: User = Depends(get_current_user),
-):
-    """列出当前用户的 ICL 训练任务（含进行中/成功/失败）。"""
-    try:
-        from ..services.icl import list_icl_tasks
-        return {"tasks": await list_icl_tasks(current.id)}
-    except Exception as e:
-        logger.error(f"[HTTP] 500 /api/icl/voices -> {type(e).__name__}: {e}", exc_info=True)
-        raise _http_exc_with_logid(500, f"查询失败: {type(e).__name__}: {e}", e)
-
-
-@router.get("/icl/voices/{task_id}")
-async def api_icl_get_voice(
-    task_id: str,
-    current: User = Depends(get_current_user),
-):
-    """任务详情（进行中会顺带刷新一次豆包侧状态；归属校验在刷新之前）。"""
-    try:
-        from ..services.icl import get_icl_task
-        resp = await get_icl_task(task_id, current.id)
-        if resp is None:
-            raise HTTPException(404, f"任务不存在或不属于当前用户: {task_id}")
-        return resp
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(
-            f"[HTTP] 500 /api/icl/voices/{task_id} -> {type(e).__name__}: {e}",
-            exc_info=True,
-        )
-        raise _http_exc_with_logid(500, f"查询失败: {type(e).__name__}: {e}", e)
-
-
-@router.delete("/icl/voices/{task_id}")
-async def api_icl_delete_voice(
-    task_id: str,
-    current: User = Depends(get_current_user),
-):
-    """删除训练任务（含参考音频）。"""
-    try:
-        from ..services.icl import delete_icl_task
-        ok = await delete_icl_task(current.id, task_id)
-        if not ok:
-            raise HTTPException(404, f"任务不存在或不属于当前用户: {task_id}")
-        return {"ok": True, "task_id": task_id}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(
-            f"[HTTP] 500 DELETE /api/icl/voices/{task_id} -> {type(e).__name__}: {e}",
-            exc_info=True,
-        )
-        raise HTTPException(500, f"删除失败: {type(e).__name__}: {e}")
-
-
-@router.post("/icl/sync")
-async def api_icl_sync_voices(
-    current: User = Depends(get_current_user),
-):
-    """把豆包控制台已有的复刻音色同步进平台（只读、幂等）。
-
-    平台的 `icl:` 音色只来自本地训练表，控制台/页面上做的复刻音色不会自动出现；
-    这里调「音色管理 HTTP」（BatchListMegaTTSTrainStatus，AK/SK 签名，与合成用的
-    API Key 不是一套）把已购买的音色槽位拉进来。
-    """
-    t0 = _time.perf_counter()
-    try:
-        from ..services.icl import sync_icl_voices_from_console
-        resp = await sync_icl_voices_from_console(current.id)
-        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
-        logger.info(
-            f"[HTTP] 200 /api/icl/sync user={current.username} "
-            f"total={resp['total']} created={resp['created']} usable={resp['usable']} "
-            f"total_ms={elapsed_ms}"
-        )
-        return resp
-    except ValueError as e:
-        # 配置缺失（APP_ID / SK）—— 明确告诉用户去哪补
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        logger.error(f"[HTTP] 502 /api/icl/sync -> {type(e).__name__}: {e}", exc_info=True)
-        raise _http_exc_with_logid(502, f"同步失败: {type(e).__name__}: {e}", e)
 
 
 # ---------- Chapter & Book 路由已移除（项目制统一入口：/api/projects/*）----------
@@ -642,8 +450,12 @@ async def api_tts_preview(
         f"voice={req.voice_id} text_len={len(req.text)} speed={req.speed}"
     )
     try:
-        # 按音色命名空间前缀路由厂商（doubao:/icl: → 豆包；minimax: 已弃用会显式报错）
-        tts = get_tts_by_voice_id(req.voice_id)
+        from ..core.config import get_active
+        from ..ai.factory import get_tts
+        active = get_active("tts")[0] or "doubao"
+        if req.voice_id not in {v["id"] for v in (await list_voices())["voices"]}:
+            raise HTTPException(400, f"音色不属于当前激活 TTS {active} 的官方音色库")
+        tts = get_tts(active)
         audio_dir = Path(settings.AUDIO_DIR)
         audio_dir.mkdir(parents=True, exist_ok=True)
         # 试听文件不属于 Build，过期后清理，避免反复试听持续占满磁盘。
@@ -670,6 +482,8 @@ async def api_tts_preview(
             "audio_url": f"/media/{fname}",
             "duration_ms": dur_ms,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         elapsed_ms = int((_time.perf_counter() - t0) * 1000)
         logger.error(
@@ -713,6 +527,8 @@ class UpdateCharacterVoiceRequest(BaseModel):
 class StartBuildRequest(BaseModel):
     voice_assignments: dict[str, str] = Field(default_factory=dict)
     narrator_voice_id: str = ""
+    default_male_voice_id: str = ""
+    default_female_voice_id: str = ""
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     # 构建模式（Task 4/8 新增）。多播剧（Seed-Audio）模式已下线，
     # 有效值只剩 "classic"；None = 调用方未指定 → 由 build 层回落到
@@ -819,7 +635,7 @@ async def api_get_project(
     try:
         return await get_project(project_id)
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404 if str(e).startswith("项目不存在") else 400, str(e))
     except Exception as e:
         logger.error(
             f"[HTTP] 500 /api/projects/{project_id} -> {type(e).__name__}: {e}",
@@ -850,7 +666,7 @@ async def api_update_project(
             cover_color=req.cover_color,
         )
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404 if str(e).startswith("项目不存在") else 400, str(e))
     except Exception as e:
         logger.error(
             f"[HTTP] 500 PATCH /api/projects/{project_id} -> {type(e).__name__}: {e}",
@@ -1031,7 +847,7 @@ async def api_project_prepare(
         )
         return resp
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404 if str(e).startswith("项目不存在") else 400, str(e))
     except RuntimeError as e:
         raise HTTPException(409 if "正在合成" in str(e) else 400, str(e))
     except Exception as e:
@@ -1190,7 +1006,7 @@ async def api_update_character_voice(
     try:
         return await update_character_voice(project_id, char_id, req.voice_id)
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404 if str(e).startswith("角色不存在") else 400, str(e))
     except Exception as e:
         logger.error(
             f"[HTTP] 500 PATCH /api/projects/{project_id[:8]}.../characters/{char_id} -> "
@@ -1565,6 +1381,8 @@ async def api_start_build(
             project_id=project_id,
             voice_assignments=req.voice_assignments,
             narrator_voice_id=req.narrator_voice_id,
+            default_male_voice_id=req.default_male_voice_id,
+            default_female_voice_id=req.default_female_voice_id,
             speed=req.speed,
             mode=req.mode,
             tts_provider=req.tts_provider,
@@ -1578,7 +1396,7 @@ async def api_start_build(
         )
         return resp
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404 if str(e).startswith("项目不存在") else 400, str(e))
     except RuntimeError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
@@ -2118,10 +1936,6 @@ _EDITABLE_SETTINGS = {
     # ---- 豆包运行参数（页面化 P-env）----
     "DOUBAO_TTS_USE_V3": ("bool", "豆包配置", "豆包 TTS 切 v3 协议（默认 True；关掉会退回 v1 老端点）"),
     "DOUBAO_TTS_RPM_LIMIT": ("int", "豆包配置", "豆包 TTS RPM 限流"),
-    "DOUBAO_ICL_RPM_LIMIT": ("int", "豆包配置", "豆包 ICL RPM 限流"),
-    "DOUBAO_ICL_POLL_INTERVAL_SECS": ("float", "豆包配置", "豆包 ICL 训练轮询间隔（秒）"),
-    "DOUBAO_ICL_TIMEOUT_SECS": ("int", "豆包配置", "豆包 ICL 训练超时（秒）"),
-    "ICL_MAX_AUDIO_BYTES": ("int", "豆包配置", "ICL 参考音频大小上限（字节）"),
     "DOUBAO_AUDIO_SAMPLE_RATE": ("int", "豆包配置", "豆包合成采样率（Hz，默认 24000）"),
     "DOUBAO_AUDIO_LOUDNESS_RATE": ("int", "豆包配置", "豆包合成响度（-50~100，默认 0）"),
     "DOUBAO_TTS_V3_BASE_URL": ("str", "豆包配置", "豆包 v3 TTS 端点（留空走 provider）"),
@@ -2163,22 +1977,19 @@ class SettingsUpdateReq(BaseModel):
 def _redact_provider(p: dict) -> dict:
     """脱敏单个厂商：所有 secret/key 字段只回显末4位 + configured 标志，绝不回显明文。
 
-    支持脱敏的字段（豆包 5 凭据 + MiniMax LLM 1 个）：
-      - api_key          (通用 / MiniMax LLM)
+    支持脱敏的字段（豆包与 MiniMax 共用）：
+      - api_key          (通用 / MiniMax)
       - secret           (豆包 SK)
       - app_id           (豆包 APP_ID，纯数字，但也脱敏避免泄露账号)
-      - icl_api_key      (豆包新版 ICL key)
-      - icl_access_key   (豆包旧版 ICL access key)
 
-    保存 / 写入用原始字段名，前端编辑面板仍可填入；
-    但 GET 响应的所有敏感字段永远是 "***LAST4" 或空 + configured bool。
+    GET 响应的所有敏感字段永远是 "***LAST4" 或空 + configured bool。
     """
     if not isinstance(p, dict):
         return p
     out = dict(p)
-    sensitive_fields = (
-        "api_key", "secret", "app_id", "icl_api_key", "icl_access_key",
-    )
+    for obsolete in ("icl_api_key", "icl_access_key", "icl_endpoint"):
+        out.pop(obsolete, None)
+    sensitive_fields = ("api_key", "secret", "app_id")
     for f in sensitive_fields:
         if f not in out:
             continue
@@ -2201,8 +2012,20 @@ async def get_providers(current: User = Depends(get_current_user)):
     from ..core.config import list_providers, get_active
     tts_pid, tts_mid, _ = get_active("tts")
     llm_pid, llm_mid, _ = get_active("llm")
+    providers = list_providers()
+    for p in providers:
+        if p.get("id") == "minimax":
+            p = dict(p)
+            models = list(p.get("models") or [])
+            for mid, label in (("speech-2.8-hd", "MiniMax Speech 2.8 HD"),
+                               ("speech-2.8-turbo", "MiniMax Speech 2.8 Turbo")):
+                if not any(m.get("id") == mid for m in models):
+                    models.append({"id": mid, "label": label, "kind": "tts"})
+            p["models"] = models
+            providers = [p if item.get("id") == "minimax" else item for item in providers]
+            break
     return {
-        "providers": [_redact_provider(p) for p in list_providers()],
+        "providers": [_redact_provider(p) for p in providers],
         "active": {
             "tts": {"provider_id": tts_pid, "model_id": tts_mid},
             "llm": {"provider_id": llm_pid, "model_id": llm_mid},
@@ -2222,7 +2045,7 @@ async def update_providers(
       接受空字符串：清空；接受其他：当作新值。
     - 校验每个 provider 的结构与字段名。
     """
-    from ..core.config import save_providers_config, get_provider, _parse_providers_config
+    from ..core.config import save_providers_config, get_provider, get_active, _parse_providers_config
     if not isinstance(cfg, dict) or "providers" not in cfg:
         raise HTTPException(400, "请求体必须包含 providers 列表")
 
@@ -2240,13 +2063,12 @@ async def update_providers(
             (x for x in _parse_providers_config().get("providers", []) if x.get("id") == p["id"]),
             None,
         )
-        for f in ("api_key", "secret", "app_id", "icl_api_key", "icl_access_key"):
+        for obsolete in ("icl_api_key", "icl_access_key", "icl_endpoint"):
+            p.pop(obsolete, None)
+        for f in ("api_key", "secret", "app_id"):
             raw = p.get(f)
             if isinstance(raw, str) and raw.startswith("***"):
                 p[f] = (old_prov or {}).get(f, "")
-
-    # 写回（先持久化，再校验 active；这样 active 可以指向本次请求里新增的 model）
-    save_providers_config(cfg)
 
     # 激活项：必须是已存在的 provider，且 model_id 必须是该 provider 下的 model 且 kind 一致
     for kind in ("tts", "llm"):
@@ -2255,9 +2077,18 @@ async def update_providers(
         mid = a.get("model_id")
         if not pid:
             continue
-        prov = get_provider(pid)
+        prov = next((p for p in providers_in if p.get("id") == pid), None)
         if not prov:
             raise HTTPException(400, f"active.{kind}.provider_id={pid!r} 不存在")
+        old_pid, old_mid, old_prov = get_active(kind)
+        inherited_disabled_default = (
+            pid == old_pid and mid == old_mid
+            and old_prov is not None and not old_prov.get("enabled")
+        )
+        if not prov.get("enabled") and not inherited_disabled_default:
+            raise HTTPException(400, f"请先启用厂商 {pid}")
+        if kind == "tts" and pid not in ("doubao", "minimax"):
+            raise HTTPException(400, "TTS 只能激活豆包或 MiniMax")
         if mid:
             model = next((m for m in (prov.get("models") or []) if m.get("id") == mid), None)
             if not model:
@@ -2267,6 +2098,13 @@ async def update_providers(
                     400,
                     f"active.{kind}.model_id={mid!r} 的 kind={model.get('kind')!r}，与角色 {kind!r} 不匹配",
                 )
+        if kind == "tts" and pid == "minimax":
+            from ..ai.providers.minimax.tts import SUPPORTED_TTS_MODELS
+            if mid not in SUPPORTED_TTS_MODELS:
+                raise HTTPException(400, "请选择 MiniMax 官方支持的语音合成模型")
+        if kind == "tts" and pid == "doubao" and mid not in ("volcano_tts", "seed-tts-2.0"):
+            raise HTTPException(400, "豆包系统音色只支持语音合成 2.0 模型")
+    save_providers_config(cfg)
     # 同步激活字段到 settings
     tts_a = active_in.get("tts") or {}
     llm_a = active_in.get("llm") or {}

@@ -201,87 +201,8 @@ async def test_l7_v3_provider_business_error_propagates_logid(monkeypatch):
 # =====================================================================
 # T-L8: ICL client create_training 业务错 → RuntimeError.logid 透传
 # =====================================================================
-@pytest.mark.asyncio
-async def test_l8_icl_client_create_training_business_error_carries_logid():
-    """ICL create_training：fake _http_post_json 返回 {code:5001, _logid:...}
-    → 抛 RuntimeError 且 .logid 透传。
-    """
-    from backend.app.ai.providers.doubao.icl import DoubaoICLClient
-
-    client = DoubaoICLClient()
-
-    async def _fake_post(url, payload, **_kwargs):
-        return {
-            "code": 5001,
-            "message": "音频太短",
-            "_logid": "icl-log-ccc",
-        }
-
-    client._http_post_json = _fake_post  # type: ignore[method-assign]
-
-    with pytest.raises(RuntimeError) as ei:
-        await client.create_training("test-voice", b"\x00" * 1024)
-
-    err = ei.value
-    assert getattr(err, "logid", None) == "icl-log-ccc"
-    assert "logid=icl-log-ccc" in str(err)
 
 
 # =====================================================================
 # T-L9: 端到端 — POST /api/icl/voices 5xx 响应 detail 含 logid
 # =====================================================================
-@pytest.mark.asyncio
-async def test_l9_icl_route_500_includes_logid_in_detail(_isolate_data_dir, monkeypatch):
-    """端到端：mock start_icl_training 抛 RuntimeError(logid=...)，
-    验证 HTTP 500 响应 detail 是 dict 含 message + logid。
-    """
-    from fastapi.testclient import TestClient
-
-    # 用 monkeypatch 让 start_icl_training 抛带 logid 的 RuntimeError。
-    # routes.py 内部用 `from ..services.icl import start_icl_training` 延迟导入，
-    # 当 app 以 `app.main` 加载时 `..services.icl` 解析为 `app.services.icl`；
-    # 当以 `backend.app.main` 加载时解析为 `backend.app.services.icl`。
-    # 两个命名空间都要 patch（与 conftest.py 处理 rate_limit 的策略一致）。
-    async def _fake_start(**kwargs):
-        err = RuntimeError("豆包 ICL 训练失败")
-        err.logid = "e2e-log-ddd"  # type: ignore[attr-defined]
-        raise err
-
-    import sys as _sys
-    # 显式 import 触发模块加载，确保 sys.modules 里有 key 可 patch
-    import importlib
-    for mod_name in ("backend.app.services.icl", "app.services.icl"):
-        try:
-            mod = importlib.import_module(mod_name)
-        except Exception:
-            continue
-        monkeypatch.setattr(mod, "start_icl_training", _fake_start, raising=False)
-    # 兜底：若 app.services.icl 此刻还没加载，先注册 backend 版本，
-    # 等 TestClient 启动触发 app.* 加载时，下面的 import 也已就绪
-    _b_svc = _sys.modules.get("backend.app.services.icl")
-    if _b_svc is not None:
-        monkeypatch.setattr(_b_svc, "start_icl_training", _fake_start, raising=False)
-
-    # DB seed admin 用户 + 取 token
-    from backend.app.db.session import init_db
-    from backend.app.services.auth import seed_admin_user, create_access_token
-    await init_db()
-    await seed_admin_user()
-    token, _ = create_access_token("admin")
-
-    from backend.app.main import app as _app
-    with TestClient(_app) as client:
-        # POST /api/icl/voices：multipart form
-        r = client.post(
-            "/api/icl/voices",
-            headers={"Authorization": f"Bearer {token}"},
-            data={"voice_name": "logid-e2e"},
-            files={"file": ("a.mp3", b"\x00" * 1024, "audio/mpeg")},
-        )
-    assert r.status_code == 500, r.text
-    body = r.json()
-    # detail 应是 dict（FastAPI 把 HTTPException.detail 序列化成 {"detail": ...}）
-    detail = body.get("detail") if isinstance(body, dict) and "detail" in body else body
-    assert isinstance(detail, dict), f"detail 应为 dict，实际：{detail!r}"
-    assert detail.get("logid") == "e2e-log-ddd"
-    assert "训练任务失败" in detail.get("message", "")

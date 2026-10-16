@@ -1198,7 +1198,10 @@ def _log_prepare_llm_estimate(project_id: str, chapters: list[Chapter], cfg) -> 
         # 无润色 → 无名单 → 全量切片扫描（旧口径）
         char_calls = _ceil_div(total_chars, slice_size)
     dialogue_calls = _ceil_div(n_ch, dbatch)
-    instruction_calls = _ceil_div(n_ch, ibatch)
+    from ..core.config import get_active
+    instruction_calls = (_ceil_div(n_ch, ibatch)
+                         if get_active("tts")[0] != "minimax"
+                         and bool(getattr(cfg, "VOICE_INSTRUCTION_ENABLED", True)) else 0)
     polish_calls = n_ch if getattr(cfg, "POLISH_ENABLED", False) else 0
     total_calls = char_calls + dialogue_calls + instruction_calls + 1 + polish_calls
 
@@ -1284,7 +1287,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         source_path = p.source_file_path
         charset = p.source_charset or "utf-8"
         original_filename = p.source_filename or ""
-        # 读取项目归属（音色推荐时把该用户的 ICL 复刻音色纳入候选池）
+        # 读取项目归属（推荐日志与权限校验仍使用该信息）
         owner_user_id_for_recommend: int | None = p.owner_user_id
 
     # 2. 读文件
@@ -2382,12 +2385,21 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         # H-13：instructions 阶段计时（命中 checkpoint / 整段跳过则 start+end 同刻）
         _stage_timing_touch(prog, "instructions")
         instruction_map: dict[tuple[int, int], str] = {}
-        if not bool(getattr(settings, "VOICE_INSTRUCTION_ENABLED", True)):
+        from ..core.config import get_active
+        active_tts = get_active("tts")[0] or "doubao"
+        if active_tts == "minimax" or not bool(getattr(settings, "VOICE_INSTRUCTION_ENABLED", True)):
             logger.info(
                 f"[project_prepare] project_id={project_id[:8]}... "
-                f"VOICE_INSTRUCTION_ENABLED=False，逐段语音指令整段跳过（按空串落库）"
+                f"激活 TTS 不使用逐段指令，整段跳过（按空串落库）"
             )
-        elif prog.get("stage") in ("instructions", "voice_recs", "done") and prog.get("instructions_done"):
+            prog["stage"] = "instructions"
+            prog["instructions_done"] = True
+            prog["instructions_raw"] = {}
+            prog["instructions_provider"] = active_tts
+            await _write_progress(prog)
+        elif (prog.get("stage") in ("instructions", "voice_recs", "done")
+              and prog.get("instructions_done")
+              and prog.get("instructions_provider") in (None, active_tts)):
             raw_instr = prog.get("instructions_raw", {}) or {}
             if isinstance(raw_instr, dict):
                 for k, v in raw_instr.items():
@@ -2433,6 +2445,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 instruction_map = {}
             prog["stage"] = "instructions"
             prog["instructions_done"] = True
+            prog["instructions_provider"] = active_tts
             prog["instructions_raw"] = {
                 f"{k[0]}:{k[1]}": v for k, v in instruction_map.items()
             }
@@ -2458,6 +2471,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             prog.get("stage") in ("voice_recs", "done")
             and prog.get("voice_recs_done")
             and (bool(_vr_raw) or not characters)
+            and prog.get("voice_recs_provider") == active_tts
         )
         if _vr_hit:
             voice_recs: list[VoiceRecommendation] = [
@@ -2475,7 +2489,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 )
             voice_recs = []
             try:
-                # 透传 user_id → 把该用户的 ICL 复刻音色纳入候选池
+                # 推荐仅从当前激活厂商的官方音色中选择
                 voice_recs = await recommend_voices_with_llm(
                     characters,
                     user_id=owner_user_id_for_recommend,
@@ -2495,6 +2509,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             if voice_recs or not characters:
                 prog["voice_recs_done"] = True
                 prog["voice_recs_raw"] = [r.model_dump() for r in voice_recs]
+                prog["voice_recs_provider"] = active_tts
             else:
                 prog["voice_recs_done"] = False
                 prog.pop("voice_recs_raw", None)
@@ -3380,6 +3395,13 @@ async def update_project(
     cover_color: str | None = None,
 ) -> ProjectResp:
     """更新项目名称/备注/标签/配置。"""
+    if default_narrator_voice_id:
+        from ..core.config import get_active
+        from ..ai.factory import get_tts
+        active = get_active("tts")[0] or "doubao"
+        official_ids = {v["id"] for v in await get_tts(active).list_voices()}
+        if default_narrator_voice_id not in official_ids:
+            raise ValueError("旁白音色必须属于当前激活 TTS 的官方音色库")
     factory = get_session_factory()
     async with factory() as session:
         p = await session.get(Project, project_id)
@@ -3622,6 +3644,13 @@ async def update_character_voice(
     project_id: str, character_id: int, voice_id: str | None,
 ) -> CharacterResp:
     """更新角色音色（voice_id 可为 None，表示清除）。"""
+    if voice_id:
+        from ..core.config import get_active
+        from ..ai.factory import get_tts
+        active = get_active("tts")[0] or "doubao"
+        official_ids = {v["id"] for v in await get_tts(active).list_voices()}
+        if voice_id not in official_ids:
+            raise ValueError("角色音色必须属于当前激活 TTS 的官方音色库")
     factory = get_session_factory()
     async with factory() as session:
         stmt = select(ProjectCharacter).where(

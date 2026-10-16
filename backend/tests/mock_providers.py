@@ -303,9 +303,15 @@ class MockTTSProvider(BaseTTSProvider):
     provider = "doubao"
 
     def __init__(self):
-        # 音色表直接复用豆包内置清单（MiniMax TTS 已弃用，不再有 minimax voices.json）
+        # 音色表复用豆包系统音色；保留旧业务测试用的虚拟音色 ID。
         from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider
         self._voices = DoubaoTTSProvider()._builtin_voices_sync()
+        self._voices.extend([
+            {"id": "female-tianmei", "name": "测试女声", "provider": "doubao", "gender": "female"},
+            {"id": "male-qn-jingying", "name": "测试男声甲", "provider": "doubao", "gender": "male"},
+            {"id": "male-qn-qingse", "name": "测试男声乙", "provider": "doubao", "gender": "male"},
+            {"id": "male-qn-badao", "name": "测试男声丙", "provider": "doubao", "gender": "male"},
+        ])
 
     async def list_voices(self) -> list[dict[str, Any]]:
         return self._voices

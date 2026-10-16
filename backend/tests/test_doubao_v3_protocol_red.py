@@ -62,9 +62,6 @@ def test_v3_payload_structure_has_nested_req_params():
     assert ap["enable_subtitle"] is False
     # emotion="calm 是默认占位，不应塞进 audio_params
     assert "emotion" not in ap
-    # icl: 前缀同样剥掉
-    payload_icl = p._build_v3_payload("hi", "icl:S_abc123")
-    assert payload_icl["req_params"]["speaker"] == "S_abc123"
 
 
 def test_v3_payload_speed_mapping_to_speech_rate():
@@ -120,18 +117,10 @@ def test_v3_resource_id_per_model():
         _resolve_resource_id_for_v3,
     )
 
-    # 显式 1.0 入参仍如实映射（远程/自定义音色可能声明），再由
-    # is_voice_usable_on_v3 过滤掉；不要静默改写成 2.0
-    assert _resolve_resource_id_for_v3("seed-tts-1.0") == "seed-tts-1.0"
-    assert _resolve_resource_id_for_v3("seed-tts-1.0-concurr") == "seed-tts-1.0"
-    # 2.0 音色
     assert _resolve_resource_id_for_v3("seed-tts-2.0") == "seed-tts-2.0"
-    # ICL 系列
-    assert _resolve_resource_id_for_v3("seed-icl-2.0") == "seed-icl-2.0"
-    assert _resolve_resource_id_for_v3("seed-icl-1.0") == "seed-icl-1.0"
-    # 未知 → 兜底 2.0（1.0 已整表下线）
     assert _resolve_resource_id_for_v3("") == "seed-tts-2.0"
-    assert _resolve_resource_id_for_v3("garbage") == "seed-tts-2.0"
+    with pytest.raises(ValueError):
+        _resolve_resource_id_for_v3("seed-icl-2.0")
 
     # _resolve_model_for_speaker 按 speaker 决定 model
     p = DoubaoTTSProviderV3()
@@ -139,9 +128,6 @@ def test_v3_resource_id_per_model():
     assert p._resolve_model_for_speaker("zh_female_vv_uranus_bigtts") == "seed-tts-2.0"
     # 1.0 内置音色已删除 → 查不到，走兜底 2.0
     assert p._resolve_model_for_speaker("BV001_streaming") == "seed-tts-2.0"
-    # ICL 复刻 speaker_id
-    assert p._resolve_model_for_speaker("S_abc123") == "seed-icl-2.0"
-    assert p._resolve_model_for_speaker("icl_xyz") == "seed-icl-2.0"
     # 未知 speaker → 兜底 seed-tts-2.0
     assert p._resolve_model_for_speaker("not_a_real_voice") == "seed-tts-2.0"
 

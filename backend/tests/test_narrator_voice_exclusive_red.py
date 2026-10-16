@@ -7,7 +7,7 @@
   N-4 显式 narrator_voice_id 入参优先于项目设置
   N-5 池中没有兜底旁白音色且项目未设旁白 → 不做任何剔除（不误伤）
 
-历史：MiniMax TTS 已弃用，音色池与兜底旁白均改为豆包 2.0 口径。
+本组测试使用豆包音色；MiniMax 使用同一厂商隔离规则。
 """
 from __future__ import annotations
 
@@ -67,11 +67,7 @@ def env(monkeypatch):
     async def _fake_provider(p: str) -> list[dict]:
         return list(state.get(p, []))
 
-    async def _fake_icl(_user_id):
-        return []
-
     monkeypatch.setattr(vr, "_fetch_provider_voices", _fake_provider)
-    monkeypatch.setattr(vr, "_fetch_icl_voices", _fake_icl)
 
     llm = _FakeLLM()
     import backend.app.ai.factory as _factory
@@ -177,7 +173,7 @@ async def test_n4_explicit_narrator_overrides_project(env):
 
 
 # ---------------------------------------------------------------------
-# N-5：无法确定旁白音色时不误伤
+# N-5：没有项目旁白时，使用池中首个男声作为旁白
 # ---------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_n5_no_narrator_known_means_no_exclusion(env):
@@ -190,6 +186,7 @@ async def test_n5_no_narrator_known_means_no_exclusion(env):
     await recommend_voices_with_llm(chars, project_id=pid)
 
     prompt = env["llm"].last_prompt
-    expected = {v["id"] for v in env["doubao"]}
-    assert _prompt_voice_ids(prompt) == expected, "无法确定旁白音色时不应剔除任何音色"
-    assert NARRATOR_HINT_MARK not in prompt
+    fallback = "doubao:zh_male_ruyaqingnian_uranus_bigtts"
+    expected = {v["id"] for v in env["doubao"]} - {fallback}
+    assert _prompt_voice_ids(prompt) == expected
+    assert NARRATOR_HINT_MARK in prompt and fallback in prompt

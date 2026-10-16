@@ -157,6 +157,9 @@ class Build(Base):
 
     # 本次配置快照
     narrator_voice_id: Mapped[str] = mapped_column(String(128), default="")
+    default_male_voice_id: Mapped[str] = mapped_column(String(128), default="")
+    default_female_voice_id: Mapped[str] = mapped_column(String(128), default="")
+    tts_model_id: Mapped[str] = mapped_column(String(64), default="")
     speed: Mapped[float] = mapped_column(Float, default=1.0)
     voice_assignments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 多厂商 + 构建模式（历史值 classic/multicast；multicast 已下线，新构建恒为 classic）
@@ -369,35 +372,6 @@ class ChapterResult(Base):
     job: Mapped[Job] = relationship(back_populates="chapter_results")
 
 
-# =====================================================================
-# ICL 声音复刻（豆包 ICL 2.0 训练任务）
-# =====================================================================
-
-class IclTrainingTask(Base):
-    """豆包 ICL 声音复刻训练任务。
-
-    status 语义同豆包官方：
-        0 排队 / 1 训练中 / 2 成功 / 3 失败 / 4 可用
-    （豆包 ICL 2.0 通常把 2/4 都视为可用，本实现 4 视为可合成状态）
-    """
-    __tablename__ = "icl_training_tasks"
-
-    task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    voice_name: Mapped[str] = mapped_column(String(128), default="")
-    reference_audio_path: Mapped[str] = mapped_column(String(512), default="")
-    reference_audio_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
-    # 0 排队 / 1 训练中 / 2 成功 / 3 失败 / 4 可用
-    status: Mapped[int] = mapped_column(Integer, default=0, index=True)
-    progress: Mapped[int] = mapped_column(Integer, default=0)
-    doubao_task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    # 训练完成后豆包返回的自定义音色 id，合成接口把 icl:<cloned_voice_id> 映射到这个值
-    cloned_voice_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
-
-
 # P1 #6 / B-6：媒体签名 URL（资源绑定 + 短时 + **TTL 内可重复使用**），
 # 用于避免在 URL 里携带完整登录 JWT。
 class MediaSignToken(Base):
@@ -431,7 +405,7 @@ class JobTask(Base):
     __tablename__ = "job_tasks"
 
     task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    # prepare | build | icl_train | media_clean | …（便于未来扩展更多后台任务）
+    # prepare | build | media_clean | …（便于未来扩展更多后台任务）
     kind: Mapped[str] = mapped_column(String(32), index=True)
     # project_id / build_id / task_id：分别对应不同 kind 的"业务实体 id"
     target_id: Mapped[str] = mapped_column(String(64), index=True)

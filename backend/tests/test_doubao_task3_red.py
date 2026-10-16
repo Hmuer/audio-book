@@ -79,41 +79,12 @@ def test_doubao_list_voices_has_builtin_14_profiles():
 # ---------------------------------------------------------------------
 # T-DV1b：voices_doubao.json 增量覆盖（用户在 data 目录放自定义音色表时合并）
 # ---------------------------------------------------------------------
-def test_doubao_list_voices_merges_custom_json(monkeypatch):
+def test_doubao_list_voices_ignores_custom_json(monkeypatch, tmp_path):
     from backend.app.ai.providers.doubao.tts import DoubaoTTSProvider
-
-    with tempfile.TemporaryDirectory() as td:
-        td_path = Path(td)
-        (td_path / "audio").mkdir(parents=True, exist_ok=True)
-        # 用 monkeypatch settings.DATA_DIR
-        from backend.app.core import config as cfgmod
-        monkeypatch.setattr(cfgmod.settings, "DATA_DIR", td_path)
-
-        custom_voices = [
-            {
-                "id": "doubao:custom_female",
-                "name": "定制女声",
-                "provider": "doubao",
-                "zh_tags": ["定制", "测试"],
-                "gender": "female",
-                "age": "youth",
-                "scene": ["日常"],
-                "dialect": "",
-            }
-        ]
-        (td_path / "voices_doubao.json").write_text(
-            json.dumps(custom_voices, ensure_ascii=False), encoding="utf-8"
-        )
-
-        import asyncio
-        dp = DoubaoTTSProvider()
-        voices = asyncio.run(dp.list_voices())
-        ids = [v["id"] for v in voices]
-        # 合并后既有内置音色，又有自定义 1 条
-        assert "doubao:custom_female" in ids
-        # 且自定义覆盖（自定义 id 重复时应当替换内置）
-        assert ids.count("doubao:custom_female") == 1
-        assert len(voices) >= 2  # 内置 ≥14 + 自定义 1，总数远大于 2
+    from backend.app.core import config
+    (tmp_path / "voices_doubao.json").write_text('[{"id":"custom","name":"私有"}]')
+    monkeypatch.setattr(config.settings, "DATA_DIR", tmp_path)
+    assert all(v["id"] != "doubao:custom" for v in DoubaoTTSProvider()._builtin_voices_sync())
 
 
 # ---------------------------------------------------------------------

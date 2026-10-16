@@ -96,6 +96,9 @@ _BUILD_NEW_COLUMNS = {
     # 注意：必须保留 SQL 级默认值，旧行自动补齐 classic / minimax（符合 T-TR3 向后兼容）
     "mode": "VARCHAR(32) DEFAULT 'classic'",
     "tts_provider": "VARCHAR(32) DEFAULT 'minimax'",
+    "default_male_voice_id": "VARCHAR(128) DEFAULT ''",
+    "default_female_voice_id": "VARCHAR(128) DEFAULT ''",
+    "tts_model_id": "VARCHAR(64) DEFAULT ''",
     # 情感/语气配置快照 + TTS 用量
     "narrator_emotion": "VARCHAR(32) DEFAULT ''",
     "narrator_instruction": "VARCHAR(512) DEFAULT ''",

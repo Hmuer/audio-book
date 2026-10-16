@@ -99,7 +99,7 @@ export default function HomePage() {
     return () => window.removeEventListener('app:projects-refreshed', onRefresh as EventListener);
   }, []);
 
-  // 自定义事件：ICL 训练任务出现新可用音色时，重拉音色列表
+  // 设置页切换激活 TTS 后重拉音色列表
   useEffect(() => {
     const onVoicesRefresh = () => {
       api.voices().then(setVoices).catch(e => console.error('voices 重拉失败:', errToLog(e)));
@@ -142,14 +142,11 @@ export default function HomePage() {
       ];
     }
     if (R.name === 'ab-voices') {
-      const iclCount = voices.filter(v => voiceProvider(v) === 'icl').length;
-      const doubaoCount = voices.filter(v => voiceProvider(v) === 'doubao').length;
+      const activeProvider = voices[0] ? voiceProvider(voices[0]) : null;
       return [
         { label: '音色',   value: String(voices.length).padStart(2, '0'), tone: 'brand' as const },
-        { label: '豆包',   value: String(doubaoCount).padStart(2, '0'),   tone: 'cold' as const },
-        ...(iclCount > 0 ? [
-          { label: '复刻', value: String(iclCount).padStart(2, '0'), tone: 'ok' as const },
-        ] : []),
+        ...(activeProvider ? [{ label: activeProvider === 'minimax' ? 'MiniMax' : '豆包',
+          value: String(voices.length).padStart(2, '0'), tone: 'cold' as const }] : []),
       ];
     }
     return [

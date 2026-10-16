@@ -147,19 +147,6 @@ async def test_tm3_empty_setting_falls_back_to_legacy(monkeypatch):
     assert "model" not in cap.payload["req_params"]
 
 
-@pytest.mark.asyncio
-async def test_tm4_clone_voice_does_not_send_model(monkeypatch):
-    """复刻音色：官方文档写明「model 仅当 speaker 为复刻音色时需指定，且指定后
-    不支持 context_texts」→ 复刻场景保住 context_texts，不下发 model。"""
-    monkeypatch.setattr(T.settings, "DOUBAO_TTS_MODEL", "seed-tts-2.0-expressive")
-    cap = _Capture()
-    cap.install(monkeypatch)
-    p = _provider(monkeypatch)
-
-    await p.synthesize_to_bytes("嗯。", "icl:S_abc123")
-
-    assert "model" not in cap.payload["req_params"]
-    assert cap.headers["X-Api-Resource-Id"] == "seed-icl-2.0"
 
 
 def test_tm5_cache_key_and_config_digest_track_tts_model(monkeypatch):

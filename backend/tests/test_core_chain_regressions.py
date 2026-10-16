@@ -44,7 +44,7 @@ async def test_reimport_invalidates_prepared_content_and_preserves_history(db_se
         assert rows == []
     assert await db_session.get(Build, "history") is not None
     with pytest.raises(RuntimeError, match="尚未完成识别"):
-        await start_build(pid, {}, "doubao:voice")
+        await start_build(pid, {}, "doubao:zh_female_vv_uranus_bigtts")
 
 
 @pytest.mark.asyncio

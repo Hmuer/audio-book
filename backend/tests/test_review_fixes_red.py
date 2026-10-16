@@ -50,32 +50,6 @@ def test_doubao_tts_endpoint_reads_settings(monkeypatch):
 # ---------------------------------------------------------------------
 # T-RF5：ICL create reqid 唯一
 # ---------------------------------------------------------------------
-@pytest.mark.asyncio
-async def test_icl_create_reqid_unique(monkeypatch):
-    from backend.app.ai.providers.doubao.icl import DoubaoICLClient
-
-    captured: list[dict] = []
-
-    async def _fake_post(url, payload, **_kwargs):
-        captured.append(payload)
-        return {"code": 0, "data": {"speaker_id": f"icl_88_{len(captured)}"}}
-
-    monkeypatch.setattr(
-        "backend.app.core.config.settings.DOUBAO_AK", "test-ak", raising=False
-    )
-    client = DoubaoICLClient()
-    client._http_post_json = _fake_post  # type: ignore[method-assign]
-
-    fake_mp3 = b"\xff\xfb\x90\x64\x00" + (b"\x00" * 2048)
-    await client.create_training("声线A", fake_mp3)
-    await client.create_training("声线B", fake_mp3)
-
-    reqids = [p["custom_speaker_id"] for p in captured]
-    assert len(reqids) == 2 and reqids[0] != reqids[1], (
-        f"ICL create custom_speaker_id 必须每次唯一，实际 {reqids}"
-    )
-    # speaker_id 是固定字面值（V3 后付费音色协议），唯一性由 custom_speaker_id 承担
-    assert {p["speaker_id"] for p in captured} == {"custom_speaker_id"}
 
 
 # ---------------------------------------------------------------------
@@ -143,7 +117,7 @@ async def test_retry_failed_inherits_provider_and_mode(_isolate_data_dir):
         # 用户传 mode='classic' + tts_provider='doubao'（multicast 已改为直接抛错）
         resp = await start_build(
             project_id=pid, voice_assignments={},
-            narrator_voice_id="doubao:BV001_streaming",
+            narrator_voice_id="doubao:zh_female_vv_uranus_bigtts",
             tts_provider="doubao", mode="classic",
         )
         # resp.mode 保持用户传入值（不降级）

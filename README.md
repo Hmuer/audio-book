@@ -90,9 +90,17 @@ cp .env.example "${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.env"
 
 ### 多厂商配置
 
-实际项目已支持 **MiniMax（LLM）**、**豆包 TTS（含 ICL 声音复刻）**、**OpenAI 兼容**、**自定义 OpenAI 兼容端点** 等并存，并通过 `PROVIDERS_CONFIG` JSON + `ACTIVE_TTS_PROVIDER` / `ACTIVE_TTS_MODEL` / `ACTIVE_LLM_PROVIDER` / `ACTIVE_LLM_MODEL` 四个指针选择。**不要再去**配置已废弃的 `LLM_BASE_URL` / `LLM_MODEL_PRO` / `LLM_MODEL_FAST` 字段——它们保留仅作兼容，新 UI 不再展示。（MiniMax 语音合成已彻底弃用，TTS 只保留豆包。）
+设置页支持 **MiniMax（LLM 与 TTS）**、**豆包 TTS**、**OpenAI 兼容 LLM** 与自定义 LLM 端点。`PROVIDERS_CONFIG` 保存厂商信息，`ACTIVE_TTS_PROVIDER` / `ACTIVE_TTS_MODEL` / `ACTIVE_LLM_PROVIDER` / `ACTIVE_LLM_MODEL` 指向激活的模型。旧的 `LLM_BASE_URL` / `LLM_MODEL_PRO` / `LLM_MODEL_FAST` 字段仅用于迁移，设置页不展示。
 
 具体厂商卡片配置请在「设置」页按厂商填写 API Key（仅管理员可见明文；其他用户只能看到脱敏后的 `***LAST4`）。
+
+### TTS 厂商与音色
+
+在「设置 → 模型厂商」启用豆包或 MiniMax，并在「激活 TTS」选定厂商及模型。MiniMax 可选 `speech-2.8-hd`（音质优先）或 `speech-2.8-turbo`（速度和成本优先），使用 MiniMax API Key；中文语音接口默认使用官方 `https://api.minimax.cn/v1`。豆包使用官方 `seed-tts-2.0` 系统音色。音色库、试听、角色推荐、全局旁白、构建与重试均限定为当前激活厂商的官方音色。MiniMax 音色从官方 `/v1/get_voice` 的 `system` 分类读取中文系统音色；接口暂不可用时使用仓库附带的官方中文清单。项目不提供上传或复刻音色。
+
+「启动新构建」弹窗为**本次构建**选择默认男声和女声，未选时分别取当前厂商列表中第一条相应性别音色；若与旁白相同，则取下一条。默认音色不能与旁白相同，男女默认音色可以相同。未分配音色的角色与未识别归属的对白按角色性别使用默认男声或女声，未知性别使用默认男声。这两个默认音色写入 Build 快照，重试继承，不写入项目全局设置。切换 TTS 厂商后，旧角色音色须重新选择或让新构建使用默认音色。
+
+豆包保留逐段语音指令生成；激活 MiniMax 时，识别流程跳过该 LLM 阶段，合成使用 MiniMax 的音色与情绪参数。
 
 ---
 
@@ -109,7 +117,7 @@ audio-book/
 │   │   │   ├── factory.py          # get_llm() / get_tts()（多厂商 + ACTIVE_* 指针）
 │   │   │   └── providers/
 │   │   │       ├── minimax/        # MiniMax（LLM + TTS）
-│   │   │       └── doubao/         # 豆包 Doubao（TTS + ICL 声音复刻 + multicast）
+│   │   │       └── doubao/         # 豆包 Doubao（官方系统 TTS）
 │   │   ├── services/               # 业务逻辑（全部 LLM 驱动 + 数据库 ORM）
 │   │   │   ├── auth.py             # JWT + bcrypt + seed admin + ENV=prod 安全门槛
 │   │   │   ├── ownership.py        # Project/Build 资源归属守卫
@@ -120,11 +128,10 @@ audio-book/
 │   │   │   ├── character.py        # 角色提取 + LLM 消歧（去重）
 │   │   │   ├── dialogue.py         # 对白归属（每段 speaker + confidence）
 │   │   │   ├── voice_recommender.py # LLM 给角色匹配内置音色
-│   │   │   ├── icl.py              # 豆包 ICL 声音复刻（user_id 归属）
 │   │   │   ├── epub_reader.py      # EPUB 解析
 │   │   │   └── book_split.py       # 正则分章（兜底；LLM 分章是默认路径）
 │   │   ├── db/
-│   │   │   ├── models.py           # users / projects / builds / build_artifacts / project_characters / project_dialogues / project_pronunciation_rules / icl_training_tasks
+│   │   │   ├── models.py           # users / projects / builds / build_artifacts / project_characters / project_dialogues / project_pronunciation_rules
 │   │   │   └── session.py          # aiosqlite + SQLAlchemy 2.0 async
 │   │   └── core/config.py          # pydantic-settings
 │   ├── tests/                      # pytest（鉴权 + 归属 + 上传 + 任务恢复）
@@ -163,13 +170,10 @@ audio-book/
 ## 数据模型 & 资源归属
 
 ```
-User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 assigned_voice_id
-       │               ├──< ProjectDialogue
-       │               ├──< ProjectPronunciationRule
-       │               └──< Build ──< BuildArtifact (每章 MP3)
-       │
-       ├──< IclTrainingTask (豆包声音复刻；user_id 显式归属)
-       └──< voice_id 关联
+User ──< Project ──┬──< ProjectCharacter ──< 音色 assigned_voice_id
+                   ├──< ProjectDialogue
+                   ├──< ProjectPronunciationRule
+                   └──< Build ──< BuildArtifact (每章 MP3)
 ```
 
 - `Project.owner_user_id` 显式归属：alice 创建的项目只能 alice 看到/改/删，bob 默认看不到；admin 可访问任何。
@@ -260,7 +264,7 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 3. **不做流式合成**：所有段 TTS 完成后才返回最终 MP3（单请求 600s 超时足够）。如需体验更好可以加 WebSocket / SSE，本 v1 不做。
 4. **后台任务仍按单进程部署**：`JobTask` 在数据库中记录心跳，重启后会检测过期任务并尝试从 checkpoint 恢复；当前没有跨多实例共享的任务队列。
 5. **角色去重只两两组合**：N 个角色产生 N(N-1)/2 对。超过 30 角色时单次调用 token 会较大，可以后续拆批。
-6. **Doubao / MiniMax `voice_id` 合法性**：内置音色 ID 列表见 `backend/app/ai/providers/{doubao,minimax}/`。如果官方实际可用 ID 不同，请在对应文件替换（保持 id 字段）。
+6. **官方音色清单**：豆包内置清单位于 `backend/app/ai/providers/doubao/tts.py`；MiniMax 中文清单位于 `backend/app/ai/providers/minimax/system_voices_zh.json`，并结合官方系统音色查询接口补充。
 7. **依赖策略**：运行依赖见 `requirements.txt` 和 `requirements.lock`，开发测试依赖见 `requirements-dev.txt`；CI、Dependabot 与依赖审计配置位于 `.github/`。
 
 ---
@@ -277,7 +281,9 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 - 音色推荐 1 次：in 3k / out 0.5k → 3.5k
 - **合计 ≈ 36k tokens × ¥15/1e6 ≈ ¥0.54**（每章）
 
-### TTS（豆包语音合成，**0.0003 元/字** = ¥300/百万字，具体以官方计费为准）
+### TTS（以官方实时价格为准）
+
+豆包估算按约 **0.0003 元/字**；MiniMax `speech-2.8-hd` / `speech-2.8-turbo` 分别约 **¥3.5 / ¥2.0 每万计费字符**，汉字按两个计费字符估算。构建弹窗仅对豆包展示原有费用估算；MiniMax 请以官方账单为准。
 按「文本字符数（含标点）」计费，基数就是实际下发给 TTS 的正文/对白/标题文本：
 - 3000 字小说 ≈ **¥0.9**
 - 10 万字中篇 ≈ **¥30**
@@ -307,7 +313,6 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 └── ...                                   ├── app.db          ← SQLite 主库
                                           ├── audio/         ← 生成的有声书
                                           ├── logs/          ← app.log / stdout
-                                          └── icl_refs/      ← ICL 训练样本
 ```
 
 ### 查看当前生效路径
@@ -416,8 +421,8 @@ if [ -f .env ]; then mv .env "$NOVEL_TTS_HOME/.env"; fi
 **Q: 一个登录用户看不到自己刚创的项目**
 → 当前为多用户隔离设计。`admin` 可见所有；普通用户只能看到自己 own 的项目。如需分享，请创建独立账号或开放 admin。
 
-**Q: voices 列表变少了 / Doubao 音色不全**
-→ 启动时会尝试同步豆包远程音色；若上游返回 401 等错误，会降级使用 `backend/app/ai/providers/doubao/tts.py` 中的内置列表。请检查豆包凭据和模型配置；也可以在「设置」页管理 ICL 复刻音色。
+**Q: 音色列表与预期不同**
+→ 音色库只显示当前激活 TTS 的官方中文系统音色。请先确认「设置 → 激活 TTS」中的厂商和模型；MiniMax 接口暂不可用时会显示仓库附带的中文系统清单。
 
 **Q: 前端打开 404**
 → 若 `frontend/out/index.html` 不存在，首次运行 `./start.sh` 会自动构建。升级后前端显示旧版本时运行 `./deploy.sh`，它会重新安装依赖并构建静态产物。

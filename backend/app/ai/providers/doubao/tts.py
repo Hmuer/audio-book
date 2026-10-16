@@ -1,13 +1,12 @@
-"""Doubao TTS 2.0 + ICL (声音复刻) 合成 Provider.
+"""Doubao TTS 2.0 官方系统音色合成 Provider.
 
 实现 BaseTTSProvider，职责：
   - list_voices()：返回内置 100+ 条豆包官方音色（覆盖通用 / 方言 / 外语 / 古风 /
-    配音 / 童声 / 新闻等）+ 用户自定义 voices_doubao.json；
+    配音 / 童声 / 新闻等）；
     全部音色 id 带 "doubao:" 前缀（与工厂路由约定一致）。
   - synthesize_to_bytes()：调用豆包 TTS 2.0 /v1/tts 接口，
     兼容 emotion/speed/instruction_text/speaker_style；遇到 429 按 Retry-After 指数退避重试最多 5 次；
     合成走 factory._doubao_rpm_wait_acquire("tts") 统一限流。
-  - ICL 音色（id="icl:<clone_id>"）：使用同一 TTS 接口，但 speaker_id 传入 clone_id（不剥离 "icl:"）。
 """
 from __future__ import annotations
 
@@ -17,10 +16,8 @@ import json
 import logging
 import math
 import os
-import tempfile
 import time as _time
 import uuid
-from pathlib import Path
 from typing import Any
 
 from backend.app.ai.base import BaseTTSProvider
@@ -199,11 +196,11 @@ async def _post_json_for_v1(
 #
 # 命名空间约定（调用方通过 _strip_voice_id_for_api 剥前缀后直接传给豆包 API）：
 #   - doubao:zh_*_uranus_bigtts   → 大模型 2.0 通用 / 角色配音（seed-tts-2.0）
-#   - doubao:ICL_uranus_*_tob     → 大模型 2.0 角色 ICL 系（seed-tts-2.0）
+#   - doubao:ICL_uranus_*_tob     → 官方大模型 2.0 系统角色音色（seed-tts-2.0）
 #
 # 说明：1.0 小模型音色（seed-tts-1.0，官方文档 97465 的 BV* 系列）已整表删除 ——
 #   该账号未开通 1.0 资源，v3 端点请求 1.0 会 403 "resource not granted"；
-#   且 1.0 音色不支持语音指令与标签。音色体系只保留 2.0 + 声音复刻（ICL 2.0）。
+#   且 1.0 音色不支持语音指令与标签。音色体系只保留 2.0 官方系统音色。
 #
 # 每条音色提供：
 #   - id          官方真实 voice_type（直接透传给豆包 API）
@@ -217,15 +214,11 @@ async def _post_json_for_v1(
 #   - supports_emotion    是否支持 emotion 多情感（基于官方「支持情感/风格类型」列）
 #   - supports_subtitle   是否支持 enable_subtitle 字级别时间戳（基于官方「时间戳 ✔」列）
 #   - supports_language   是否支持 language 多语种参数（基于官方「支持语种」列）
-#   - free        是否免费音色（内置 2.0 音色均为 False；远程/自定义音色可自行声明）
-#   - model       推荐使用的豆包模型（内置条目恒为 "seed-tts-2.0"；复刻音色走 "seed-icl-2.0"）
+#   - free        是否免费音色（内置 2.0 音色均为 False）
+#   - model       推荐使用的豆包模型（内置条目恒为 "seed-tts-2.0"）
 #   - provider    固定为 "doubao"（list_voices 输出时再补）
 #
-# 维护要点：
-#   - 豆包会不定期新增音色；如有新 ID 需求，可在 voices_doubao.json 里追加覆盖
-#     （内置条目作为 id 默认存在时，自定义条目按 id 覆盖）。
-#   - 内置表只收录官方 2.0 文档里真实存在的 *_uranus_bigtts / ICL_uranus_*_tob id；
-#     1.0 小模型 BV* 命名（*_streaming / *_V2_streaming / *_24k_streaming）已整表移除。
+# 维护要点：仅收录官方 2.0 文档里的系统音色；新增音色需核对官方 ID。
 # =====================================================================
 _BUILTIN_VOICES: list[dict[str, Any]] = [
     # =================================================================
@@ -704,32 +697,12 @@ _BUILTIN_VOICES: list[dict[str, Any]] = [
 ]
 
 
-def _is_icl_cloned_speaker(speaker_for_api: str) -> bool:
-    """是否 ICL 声音复刻音色 —— 决定 cluster（v1）/ X-Api-Resource-Id（v3）走复刻通道。
-
-    判定收在 `icl.py::is_cloned_speaker_id`（那里也是音色代号的生成处），这里函数内
-    延迟 import：tts 与 icl 都挂在 ai.factory 下，模块级互相 import 会成环。
-    """
-    sid = str(speaker_for_api or "")
-    if not sid:
-        return False
-    try:
-        from .icl import is_cloned_speaker_id
-        return is_cloned_speaker_id(sid)
-    except Exception:  # pragma: no cover - 极端情况下退回保守判定
-        return sid.startswith("S_") or sid.startswith("icl_")
-
-
 def _voice_supports_emotion(speaker_for_api: str) -> bool:
     """P1-2：模块级 helper — 查 _BUILTIN_VOICES 元数据返回当前音色是否支持 emotion。
 
     v1 / v3 两条 provider 路径都要用，所以提到模块级避免重复定义。
-    ICL 复刻音色（speaker 以 `S_`/`icl_`/`iclvoice` 开头）走 ICL 2.0 协议，按文档不接收
-    emotion；元数据里找不到也兜底 False（默认"未支持"更安全，避免下发失败）。
     """
     if not speaker_for_api:
-        return False
-    if _is_icl_cloned_speaker(speaker_for_api):
         return False
     for v in _BUILTIN_VOICES:
         if v["id"] == speaker_for_api:
@@ -810,76 +783,8 @@ class DoubaoTTSProvider(BaseTTSProvider):
         return out
 
     async def list_voices(self) -> list[dict[str, Any]]:
-        """合并三层音色（优先级 自定义 > 远程 > 内置）：
-        1. 内置 `_BUILTIN_VOICES`（底）
-        2. `DATA_DIR/voices_doubao_remote.json`（P2-1 启动时同步，写盘后只在重启再同步）
-        3. `DATA_DIR/voices_doubao.json`（运营/用户自定义，顶）
-        """
-        voices_by_id: dict[str, dict[str, Any]] = {}
-        for v in self._builtin_voices_sync():
-            voices_by_id[v["id"]] = v
-
-        # P2-1：远程音色（启动时由 doubao_list_speakers 同步写入磁盘）
-        try:
-            from backend.app.services.doubao_list_speakers import load_remote_voices
-            for v in load_remote_voices():
-                vid = str(v.get("id") or "").strip()
-                if not vid:
-                    continue
-                if not vid.startswith("doubao:") and not vid.startswith("icl:"):
-                    vid = f"doubao:{vid}"
-                merged = {
-                    "id": vid,
-                    "name": v.get("name") or vid.split(":", 1)[-1],
-                    "provider": "doubao",
-                    "gender": v.get("gender", "neutral"),
-                    "age": v.get("age", "youth"),
-                    "scene": v.get("scene", ["远程"]),
-                    "dialect": v.get("dialect", ""),
-                    "languages": v.get("languages", ["zh"]),
-                    "supports_emotion": bool(v.get("supports_emotion", False)),
-                    "supports_subtitle": bool(v.get("supports_subtitle", True)),
-                    "supports_language": bool(v.get("supports_language", False)),
-                    "free": bool(v.get("free", False)),
-                    "model": v.get("model", "seed-tts-2.0"),
-                    "zh_tags": v.get("zh_tags", ["远程"]),
-                }
-                # 额外字段（如 description / avatar / categories）原样保留
-                for k, val in v.items():
-                    if k not in merged and k != "id":
-                        merged[k] = val
-                voices_by_id[vid] = merged
-        except Exception:
-            logger.exception("读取 voices_doubao_remote.json 失败，仅使用内置音色")
-
-        # 自定义覆盖（用户/运营手工编辑的 json，最高优先级）
-        try:
-            custom_path = Path(settings.DATA_DIR) / "voices_doubao.json"
-            if custom_path.exists():
-                raw = json.loads(custom_path.read_text(encoding="utf-8"))
-                for v in raw:
-                    # 强制 id 规范：若缺前缀自动补 doubao:
-                    vid = str(v.get("id", ""))
-                    if not vid.startswith("doubao:") and not vid.startswith("icl:"):
-                        vid = f"doubao:{vid}"
-                    merged: dict[str, Any] = {
-                        "id": vid,
-                        "name": v.get("name") or vid.split(":", 1)[-1],
-                        "provider": "doubao",
-                        "gender": v.get("gender", "neutral"),
-                        "age": v.get("age", "youth"),
-                        "scene": v.get("scene", ["自定义"]),
-                        "dialect": v.get("dialect", ""),
-                        "zh_tags": list(v.get("zh_tags") or ["自定义"]),
-                    }
-                    # 任何额外字段原样保留（例如 sample_url / description）
-                    for k, val in v.items():
-                        if k not in merged and k != "id":
-                            merged[k] = val
-                    voices_by_id[vid] = merged
-        except Exception:
-            logger.exception("读取 voices_doubao.json 失败，仅使用内置音色")
-        return list(voices_by_id.values())
+        """只返回官方系统音色。"""
+        return self._builtin_voices_sync()
 
     # -----------------------------------------------------------------
     # 合成入口（同步 + 文件）
@@ -888,11 +793,8 @@ class DoubaoTTSProvider(BaseTTSProvider):
     def _strip_voice_id_for_api(voice_id: str) -> str:
         """根据 voice_id 的命名空间返回 (真实 speaker_id)
         - doubao:xxx → xxx
-        - icl:xxx → xxx（豆包 ICL 直接用 clone_id 当 speaker_id 传入）
         - 无前缀：直接返回
         """
-        if voice_id.startswith("icl:"):
-            return voice_id.split(":", 1)[1]
         if voice_id.startswith("doubao:"):
             return voice_id.split(":", 1)[1]
         return voice_id
@@ -916,18 +818,11 @@ class DoubaoTTSProvider(BaseTTSProvider):
     ) -> dict[str, Any]:
         """构造豆包 TTS v1 请求体（与 T-DV3 测试对齐）。
 
-        关键：cluster 按 speaker 路由
-          - 普通 TTS 音色（zh_xxx_uranus_bigtts 等）→ cluster=volcano_tts
-          - 复刻音色（S_ / icl_ / iclvoice 前缀）→ cluster=volcano_icl
-        官方文档：https://www.volcengine.com/docs/6561/1305191
+        仅支持官方系统音色，固定使用 volcano_tts cluster。
         """
         speaker_for_api = self._strip_voice_id_for_api(voice_id)
         speed_ratio = self._clamp_speed(speed)
-        # 复刻音色必须用 volcano_icl cluster，否则官方按标准 TTS 路由找不到 speaker
-        if _is_icl_cloned_speaker(speaker_for_api):
-            cluster = "volcano_icl"
-        else:
-            cluster = "volcano_tts"
+        cluster = "volcano_tts"
         body: dict[str, Any] = {
             "text": text,                    # 平铺
             "voice_id": speaker_for_api,     # 平铺：便于 3rd-party 代理或测试校验
@@ -1206,7 +1101,7 @@ class DoubaoTTSProvider(BaseTTSProvider):
 #
 # 鉴权（新版控制台推荐）：
 #   X-Api-Key: <API Key>
-#   X-Api-Resource-Id: seed-tts-2.0  # 2.0 音色；声音复刻走 seed-icl-2.0
+#   X-Api-Resource-Id: seed-tts-2.0
 #   X-Api-App-Key: aGjiRDfUWi        # 固定值（官方要求）
 #   X-Api-Request-Id: <uuid>
 #
@@ -1220,7 +1115,7 @@ class DoubaoTTSProvider(BaseTTSProvider):
 #     "user": {"uid": "..."},
 #     "req_params": {
 #       "text": "...",
-#       "speaker": "zh_female_vv_uranus_bigtts",  # 2.0 音色，或 ICL speaker_id
+#       "speaker": "zh_female_vv_uranus_bigtts",  # 官方 2.0 音色
 #       "audio_params": {
 #         "format": "mp3",
 #         "sample_rate": 24000,
@@ -1346,61 +1241,23 @@ class DoubaoTTSResponseV3Error(RuntimeError):
 
 
 def _strip_voice_id_for_api_v3(voice_id: str) -> str:
-    """与 v1 同语义：剥 `doubao:` / `icl:` 前缀得到真实 speaker_id。"""
-    if voice_id.startswith("icl:"):
-        return voice_id.split(":", 1)[1]
+    """剥 `doubao:` 前缀得到真实 speaker_id。"""
     if voice_id.startswith("doubao:"):
         return voice_id.split(":", 1)[1]
     return voice_id
 
 
 def _resolve_resource_id_for_v3(model: str) -> str:
-    """按音色表 `model` 字段映射到 X-Api-Resource-Id。
-
-    已知：
-      - seed-tts-1.0 / seed-tts-1.0-concurr → 1.0 音色
-      - seed-tts-2.0 → 2.0 音色
-      - seed-icl-1.0 / seed-icl-2.0 → ICL 声音复刻
-    """
-    m = (model or "").strip().lower()
-    if m in ("seed-tts-2.0",):
-        return "seed-tts-2.0"
-    # 显式声明 1.0 的入参（远程同步 / 用户自定义音色可能仍带）如实映射；
-    # 调用方再按 is_voice_usable_on_v3 把它过滤掉，不要在这里悄悄改写成 2.0。
-    if m in ("seed-tts-1.0", "seed-tts-1.0-concurr"):
-        return "seed-tts-1.0"
-    if m in ("seed-icl-2.0",):
-        return "seed-icl-2.0"
-    if m in ("seed-icl-1.0", "seed-icl-1.0-concurr"):
-        return "seed-icl-1.0"
-    # 未知值兜底 2.0（1.0 已整表下线，账号也只有 2.0 资源）
+    """官方系统音色只使用 seed-tts-2.0。"""
+    if model and model != "seed-tts-2.0":
+        raise ValueError(f"不支持的豆包官方系统音色模型: {model}")
     return "seed-tts-2.0"
 
 
-# v3 端点（DOUBAO_TTS_USE_V3=True，当前默认路径）官方只支持这两类合成资源：
-#   seed-tts-2.0 → *_uranus_bigtts 等 2.0 官方音色
-#   seed-icl-2.0 → 声音复刻音色
-# 声明 model=seed-tts-1.0 的音色（远程同步 / 用户自定义表里可能仍有 BV* 小模型）
-# 在 v3 上会被要求 1.0 资源（服务端别名 volc.service_type.10029），账号未开通时
-# 直接 403 + code=45000030 "requested resource not granted"（实测 2026-09-20
-# 音色 BV158_streaming），因此这类音色要在这里被过滤掉；内置表已不含 1.0。
-_V3_SUPPORTED_MODELS: frozenset[str] = frozenset({"seed-tts-2.0", "seed-icl-2.0"})
-
-
 def is_voice_usable_on_v3(voice: dict[str, Any]) -> bool:
-    """判断音色是否落在 v3 端点支持的资源上（供音色推荐筛选用）。
-
-    只对 `provider="doubao"` 生效；`icl:` 前缀与缺失 `model` 元数据的一律放行
-    —— 宁可不筛，也不要误伤复刻音色和用户自定义音色。
-    """
-    if (voice.get("provider") or "") != "doubao":
+    if voice.get("provider") != "doubao":
         return True
-    if str(voice.get("id") or "").startswith("icl:"):
-        return True
-    model = str(voice.get("model") or "").strip().lower()
-    if not model:
-        return True
-    return model in _V3_SUPPORTED_MODELS
+    return voice.get("model") == "seed-tts-2.0"
 
 
 def _v3_http_error_hint(status_code: int, body: str) -> str:
@@ -1500,9 +1357,6 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
 
     def _resolve_model_for_speaker(self, speaker_id: str) -> str:
         """根据 speaker_id 查 _BUILTIN_VOICES 返回 model；找不到则兜底 seed-tts-2.0。"""
-        # icl: 开头按 ICL 2.0 走
-        if _is_icl_cloned_speaker(speaker_id):
-            return "seed-icl-2.0"
         for v in _BUILTIN_VOICES:
             if v["id"] == speaker_id:
                 return v.get("model") or "seed-tts-2.0"
@@ -1514,85 +1368,8 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
     # 音色列表：复用 v1 内置音色（保证前后端列表稳定）
     # -----------------------------------------------------------------
     async def list_voices(self) -> list[dict[str, Any]]:
-        """三层合并：内置 < 远程 < 自定义。P2-1。"""
-        voices_by_id: dict[str, dict[str, Any]] = {}
-        for v in _BUILTIN_VOICES:
-            voices_by_id[f"doubao:{v['id']}"] = {
-                "id": f"doubao:{v['id']}",
-                "name": v["name"],
-                "provider": "doubao",
-                "gender": v["gender"],
-                "age": v["age"],
-                "scene": list(v["scene"]),
-                "dialect": v["dialect"],
-                "languages": list(v.get("languages") or ["zh"]),
-                "zh_tags": list(v["zh_tags"]),
-                "supports_emotion": bool(v.get("supports_emotion", False)),
-                "supports_subtitle": bool(v.get("supports_subtitle", True)),
-                "supports_language": bool(v.get("supports_language", False)),
-                "free": bool(v.get("free", False)),
-                "model": v.get("model", "seed-tts-2.0"),
-                "protocol": "v3",  # 标记当前 provider 走 v3
-            }
-        # P2-1：远程音色（启动时由 doubao_list_speakers 同步写入磁盘）
-        try:
-            from backend.app.services.doubao_list_speakers import load_remote_voices
-            for v in load_remote_voices():
-                vid = str(v.get("id") or "").strip()
-                if not vid:
-                    continue
-                if not vid.startswith("doubao:") and not vid.startswith("icl:"):
-                    vid = f"doubao:{vid}"
-                merged: dict[str, Any] = {
-                    "id": vid,
-                    "name": v.get("name") or vid.split(":", 1)[-1],
-                    "provider": "doubao",
-                    "gender": v.get("gender", "neutral"),
-                    "age": v.get("age", "youth"),
-                    "scene": v.get("scene", ["远程"]),
-                    "dialect": v.get("dialect", ""),
-                    "languages": list(v.get("languages") or ["zh"]),
-                    "zh_tags": list(v.get("zh_tags") or ["远程"]),
-                    "supports_emotion": bool(v.get("supports_emotion", False)),
-                    "supports_subtitle": bool(v.get("supports_subtitle", True)),
-                    "supports_language": bool(v.get("supports_language", False)),
-                    "free": bool(v.get("free", False)),
-                    "model": v.get("model", "seed-tts-2.0"),
-                    "protocol": "v3",
-                }
-                for k, val in v.items():
-                    if k not in merged and k != "id":
-                        merged[k] = val
-                voices_by_id[vid] = merged
-        except Exception:
-            logger.exception("v3 list_voices: 读取 voices_doubao_remote.json 失败")
-        # 用户自定义 voices_doubao.json（与 v1 同样路径）
-        try:
-            custom_path = Path(settings.DATA_DIR) / "voices_doubao.json"
-            if custom_path.exists():
-                raw = json.loads(custom_path.read_text(encoding="utf-8"))
-                for v in raw:
-                    vid = str(v.get("id", ""))
-                    if not vid.startswith("doubao:") and not vid.startswith("icl:"):
-                        vid = f"doubao:{vid}"
-                    merged: dict[str, Any] = {
-                        "id": vid,
-                        "name": v.get("name") or vid.split(":", 1)[-1],
-                        "provider": "doubao",
-                        "gender": v.get("gender", "neutral"),
-                        "age": v.get("age", "youth"),
-                        "scene": v.get("scene", ["自定义"]),
-                        "dialect": v.get("dialect", ""),
-                        "zh_tags": list(v.get("zh_tags") or ["自定义"]),
-                        "protocol": "v3",
-                    }
-                    for k, val in v.items():
-                        if k not in merged and k != "id":
-                            merged[k] = val
-                    voices_by_id[vid] = merged
-        except Exception:
-            logger.exception("v3 list_voices: 读取 voices_doubao.json 失败")
-        return list(voices_by_id.values())
+        """只返回官方系统音色。"""
+        return [{**v, "protocol": "v3"} for v in DoubaoTTSProvider()._builtin_voices_sync()]
 
     # -----------------------------------------------------------------
     # Payload 构造
@@ -1631,27 +1408,15 @@ class DoubaoTTSProviderV3(BaseTTSProvider):
                 )
             else:
                 audio_params["emotion"] = emotion
-        # P1-5：instruction_text 按官方 v3 文档放入 req_params.context_texts；
-        # 复刻音色（speaker 以 S_ / icl_ / iclvoice 开头）忽略并 warning。
-        is_clone_speaker = _is_icl_cloned_speaker(speaker_for_api)
+        # 官方系统音色使用 2.0 指令模型。
         payload_extras: dict[str, Any] = {}
         if speaker_style:
             payload_extras["speaker_style"] = speaker_style
-        # ⚠️ model 是「语音指令 / 语音标签」的总开关（2026-09-20 用户反馈「指令不生效」的根因）：
-        # 官方《模型列表》写明 2.0 分两版 —— seed-tts-2.0-standard（接口默认）**不支持
-        # 语音指令 QA 和语音标签 CoT**，只有 seed-tts-2.0-expressive 支持。本项目此前
-        # 从不传 model，于是指令发出去也被上游**静默忽略**，听感与不加指令完全一样。
-        # 复刻音色不下发：官方 HTTP 文档写明「model 仅当 speaker 为复刻音色时需指定，
-        # 且指定后不支持 context_texts」——复刻场景保住 context_texts 更有价值。
         tts_model = str(getattr(settings, "DOUBAO_TTS_MODEL", "") or "").strip()
-        if tts_model and not is_clone_speaker:
+        if tts_model:
             payload_extras["model"] = tts_model
-        if instruction_text and not is_clone_speaker:
+        if instruction_text:
             payload_extras["context_texts"] = [str(instruction_text)]
-        elif instruction_text:
-            logger.warning(
-                f"[DoubaoTTS-v3] 复刻音色 {speaker_for_api} 不支持 instruction_text，已忽略"
-            )
         return {
             "user": {"uid": f"local-{os.getpid() % 10000:04d}"},
             "req_params": {

@@ -163,13 +163,18 @@ def test_multiple_models_in_one_provider(client_and_state):
 
     # 给 doubao 加多个 tts 模型 + 多个 llm 模型（MiniMax 卡片现在只承载 LLM）
     doubao = next(p for p in cfg["providers"] if p["id"] == "doubao")
+    doubao["enabled"] = True
+    doubao["api_key"] = "test-doubao-key"
     doubao["models"].extend([
         {"id": "doubao-tts-v2", "label": "Speech v2", "kind": "tts"},
         {"id": "doubao-llm-fast", "label": "Fast LLM", "kind": "llm"},
     ])
-    # 切换激活到新模型
+    # 非官方豆包 TTS 模型不能激活，LLM 可激活新模型。
     cfg["active"]["tts"] = {"provider_id": "doubao", "model_id": "doubao-tts-v2"}
     cfg["active"]["llm"] = {"provider_id": "doubao", "model_id": "doubao-llm-fast"}
+    r = client.put("/api/providers", headers=_auth(token), json=cfg)
+    assert r.status_code == 400
+    cfg["active"]["tts"] = {"provider_id": "doubao", "model_id": "volcano_tts"}
     r = client.put("/api/providers", headers=_auth(token), json=cfg)
     assert r.status_code == 200, r.text
 
@@ -178,7 +183,7 @@ def test_multiple_models_in_one_provider(client_and_state):
     doubao = next(p for p in body["providers"] if p["id"] == "doubao")
     model_ids = {m["id"] for m in doubao["models"]}
     assert {"doubao-tts-v2", "doubao-llm-fast"}.issubset(model_ids)
-    assert body["active"]["tts"]["model_id"] == "doubao-tts-v2"
+    assert body["active"]["tts"]["model_id"] == "volcano_tts"
     assert body["active"]["llm"]["model_id"] == "doubao-llm-fast"
 
 

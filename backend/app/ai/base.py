@@ -54,7 +54,7 @@ class BaseLLMProvider(ABC):
 
 class BaseTTSProvider(ABC):
     name: str = "base"
-    provider: str = "base"  # minimax / doubao / icl / ... 命名空间标识
+    provider: str = "base"  # minimax / doubao 命名空间标识
 
     @abstractmethod
     async def list_voices(self) -> list[dict[str, Any]]:

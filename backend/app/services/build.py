@@ -507,20 +507,10 @@ def _h4_progress_meta_json(
 
 
 async def _ensure_default_narrator(narrator_voice_id: str | None) -> str:
-    """narrator 为空时兜底到擎苍 2.0（豆包 2.0 中音色）；音色库无此 id 时取第一个。
-    注意：MiniMax TTS 已弃用，兜底改为豆包 2.0 音色；同时兼容「无前缀 legacy id」。
-    """
-    if narrator_voice_id:
-        return narrator_voice_id
-    tts = get_tts()
-    voices = await tts.list_voices()
-    if voices:
-        vid = (
-            next((v["id"] for v in voices if v.get("id") in ("doubao:zh_male_qingcang_uranus_bigtts", "zh_male_qingcang_uranus_bigtts")), None)
-            or voices[0].get("id", "")
-        )
-        return vid
-    raise RuntimeError("音色库为空，无法合成")
+    """兼容旧调用：空旁白从当前激活 TTS 的男声音色中选择。"""
+    from ..core.config import get_active
+    provider = get_active("tts")[0] or "doubao"
+    return (await _resolve_build_voice_defaults(provider, narrator_voice_id or ""))[0]
 
 
 # ---------------------------------------------------------------------
@@ -538,93 +528,74 @@ async def _ensure_default_narrator(narrator_voice_id: str | None) -> str:
 # voice_assignments 快照（chapter.py 只认这张表，不必认识音色池）。
 # ---------------------------------------------------------------------
 
-# 兜底音色只从内置音色的「通用」场景里挑：避免给路边议论的路人配上
-# 「猴哥 2.0」「佩奇猪 2.0」这类辨识度极高、明显不符合语境的音色。
-# 注意官方音色表里该 scene 的字面值就是「通用」（不是「通用场景」）。
-_UNKNOWN_SPEAKER_VOICE_SCENE = "通用"
+async def _resolve_build_voice_defaults(
+    provider: str, narrator_voice_id: str,
+    male_voice_id: str = "", female_voice_id: str = "",
+) -> tuple[str, str, str, set[str]]:
+    """从激活厂商的官方音色中选旁白和男女兜底音色。"""
+    voices = [v for v in await get_tts(provider).list_voices() if v.get("provider") == provider]
+    by_id = {str(v["id"]): v for v in voices}
+    if not by_id:
+        raise RuntimeError(f"{provider} 没有可用的官方音色")
 
+    def canonical(value: str) -> str:
+        value = (value or "").strip()
+        if not value:
+            return ""
+        if value in by_id:
+            return value
+        prefixed = f"{provider}:{value}"
+        if prefixed in by_id:
+            return prefixed
+        raise ValueError(f"音色 {value} 不属于当前激活的 {provider} 官方音色库")
 
-def _unknown_speaker_voice_candidates(narrator_voice_id: str) -> list[str]:
-    """兜底对白音色候选：内置「通用」场景音色（排序后 id，排除旁白音色）。
+    narrator = canonical(narrator_voice_id)
+    if not narrator:
+        narrator = next((v["id"] for v in voices if v.get("gender") == "male"), voices[0]["id"])
 
-    - 排序是为了**稳定**：候选顺序固定，同一个说话人每次都会拿到同一个音色。
-    - 只保留声明了中文（`zh`）能力的音色：纯外语音色（如
-      `en_female_stokie_uranus_bigtts`）读中文会命中上游「成功码但音频为空」，
-      中文正文配上它们等于把对白变成静音。
-    """
-    try:
-        from ..ai.providers.doubao.tts import _BUILTIN_VOICES
-    except Exception:  # pragma: no cover - 极少见的导入失败
-        return []
+    def pick(value: str, gender: str) -> str:
+        selected = canonical(value)
+        if selected:
+            if selected == narrator:
+                raise ValueError("默认音色必须与旁白音色不同")
+            if by_id[selected].get("gender") != gender:
+                raise ValueError(f"所选默认音色不是{'男声' if gender == 'male' else '女声'}")
+            return selected
+        candidate = next((v["id"] for v in voices if v.get("gender") == gender and v["id"] != narrator), "")
+        if not candidate:
+            raise ValueError(f"{provider} 缺少与旁白不同的{'男声' if gender == 'male' else '女声'}默认音色")
+        return candidate
 
-    def _usable(v: dict[str, Any]) -> bool:
-        langs = [str(x).lower() for x in (v.get("languages") or [])]
-        return not langs or "zh" in langs
-
-    general = [
-        f"doubao:{v['id']}" for v in _BUILTIN_VOICES
-        if _UNKNOWN_SPEAKER_VOICE_SCENE in (v.get("scene") or []) and _usable(v)
-    ]
-    pool = general or [
-        f"doubao:{v['id']}" for v in _BUILTIN_VOICES if _usable(v)
-    ]
-    return sorted(vid for vid in pool if vid != narrator_voice_id)
-
-
-def _fallback_voice_for_unknown_speaker(speaker: str, narrator_voice_id: str) -> str:
-    """给「没有角色归属的说话人」稳定地挑一个非旁白音色。
-
-    用 speaker 名字的哈希取模：同一个名字永远拿到同一个音色（否则同一段对白在不同
-    build 里换嗓子，缓存全失效且听感漂移）；不同的名字大概率拿到不同音色 ——
-    一章里同时出现「有人」「另一人」时不会撞成同一个人。
-    """
-    cands = _unknown_speaker_voice_candidates(narrator_voice_id)
-    if not cands:
-        return ""
-    h = int(hashlib.sha256((speaker or "").encode("utf-8")).hexdigest()[:8], 16)
-    return cands[h % len(cands)]
+    return narrator, pick(male_voice_id, "male"), pick(female_voice_id, "female"), set(by_id)
 
 
 async def _with_unknown_speaker_voices(
-    session: Any,
-    project_id: str,
-    voice_assignments: dict[str, str],
-    narrator_voice_id: str,
+    session: Any, project_id: str, voice_assignments: dict[str, str],
+    narrator_voice_id: str, default_male_voice_id: str,
+    default_female_voice_id: str, allowed_voice_ids: set[str],
 ) -> dict[str, str]:
-    """把「未归属对白」的说话人补进 voice_assignments（不覆盖已有分配）。
-
-    - 已有角色分配一律不动；
-    - 项目**完全没有**任何角色分配时不动（那时连主角都没有音色，逐句兜底只会
-      让全书对白变成同一个路人音色，还不如维持原样让用户先去做识别）；
-    - 返回新 dict，调用方需用返回值覆盖原变量。
-    """
-    if not voice_assignments:
-        return voice_assignments
-    stmt = select(ProjectDialogue.speaker).where(
+    """未分配角色、未识别对白按性别兜底；未知性别使用男声。"""
+    chars = (await session.execute(select(ProjectCharacter.name, ProjectCharacter.gender).where(
+        ProjectCharacter.project_id == project_id
+    ))).all()
+    gender_by_name = {name: gender for name, gender in chars}
+    dialogue_names = (await session.execute(select(ProjectDialogue.speaker).where(
         ProjectDialogue.project_id == project_id
-    ).distinct()
-    raw_speakers = list((await session.execute(stmt)).scalars().all())
-
-    out = dict(voice_assignments)
-    unknown: set[str] = set()
-    for raw in raw_speakers:
-        spk = (raw or "").strip()
-        if spk not in out:
-            unknown.add(spk)
-    if not unknown:
-        return out
-
-    filled: dict[str, str] = {}
-    for spk in sorted(unknown):
-        vid = _fallback_voice_for_unknown_speaker(spk or "未知说话人", narrator_voice_id)
-        if vid:
-            out[spk] = vid
-            filled[spk or "(空)"] = vid
-    if filled:
-        logger.info(
-            f"[build_start] project_id={project_id[:8]}... 未归属对白兜底音色 "
-            f"{len(filled)} 个（非旁白）：{filled}"
-        )
+    ).distinct())).scalars().all()
+    out: dict[str, str] = {}
+    for name, value in voice_assignments.items():
+        if not value:
+            continue
+        if value not in allowed_voice_ids and ":" not in value:
+            matched = next((vid for vid in allowed_voice_ids if vid.endswith(f":{value}")), None)
+            value = matched or value
+        if value not in allowed_voice_ids:
+            raise ValueError(f"角色 {name} 的音色 {value} 不属于当前激活 TTS")
+        out[name] = value
+    for name in set(gender_by_name) | {name or "" for name in dialogue_names}:
+        if not out.get(name):
+            gender = str(gender_by_name.get(name) or "").lower()
+            out[name] = default_female_voice_id if gender in ("女", "female", "女声") else default_male_voice_id
     return out
 
 
@@ -916,30 +887,11 @@ def _seg_cache_key(
 
 
 def _voice_model_lookup(voice_id: str) -> str:
-    """P1-7：根据 voice_id 反查豆包模型名（seed-tts-2.0 / seed-icl-2.0）。
-
-    优先复用 tts.py 内置的 `_voice_supports_emotion` 体系：找不到则用启发式
-    （ICL 复刻音色前缀 S_ / icl_ / iclvoice → seed-icl-2.0；其他 → seed-tts-2.0）。
-    供缓存 key 区分用。
-    兜底用 2.0 而不是 1.0：内置表已无 1.0 音色（1.0 资源账号也未开通），
-    继续兜底 1.0 只会让缓存键里留一个永远不会被真实使用的模型名。
-    """
+    """返回段缓存使用的厂商模型标记。"""
     if not voice_id:
         return ""
-    # 1. ICL 复刻（判定与合成路由共用 icl.py 的同一份实现，避免前缀漂移）
-    try:
-        from backend.app.ai.providers.doubao.icl import is_cloned_speaker_id
-        if is_cloned_speaker_id(voice_id):
-            return "seed-icl-2.0"
-    except Exception:  # pragma: no cover - 导入失败时退回前缀启发式
-        bare = voice_id
-        if bare.startswith("icl:"):
-            bare = bare[4:]
-        if bare.startswith("doubao:"):
-            bare = bare[7:]
-        if bare.startswith(("S_", "icl_", "iclvoice")):
-            return "seed-icl-2.0"
-    # 2. 内置音色表
+    if voice_id.startswith("minimax:"):
+        return "minimax"
     try:
         from backend.app.ai.providers.doubao.tts import _BUILTIN_VOICES
         bare = voice_id
@@ -950,7 +902,6 @@ def _voice_model_lookup(voice_id: str) -> str:
                 return str(v.get("model") or "seed-tts-2.0")
     except Exception:
         pass
-    # 3. 兜底：默认 2.0
     return "seed-tts-2.0"
 
 
@@ -963,7 +914,11 @@ def _tts_model_param() -> str:
     「旧 model + 无情绪」的历史缓存 / 历史成功 build，听不出任何变化。
     空串 = 不下发该字段（旧行为）。
     """
-    return str(getattr(settings, "DOUBAO_TTS_MODEL", "") or "").strip()
+    from ..core.config import get_active
+    provider, model, _ = get_active("tts")
+    if provider == "minimax":
+        return model or "speech-2.8-hd"
+    return f"{model or 'volcano_tts'}|{getattr(settings, 'DOUBAO_TTS_MODEL', '') or ''}"
 
 
 def _context_texts_hash(instruction: str) -> str:
@@ -1083,6 +1038,8 @@ def _calc_config_digest(
     narrator_instruction: str = "",
     content_digest: str = "",
     tts_model: str = "",
+    default_male_voice_id: str = "",
+    default_female_voice_id: str = "",
 ) -> str:
     sorted_va = dict(sorted((voice_assignments or {}).items()))
     raw = json.dumps(
@@ -1103,6 +1060,8 @@ def _calc_config_digest(
             # 属于会影响产出的合成配置：不纳入 digest 的话，切了 model 重新合成会
             # 命中历史成功 build 直接复用旧产物，用户听不出任何变化。
             "tts_model": tts_model or "",
+            "default_male_voice_id": default_male_voice_id or "",
+            "default_female_voice_id": default_female_voice_id or "",
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -1297,13 +1256,13 @@ def _build_to_status_resp(b: Build, artifacts: list[BuildArtifact]) -> BuildStat
 # TTS 命名空间校验（Task 4 / Task 8）
 # =====================================================================
 
-_VALID_PROVIDERS = {"doubao"}
+_VALID_PROVIDERS = {"doubao", "minimax"}
 # 多播剧（Seed-Audio）模式已下线，合法构建模式只剩 classic
 _VALID_MODES = {"classic"}
-# 前缀 → 归属哪个 tts_provider（MiniMax TTS 已弃用，minimax: 不再映射）
+# 前缀 → 所属 TTS 厂商
 _PREFIX_TO_PROVIDER: dict[str, str] = {
     "doubao": "doubao",
-    "icl": "doubao",
+    "minimax": "minimax",
 }
 
 
@@ -1323,26 +1282,16 @@ def _validate_tts_namespace(
     narrator_voice_id: str,
     voice_assignments: dict[str, str],
 ) -> None:
-    """[P-2.5] 校验 mode 合法性；不再校验 tts_provider 与音色命名空间一致性。
-
-    历史：旧版硬约束「旁白/角色音色必须属于同一 tts_provider」，导致用户每
-    次配置都要先选厂商、然后只能用该厂商的音色。新行为：合成时**按 voice_id
-    前缀自动路由 TTS 厂商**（doubao:/icl: → 豆包；无前缀 → tts_provider 兜底），
-    用户可以混用任意音色。
-
-    MiniMax TTS 已弃用：老数据里 Build.tts_provider == "minimax" 时给一条明确的
-    迁移提示，而不是抛一个没有信息量的「未知 tts_provider」。
-    """
+    """构建只允许当前激活厂商的官方音色。"""
     norm_mode = (mode or "classic").lower()
     if norm_mode not in _VALID_MODES:
         raise RuntimeError(f"未知 build.mode: {mode}，可选 {sorted(_VALID_MODES)}")
     norm_provider = (tts_provider or "").lower()
-    if norm_provider == "minimax":
-        raise RuntimeError(
-            "该构建使用的 MiniMax 语音合成已弃用，请重新推荐音色后新建构建"
-        )
     if norm_provider and norm_provider not in _VALID_PROVIDERS:
         raise RuntimeError(f"未知 tts_provider: {tts_provider}，可选 {sorted(_VALID_PROVIDERS)}")
+    for voice_id in [narrator_voice_id, *voice_assignments.values()]:
+        if voice_id and ":" in voice_id and voice_id.split(":", 1)[0] != norm_provider:
+            raise RuntimeError(f"音色 {voice_id} 不属于当前激活 TTS {norm_provider}")
 
 
 # =====================================================================
@@ -1388,6 +1337,8 @@ async def _start_build_impl(
     narrator_voice_id: str,
     speed: float = 1.0,
     *,
+    default_male_voice_id: str = "",
+    default_female_voice_id: str = "",
     mode: str | None = None,
     tts_provider: str | None = None,
     narrator_emotion: str = "",
@@ -1410,25 +1361,22 @@ async def _start_build_impl(
       3) **config_digest 命中**：同一 project + 相同 narrator/speed/voice_assignments/mode/tts_provider/情感配置，
          且历史已有**成功** Build（ZIP 生成过）→ 直接返回旧 build_id，不重建。
     """
-    from ..core.config import settings as _settings_mod
-
     _run_seg_cache_gc_if_needed(force=False)
 
-    narrator_voice_id = await _ensure_default_narrator(narrator_voice_id)
-
-    # 解析 tts_provider （优先级：参数 > Project.default_tts_provider > settings.TTS_PROVIDER > 'doubao'）
-    effective_provider = (tts_provider or "").lower() or None
-    if not effective_provider:
-        factory_sess = get_session_factory()
-        try:
-            async with factory_sess() as s:
-                p = await s.get(Project, project_id)
-                if p and p.default_tts_provider:
-                    effective_provider = p.default_tts_provider.lower()
-        except Exception:
-            pass
-    if not effective_provider:
-        effective_provider = (_settings_mod.TTS_PROVIDER or "doubao").lower()
+    from ..core.config import get_active
+    active_provider, active_model, _ = get_active("tts")
+    effective_provider = active_provider or "doubao"
+    if tts_provider and tts_provider.lower() != effective_provider:
+        raise RuntimeError(f"设置页当前激活 TTS 为 {effective_provider}，不能启动 {tts_provider} 构建")
+    if effective_provider == "minimax":
+        from ..ai.providers.minimax.tts import SUPPORTED_TTS_MODELS
+        if active_model not in SUPPORTED_TTS_MODELS:
+            raise RuntimeError("设置页未激活有效的 MiniMax 语音模型")
+    narrator_voice_id, default_male_voice_id, default_female_voice_id, allowed_voice_ids = (
+        await _resolve_build_voice_defaults(
+            effective_provider, narrator_voice_id, default_male_voice_id, default_female_voice_id,
+        )
+    )
 
     # mode 解析：只按「调用方是否显式指定」分流。
     #   mode is None → 未指定，回落 Project.default_build_mode（再兜底 classic）
@@ -1505,7 +1453,8 @@ async def _start_build_impl(
         # **之前**：它改变了实际使用的音色映射，digest 不跟着变的话，用户重新合成会命中
         # 历史成功 build 的旧产物（匿名对白仍由旁白念）而完全听不出变化。
         voice_assignments = await _with_unknown_speaker_voices(
-            session, project_id, voice_assignments, narrator_voice_id
+            session, project_id, voice_assignments, narrator_voice_id,
+            default_male_voice_id, default_female_voice_id, allowed_voice_ids,
         )
 
         # A-7：把正文/对白/发音规则的内容哈希纳入 digest（放在读书 chapters 之后，
@@ -1518,6 +1467,8 @@ async def _start_build_impl(
             narrator_instruction=narrator_instruction,
             content_digest=content_digest,
             tts_model=_tts_model_param(),
+            default_male_voice_id=default_male_voice_id,
+            default_female_voice_id=default_female_voice_id,
         )
 
         stmt_active = select(Build).where(
@@ -1596,6 +1547,9 @@ async def _start_build_impl(
             completed_chapters=0,
             total_chapters=len(chapters),
             narrator_voice_id=narrator_voice_id,
+            default_male_voice_id=default_male_voice_id,
+            default_female_voice_id=default_female_voice_id,
+            tts_model_id=active_model or "",
             speed=speed,
             mode=resolved_mode,
             tts_provider=effective_provider,
@@ -1765,12 +1719,10 @@ async def retry_failed_build(
             raise ValueError(f"Build 不存在: {source_build_id}")
         project_id = source_build.project_id
 
-        # MiniMax TTS 已弃用：老 build 无法重试（其 tts_provider/minimax: 音色都已失效），
-        # 这里显式报出可操作的迁移提示，而不是继承 minimax 后在别处抛出难懂的内部错误。
-        if (source_build.tts_provider or "").lower() == "minimax":
-            raise RuntimeError(
-                "该构建使用的 MiniMax 语音合成已弃用，请重新推荐音色后新建构建"
-            )
+        from ..core.config import get_active
+        active_provider = get_active("tts")[0] or "doubao"
+        if source_build.tts_provider != active_provider:
+            raise RuntimeError(f"此 Build 使用 {source_build.tts_provider}，请激活该 TTS 后重试")
 
         p = await session.get(Project, project_id)
         if not p:
@@ -1781,6 +1733,13 @@ async def retry_failed_build(
             raise RuntimeError("项目尚未 prepare（没有章节数据），请先执行识别")
 
         narrator_voice_id = source_build.narrator_voice_id
+        narrator_voice_id, male_default, female_default, allowed_voice_ids = (
+            await _resolve_build_voice_defaults(
+                active_provider, narrator_voice_id,
+                source_build.default_male_voice_id or "",
+                source_build.default_female_voice_id or "",
+            )
+        )
         speed = source_build.speed
         try:
             voice_assignments = json.loads(source_build.voice_assignments_json or "{}")
@@ -1790,7 +1749,8 @@ async def retry_failed_build(
         # source_build 快照里没有 → 这里补一次，否则「重试失败章」出来的匿名对白
         # 仍会是旁白音色。
         voice_assignments = await _with_unknown_speaker_voices(
-            session, project_id, voice_assignments, narrator_voice_id
+            session, project_id, voice_assignments, narrator_voice_id,
+            male_default, female_default, allowed_voice_ids,
         )
 
         failed_ch_idxs: list[int] = []
@@ -1863,6 +1823,9 @@ async def retry_failed_build(
             completed_chapters=0,
             total_chapters=len(chapters),
             narrator_voice_id=narrator_voice_id,
+            default_male_voice_id=male_default,
+            default_female_voice_id=female_default,
+            tts_model_id=source_build.tts_model_id,
             speed=speed,
             voice_assignments_json=new_voice_json,
             # 重试必须继承源 Build 的合成配置：否则豆包 Build 重试会
@@ -2123,6 +2086,9 @@ async def _run_build_inner(
         speaker_to_char_id: dict[str, int] = {
             c.name: c.id for c in char_rows if c.name
         }
+        gender_by_speaker: dict[str, str] = {
+            c.name: str(c.gender or "").lower() for c in char_rows if c.name
+        }
 
 
     dialogues_by_chapter: dict[int, list[ProjectDialogue]] = {}
@@ -2146,6 +2112,12 @@ async def _run_build_inner(
             raise RuntimeError(f"Build 不存在: {build_id}")
         build_mode = (b.mode or "classic").lower()
         tts_provider_label = b.tts_provider or "doubao"
+        tts_model_snapshot = b.tts_model_id or ""
+        default_male_snapshot = b.default_male_voice_id or narrator_voice_id
+        default_female_snapshot = b.default_female_voice_id or default_male_snapshot
+        if tts_provider_label == "minimax":
+            from ..ai.providers.minimax.tts import BUILD_TTS_MODEL
+            BUILD_TTS_MODEL.set(tts_model_snapshot)
         # 情感/语气配置快照（build 启动时写入，这里只读快照）
         narrator_emotion = (b.narrator_emotion or "").strip()
         narrator_instruction = (b.narrator_instruction or "").strip()
@@ -2191,12 +2163,8 @@ async def _run_build_inner(
         f"narrator_emo={narrator_emotion!r}"
     )
 
-    from ..ai.factory import get_tts_sem, get_tts_by_voice_id
-    # [P-2.5] 不再预先拿一个全局 tts 实例。改为每段按 voice_id 路由：
-    #   - doubao:/icl: 前缀 → 豆包
-    #   - 无前缀 → 用 tts_provider_label 兜底（默认 settings.TTS_PROVIDER）
-    # 这样旁白/角色可以混用任意音色，不再被「跨厂商音色」约束。
-    fallback_provider = (tts_provider_label or "").lower() or None
+    from ..ai.factory import get_tts_sem
+    build_tts = get_tts(tts_provider_label)
     sem = get_tts_sem()
     audio_dir = Path(settings.AUDIO_DIR)
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -2392,6 +2360,13 @@ async def _run_build_inner(
                 narrator_emotion=narrator_emotion,
                 narrator_instruction=narrator_instruction,
             )
+            # 合成前再次兜底：识别结果更新或旧 Build 快照缺少 speaker 时，
+            # 对白也不能悄悄退回旁白音色。
+            for seg in segs:
+                if seg.kind == "dialogue" and not voice_assignments.get(seg.speaker or ""):
+                    gender = gender_by_speaker.get(seg.speaker or "", "")
+                    seg.voice_id = (default_female_snapshot if gender in ("女", "female", "女声")
+                                    else default_male_snapshot)
 
             async def _synth_seg(s: _Segment) -> tuple[_Segment, bytes, int]:
                 nonlocal tts_calls_used, tts_chars_used
@@ -2412,10 +2387,11 @@ async def _run_build_inner(
                 seg_ctx_hash = _context_texts_hash(seg_ins)
                 # req_params.model（standard / expressive）：决定指令是否真的生效，
                 # 必须进缓存键，否则切完设置还会命中旧的「无情绪」音频
-                seg_tts_model = _tts_model_param()
-                seg_sample_rate = int(
+                seg_tts_model = (tts_model_snapshot if tts_provider_label == "minimax"
+                                 else f"{tts_model_snapshot}|{getattr(settings, 'DOUBAO_TTS_MODEL', '') or ''}")
+                seg_sample_rate = (32000 if tts_provider_label == "minimax" else int(
                     getattr(settings, "DOUBAO_AUDIO_SAMPLE_RATE", 24000) or 24000
-                )
+                ))
                 cached = await tts_segment_cache_get(
                     vid, speed, s.text, emotion=seg_emo, instruction=seg_ins,
                     model=seg_model, context_texts_hash=seg_ctx_hash,
@@ -2424,14 +2400,12 @@ async def _run_build_inner(
                 if cached is not None:
                     mp3_b, dur_ms = cached
                     return s, mp3_b, dur_ms
-                # [P-2.5] 按 voice_id 前缀自动路由 TTS 厂商；无前缀走 fallback_provider
-                seg_tts = get_tts_by_voice_id(vid) if ":" in (vid or "") else get_tts(fallback_provider)
                 async with sem:
-                    data, dur = await seg_tts.synthesize_to_bytes(
+                    data, dur = await build_tts.synthesize_to_bytes(
                         s.text, vid, speed=speed,
                         # 未配置时传 provider 默认（"calm"），与历史行为一致
                         emotion=seg_emo or "calm",
-                        instruction_text=seg_ins or None,
+                        instruction_text=seg_ins or None if tts_provider_label == "doubao" else None,
                     )
                 tts_calls_used += 1
                 tts_chars_used += len(s.text)
@@ -3146,7 +3120,8 @@ async def estimate_project_build(project_id: str, speed: float = 1.0) -> BuildEs
     slice_size = max(1, int(_settings.LLM_CHAR_EXTRACT_SLICE_SIZE))
     dlg_batch = max(1, int(_settings.DIALOGUE_BATCH_CHAPTERS))
     # 逐段语音指令：按章切批，一次 LLM 调用处理 VOICE_INSTRUCTION_BATCH_CHAPTERS 章
-    vi_enabled = bool(getattr(_settings, "VOICE_INSTRUCTION_ENABLED", True))
+    from ..core.config import get_active
+    vi_enabled = bool(getattr(_settings, "VOICE_INSTRUCTION_ENABLED", True)) and get_active("tts")[0] != "minimax"
     vi_batch = max(1, int(getattr(_settings, "VOICE_INSTRUCTION_BATCH_CHAPTERS", 6) or 6))
     est_llm_calls = 0
     if not prepared:

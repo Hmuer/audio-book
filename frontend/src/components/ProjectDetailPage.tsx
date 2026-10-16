@@ -113,11 +113,7 @@ export default function ProjectDetailPage({
   const [loadingVoice, setLoadingVoice] = useState<string | null>(null);
 
   const narratorDefault = useMemo(
-    // 后端音色 id 已带命名空间前缀（doubao:/icl:），无前缀匹配会退化成 voices[0]
-    () =>
-      voices.find(v => v.id === 'doubao:zh_male_qingcang_uranus_bigtts') ||
-      voices.find(v => v.id.endsWith('zh_male_qingcang_uranus_bigtts')) ||
-      voices[0],
+    () => voices.find(v => normalizeGender(v) === '男声') || voices[0],
     [voices]
   );
 
@@ -1676,7 +1672,8 @@ function VoicesTab({
   onReload: () => void;
 }) {
   const [narratorVoice, setNarratorVoice] = useState<string>(
-    project.default_narrator_voice_id || narratorDefault?.id || ''
+    voices.some(v => v.id === project.default_narrator_voice_id)
+      ? project.default_narrator_voice_id! : narratorDefault?.id || ''
   );
   const [speed, setSpeed] = useState<number>(project.default_speed ?? 1.0);
   const [savingDefault, setSavingDefault] = useState(false);
@@ -1684,7 +1681,8 @@ function VoicesTab({
   const [chars, setChars] = useState<CharacterWithVoice[]>(project.characters);
 
   useEffect(() => {
-    setNarratorVoice(project.default_narrator_voice_id || narratorDefault?.id || '');
+    setNarratorVoice(voices.some(v => v.id === project.default_narrator_voice_id)
+      ? project.default_narrator_voice_id! : narratorDefault?.id || '');
     setSpeed(project.default_speed ?? 1.0);
     setChars(project.characters);
   }, [project.project_id, project.default_narrator_voice_id, project.default_speed, project.characters, narratorDefault]);
@@ -2593,19 +2591,34 @@ function CreateBuildModal({
   onCreated: () => void;
 }) {
   const [narrator, setNarrator] = useState<string>(
-    project.default_narrator_voice_id || narratorDefault?.id || ''
+    voices.some(v => v.id === project.default_narrator_voice_id)
+      ? project.default_narrator_voice_id! : narratorDefault?.id || ''
   );
+  const activeTts = voices[0]?.provider || '';
+  const maleVoices = voices.filter(v => normalizeGender(v) === '男声');
+  const femaleVoices = voices.filter(v => normalizeGender(v) === '女声');
+  const [defaultMale, setDefaultMale] = useState(
+    maleVoices.find(v => v.id !== narrator)?.id || ''
+  );
+  const [defaultFemale, setDefaultFemale] = useState(
+    femaleVoices.find(v => v.id !== narrator)?.id || ''
+  );
+  useEffect(() => {
+    if (!maleVoices.some(v => v.id === defaultMale && v.id !== narrator))
+      setDefaultMale(maleVoices.find(v => v.id !== narrator)?.id || '');
+    if (!femaleVoices.some(v => v.id === defaultFemale && v.id !== narrator))
+      setDefaultFemale(femaleVoices.find(v => v.id !== narrator)?.id || '');
+  }, [narrator, voices]);
   const [speed, setSpeed] = useState<number>(project.default_speed ?? 1.0);
   const [charVoices, setCharVoices] = useState<Record<string, string>>(() => {
     const m: Record<string, string> = {};
     project.characters.forEach(c => {
-      if (c.assigned_voice_id) m[c.name] = c.assigned_voice_id;
+      if (c.assigned_voice_id && voices.some(v => v.id === c.assigned_voice_id))
+        m[c.name] = c.assigned_voice_id;
     });
     return m;
   });
-  // TTS 厂商**不再由用户选择**：每个角色的音色自带命名空间前缀（doubao: / icl:），
-  // 合成时后端按 voice_id 前缀自动路由到对应厂商。
-  // 多播剧（Seed-Audio）模式已下线，构建模式固定为 classic。
+  // TTS 厂商由设置页激活项决定，弹窗只配置本次 Build 的音色。
   // 旁白情感/风格指令（本次构建快照；角色不绑定语气，对白语气按内容自动生成）
   const [narrEmotion, setNarrEmotion] = useState('');
   const [narrInstruction, setNarrInstruction] = useState('');
@@ -2630,15 +2643,19 @@ function CreateBuildModal({
       setErr('请选择旁白音色');
       return;
     }
-    // [P-2.5] 不再做「跨厂商音色 → 拒绝」检查。
-    // 后端按 voice_id 前缀自动路由 TTS 厂商，旁白/角色可以混用任何命名空间（doubao: / icl:）。
+    if (!defaultMale || !defaultFemale || defaultMale === narrator || defaultFemale === narrator) {
+      setErr('请选择与旁白不同的默认男声和女声');
+      return;
+    }
     setBusy(true);
     try {
       await api.buildCreate(projectId, {
         voice_assignments: charVoices,
         narrator_voice_id: narrator,
+        default_male_voice_id: defaultMale,
+        default_female_voice_id: defaultFemale,
         speed,
-        // [P-2.5] 不再传 tts_provider；后端按 voice_id 前缀自动路由。
+        tts_provider: activeTts as 'doubao' | 'minimax',
         narrator_emotion: narrEmotion,
         narrator_instruction: narrInstruction.trim(),
       });
@@ -2695,7 +2712,7 @@ function CreateBuildModal({
               <span className="chip-soft">≈{estimate.est_tts_segments} 段 TTS 调用</span>
               <span className="chip-soft">≈{estimate.est_audio_minutes} 分钟音频</span>
               <span className="chip-soft">≈{estimate.est_zip_mb} MB</span>
-              <span
+              {activeTts === 'doubao' ? <span
                 className="chip-soft"
                 title={
                   `按豆包语音合成 ${estimate.price_per_char_cny} 元/字估算：`
@@ -2705,7 +2722,7 @@ function CreateBuildModal({
                 }
               >
                 ≈¥{estimate.est_tts_cost_cny.toFixed(2)} 合成费用
-              </span>
+              </span> : <span className="chip-soft">MiniMax 费用按官方计费字符结算</span>}
               {estimate.prepared
                 ? <span className="chip-soft">已识别（无需再调 LLM）</span>
                 : <span className="chip-soft">需先识别 ≈{estimate.est_llm_calls} 次 LLM</span>}
@@ -2714,23 +2731,19 @@ function CreateBuildModal({
         )}
 
         <div className="space-y-5 relative">
-          {/* 构建模式（多播剧 Seed-Audio 已下线，固定 classic） */}
+          {/* 本次构建的未分配角色与对白兜底音色 */}
           <div className="space-y-2">
             <div className="text-sm text-ink-700 flex items-center gap-2">
               <span className="w-6 h-6 rounded-lg grid place-items-center bg-brand-500/20 text-brand-300 text-xs">1</span>
-              合成模式
+              默认音色
             </div>
-            <div className="rounded-lg border p-3 bg-brand-500/12 border-brand-500/40">
-              <div className="flex items-center gap-2">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-ink-600">
-                  <path d="M4 12h16" /><path d="M4 6h16" /><path d="M4 18h16" />
-                </svg>
-                <span className="text-sm font-medium text-ink-800">经典模式</span>
-                <span className="chip-soft !px-1.5 !py-0.5 !text-[11px] ml-auto">逐句合成</span>
-              </div>
-              <p className="text-[11px] text-ink-500 mt-1.5 leading-relaxed">
-                按对白逐句合成后拼接，角色音色与情绪控制更精细
-              </p>
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div><div className="text-xs text-ink-500 mb-1">男声（未知性别也使用男声）</div>
+                <VoicePicker voices={maleVoices.filter(v => v.id !== narrator)} value={defaultMale}
+                  onChange={setDefaultMale} onPreview={() => {}} /></div>
+              <div><div className="text-xs text-ink-500 mb-1">女声</div>
+                <VoicePicker voices={femaleVoices.filter(v => v.id !== narrator)} value={defaultFemale}
+                  onChange={setDefaultFemale} onPreview={() => {}} /></div>
             </div>
           </div>
 
@@ -2745,7 +2758,7 @@ function CreateBuildModal({
               onChange={setNarrator}
               onPreview={() => {}}
             />
-            {/* 旁白情感/语气（可选）；角色情感在「音色」页配置 */}
+            {/* 旁白情感/语气（可选） */}
             <div className="rounded-lg border border-ink-300/70 bg-ink-100 p-3 space-y-2">
                 <button
                   type="button"
@@ -2770,14 +2783,14 @@ function CreateBuildModal({
                         <option key={p.value} value={p.value}>{p.label}</option>
                       ))}
                     </select>
-                    <input
+                    {activeTts === 'doubao' && <input
                       type="text"
                       className="input-base !py-1.5 !px-2 text-xs"
                       placeholder="旁白语气指令（豆包），如：沉稳、略带悬念的讲述感"
                       value={narrInstruction}
                       onChange={e => setNarrInstruction(e.target.value)}
                       maxLength={200}
-                    />
+                    />}
                   </div>
                 )}
               </div>
@@ -2855,7 +2868,7 @@ function CreateBuildModal({
                           setCharVoices(prev => ({ ...prev, [c.name]: e.target.value }))
                         }
                       >
-                        <option value="">未分配（使用旁白朗读）</option>
+                        <option value="">未分配（使用对应性别的默认音色）</option>
                         {voices.map(v => (
                           <option key={v.id} value={v.id}>
                             {v.name} ({normalizeGender(v)})
@@ -2911,7 +2924,8 @@ function SettingsTab({
   const [description, setDescription] = useState(project.description || '');
   const [tagsInput, setTagsInput] = useState(project.tags || '');
   const [narratorVoice, setNarratorVoice] = useState(
-    project.default_narrator_voice_id || ''
+    voices.some(v => v.id === project.default_narrator_voice_id)
+      ? project.default_narrator_voice_id! : voices.find(v => normalizeGender(v) === '男声')?.id || voices[0]?.id || ''
   );
   const [speed, setSpeed] = useState(project.default_speed ?? 1.0);
 
@@ -2926,9 +2940,10 @@ function SettingsTab({
     setName(project.name);
     setDescription(project.description || '');
     setTagsInput(project.tags || '');
-    setNarratorVoice(project.default_narrator_voice_id || '');
+    setNarratorVoice(voices.some(v => v.id === project.default_narrator_voice_id)
+      ? project.default_narrator_voice_id! : voices.find(v => normalizeGender(v) === '男声')?.id || voices[0]?.id || '');
     setSpeed(project.default_speed ?? 1.0);
-  }, [project.project_id, project.name, project.description, project.tags, project.default_narrator_voice_id, project.default_speed]);
+  }, [project.project_id, project.name, project.description, project.tags, project.default_narrator_voice_id, project.default_speed, voices]);
 
   const save = async () => {
     setErr(null);
