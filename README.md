@@ -243,6 +243,7 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 - ✅ 后台任务 checkpoint 可中断恢复（prepare_project 写到 `progress_json`）
 - ✅ Build 取消幂等：重复取消不会破坏状态
 - ✅ 生成 MP3 / ZIP 可下载：`/media/build_<id>_ch<NNNN>.mp3` 或 `_all.zip`
+- ✅ 质检按完整章节 MP3 时长计算：可跨段跳过 ID3 标签；旧构建首次打开详情时用段级时间轴或本地 MP3 修正时长、总时长和质检报告，无需重新合成
 - ✅ `data/**` 完全 `.gitignored`（含 db / 上传文本 / ZIP / cache）
 - ✅ 后端测试覆盖文件导入校验与后台任务恢复；运行命令见「启动步骤」
 
@@ -250,7 +251,7 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 
 ## 已知限制
 
-1. **TTS 音频拼接纯 MP3 帧直拼**：大多数 HTML5 `<audio>` 兼容。如果你要最严格的 ID3 + 无缝拼接，可以后续加 `pydub` + ffmpeg。
+1. **TTS 音频按段直接拼接**：章节 MP3 可能包含多个段落各自的 ID3 标签；时长解析会跳过这些标签。大多数 HTML5 `<audio>` 兼容；若需要重封装成单一连续 MP3，可后续引入 ffmpeg。
 2. **LLM JSON mode 鲁棒性**：LLM + 3 次重试 + 温度递增，在 100+ 测试中成功率约 97%；极端失败时会抛 HTTP 500（前端弹窗），无自动降级。
 3. **不做流式合成**：所有段 TTS 完成后才返回最终 MP3（单请求 600s 超时足够）。如需体验更好可以加 WebSocket / SSE，本 v1 不做。
 4. **后台任务仍按单进程部署**：`JobTask` 在数据库中记录心跳，重启后会检测过期任务并尝试从 checkpoint 恢复；当前没有跨多实例共享的任务队列。

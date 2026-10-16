@@ -495,6 +495,8 @@ def _h4_progress_meta_json(
             "shard_done": shard_done,
             "shard_total": shard_total,
             "quality": quality,
+            # 终态新构建已经使用可跨段读取 ID3 的时长解析器。
+            "duration_parser_version": 2 if phase == "done" else None,
             # H-13：阶段耗时
             "phase_started_ms": phase_started_ms,
             "completed_timings": completed_timings or {},
@@ -2249,7 +2251,7 @@ async def _run_build_inner(
 
             if ch_ok_path is not None:
                 mp3_bytes = ch_ok_path.read_bytes()
-                ch_ok_duration_ms = int(ch_ok_duration_ms or 0) or mp3_duration_ms(mp3_bytes)
+                ch_ok_duration_ms = mp3_duration_ms(mp3_bytes) or int(ch_ok_duration_ms or 0)
                 chapter_outputs[ch_idx] = (str(ch_ok_path), ch_ok_duration_ms)
                 completed += 1
                 chapter_ok_flag[ch_idx] = True
@@ -2259,12 +2261,13 @@ async def _run_build_inner(
                         BuildArtifact.chapter_idx == ch_idx,
                     )
                     art = (await s.execute(stmt_art)).scalar_one_or_none()
-                    if art and art.status != "done":
-                        art.status = "done"
-                        art.audio_filename = ch_ok_path.name
-                        art.audio_url = f"/media/{ch_ok_path.name}"
+                    if art:
+                        if art.status != "done":
+                            art.status = "done"
+                            art.audio_filename = ch_ok_path.name
+                            art.audio_url = f"/media/{ch_ok_path.name}"
+                            art.error_msg = None
                         art.duration_ms = ch_ok_duration_ms
-                        art.error_msg = None
                         await s.commit()
                     b = await s.get(Build, build_id)
                     if b:
@@ -2317,12 +2320,12 @@ async def _run_build_inner(
 
             if ch_ok_path is not None:
                 mp3_bytes = ch_ok_path.read_bytes()
-                ch_ok_duration_ms = int(ch_ok_duration_ms or 0) or mp3_duration_ms(mp3_bytes)
+                ch_ok_duration_ms = mp3_duration_ms(mp3_bytes) or int(ch_ok_duration_ms or 0)
                 chapter_outputs[ch_idx] = (str(ch_ok_path), ch_ok_duration_ms)
                 completed += 1
                 chapter_ok_flag[ch_idx] = True
                 skip_this_chapter = True
-                if art is not None and art in s.dirty:
+                if art is not None and (art in s.dirty or art.duration_ms != ch_ok_duration_ms):
                     art.duration_ms = ch_ok_duration_ms
                     await s.commit()
                 logger.info(
@@ -2881,6 +2884,73 @@ async def _run_build_inner(
 # 查询 / 删除
 # =====================================================================
 
+def _legacy_artifact_duration_ms(build_id: str, art: BuildArtifact) -> int | None:
+    """旧构建时长回填：优先用逐段时间轴，缺失时解析本地 MP3。"""
+    sidecar = Path(settings.AUDIO_DIR) / _timings_filename(build_id, art.chapter_idx)
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("estimated") is False:
+            segs = data.get("segs")
+            if isinstance(segs, list) and segs:
+                durations = [seg.get("dur_ms") for seg in segs if isinstance(seg, dict)]
+                if len(durations) == len(segs) and all(
+                    isinstance(d, int) and d >= 0 for d in durations
+                ):
+                    total = sum(durations)
+                    if total > 0:
+                        return total
+    except (OSError, ValueError, TypeError):
+        pass
+    if art.audio_filename:
+        # 文件名来自 BuildArtifact，限制在音频目录内。
+        path = Path(settings.AUDIO_DIR) / Path(art.audio_filename).name
+        try:
+            if path.is_file():
+                return mp3_duration_ms(path.read_bytes()) or None
+        except OSError:
+            pass
+    return None
+
+
+async def _repair_legacy_build_durations(session, b: Build, arts: list[BuildArtifact]) -> None:
+    """首次查看旧终态构建时，修复 MP3 拼接标签导致的时长和质检误报。"""
+    if b.status not in ("success", "partial_success", "failed"):
+        return
+    try:
+        meta = json.loads(b.progress_meta_json or "{}")
+    except (ValueError, TypeError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    if meta.get("duration_parser_version") == 2:
+        return
+
+    all_readable = True
+    changed = False
+    for art in arts:
+        if art.status != "done":
+            continue
+        # 解析本地大文件时在线程中运行，避免阻塞请求事件循环。
+        corrected = await asyncio.to_thread(_legacy_artifact_duration_ms, b.build_id, art)
+        if corrected is None:
+            all_readable = False
+        elif corrected != art.duration_ms:
+            art.duration_ms = corrected
+            changed = True
+
+    if changed:
+        b.total_duration_ms = sum(a.duration_ms or 0 for a in arts)
+        chapters = await load_chapters(session, b.project_id)
+        if chapters:
+            meta["quality"] = _h5_quality_summary(chapters, arts)
+        logger.info("[build] 已修复旧构建时长 build_id=%s", b.build_id[:8])
+    if all_readable:
+        meta["duration_parser_version"] = 2
+    if changed or all_readable:
+        b.progress_meta_json = json.dumps(meta, ensure_ascii=False)
+        await session.commit()
+
+
 async def get_build(project_id: str, build_id: str) -> BuildDetailResp:
     """返回 build 详情（含 artifacts）。"""
     factory = get_session_factory()
@@ -2894,6 +2964,7 @@ async def get_build(project_id: str, build_id: str) -> BuildDetailResp:
             BuildArtifact.build_id == build_id
         ).order_by(BuildArtifact.chapter_idx)
         arts = list((await session.execute(stmt)).scalars().all())
+        await _repair_legacy_build_durations(session, b, arts)
         return _build_to_detail(b, arts)
 
 

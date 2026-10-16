@@ -60,17 +60,21 @@ def _parse_frame_header(data: bytes, pos: int) -> tuple[int, int, int] | None:
     return frame_len, sample_rate, samples
 
 
-def _skip_id3v2(data: bytes) -> int:
-    """返回 ID3v2 tag 之后的偏移（无 tag 返回 0）。"""
-    if len(data) < 10 or data[0:3] != b"ID3":
-        return 0
+def _skip_id3v2(data: bytes, pos: int = 0) -> int:
+    """返回 pos 处 ID3v2 tag 之后的偏移（无有效 tag 返回 pos）。"""
+    if (pos + 10 > len(data) or data[pos:pos + 3] != b"ID3"
+            or data[pos + 3] not in (2, 3, 4)
+            or any(byte & 0x80 for byte in data[pos + 6:pos + 10])):
+        return pos
     size = (
-        ((data[6] & 0x7F) << 21)
-        | ((data[7] & 0x7F) << 14)
-        | ((data[8] & 0x7F) << 7)
-        | (data[9] & 0x7F)
+        (data[pos + 6] << 21)
+        | (data[pos + 7] << 14)
+        | (data[pos + 8] << 7)
+        | data[pos + 9]
     )
-    return 10 + size
+    # ID3v2.4 可带 10 字节 footer；size 本身不包含 header/footer。
+    end = pos + 10 + size + (10 if data[pos + 3] == 4 and data[pos + 5] & 0x10 else 0)
+    return end if end <= len(data) else pos
 
 
 def mp3_duration_ms(mp3_bytes: bytes) -> int:
@@ -84,8 +88,15 @@ def mp3_duration_ms(mp3_bytes: bytes) -> int:
     resync_failures = 0
     n = len(data)
     while pos + 4 <= n:
+        # 章节由多个 TTS MP3 拼接，段与段之间可能各自带 ID3v2 标签。
+        # 标签体可能超过 64 字节，必须整体跳过。
+        tag_end = _skip_id3v2(data, pos) if data[pos:pos + 3] == b"ID3" else pos
+        if tag_end > pos:
+            pos = tag_end
+            resync_failures = 0
+            continue
         if data[pos] != 0xFF or (data[pos + 1] & 0xE0) != 0xE0:
-            # 垃圾数据：向前重同步（最多连续 64 次后放弃）
+            # 垃圾数据：向前重同步（最多连续 64 字节后放弃）
             resync_failures += 1
             if resync_failures > 64:
                 break
@@ -104,6 +115,7 @@ def mp3_duration_ms(mp3_bytes: bytes) -> int:
         total_sec += samples / sample_rate
         parsed_frames += 1
         pos += frame_len
+        resync_failures = 0
     if parsed_frames > 0:
         return int(total_sec * 1000)
     # 回退：假设 128kbps（MiniMax/主流 TTS 输出码率）

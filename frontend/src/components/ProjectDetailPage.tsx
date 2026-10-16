@@ -85,8 +85,9 @@ function formatSize(bytes: number | null | undefined): string {
 }
 function formatDuration(sec: number | null | undefined): string {
   if (sec == null) return '—';
-  const m = Math.floor(sec / 60);
-  const s = Math.round(sec % 60);
+  const rounded = Math.round(sec);
+  const m = Math.floor(rounded / 60);
+  const s = rounded % 60;
   return `${m}分${s}秒`;
 }
 function formatMs(ms: number | null | undefined): string {
@@ -2399,7 +2400,7 @@ function BuildDetailContent({
               <span className="font-mono tabular-nums">第 {s.chapter_idx + 1} 章</span>
               <span className="text-ink-500 tabular-nums">{s.chars} 字</span>
               <span className="text-ink-500 tabular-nums">
-                {s.duration_ms != null ? `${(s.duration_ms / 1000).toFixed(1)}s` : '时长未知'}
+                {s.duration_ms != null ? formatDuration(s.duration_ms / 1000) : '时长未知'}
               </span>
               <span className="text-amber-300 tabular-nums font-medium">
                 {s.chars_per_sec != null ? `${s.chars_per_sec} 字/秒` : '比例异常'}
