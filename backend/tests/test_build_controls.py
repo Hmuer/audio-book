@@ -304,6 +304,76 @@ async def test_http_control_not_found_conflict_and_permissions(admin_token):
 
 
 @pytest.mark.asyncio
+async def test_retry_persists_explicit_target_and_source(monkeypatch):
+    _pid, bid = await seed_build(status="failed")
+    async with get_session_factory()() as session:
+        b = await session.get(Build, bid)
+        b.failed_chapters_json = "[0]"
+        await session.commit()
+
+    launched = []
+
+    async def record_runner(*args, **kwargs):
+        launched.append((args, kwargs))
+
+    monkeypatch.setattr(builds, "_run_build_runner", record_runner)
+    result = await builds.retry_failed_build(bid, chapters=[2])
+    await asyncio.sleep(0)
+    async with get_session_factory()() as session:
+        retry = await session.get(Build, result.build_id)
+        assert retry.is_retry
+        assert json.loads(retry.retry_chapters_json) == [0, 2]
+        assert retry.retry_source_build_id == bid
+    assert launched[0][1]["only_chapter_idxs"] == [0, 2]
+
+
+@pytest.mark.asyncio
+async def test_retry_recovery_keeps_target_chapters(monkeypatch):
+    _pid, bid = await seed_build(status="running")
+    async with get_session_factory()() as session:
+        b = await session.get(Build, bid)
+        b.is_retry = True
+        b.retry_chapters_json = "[1]"
+        b.retry_source_build_id = "source-build"
+        await session.commit()
+
+    captured = {}
+
+    async def record_inner(**kwargs):
+        captured.update(kwargs)
+        async with get_session_factory()() as session:
+            retry = await session.get(Build, kwargs["build_id"])
+            captured["retry_chapters"] = json.loads(retry.retry_chapters_json)
+            captured["source_build"] = retry.retry_source_build_id
+        raise RuntimeError("stop before synthesis")
+
+    monkeypatch.setattr(builds, "_run_build_inner", record_inner)
+    job = await register_task("build", bid)
+    assert await _recover_build_orphan(job)
+    await wait_status(bid, "failed")
+    assert captured["build_id"] == bid
+    assert captured["retry_chapters"] == [1]
+    assert captured["source_build"] == "source-build"
+
+
+@pytest.mark.asyncio
+async def test_retry_missing_snapshot_fails_closed(monkeypatch):
+    pid, bid = await seed_build(status="queued")
+    async with get_session_factory()() as session:
+        b = await session.get(Build, bid)
+        b.is_retry = True
+        await session.commit()
+    with pytest.raises(RuntimeError, match="重试 Build"):
+        await builds._run_build_inner(bid, pid, {}, "doubao:zh_female_qingxin")
+
+
+@pytest.mark.asyncio
+async def test_cache_key_distinguishes_precise_speeds():
+    assert builds._seg_cache_key("voice", 1.001, "text") != builds._seg_cache_key("voice", 1.004, "text")
+    assert builds._seg_cache_key("voice", 1.001, "text") == builds._seg_cache_key("voice", 1.001, "text")
+
+
+@pytest.mark.asyncio
 async def test_resume_digest_legacy_migration():
     import sqlite3
 

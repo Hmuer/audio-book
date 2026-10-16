@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '@/components/AuthContext';
 import { ChangePasswordModal } from './UserMenu';
 import { formatDate } from '@/lib/time';
@@ -54,10 +54,12 @@ const SECTION_LABEL_SYSTEM    = '系统';
 
 interface Props {
   currentPath: string;
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
 }
 
 // ================= 组件 =================
-export default function AppSidebar({ currentPath }: Props) {
+export default function AppSidebar({ currentPath, mobileOpen = false, onMobileClose }: Props) {
   const { user, logout } = useAuth();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [pwdModal, setPwdModal] = useState(false);
@@ -87,6 +89,13 @@ export default function AppSidebar({ currentPath }: Props) {
     });
   };
 
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') onMobileClose?.(); };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [mobileOpen, onMobileClose]);
+
   if (!user) return null;
 
   const isPathActive = (href: string) => {
@@ -107,10 +116,11 @@ export default function AppSidebar({ currentPath }: Props) {
     return false;
   };
 
-  return (
-    <>
+  const sidebar = (mobile: boolean) => (
       <aside
-        className="hidden md:flex flex-col w-[244px] shrink-0 h-screen sticky top-0 border-r border-ink-300/70"
+        id={mobile ? 'mobile-navigation' : undefined}
+        aria-label="主导航"
+        className={`${mobile ? 'flex md:hidden fixed inset-y-0 left-0 z-50 shadow-el-xl' : 'hidden md:flex sticky top-0'} flex-col w-[244px] shrink-0 h-screen border-r border-ink-300/70`}
         style={{
           background: 'rgb(var(--ink-50))',
         }}
@@ -127,7 +137,7 @@ export default function AppSidebar({ currentPath }: Props) {
         </div>
 
         {/* ============ 菜单主体 ============ */}
-        <nav className="flex-1 px-3 pb-4 overflow-y-auto space-y-7">
+        <nav className="flex-1 px-3 pb-4 overflow-y-auto space-y-7" onClick={e => { if (mobile && (e.target as HTMLElement).closest('a')) onMobileClose?.(); }}>
           <div className="space-y-1">
             <SectionLabel label={SECTION_LABEL_WORKSPACE} />
             {MODULES.map((m) => (
@@ -204,7 +214,17 @@ export default function AppSidebar({ currentPath }: Props) {
           </div>
         </div>
       </aside>
+  );
 
+  return (
+    <>
+      {sidebar(false)}
+      {mobileOpen && (
+        <>
+          <button type="button" className="fixed inset-0 z-40 bg-black/60 md:hidden" aria-label="关闭导航" onClick={onMobileClose} />
+          {sidebar(true)}
+        </>
+      )}
       {pwdModal && <ChangePasswordModal onClose={() => setPwdModal(false)} />}
     </>
   );

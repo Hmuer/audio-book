@@ -20,6 +20,49 @@ import pytest_asyncio
 pytest_plugins = ("pytest_asyncio",)
 
 
+@pytest.mark.asyncio
+async def test_project_delete_removes_remote_artifacts(_isolate_data_dir, monkeypatch):
+    import json
+
+    from backend.app.db.models import Build, BuildArtifact, Project
+    from backend.app.db.session import get_session_factory, init_db
+    from backend.app.services import project as projects
+    from backend.app.services import storage
+
+    await init_db()
+    pid, bid = uuid.uuid4().hex, uuid.uuid4().hex
+    async with get_session_factory()() as session:
+        session.add(Project(project_id=pid, name="remote", status="done"))
+        session.add(Build(
+            build_id=bid, project_id=pid, status="success",
+            zip_filename="first.zip",
+            zip_filenames_json=json.dumps([{"filename": "first.zip"}, {"filename": "second.zip"}]),
+        ))
+        session.add(BuildArtifact(
+            build_id=bid, chapter_idx=2, title="chapter", status="done", audio_filename="chapter.mp3",
+        ))
+        await session.commit()
+
+    deleted = []
+
+    class Remote:
+        archives_remotely = True
+
+        async def delete_key(self, key):
+            deleted.append(key)
+
+    monkeypatch.setattr(storage, "get_storage", lambda: Remote())
+    monkeypatch.setattr(storage.settings, "S3_PREFIX", "books")
+    await projects.delete_project(pid)
+    assert set(deleted) == {
+        storage.media_key(pid, bid, name)
+        for name in ("chapter.mp3", "ch0002.lrc", "first.zip", "second.zip")
+    }
+    async with get_session_factory()() as session:
+        assert await session.get(Project, pid) is None
+        assert await session.get(Build, bid) is None
+
+
 # =====================================================================
 # T-OS1 key 组装
 # =====================================================================

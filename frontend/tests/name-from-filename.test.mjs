@@ -168,3 +168,51 @@ test('pickFile: 用户清空名字后再选文件 → 重新自动预填', () =>
   p.pickFile({ name: 'bar.txt' });         // 空字符串视为"未填"，重新预填
   deepStrictEqual(p.getName(), 'bar');
 });
+
+test('导入失败后重试复用已创建项目且阻止并发提交', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  const ts = require('typescript');
+  const source = readFileSync(new URL('../src/components/CreateAudiobookDialog.tsx', import.meta.url), 'utf8');
+  const output = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+  const slots = [];
+  let cursor = 0;
+  const react = { ...require('react'), useState(initial) {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = initial;
+    return [slots[index], value => { slots[index] = value; }];
+  }, useRef(initial) {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = { current: initial };
+    return slots[index];
+  } };
+  let creates = 0;
+  let imports = 0;
+  let release;
+  const api = { projectCreate: async () => { creates++; return { project_id: 'existing' }; },
+    projectImport: () => { imports++; return imports === 1 ? Promise.reject(new Error('upload failed')) : new Promise(resolve => { release = resolve; }); } };
+  const module = { exports: {} };
+  new Function('exports', 'require', 'module', output)(module.exports, name => name === 'react' ? react : name === 'react/jsx-runtime' ? require('react/jsx-runtime') : { api }, module);
+  const created = [];
+  const render = () => { cursor = 0; return module.exports.default({ onClose() {}, onCreated(id) { created.push(id); } }); };
+  const find = (tree, predicate) => {
+    if (!tree || typeof tree !== 'object') return null;
+    if (Array.isArray(tree)) return tree.map(node => find(node, predicate)).find(Boolean);
+    return predicate(tree) ? tree : find(tree.props?.children, predicate);
+  };
+  let tree = render();
+  find(tree, node => node.type === 'input' && node.props?.placeholder?.includes('例如')).props.onChange({ target: { value: 'book' } });
+  tree = render();
+  find(tree, node => node.type === 'input' && node.props?.type === 'file').props.onChange({ target: { files: [{ name: 'book.txt' }] } });
+  tree = render();
+  const submit = () => find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  await submit();
+  tree = render();
+  const retry = submit();
+  await submit();
+  deepStrictEqual([creates, imports], [1, 2]);
+  release();
+  await retry;
+  deepStrictEqual(created, ['existing']);
+});

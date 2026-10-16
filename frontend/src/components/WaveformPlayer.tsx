@@ -54,6 +54,7 @@ export default function WaveformPlayer({
 
   const [speed, setSpeed] = useState<number>(1.0);
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
+  const [showVolume, setShowVolume] = useState(false);
 
   // 进度条拖动
   const [dragging, setDragging] = useState(false);
@@ -442,17 +443,18 @@ export default function WaveformPlayer({
             >
               <VolumeIcon />
             </button>
-            {/* 悬停展开的音量滑条 */}
-            <div className="
-              hidden group-hover/vol:flex items-center gap-2 px-2
-              ml-1 h-8 rounded-md border border-ink-300/70 bg-ink-200
-            ">
+            <button type="button" aria-label={showVolume ? '收起音量' : '调整音量'} aria-expanded={showVolume} onClick={() => setShowVolume(v => !v)} className="shrink-0 grid place-items-center w-8 h-8 rounded-md text-ink-600 hover:text-ink-800 focus-visible:ring-2 focus-visible:ring-brand-500/40">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6" /></svg>
+            </button>
+            <div className={`${showVolume ? 'flex' : 'hidden'} items-center gap-2 px-2 ml-1 h-8 rounded-md border border-ink-300/70 bg-ink-200`}>
+
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-ink-500">
                 <circle cx="11" cy="11" r="8"/>
                 <path d="M21 21l-4.35-4.35"/>
               </svg>
               <input
                 type="range"
+                aria-label="音量"
                 min={0}
                 max={1}
                 step={0.01}
@@ -477,11 +479,12 @@ export default function WaveformPlayer({
           </div>
 
           {/* 倍速 */}
-          <div className="relative">
+          <div className="relative" onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setShowSpeedMenu(false); }}>
             <button
               type="button"
               onClick={() => setShowSpeedMenu(v => !v)}
-              onBlur={() => setTimeout(() => setShowSpeedMenu(false), 120)}
+              aria-expanded={showSpeedMenu}
+              aria-label="播放速度"
               className="shrink-0 inline-flex items-center justify-center gap-1
                 h-8 px-2.5 rounded-md border border-ink-300/70 bg-ink-200
                 text-ink-600 hover:text-ink-800 hover:bg-ink-200 hover:border-ink-400
@@ -494,18 +497,16 @@ export default function WaveformPlayer({
               </svg>
             </button>
             {showSpeedMenu && (
-              <div className="absolute bottom-9 right-0 z-30
+              <div role="menu" onKeyDown={e => { if (e.key === 'Escape') { setShowSpeedMenu(false); (e.currentTarget.previousElementSibling as HTMLElement)?.focus(); } }} className="absolute bottom-9 right-0 z-30
                 rounded-md border border-ink-300/70 bg-ink-50
                 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.7)] p-1.5 w-24 animate-fade-in">
                 {SPEEDS.map(s => (
                   <button
                     key={s}
+                    role="menuitemradio"
+                    aria-checked={s === speed}
                     type="button"
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      setSpeed(s);
-                      setShowSpeedMenu(false);
-                    }}
+                    onClick={() => { setSpeed(s); setShowSpeedMenu(false); }}
                     className={`w-full text-left text-[12px] px-2.5 py-1.5 rounded-lg transition-colors
                       ${Math.abs(s - speed) < 1e-6
                         ? 'bg-brand-500/20 text-brand-200'

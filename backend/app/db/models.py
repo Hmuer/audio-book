@@ -154,6 +154,8 @@ class Build(Base):
     failed_chapters_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 是否是 retry-failed 产生的 build（用于前端展示"重试"标签）
     is_retry: Mapped[bool] = mapped_column(Boolean, default=False)
+    retry_chapters_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_source_build_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # 本次配置快照
     narrator_voice_id: Mapped[str] = mapped_column(String(128), default="")

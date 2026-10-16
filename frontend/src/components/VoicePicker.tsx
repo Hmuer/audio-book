@@ -99,7 +99,7 @@ export default function VoicePicker({
   const [dialectOnly, setDialectOnly] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelIdRef = useRef(`__voice_picker_panel_${Math.random().toString(36).slice(2)}`);
-  const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [coords, setCoords] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null);
 
   // 当前厂商 Tab 下可选的场景/年龄选项
   const providerVoices = useMemo(
@@ -133,14 +133,36 @@ export default function VoicePicker({
     if (!open || !btnRef.current) return;
     const update = () => {
       const r = btnRef.current?.getBoundingClientRect();
-      if (r) setCoords({ top: r.bottom + 6, left: r.left, width: r.width });
+      if (r) {
+        const viewport = window.visualViewport;
+        const leftEdge = viewport?.offsetLeft ?? 0;
+        const topEdge = viewport?.offsetTop ?? 0;
+        const width = viewport?.width ?? window.innerWidth;
+        const height = viewport?.height ?? window.innerHeight;
+        const margin = 8;
+        const panelWidth = Math.min(Math.max(r.width, 400), width - margin * 2);
+        const below = topEdge + height - r.bottom - margin - 6;
+        const above = r.top - topEdge - margin - 6;
+        const placeAbove = above > below && below < 320;
+        const maxHeight = Math.max(0, placeAbove ? above : below);
+        setCoords({
+          top: placeAbove ? r.top - 6 - maxHeight : r.bottom + 6,
+          left: Math.max(leftEdge + margin, Math.min(r.left, leftEdge + width - margin - panelWidth)),
+          width: panelWidth,
+          maxHeight,
+        });
+      }
     };
     update();
     window.addEventListener('scroll', update, true);
     window.addEventListener('resize', update);
+    window.visualViewport?.addEventListener('resize', update);
+    window.visualViewport?.addEventListener('scroll', update);
     return () => {
       window.removeEventListener('scroll', update, true);
       window.removeEventListener('resize', update);
+      window.visualViewport?.removeEventListener('resize', update);
+      window.visualViewport?.removeEventListener('scroll', update);
     };
   }, [open]);
 
@@ -244,7 +266,9 @@ export default function VoicePicker({
             position: 'fixed',
             top: `${coords.top}px`,
             left: `${coords.left}px`,
-            width: `${Math.max(coords.width, 400)}px`,
+            width: `${coords.width}px`,
+            maxHeight: `${coords.maxHeight}px`,
+            overflowY: 'auto',
             zIndex: 9999,
           }}
           className="glass-panel !rounded-lg p-3 shadow-el-xl animate-scale-in"

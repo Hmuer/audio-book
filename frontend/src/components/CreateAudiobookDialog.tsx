@@ -24,20 +24,26 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
   // false（用户手动输入过）时不再自动覆盖。需要在用户每次输入 name 时手动 set 回 false。
   // 用 ref 而非 state：仅用作内部决策标记，不影响 UI。
   const nameAutoFilledRef = useRef(false);
+  const createdProjectIdRef = useRef<string | null>(null);
+  const submittingRef = useRef(false);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submittingRef.current) return;
     setErr(null);
 
     if (!name.trim()) { setErr('请输入有声书名称'); return; }
     if (mode === 'file' && !file) { setErr('请选择要上传的文件'); return; }
     if (mode === 'text' && !text.trim()) { setErr('请粘贴小说文本'); return; }
 
+    submittingRef.current = true;
     setBusy(true);
     try {
-      // 1. 创建项目
-      const project = await api.projectCreate(name.trim());
-      const id = project.project_id;
+      if (!createdProjectIdRef.current) {
+        const project = await api.projectCreate(name.trim());
+        createdProjectIdRef.current = project.project_id;
+      }
+      const id = createdProjectIdRef.current;
 
       // 2. 导入内容
       if (mode === 'file' && file) {
@@ -50,6 +56,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
+      submittingRef.current = false;
       setBusy(false);
     }
   };

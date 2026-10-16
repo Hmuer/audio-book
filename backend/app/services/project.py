@@ -3397,26 +3397,35 @@ async def delete_project(project_id: str) -> None:
             return
 
         # 收集所有 build 产物文件名，用于稍后删磁盘
-        stmt_art = select(BuildArtifact.audio_filename).where(
+        stmt_art = select(BuildArtifact.build_id, BuildArtifact.chapter_idx, BuildArtifact.audio_filename).where(
             BuildArtifact.build_id.in_(
                 select(Build.build_id).where(Build.project_id == project_id)
             )
         )
-        art_filenames = [r for r in (await session.execute(stmt_art)).scalars().all() if r]
+        art_rows = (await session.execute(stmt_art)).all()
+        art_filenames = [filename for _, _, filename in art_rows if filename]
 
         # F-7：ZIP 可能是分片的，必须把全部分片名都收集起来（zip_filename 只是第 0 片）
-        stmt_zip = select(Build.zip_filename, Build.zip_filenames_json).where(
+        stmt_zip = select(Build.build_id, Build.zip_filename, Build.zip_filenames_json).where(
             Build.project_id == project_id
         )
         zip_names: set[str] = set()
-        for _single, _shards_json in (await session.execute(stmt_zip)).all():
+        remote_keys: set[tuple[str, str]] = set()
+        for bid, idx, filename in art_rows:
+            remote_keys.add((bid, f"ch{idx:04d}.lrc"))
+            if filename:
+                remote_keys.add((bid, filename))
+        for bid, _single, _shards_json in (await session.execute(stmt_zip)).all():
             if _single:
                 zip_names.add(_single)
+                remote_keys.add((bid, _single))
             if _shards_json:
                 try:
                     for _d in json.loads(_shards_json) or []:
                         if isinstance(_d, dict) and _d.get("filename"):
-                            zip_names.add(str(_d["filename"]))
+                            filename = str(_d["filename"])
+                            zip_names.add(filename)
+                            remote_keys.add((bid, filename))
                 except Exception:
                     pass
         zip_filenames = sorted(zip_names)
@@ -3432,6 +3441,13 @@ async def delete_project(project_id: str) -> None:
         # 删 DB（cascade=all,delete-orphan 会自动连带 Build/BuildArtifact/ProjectCharacter/ProjectDialogue）
         await session.delete(p)
         await session.commit()
+
+    from .storage import get_storage, media_key
+
+    storage = get_storage()
+    if storage.archives_remotely:
+        for bid, filename in sorted(remote_keys):
+            await storage.delete_key(media_key(project_id, bid, filename))
 
     # 删磁盘文件（在 session 关闭后做，避免占用 DB 连接）
     audio_dir = Path(settings.AUDIO_DIR)

@@ -62,10 +62,11 @@ export default function HomePage() {
   const [routeInfo, setRouteInfo] = useState(() => parseHash());
   const [voices, setVoices] = useState<Voice[]>([]);
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   // hash 监听
   useEffect(() => {
-    const sync = () => setRouteInfo(parseHash());
+    const sync = () => { setRouteInfo(parseHash()); setMobileNavOpen(false); };
     sync();
     window.addEventListener('hashchange', sync);
     return () => window.removeEventListener('hashchange', sync);
@@ -151,13 +152,16 @@ export default function HomePage() {
   return (
     <div className="flex min-h-screen">
       {/* 左侧全局侧栏 */}
-      <AppSidebar currentPath={routeInfo.path} />
+      <AppSidebar currentPath={routeInfo.path} mobileOpen={mobileNavOpen} onMobileClose={() => setMobileNavOpen(false)} />
 
       {/* 右侧主内容 */}
       <div className="flex-1 min-w-0 flex flex-col">
         {/* 顶部状态条：面包屑 + 状态胶囊（Edtech 参考） */}
         <header className="h-12 shrink-0 border-b border-ink-300/70 px-5 lg:px-7 flex items-center justify-between bg-ink-50">
           <div className="flex items-center gap-3 min-w-0">
+            <button type="button" className="md:hidden shrink-0 grid place-items-center w-9 h-9 rounded-md border border-ink-300/70 text-ink-700" aria-label="打开导航" aria-controls="mobile-navigation" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen(true)}>
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+            </button>
             {/* 面包屑（收敛字距） */}
             <div className="text-[11px] font-semibold text-ink-500">
               {R.name === 'ab-list' && '有声书 · 我的作品库'}

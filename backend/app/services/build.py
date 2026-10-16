@@ -1046,7 +1046,7 @@ def _seg_cache_key(
             f"|e:{emotion}|i:{instruction}|m:{model}|c:{context_texts_hash}|sr:{sample_rate}"
             f"|tm:{tts_model}"
         )
-    raw = f"v1|{voice_id}|{speed:.2f}|{text}{style_part}"
+    raw = f"v2|{voice_id}|{float(speed).hex()}|{text}{style_part}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -2114,7 +2114,8 @@ async def _retry_failed_build_impl(
             tts_provider=(source_build.tts_provider or "doubao"),
             config_digest=source_build.config_digest,
             is_retry=True,
-            # 情感/语气配置同样继承快照（保证 digest 一致 + 合成结果一致）
+            retry_chapters_json=json.dumps(failed_ch_idxs),
+            retry_source_build_id=source_build_id,
             narrator_emotion=(source_build.narrator_emotion or ""),
             narrator_instruction=(source_build.narrator_instruction or ""),
         )
@@ -2269,13 +2270,6 @@ async def _run_build_inner(
     only_set: set[int] | None = set(only_chapter_idxs) if only_chapter_idxs else None
 
     source_art_by_idx: dict[int, BuildArtifact] = {}
-    if source_build_id:
-        async with factory() as s:
-            stmt_src = select(BuildArtifact).where(
-                BuildArtifact.build_id == source_build_id
-            )
-            src_arts = list((await s.execute(stmt_src)).scalars().all())
-            source_art_by_idx = {a.chapter_idx: a for a in src_arts}
 
     async with factory() as s:
         p = await s.get(Project, project_id)
@@ -2325,6 +2319,22 @@ async def _run_build_inner(
         b = await s.get(Build, build_id)
         if not b:
             raise RuntimeError(f"Build 不存在: {build_id}")
+        if b.is_retry:
+            try:
+                retry_idxs = json.loads(b.retry_chapters_json or "null")
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("重试 Build 的目标章节快照无效，无法安全恢复") from exc
+            if (not isinstance(retry_idxs, list) or not retry_idxs
+                    or any(type(idx) is not int or idx < 0 or idx >= total for idx in retry_idxs)
+                    or not b.retry_source_build_id):
+                raise RuntimeError("重试 Build 缺少有效目标章节或来源快照，无法安全恢复")
+            only_set = set(retry_idxs)
+            processed_target = len(only_set)
+            source_build_id = b.retry_source_build_id
+        if source_build_id:
+            stmt_src = select(BuildArtifact).where(BuildArtifact.build_id == source_build_id)
+            src_arts = list((await s.execute(stmt_src)).scalars().all())
+            source_art_by_idx = {a.chapter_idx: a for a in src_arts}
         existing_zip_shards = {
             (shard["filename"], shard["start"], shard["end"]): shard
             for shard in _parse_zip_shards(b)

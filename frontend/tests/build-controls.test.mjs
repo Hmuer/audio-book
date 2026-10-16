@@ -50,11 +50,11 @@ function harness(apiOverrides = {}) {
     '@/lib/api': { api: apiOverrides, errToLog: e => e.message },
     '@/lib/buildState': state,
     '@/lib/time': { relativeTime: () => '刚刚', parseTime: value => new Date(value) },
-    '@/lib/voiceUtils': {},
-    './VoicePicker': {},
+    '@/lib/voiceUtils': { normalizeGender: v => v.gender === 'male' ? '男声' : '女声', defaultVoiceForGender: () => 'male' },
+    './VoicePicker': { __esModule: true, default: () => null },
     './WaveformPlayer': { __esModule: true, default: () => null },
     './ProjectListPage': { StatusBadge: () => null },
-  }, '\nexport { BuildRow, BuildsTab, BuildDetailContent };\n');
+  }, '\nexport { BuildRow, BuildsTab, BuildDetailContent, CreateBuildModal };\n');
   return {
     render(name, props) { cursor = 0; return components[name](props); },
     runEffects() { const queued = effects; effects = []; queued.forEach(effect => effect()); },
@@ -422,8 +422,9 @@ test('部分单卷 ZIP 显示章节范围，仅覆盖全部章节时显示全部
     h.runEffects();
     await flush();
     const tree = h.render('BuildDetailContent', props);
-    const link = nodes(tree, node => node.type === 'a' && node.props.href === `/shard-${idx}.zip`)[0];
+    const link = nodes(tree, node => node.type === 'button' && text(node) === label)[0];
     assert.equal(text(link), label);
+    assert.equal(link.props.onClick instanceof Function, true);
     if (end - start + 1 < 3) assert.doesNotMatch(text(tree), /下载全部 ZIP/);
   }
 });
@@ -447,4 +448,87 @@ test('projectBlocked 禁用暂停构建及历史构建删除，确认后变为�
     assert.equal(button(h.render('BuildRow', props), '确认删除'), undefined);
     assert.equal(calls, 0);
   }
+});
+
+test('ZIP 分卷每次点击重新签发，渲染时不预签发', async () => {
+  const calls = [];
+  const clicks = [];
+  const previousDocument = globalThis.document;
+  globalThis.document = {
+    createElement: () => ({ click() { clicks.push(this.href); }, remove() {} }),
+    body: { appendChild() {} },
+  };
+  try {
+    const h = harness({ buildDownloadAll: async (...args) => { calls.push(args); return `/signed/${calls.length}`; } });
+    const props = { ...detailProps() };
+    props.detail.zip_shards = [
+      { idx: 0, filename: 'one.zip', start_chapter: 1, end_chapter: 2 },
+      { idx: 1, filename: 'two.zip', start_chapter: 3, end_chapter: 4 },
+    ];
+    let tree = h.render('BuildDetailContent', props);
+    h.runEffects();
+    assert.equal(calls.length, 0);
+    const download = () => nodes(tree, node => node.type === 'button' && node.props.title === '下载 two.zip')[0];
+    await download().props.onClick();
+    tree = h.render('BuildDetailContent', props);
+    await download().props.onClick();
+    assert.deepEqual(calls, [['project', 'build', 1], ['project', 'build', 1]]);
+    assert.deepEqual(clicks, ['/signed/1', '/signed/2']);
+  } finally { globalThis.document = previousDocument; }
+});
+
+test('构建弹窗三个音色选择器都能传递试听音色与语速', () => {
+  const h = harness({ projectEstimate: async () => null });
+  const calls = [];
+  const voices = [{ id: 'male', gender: 'male' }, { id: 'female', gender: 'female' }];
+  const tree = h.render('CreateBuildModal', {
+    projectId: 'project', project: { characters: [], default_speed: 1.2, chapter_count: 2 },
+    voices, narratorDefault: voices[0], playingKey: 'voice_male', loadingVoice: 'female',
+    onPreviewVoice: (...args) => calls.push(args), onClose() {}, onCreated() {},
+  });
+  const pickers = nodes(tree, node => typeof node.type === 'function' && node.props?.onPreview);
+  assert.equal(pickers.length, 3);
+  pickers[0].props.onPreview('male');
+  pickers[1].props.onPreview('female');
+  pickers[2].props.onPreview('male');
+  assert.deepEqual(calls.map(([id, , speed]) => [id, speed]), [['male', 1.2], ['female', 1.2], ['male', 1.2]]);
+  assert.equal(pickers[0].props.playingVoiceId, 'male');
+  assert.equal(pickers[1].props.loadingVoiceId, 'female');
+});
+
+test('播放器音量滑块及倍速菜单可通过点击操作', () => {
+  const slots = [];
+  let cursor = 0;
+  const react = {
+    ...require('react'),
+    useState(initial) {
+      const index = cursor++;
+      if (!(index in slots)) slots[index] = initial;
+      return [slots[index], value => { slots[index] = typeof value === 'function' ? value(slots[index]) : value; }];
+    },
+    useRef(initial) { const index = cursor++; return slots[index] ?? (slots[index] = { current: initial }); },
+    useEffect() { cursor++; },
+    useMemo(factory) { cursor++; return factory(); },
+    useCallback(callback) { cursor++; return callback; },
+  };
+  const Player = load('../src/components/WaveformPlayer.tsx', { react }).default;
+  const render = () => { cursor = 0; return Player({ src: null }); };
+  let tree = render();
+  const volumeToggle = nodes(tree, node => node.type === 'button' && node.props?.['aria-label'] === '调整音量')[0];
+  assert.ok(volumeToggle);
+  volumeToggle.props.onClick();
+  tree = render();
+  assert.equal(nodes(tree, node => node.type === 'button' && node.props?.['aria-label'] === '收起音量')[0].props['aria-expanded'], true);
+  const slider = nodes(tree, node => node.type === 'input' && node.props?.['aria-label'] === '音量')[0];
+  slider.props.onChange({ target: { value: '0.45' } });
+  tree = render();
+  assert.equal(nodes(tree, node => node.type === 'input' && node.props?.['aria-label'] === '音量')[0].props.value, 0.45);
+  nodes(tree, node => node.type === 'button' && node.props?.['aria-label'] === '播放速度')[0].props.onClick();
+  tree = render();
+  const option = nodes(tree, node => node.type === 'button' && node.props?.role === 'menuitemradio' && text(node).includes('1.5x'))[0];
+  assert.ok(option);
+  option.props.onClick();
+  tree = render();
+  assert.equal(nodes(tree, node => node.type === 'button' && node.props?.['aria-label'] === '播放速度')[0].props['aria-expanded'], false);
+  assert.equal(text(nodes(tree, node => node.type === 'button' && node.props?.['aria-label'] === '播放速度')[0]), '1.5x');
 });

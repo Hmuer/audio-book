@@ -385,6 +385,8 @@ export default function ProjectDetailPage({
               narratorDefault={narratorDefault}
               playingKey={playingKey}
               onTogglePlay={togglePlay}
+              onPreviewVoice={togglePreviewVoice}
+              loadingVoice={loadingVoice}
               onReload={reload}
             />
           )}
@@ -1876,7 +1878,7 @@ function VoicesTab({
 
 // =================== Builds Tab ===================
 function BuildsTab({
-  projectId, project, builds, voices, narratorDefault, playingKey, onTogglePlay, onReload, onBuildUpdated,
+  projectId, project, builds, voices, narratorDefault, playingKey, onTogglePlay, onPreviewVoice, loadingVoice, onReload, onBuildUpdated,
 }: {
   projectId: string;
   project: ProjectDetailResp;
@@ -1886,6 +1888,8 @@ function BuildsTab({
   narratorDefault: Voice | undefined;
   playingKey: string | null;
   onTogglePlay: (key: string, url: string | null) => void;
+  onPreviewVoice: (voiceId: string, text: string, speed: number) => void;
+  loadingVoice: string | null;
   onReload: () => void;
 }) {
   const [showCreate, setShowCreate] = useState(false);
@@ -1980,6 +1984,9 @@ function BuildsTab({
           project={project}
           voices={voices}
           narratorDefault={narratorDefault}
+          playingKey={playingKey}
+          loadingVoice={loadingVoice}
+          onPreviewVoice={onPreviewVoice}
           onClose={() => setShowCreate(false)}
           onCreated={onCreateSuccess}
         />
@@ -2298,14 +2305,12 @@ function BuildDetailContent({
 }) {
   // P1 #6：每个 BuildArtifact 的签名音频 URL（一次性 token，5 分钟过期）
   const [signedUrls, setSignedUrls] = useState<Record<number, string>>({});
-  // F-7：ZIP 可能是多分片，按分片下标存放签名 URL
-  const [zipUrls, setZipUrls] = useState<Record<number, string>>({});
+  const [downloadingZip, setDownloadingZip] = useState<number | null>(null);
   const zipShards = detail.zip_shards ?? [];
   // F-5：分批渲染 + 只签发可见区间
   const [visibleCount, setVisibleCount] = useState(ARTIFACTS_PAGE_SIZE);
   const signedChaptersRef = useRef<Record<number, string>>({});
   const visibleArtifactsKey = (detail.artifacts ?? []).slice(0, visibleCount).map(a => `${a.chapter_idx}:${a.status}`).join(',');
-  const zipShardsKey = zipShards.map(s => `${s.idx}:${s.filename}:${s.start_chapter}:${s.end_chapter}`).join(',');
   // H-5：质检可疑章重跑（单章 / 全部）
   const [rerunning, setRerunning] = useState(false);
   const quality = detail.quality_report ?? null;
@@ -2328,7 +2333,6 @@ function BuildDetailContent({
   useEffect(() => {
     signedChaptersRef.current = {};
     setSignedUrls({});
-    setZipUrls({});
     setVisibleCount(ARTIFACTS_PAGE_SIZE);
   }, [detail.build_id, projectId]);
 
@@ -2352,26 +2356,28 @@ function BuildDetailContent({
           break;
         }
       }
-
-      const shards = detail.zip_shards ?? [];
-      if (shards.length > 0) {
-        const zUpdates: Record<number, string> = {};
-        for (const s of shards) {
-          try {
-            zUpdates[s.idx] = await api.buildDownloadAll(projectId, detail.build_id, s.idx);
-            if (cancelled) return;
-          } catch (e) {
-            console.warn('sign zip url failed', s.idx, e);
-          }
-        }
-        if (!cancelled && Object.keys(zUpdates).length) {
-          setZipUrls(prev => ({ ...prev, ...zUpdates }));
-        }
-      }
     };
     signAll();
     return () => { cancelled = true; };
-  }, [detail.build_id, projectId, visibleCount, visibleArtifactsKey, zipShardsKey]);
+  }, [detail.build_id, projectId, visibleCount, visibleArtifactsKey]);
+
+  const downloadZip = async (idx: number, filename: string) => {
+    if (downloadingZip !== null) return;
+    setDownloadingZip(idx);
+    try {
+      const url = await api.buildDownloadAll(projectId, detail.build_id, idx);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (e: any) {
+      alert(`下载失败: ${e?.message || e}`);
+    } finally {
+      setDownloadingZip(null);
+    }
+  };
 
   return (
     <div className="space-y-3">
@@ -2384,17 +2390,18 @@ function BuildDetailContent({
             TTS {detail.tts_calls} 次 / {detail.tts_chars?.toLocaleString()} 字
           </span>
         )}
-        {zipShards.length === 1 && zipUrls[zipShards[0].idx] && (
-          <a
+        {zipShards.length === 1 && (
+          <button
             className="btn-primary !py-1.5 !px-3 text-xs ml-auto"
-            href={zipUrls[zipShards[0].idx]}
-            download
+            type="button"
+            disabled={downloadingZip !== null}
+            onClick={() => downloadZip(zipShards[0].idx, zipShards[0].filename)}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="mr-1"><rect x="2" y="7" width="13" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V18a2 2 0 0 1-2 2"/></svg>
             {zipShards[0].start_chapter === 1 && zipShards[0].end_chapter === detail.total_chapters
               ? '下载全部 ZIP'
               : `下载第${String(zipShards[0].start_chapter).padStart(3, '0')}-${String(zipShards[0].end_chapter).padStart(3, '0')}章 ZIP`}
-          </a>
+          </button>
         )}
         {zipShards.length > 1 && (
           <span className="chip-soft ml-auto" title="为控制单包体积与下载可靠性，已按章节区间分卷打包">
@@ -2411,17 +2418,17 @@ function BuildDetailContent({
           </div>
           <div className="flex flex-wrap gap-2">
             {zipShards.map(s => (
-              <a
+              <button
                 key={s.idx}
+                type="button"
                 className="btn-ghost !py-1.5 !px-3 text-xs tabular-nums"
-                href={zipUrls[s.idx] ?? undefined}
-                download
-                aria-disabled={!zipUrls[s.idx]}
-                title={zipUrls[s.idx] ? `下载 ${s.filename}` : '正在签发下载地址…'}
+                disabled={downloadingZip !== null}
+                onClick={() => downloadZip(s.idx, s.filename)}
+                title={`下载 ${s.filename}`}
               >
                 第{String(s.start_chapter).padStart(3, '0')}-{String(s.end_chapter).padStart(3, '0')}章
                 {s.size_kb ? <span className="text-ink-500 ml-1">{formatSize(s.size_kb * 1024)}</span> : null}
-              </a>
+              </button>
             ))}
           </div>
         </div>
@@ -2632,12 +2639,15 @@ function BuildArtifactStatusIcon({ status }: { status: string }) {
 
 // =================== Create Build Modal ===================
 function CreateBuildModal({
-  projectId, project, voices, narratorDefault, onClose, onCreated,
+  projectId, project, voices, narratorDefault, playingKey, loadingVoice, onPreviewVoice, onClose, onCreated,
 }: {
   projectId: string;
   project: ProjectDetailResp;
   voices: Voice[];
   narratorDefault: Voice | undefined;
+  playingKey: string | null;
+  loadingVoice: string | null;
+  onPreviewVoice: (voiceId: string, text: string, speed: number) => void;
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -2782,12 +2792,12 @@ function CreateBuildModal({
             <div className="grid sm:grid-cols-2 gap-3">
               <div className="space-y-2">
                 <div className="text-xs text-ink-600">默认男声</div>
-                <VoicePicker voices={maleVoices} value={defaultMale} onChange={setDefaultMale} onPreview={() => {}} />
+                <VoicePicker voices={maleVoices} value={defaultMale} onChange={setDefaultMale} onPreview={id => onPreviewVoice(id, '这是一段角色对白示例，用于试听所选音色。', speed)} playingVoiceId={playingKey?.replace(/^voice_/, '')} loadingVoiceId={loadingVoice} isPlaying={playingKey === `voice_${defaultMale}`} isLoading={loadingVoice === defaultMale} />
                 {maleVoices.length === 0 && <p className="text-xs text-amber-300">激活音色池中没有可用男声</p>}
               </div>
               <div className="space-y-2">
                 <div className="text-xs text-ink-600">默认女声</div>
-                <VoicePicker voices={femaleVoices} value={defaultFemale} onChange={setDefaultFemale} onPreview={() => {}} />
+                <VoicePicker voices={femaleVoices} value={defaultFemale} onChange={setDefaultFemale} onPreview={id => onPreviewVoice(id, '这是一段角色对白示例，用于试听所选音色。', speed)} playingVoiceId={playingKey?.replace(/^voice_/, '')} loadingVoiceId={loadingVoice} isPlaying={playingKey === `voice_${defaultFemale}`} isLoading={loadingVoice === defaultFemale} />
                 {femaleVoices.length === 0 && <p className="text-xs text-amber-300">激活音色池中没有可用女声</p>}
               </div>
             </div>
@@ -2803,7 +2813,11 @@ function CreateBuildModal({
               voices={voices}
               value={narrator}
               onChange={setNarrator}
-              onPreview={() => {}}
+              onPreview={id => onPreviewVoice(id, '这是一段旁白示例文本，用于试听所选音色的朗读效果。', speed)}
+              playingVoiceId={playingKey?.replace(/^voice_/, '')}
+              loadingVoiceId={loadingVoice}
+              isPlaying={playingKey === `voice_${narrator}`}
+              isLoading={loadingVoice === narrator}
             />
             {/* 旁白情感/语气（可选）；角色情感在「音色」页配置 */}
             <div className="rounded-lg border border-ink-300/70 bg-ink-100 p-3 space-y-2">
