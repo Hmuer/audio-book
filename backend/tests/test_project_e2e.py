@@ -248,8 +248,12 @@ async def test_project_full_lifecycle(_isolate_data_dir):
         await asyncio.sleep(0.5)
     b2_ch0 = audio_dir / f"build_{b2.build_id}_ch0000.mp3"
     b2_zip = audio_dir / f"build_{b2.build_id}_all.zip"
+    b2_timings = audio_dir / f"build_{b2.build_id}_ch0000_timings.json"
+    b2_preview = audio_dir / f"build_{b2.build_id}_ch0000_preview_v2.mp3"
     assert b2_ch0.is_file()
     assert b2_zip.is_file()
+    b2_timings.write_text('{}')
+    b2_preview.write_bytes(b'preview')
 
     # 源文件路径
     source_path = Path(detail3.source_filename)  # 仅作为存在性参考
@@ -268,6 +272,8 @@ async def test_project_full_lifecycle(_isolate_data_dir):
     # 磁盘级联清理
     assert not b2_ch0.is_file(), "项目删除应级联删 build 章节 MP3"
     assert not b2_zip.is_file(), "项目删除应级联删 build ZIP"
+    assert not b2_timings.is_file(), "项目删除应清理章节时间轴"
+    assert not b2_preview.is_file(), "项目删除应清理章节预告片"
     assert not proj_source.is_file(), "项目删除应删源文件"
 
     # get_project 应抛 ValueError

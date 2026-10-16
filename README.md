@@ -42,7 +42,7 @@ cd audio-book
 - `/api/health` — 健康检查（无需登录）
 - `/docs` — FastAPI Swagger 文档
 - `/api/voices` — 当前激活厂商的内置音色 JSON
-- `/media/<filename>` — MP3 / ZIP 下载（需登录；当前用户必须是该资源所属 project 的 owner 或 admin）
+- `/media/<filename>` — 章节 MP3、ZIP、时间轴与预告片访问（需登录；Build 文件只允许所属项目的 owner 或 admin，音色试听只允许创建者或 admin）
 - `/api/auth/login` — 默认账号 `admin / admin`（**首次登录后必须改密**）
 
 ### 3. 跑测试
@@ -174,7 +174,7 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 
 - `Project.owner_user_id` 显式归属：alice 创建的项目只能 alice 看到/改/删，bob 默认看不到；admin 可访问任何。
 - 孤儿项目（NULL owner）启动时由 lifespan 自动归 admin。
-- `/media/build_<build_id>_*.mp3|*.zip` 路径通过文件名反查 build → project → owner，**不再接受"任意登录用户"读**。
+- `/media/build_<build_id>_*` 路径通过文件名反查 build → project → owner，包括章节 MP3、分卷 ZIP、章节预告片和时间轴 JSON。`preview_u<user_id>_*.mp3` 音色试听按用户归属校验，旧版无归属的试听文件拒绝访问。
 
 ---
 
@@ -197,6 +197,10 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 - 段级 `segment_overrides` voice **最高优先级**
 - 所有段依次合成 → 字节直接拼接 → 最终 MP3
 
+项目源文件可在详情页替换。替换后会清空旧章节、角色、对白和识别进度，状态回到「已导入」，必须重新识别才能启动新合成；已有 Build 与音频仍作为历史产物保留。识别或合成正在运行时，先取消任务再替换文件或删除项目；合成运行时也不能重新识别。
+
+合成完成后按完整 MP3 帧计算章节时长并生成质检报告；章内拼接的 ID3 标签会跳过。旧构建首次打开详情时会尝试从段级时间轴或本地 MP3 回填时长。章节试听从源 MP3 逐帧截取约 15 秒并缓存为 `_preview_v2.mp3`；章节音频更新时会重新生成预告片。删除 Build 或项目会清理对应的预告片和时间轴文件。
+
 ---
 
 ## 前端 UI 步骤
@@ -204,7 +208,7 @@ User ──┬──< Project ──┬──< ProjectCharacter ──< 音色 a
 | Step | 关键组件 |
 |---|---|
 | **项目列表** | ProjectCard（封面 / 章节数 / 上次构建状态 / 删除按钮） |
-| **Step 1 输入** | 上传 TXT / Markdown / EPUB 或粘贴文本；文件按 50MB 流式限额读取，粘贴内容按 UTF-8 字节数限制为 50MB。无效文件在保存前返回 400，可在原项目中重试导入 |
+| **Step 1 输入** | 上传 TXT / Markdown / EPUB 或粘贴文本；文件按 50MB 流式限额读取，粘贴内容按 UTF-8 字节数限制为 50MB。无效文件在保存前返回 400，可在原项目中重试导入；详情页可替换源文件并重新识别 |
 | **Step 2 角色+音色** | diff 对比面板 + polish_warning 黄色警告条 + 角色卡片（性格/标签 + LLM 推荐理由 + 试听） + 内置音色搜索 |
 | **Step 3 生成+试听** | 对白卡片列表（橙色边框高亮 confidence<0.7） + 每段独立改音色覆盖 + 旁白折叠区 + 总音频播放器 + MP3 / ZIP 下载按钮 |
 | **设置** | ProviderModelsEditor（多厂商卡片化：厂商开关 ToggleSwitch / API Key 输入（脱敏显示 + 「重写」）/ 模型列表） + LLM / TTS 激活厂商 + 模型指针 |

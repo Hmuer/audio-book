@@ -28,9 +28,9 @@ def test_p2_3_pv5_preview_filename_and_path():
     """preview 文件命名规则：build_<id>_ch<NN>_preview.mp3。"""
     from backend.app.services.preview import _preview_filename, preview_path
 
-    assert _preview_filename("b1234", 0) == "build_b1234_ch0000_preview.mp3"
-    assert _preview_filename("b1234", 5) == "build_b1234_ch0005_preview.mp3"
-    assert preview_path("/tmp/audio", "b1234", 0).name == "build_b1234_ch0000_preview.mp3"
+    assert _preview_filename("b1234", 0) == "build_b1234_ch0000_preview_v2.mp3"
+    assert _preview_filename("b1234", 5) == "build_b1234_ch0005_preview_v2.mp3"
+    assert preview_path("/tmp/audio", "b1234", 0).name == "build_b1234_ch0000_preview_v2.mp3"
 
 
 # ---------------------------------------------------------------------
@@ -131,7 +131,7 @@ def test_p2_3_pv6_reuses_existing_preview(tmp_path, monkeypatch):
 
     chapter_mp3 = tmp_path / "build_b1_ch0000.mp3"
     chapter_mp3.write_bytes(b"\xff\xfb\x90\x64" + b"\x00" * 1000)
-    pv = tmp_path / "build_b1_ch0000_preview.mp3"
+    pv = tmp_path / "build_b1_ch0000_preview_v2.mp3"
     pv.write_bytes(b"cached-preview")
 
     called = {"gen": 0}
@@ -151,7 +151,7 @@ def test_p2_3_pv6_force_regenerate_overwrites(tmp_path, monkeypatch):
 
     chapter_mp3 = tmp_path / "build_b1_ch0000.mp3"
     chapter_mp3.write_bytes(b"\xff\xfb\x90\x64" + b"\x00" * 1000)
-    pv = tmp_path / "build_b1_ch0000_preview.mp3"
+    pv = tmp_path / "build_b1_ch0000_preview_v2.mp3"
     pv.write_bytes(b"old-cache")
 
     called = {"gen": 0}
@@ -236,7 +236,7 @@ async def test_p2_3_pv8_route_returns_preview_mp3(_isolate_data_dir, tmp_path, m
     assert len(r.content) > 0
     assert len(r.content) < 64 * 1024  # 比原始小
     # 预告片文件已落盘（第二次访问会复用）
-    pv = tmp_path / "build_pv0001_ch0000_preview.mp3"
+    pv = tmp_path / "build_pv0001_ch0000_preview_v2.mp3"
     assert pv.is_file()
 
 

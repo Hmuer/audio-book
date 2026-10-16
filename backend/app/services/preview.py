@@ -4,10 +4,9 @@
 适用于详情页"试听"按钮，避免用户下载完整章节（百兆级 MP3）才能听效果。
 
 策略：
-  1. 用 mutagen 解析章节 MP3 frame header 算每帧时长
-  2. 顺序累加帧时长，达到 max_seconds 时停止
-  3. 写入 build_<id>_ch<NN>_preview.mp3（与章节同目录）
-  4. 第二次调用复用磁盘缓存（除非参数变化）
+  1. 逐帧累加时长，跨段跳过 ID3 标签，达到 max_seconds 时停止
+  2. 写入 build_<id>_ch<NN>_preview_v2.mp3（与章节同目录）
+  3. 第二次调用复用磁盘缓存（源章节改变时重新生成）
 """
 from __future__ import annotations
 
@@ -16,6 +15,7 @@ import logging
 from pathlib import Path
 
 from ..core.config import settings
+from ..core.mp3_util import mp3_prefix_for_duration
 
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ DEFAULT_PREVIEW_SECONDS = 15
 
 def _preview_filename(build_id: str, ch_idx: int) -> str:
     """章节预告片文件名（与章节 MP3 同目录）。"""
-    return f"build_{build_id}_ch{ch_idx:04d}_preview.mp3"
+    return f"build_{build_id}_ch{ch_idx:04d}_preview_v2.mp3"
 
 
 def preview_path(audio_dir: str | Path, build_id: str, ch_idx: int) -> Path:
@@ -40,7 +40,10 @@ def _split_frames(mp3_bytes: bytes, max_seconds: int) -> bytes:
     Returns:
         截取后的 MP3 bytes（含所有完整 frame；最后一帧不会半截）
     """
-    # 优先用 mutagen（更准），缺失时退化到简单 header skip
+    precise = mp3_prefix_for_duration(mp3_bytes, max_seconds * 1000)
+    if precise is not None:
+        return precise
+    # 损坏或非标准音频：保留旧的码率估算兜底。
     try:
         from mutagen.mp3 import MP3  # type: ignore
         bio = io.BytesIO(mp3_bytes)
@@ -122,7 +125,12 @@ def get_or_generate_preview(
         return None
 
     pv = preview_path(adir, build_id, ch_idx)
-    if pv.is_file() and not force_regenerate:
+    if pv.is_file() and not force_regenerate and pv.stat().st_mtime >= chapter_mp3.stat().st_mtime:
         return pv
-
-    return generate_chapter_preview(chapter_mp3, pv, max_seconds=max_seconds)
+    result = generate_chapter_preview(chapter_mp3, pv, max_seconds=max_seconds)
+    legacy = adir / f"build_{build_id}_ch{ch_idx:04d}_preview.mp3"
+    try:
+        legacy.unlink(missing_ok=True)
+    except OSError as e:
+        logger.warning("[preview] 清理旧预告片失败 %s: %s", legacy.name, e)
+    return result

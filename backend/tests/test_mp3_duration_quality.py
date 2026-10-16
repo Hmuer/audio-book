@@ -26,6 +26,18 @@ def test_mp3_duration_resync_limit_is_consecutive():
     assert 79_000 <= mp3_duration_ms(audio) <= 83_000
 
 
+def test_chapter_preview_cuts_at_fifteen_seconds_across_id3():
+    from backend.app.services.preview import _split_frames
+
+    audio = (
+        _id3_tag(80) + make_silent_mp3(12_500, sample_rate=24000, kbps=64)
+        + _id3_tag(80) + make_silent_mp3(10_000, sample_rate=24000, kbps=128)
+    )
+    cut = _split_frames(audio, max_seconds=15)
+    assert 15_000 <= mp3_duration_ms(cut) <= 15_024
+    assert len(cut) < len(audio)
+
+
 def test_legacy_duration_uses_local_mp3_when_sidecar_missing(tmp_path, monkeypatch):
     from backend.app.core.config import settings
     from backend.app.db.models import BuildArtifact

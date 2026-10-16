@@ -1494,6 +1494,8 @@ async def _start_build_impl(
         p = await session.get(Project, project_id)
         if not p:
             raise ValueError(f"项目不存在: {project_id}")
+        if p.status not in ("ready", "done", "partial_success"):
+            raise RuntimeError("项目尚未完成识别，请先识别最新导入的源文件再合成")
         # F-4：正文以 project_chapters 为主路径（表为空时自动回落 chapters_json 快照）
         chapters = await load_chapters(session, project_id)
         if not chapters:
@@ -3043,6 +3045,11 @@ async def delete_build(project_id: str, build_id: str) -> None:
                 fpath.unlink()
         except OSError as e:
             logger.warning(f"[build_delete] 删 ZIP 失败: {_zf} -> {e}")
+    for preview in audio_dir.glob(f"build_{build_id}_ch*_preview*.mp3"):
+        try:
+            preview.unlink()
+        except OSError as e:
+            logger.warning("[build_delete] 删预告片失败 %s: %s", preview.name, e)
 
     # G-5：对象存储里的对象也要删（公有读桶不会有「本地已清理」的兜底）
     st = get_storage()

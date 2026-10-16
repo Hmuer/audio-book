@@ -633,6 +633,7 @@ async def api_icl_sync_voices(
 async def api_tts_preview(
     req: TtsPreviewRequest,
     request: Request,
+    current: User = Depends(get_current_user),
 ):
     t0 = _time.perf_counter()
     remote = request.client.host if request.client else "?"
@@ -645,8 +646,16 @@ async def api_tts_preview(
         tts = get_tts_by_voice_id(req.voice_id)
         audio_dir = Path(settings.AUDIO_DIR)
         audio_dir.mkdir(parents=True, exist_ok=True)
+        # 试听文件不属于 Build，过期后清理，避免反复试听持续占满磁盘。
+        cutoff = _time.time() - 24 * 60 * 60
+        for stale in audio_dir.glob("preview_*.mp3"):
+            try:
+                if stale.stat().st_mtime < cutoff:
+                    stale.unlink()
+            except OSError:
+                pass
         import uuid as _uuid
-        fname = f"preview_{_uuid.uuid4().hex[:10]}.mp3"
+        fname = f"preview_u{current.id}_{_uuid.uuid4().hex}.mp3"
         fpath = str(audio_dir / fname)
         path, dur_ms = await tts.synthesize_to_file(
             req.text, req.voice_id, fpath, speed=req.speed
@@ -924,6 +933,8 @@ async def api_project_import(
         return resp
     except ValueError as e:
         raise HTTPException(404 if str(e).startswith("项目不存在") else 400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
     except Exception as e:
         logger.error(
             f"[HTTP] 500 /api/projects/{project_id[:8]}.../import -> "
@@ -968,6 +979,8 @@ async def api_project_import_text(
         return resp
     except ValueError as e:
         raise HTTPException(404 if str(e).startswith("项目不存在") else 400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
     except Exception as e:
         logger.error(
             f"[HTTP] 500 /api/projects/{project_id[:8]}.../import-text -> "
@@ -1020,7 +1033,7 @@ async def api_project_prepare(
     except ValueError as e:
         raise HTTPException(404, str(e))
     except RuntimeError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(409 if "正在合成" in str(e) else 400, str(e))
     except Exception as e:
         logger.error(
             f"[HTTP] 500 /api/projects/{project_id[:8]}.../prepare -> "
@@ -1756,7 +1769,7 @@ async def api_build_chapter_preview(
         media_type="audio/mpeg",
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{ascii_name}",
-            "Cache-Control": "public, max-age=3600",
+            "Cache-Control": "private, max-age=3600",
         },
         filename=fname,
     )

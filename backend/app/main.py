@@ -336,13 +336,8 @@ class _RangedAuthStaticFiles(StaticFiles):
     校验方式： Authorization: Bearer <token> 或 ?token=<token>（后者供
     <audio src="...?token=..."> 等浏览器原生标签消费；前者供 fetch 用）。
 
-    P1 #5 资源归属：除 JWT 校验外，从请求文件名反解 build_id，查 DB 拿到
-    project 的 owner_user_id；当前登录用户必须是 owner 或是 admin 才能访问。
-    文件名模式：
-      - build_<build_id>_ch<NNNN>.mp3   → 单章 MP3
-      - build_<build_id>_ch<NNNN>_failed.mp3
-      - build_<build_id>_all.zip        → 整包 ZIP
-    其它文件（seg_cache 等）只做 JWT 校验，不查 DB（性能优先）。
+    P1 #5 资源归属：所有 build_<id>_ 文件（章节、分卷 ZIP、预览、时间轴）
+    都按 build → project 校验 owner；preview_u<uid>_ 文件按创建者校验。
 
     目录解析：每次请求都重新读 settings.AUDIO_DIR，这样测试中通过
     monkeypatch 修改 settings.AUDIO_DIR 也能立即生效（无需重启进程）。
@@ -390,15 +385,14 @@ class _RangedAuthStaticFiles(StaticFiles):
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # P1 #5：资源归属校验 —— 只对 build_* 命名的产出生效
+        # 只要属于 build，就必须按 project 校验；不能只枚举 MP3/整包 ZIP，
+        # 否则分卷 ZIP 和含正文的 timings.json 会绕过归属检查。
         import re as _re
-        import asyncio as _asyncio
-        m = _re.match(
-            r"build_(?P<build_id>[A-Za-z0-9]+)_(?:ch\d+(?:_failed)?\.mp3|all\.zip)$",
-            path,
-        )
-        if m:
-            bid = m.group("build_id")
+        m = _re.match(r"^build_(?P<build_id>[A-Za-z0-9]+)_", path)
+        preview = _re.fullmatch(r"preview_u(?P<user_id>\d+)_[0-9a-f]{32}\.mp3", path)
+        if path.startswith("preview_") and not preview:
+            return JSONResponse({"detail": "旧预览文件无归属信息"}, status_code=403)
+        if m or preview:
             try:
                 from .db.session import get_session_factory
                 from .db.models import Build, Project, User
@@ -417,7 +411,9 @@ class _RangedAuthStaticFiles(StaticFiles):
                             return False
                         if is_admin_user(user):
                             return True
-                        b = await s.get(Build, bid)
+                        if preview:
+                            return user.id == int(preview.group("user_id"))
+                        b = await s.get(Build, m.group("build_id"))
                         if not b:
                             return False
                         p = await s.get(Project, b.project_id)

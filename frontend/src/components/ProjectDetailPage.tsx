@@ -346,7 +346,8 @@ export default function ProjectDetailPage({
         {/* 内容区 */}
         <div className="min-w-0 space-y-5">
           {tab === 'overview' && (
-            <OverviewTab project={project!} onTab={setTab} onReload={reload} />
+            <OverviewTab project={project!} buildRunning={builds.some(b => isBuildRunning(b.status))}
+              onTab={setTab} onReload={reload} />
           )}
           {tab === 'chapters' && (
             <ChaptersTab
@@ -616,10 +617,12 @@ function PipelineTimeline({
 
 function OverviewTab({
   project,
+  buildRunning,
   onTab,
   onReload,
 }: {
   project: ProjectDetailResp;
+  buildRunning: boolean;
   onTab: (t: Tab) => void;
   onReload: () => void;
 }) {
@@ -632,8 +635,7 @@ function OverviewTab({
   const prog = project.prepare_progress;
 
   const needsImport = !project.source_filename;
-  const needsPrepare =
-    project.status === 'draft' || (project.status === 'imported' && project.chapter_count === 0);
+  const needsPrepare = project.status === 'draft' || project.status === 'imported';
 
   const isPreparing = project.status === 'preparing';
   const hasPrepareError = Boolean(prog?.last_error);
@@ -698,15 +700,30 @@ function OverviewTab({
     }
   };
 
+  const chooseFile = (file: File) => {
+    if (uploadBusy || isPreparing || buildRunning) return;
+    if (project.source_filename && !window.confirm(
+      '替换源文件会清除当前章节、角色和对白识别结果，需要重新识别；历史生成音频会保留。确定继续？'
+    )) return;
+    handleUpload(file);
+  };
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
     const f = e.dataTransfer.files?.[0];
-    if (f) handleUpload(f);
+    if (f) chooseFile(f);
   };
 
   return (
     <div className="space-y-4">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".txt,.md,.epub"
+        onChange={e => { const f = e.target.files?.[0]; e.currentTarget.value = ''; if (f) chooseFile(f); }}
+        className="hidden"
+      />
       {prepareTip && (
         <div className="rounded-lg px-4 py-3 text-sm flex items-center gap-2"
           style={{
@@ -716,6 +733,22 @@ function OverviewTab({
           }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="m9 12 2 2 4-4"/></svg>
           {prepareTip}
+        </div>
+      )}
+
+      {project.source_filename && !isPreparing && (
+        <div className="glass-panel flex items-center justify-between gap-3 flex-wrap">
+          <div className="min-w-0">
+            <div className="text-sm text-ink-700 truncate">源文件：{project.source_filename}</div>
+            <div className="text-xs text-ink-500 mt-1">{buildRunning
+              ? '合成运行中，请先取消构建再替换源文件。'
+              : '替换后需重新识别；历史生成音频会保留。'}</div>
+          </div>
+          <button type="button" className="btn-ghost text-xs !py-1.5" disabled={uploadBusy || buildRunning}
+            onClick={() => fileInputRef.current?.click()}>
+            {uploadBusy ? '导入中…' : '替换源文件'}
+          </button>
+          {uploadErr && <div className="w-full text-xs text-rose-300">{uploadErr}</div>}
         </div>
       )}
 
@@ -732,13 +765,6 @@ function OverviewTab({
               : 'border-ink-300/70 hover:border-ink-400 hover:bg-ink-200'
           }`}
         >
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".txt,.md,.epub"
-            onChange={e => { const f = e.target.files?.[0]; e.currentTarget.value = ''; if (f) handleUpload(f); }}
-            className="hidden"
-          />
           {uploadBusy ? (
             <div>
               <div className="inline-block w-8 h-8 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin mb-3" />

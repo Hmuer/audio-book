@@ -36,7 +36,7 @@ async def test_preview_uses_voice_id_routing(monkeypatch):
     monkeypatch.setattr(routes_mod, "get_tts_by_voice_id", _fake_get_tts_by_voice_id)
 
     req = TtsPreviewRequest(text="你好世界", voice_id="doubao:zh_female_qingxin", speed=1.0)
-    resp = await routes_mod.api_tts_preview(req, _FakeRequest())
+    resp = await routes_mod.api_tts_preview(req, _FakeRequest(), SimpleNamespace(id=1))
 
     assert routed == ["doubao:zh_female_qingxin"], (
         f"preview 必须按音色前缀路由，实际调用了 {routed}"

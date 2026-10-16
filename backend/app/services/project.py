@@ -312,11 +312,72 @@ def _detect_encoding(raw_bytes: bytes) -> str:
     return "utf-8"  # 兜底
 
 
-def _project_source_path(project_id: str, ext: str = ".txt") -> str:
-    """项目源文件磁盘路径：uploads/proj_{project_id}{ext}。"""
+def _project_source_path(project_id: str, ext: str = ".txt", *, replacing: bool = False) -> str:
+    """首次导入沿用旧路径；替换时使用独立路径避免覆盖旧文件。"""
     uploads_dir = Path(settings.DATA_DIR) / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
-    return str(uploads_dir / f"proj_{project_id}{ext}")
+    suffix = f"_{uuid.uuid4().hex}" if replacing else ""
+    return str(uploads_dir / f"proj_{project_id}{suffix}{ext}")
+
+
+async def _store_imported_source(
+    project_id: str, content: bytes, filename: str, charset: str,
+    saved_path_ext: str, book_title_hint: str | None,
+) -> ProjectResp:
+    """替换源文件并清除旧识别结果；历史 Build 作为历史产物保留。"""
+    factory = get_session_factory()
+    old_path: str | None = None
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        if not p:
+            raise ValueError(f"项目不存在: {project_id}")
+        if p.status == "preparing" or _is_prepare_running_for(project_id):
+            raise RuntimeError("项目正在识别，请先取消识别后再替换源文件")
+        active = (await session.execute(
+            select(Build.build_id).where(
+                Build.project_id == project_id,
+                Build.status.in_(("queued", "running")),
+            ).limit(1)
+        )).scalar_one_or_none()
+        if active:
+            raise RuntimeError("项目正在合成，请先取消构建后再替换源文件")
+
+        old_path = p.source_file_path
+        new_path = _project_source_path(project_id, saved_path_ext, replacing=bool(old_path))
+        try:
+            Path(new_path).write_bytes(content)
+            # 源文件改变后，旧章节/角色/对白不能再用于合成或展示。
+            await session.execute(delete(ProjectChapter).where(ProjectChapter.project_id == project_id))
+            await session.execute(delete(ProjectCharacter).where(ProjectCharacter.project_id == project_id))
+            await session.execute(delete(ProjectDialogue).where(ProjectDialogue.project_id == project_id))
+            p.chapters_json = None
+            p.chapter_count = 0
+            p.progress_json = None
+            p.source_file_path = new_path
+            p.source_filename = filename
+            p.source_file_size = len(content)
+            p.source_charset = charset
+            if book_title_hint:
+                p.book_title = book_title_hint
+            p.status = "imported"
+            await session.commit()
+            await session.refresh(p)
+            result = _to_project_resp(p)
+        except Exception:
+            await session.rollback()
+            Path(new_path).unlink(missing_ok=True)
+            raise
+
+    if old_path and old_path != new_path:
+        # 仅清理本项目在 uploads 下的旧源文件，避免意外删除外部路径。
+        old = Path(old_path)
+        uploads = Path(settings.DATA_DIR, "uploads").resolve()
+        if old.parent.resolve() == uploads and old.name.startswith(f"proj_{project_id}"):
+            try:
+                old.unlink(missing_ok=True)
+            except OSError as e:
+                logger.warning("[project_import] 清理旧源文件失败 %s: %s", old, e)
+    return result
 
 
 def _to_project_resp(p: Project) -> ProjectResp:
@@ -370,7 +431,6 @@ async def import_file(project_id: str, file_content: bytes, filename: str) -> Pr
     支持 .txt / .md / .epub — EPUB 会先被解析成有序章节，拼成纯文本 .txt 落盘，
     后续 prepare_project 完全复用既有 TXT 流程。
     """
-    factory = get_session_factory()
     ext = Path(filename).suffix.lower() or ".txt"
     if ext not in {".txt", ".md", ".epub"}:
         raise ValueError("仅支持 TXT、Markdown 和 EPUB 文件")
@@ -413,28 +473,16 @@ async def import_file(project_id: str, file_content: bytes, filename: str) -> Pr
     if not source_text.strip() or "\x00" in source_text:
         raise ValueError("文件没有可读取的文本内容")
 
-    async with factory() as session:
-        p = await session.get(Project, project_id)
-        if not p:
-            raise ValueError(f"项目不存在: {project_id}")
-
-        saved_path = _project_source_path(project_id, saved_path_ext)
-        Path(saved_path).write_bytes(file_content)
-
-        p.source_file_path = saved_path
-        p.source_filename = filename or f"proj_{project_id[:8]}{saved_path_ext}"
-        p.source_file_size = len(file_content)
-        p.source_charset = charset
-        if book_title_hint:
-            p.book_title = book_title_hint
-        p.status = "imported"
-        await session.commit()
-        await session.refresh(p)
-        logger.info(
-            f"[project_import] project_id={project_id[:8]}... "
-            f"file={p.source_filename} size={len(file_content)} charset={charset}"
-        )
-        return _to_project_resp(p)
+    result = await _store_imported_source(
+        project_id, file_content,
+        filename or f"proj_{project_id[:8]}{saved_path_ext}",
+        charset, saved_path_ext, book_title_hint,
+    )
+    logger.info(
+        "[project_import] project_id=%s... file=%s size=%s charset=%s",
+        project_id[:8], result.source_filename, len(file_content), charset,
+    )
+    return result
 
 
 async def import_text(
@@ -447,38 +495,24 @@ async def import_text(
     无字节歧义，不需要编码检测）→ 更新 source_* 字段 → status=imported。
     逻辑等价于 import_file（bytes），只是输入源直接是 text。
     """
-    factory = get_session_factory()
-    async with factory() as session:
-        p = await session.get(Project, project_id)
-        if not p:
-            raise ValueError(f"项目不存在: {project_id}")
-
-        # 粘贴内容编码稳定（浏览器给的 JS string，直接 encode 成 utf-8）
-        file_content = text.encode("utf-8")
-        if not file_content.strip():
-            raise ValueError("粘贴内容为空")
-
-        ext = Path(filename_hint).suffix or ".txt"
-        saved_path = _project_source_path(project_id, ext)
-        Path(saved_path).write_bytes(file_content)
-
-        charset = "utf-8"
-        p.source_file_path = saved_path
-        p.source_filename = filename_hint or f"proj_{project_id[:8]}_pasted.txt"
-        p.source_file_size = len(file_content)
-        p.source_charset = charset
-        # 书名：优先用户给的 hint stem（没给就保留当前 book_title）
-        stem = Path(filename_hint).stem if filename_hint else None
-        if stem and stem.strip() and stem != "pasted_text":
-            p.book_title = stem.strip()
-        p.status = "imported"
-        await session.commit()
-        await session.refresh(p)
-        logger.info(
-            f"[project_import_text] project_id={project_id[:8]}... "
-            f"filename_hint={p.source_filename} size={len(file_content)}"
-        )
-        return _to_project_resp(p)
+    # 粘贴内容编码稳定（浏览器给的 JS string，直接 encode 成 utf-8）。
+    file_content = text.encode("utf-8")
+    if not file_content.strip():
+        raise ValueError("粘贴内容为空")
+    filename_hint = filename_hint or f"proj_{project_id[:8]}_pasted.txt"
+    ext = Path(filename_hint).suffix.lower() or ".txt"
+    if ext not in {".txt", ".md"}:
+        raise ValueError("粘贴文本只支持 .txt 或 .md 文件名")
+    stem = Path(filename_hint).stem
+    book_title_hint = stem.strip() if stem.strip() and stem != "pasted_text" else None
+    result = await _store_imported_source(
+        project_id, file_content, filename_hint, "utf-8", ext, book_title_hint,
+    )
+    logger.info(
+        "[project_import_text] project_id=%s... filename_hint=%s size=%s",
+        project_id[:8], result.source_filename, len(file_content),
+    )
+    return result
 
 
 async def trigger_prepare_project(project_id: str) -> ProjectPrepareTriggerResp:
@@ -492,6 +526,14 @@ async def trigger_prepare_project(project_id: str) -> ProjectPrepareTriggerResp:
         p = await session.get(Project, project_id)
         if not p:
             raise ValueError(f"项目不存在: {project_id}")
+        active_build = (await session.execute(
+            select(Build.build_id).where(
+                Build.project_id == project_id,
+                Build.status.in_(("queued", "running")),
+            ).limit(1)
+        )).scalar_one_or_none()
+        if active_build:
+            raise RuntimeError("项目正在合成，请先取消构建后再重新识别")
         if not p.source_file_path or not os.path.isfile(p.source_file_path):
             p.status = "failed"
             await session.commit()
@@ -3363,7 +3405,7 @@ async def update_project(
 async def delete_project(project_id: str) -> None:
     """
     级联删除：DB（Project + Builds + BuildArtifacts + ProjectCharacters + ProjectDialogues）
-    + 磁盘文件（源文件 + 所有 build 产生的 MP3/ZIP）。
+    + 磁盘文件（源文件 + 所有 build 产生的 MP3/ZIP/时间轴/预告片）。
     """
     factory = get_session_factory()
     async with factory() as session:
@@ -3371,6 +3413,16 @@ async def delete_project(project_id: str) -> None:
         if not p:
             # 已不存在，幂等返回
             return
+        if p.status == "preparing" or _is_prepare_running_for(project_id):
+            raise ValueError("项目正在识别，请先取消识别后再删除项目")
+        active_build = (await session.execute(
+            select(Build.build_id).where(
+                Build.project_id == project_id,
+                Build.status.in_(("queued", "running")),
+            ).limit(1)
+        )).scalar_one_or_none()
+        if active_build:
+            raise ValueError("项目正在合成，请先取消构建后再删除项目")
 
         # 收集所有 build 产物文件名，用于稍后删磁盘
         stmt_art = select(BuildArtifact.audio_filename).where(
@@ -3381,11 +3433,13 @@ async def delete_project(project_id: str) -> None:
         art_filenames = [r for r in (await session.execute(stmt_art)).scalars().all() if r]
 
         # F-7：ZIP 可能是分片的，必须把全部分片名都收集起来（zip_filename 只是第 0 片）
-        stmt_zip = select(Build.zip_filename, Build.zip_filenames_json).where(
+        stmt_zip = select(Build.build_id, Build.zip_filename, Build.zip_filenames_json).where(
             Build.project_id == project_id
         )
         zip_names: set[str] = set()
-        for _single, _shards_json in (await session.execute(stmt_zip)).all():
+        build_ids: list[str] = []
+        for _bid, _single, _shards_json in (await session.execute(stmt_zip)).all():
+            build_ids.append(_bid)
             if _single:
                 zip_names.add(_single)
             if _shards_json:
@@ -3418,6 +3472,17 @@ async def delete_project(project_id: str) -> None:
                 fpath.unlink()
         except OSError as e:
             logger.warning(f"[project_delete] 删音频文件失败: {fname} -> {e}")
+    for bid in build_ids:
+        for sidecar in audio_dir.glob(f"build_{bid}_ch*_timings.json"):
+            try:
+                sidecar.unlink()
+            except OSError as e:
+                logger.warning("[project_delete] 删时间轴失败 %s: %s", sidecar.name, e)
+        for preview in audio_dir.glob(f"build_{bid}_ch*_preview*.mp3"):
+            try:
+                preview.unlink()
+            except OSError as e:
+                logger.warning("[project_delete] 删预告片失败 %s: %s", preview.name, e)
 
     if source_path:
         try:

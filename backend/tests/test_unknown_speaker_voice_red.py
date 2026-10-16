@@ -100,7 +100,7 @@ async def _seed_dialogues(speakers: list[str]) -> str:
         s.add(Project(
             project_id=pid,
             name="未归属对白用例",
-            status="prepared",
+            status="ready",
             owner_user_id=1,
             source_file_path="/nonexistent.txt",
             source_filename="t.txt",
@@ -201,7 +201,7 @@ async def _seed_prepared_project() -> str:
         s.add(Project(
             project_id=pid,
             name="端到端兜底音色用例",
-            status="prepared",
+            status="ready",
             owner_user_id=1,
             source_file_path="/nonexistent.txt",
             source_filename="t.txt",

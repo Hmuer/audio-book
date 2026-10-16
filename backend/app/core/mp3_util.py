@@ -117,9 +117,47 @@ def mp3_duration_ms(mp3_bytes: bytes) -> int:
         pos += frame_len
         resync_failures = 0
     if parsed_frames > 0:
-        return int(total_sec * 1000)
+        return round(total_sec * 1000)
     # 回退：假设 128kbps（MiniMax/主流 TTS 输出码率）
     return int(len(mp3_bytes) * 8 / 128000 * 1000)
+
+
+def mp3_prefix_for_duration(mp3_bytes: bytes, duration_ms: int) -> bytes | None:
+    """按完整 MPEG 帧截取前 duration_ms；数据无法连续解析时返回 None。"""
+    if len(mp3_bytes) < 4 or duration_ms <= 0:
+        return None
+    pos = 0
+    elapsed_ms = 0.0
+    frames = 0
+    bad_bytes = 0
+    n = len(mp3_bytes)
+    while pos + 4 <= n:
+        tag_end = _skip_id3v2(mp3_bytes, pos) if mp3_bytes[pos:pos + 3] == b"ID3" else pos
+        if tag_end > pos:
+            pos = tag_end
+            bad_bytes = 0
+            continue
+        parsed = (
+            _parse_frame_header(mp3_bytes, pos)
+            if mp3_bytes[pos] == 0xFF and (mp3_bytes[pos + 1] & 0xE0) == 0xE0
+            else None
+        )
+        if parsed is None:
+            bad_bytes += 1
+            if bad_bytes > 64:
+                return None
+            pos += 1
+            continue
+        frame_len, sample_rate, samples = parsed
+        if pos + frame_len > n:
+            return None
+        pos += frame_len
+        frames += 1
+        bad_bytes = 0
+        elapsed_ms += samples / sample_rate * 1000
+        if elapsed_ms >= duration_ms:
+            return mp3_bytes[:pos]
+    return mp3_bytes if frames else None
 
 
 def mp3_sample_rate(mp3_bytes: bytes) -> int | None:
