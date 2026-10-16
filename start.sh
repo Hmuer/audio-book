@@ -151,6 +151,8 @@ if [ "$ACTION" = "stop" ] || [ "$ACTION" = "restart" ]; then
     echo "[stop] 没有在运行的后台进程（前台模式请到对应终端 Ctrl+C）"
   fi
   [ "$ACTION" = "stop" ] && exit 0
+  # restart 停止旧进程后应按默认后台模式启动；否则会落到脚本末尾的前台 exec。
+  ACTION="daemon"
 fi
 
 # ---------- 状态 ----------
