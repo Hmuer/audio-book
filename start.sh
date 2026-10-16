@@ -263,7 +263,13 @@ UVICORN_ARGS=(
 
 if [ "$ACTION" = "daemon" ]; then
   : > "$STDOUT_LOG"
-  nohup "$VENV_PY" -m uvicorn "${UVICORN_ARGS[@]}" >> "$STDOUT_LOG" 2>&1 &
+  # 从调用方的会话中分离，避免远程终端或自动化命令结束时回收后台服务。
+  # macOS 通常没有 setsid，保留原有 nohup 路径作为兼容。
+  if command -v setsid >/dev/null 2>&1; then
+    nohup setsid "$VENV_PY" -m uvicorn "${UVICORN_ARGS[@]}" >> "$STDOUT_LOG" 2>&1 &
+  else
+    nohup "$VENV_PY" -m uvicorn "${UVICORN_ARGS[@]}" >> "$STDOUT_LOG" 2>&1 &
+  fi
   DAEMON_PID=$!
   echo "$DAEMON_PID" > "$PID_FILE"
   disown "$DAEMON_PID" 2>/dev/null || true
