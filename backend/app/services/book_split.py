@@ -13,8 +13,10 @@
      保持原行为
 3. 剥离纯分隔线行（------ / ──── / ***** 等）：零朗读价值，不剥离会被
    narrator 段念出来，白占润色/对白归属的 token
-4. 无编号的散文、诗集或自传：优先使用 Markdown/连续编号标题；没有可靠
-   标题时按段落/句子切成朗读单元，原文仍完整保留。
+4. 书首有页码索引的目录不参与朗读；下载站把同一篇拆成连续 (1)/(2) 页时
+   合并为一个篇章，保留前言。
+5. 无编号的散文、诗集或自传：优先使用 Markdown/连续编号标题；没有可靠
+   标题时先按完整段落成组，超长段落才按句子/行切成朗读单元。
 
 章节切分规则可在 .env 中扩展 CHAPTER_SPLIT_PATTERNS 覆盖，也可直接改
 config.py 默认值。
@@ -95,6 +97,30 @@ _SEPARATOR_LINE_RE = re.compile(
     r"^[ \t]*[-－—─_=＝+＋*＊~～]{3,}[ \t]*$",
     re.MULTILINE,
 )
+_TOC_SECTION_RE = re.compile(
+    r"^(?:第\s*[零〇一二三四五六七八九十百千两0-9]+\s*节\s*[:：]\s*)?目\s*录$"
+)
+_TOC_PAGE_RE = re.compile(r"(?:[/／]\s*\d+|[.．·…]{2,}\s*\d+)\s*$")
+_PARAGRAPH_BREAK_RE = re.compile(r"\n[ \t\u3000]*\n+")
+_SERIAL_SECTION_RE = re.compile(
+    r"^第\s*(\d+)\s*节\s*[:：]\s*(.+?)\s*[（(](\d+)[）)]$"
+)
+_FRONT_SECTION_RE = re.compile(
+    r"^第\s*[零〇一二三四五六七八九十百千两0-9]+\s*节\s*[:：]\s*(前言|序言|序|引言)$"
+)
+_LEADING_CHAPTER_RE = re.compile(
+    r"^第\s*[零〇一二三四五六七八九十百千两0-9]+\s*(?:章|回|篇)"
+)
+_SECTION_PROSE_START_RE = re.compile(r"^(?:第\s*[零〇一二三四五六七八九十百千两0-9]+\s*节|[0-9]+[.．、])")
+_SENTENCE_BREAK_RE = re.compile(r"[。！？!?；;](?:[”’」』）])*|[.!?](?:[\"'”’])*\s")
+_TOC_HEADING_RE = re.compile(
+    r"^[ \t\u3000]*(?:第\s*(?P<section>\d+)\s*节\s*[:：][ \t\u3000]*)?目\s*录[ \t\u3000]*$",
+    re.MULTILINE,
+)
+_NUMBERED_SECTION_LINE_RE = re.compile(r"^[ \t\u3000]*第\s*(\d+)\s*节\s*[:：]", re.MULTILINE)
+_BODY_HEADING_RE = re.compile(
+    r"^[ \t\u3000]*第\s*[零〇一二三四五六七八九十百千两0-9]+\s*(?:章|回|篇|节)"
+)
 
 
 # 中文数字 → 阿拉伯，用于章节序号归一化（仅前 99）
@@ -174,6 +200,141 @@ def _cn_to_int(s: str) -> Optional[int]:
             return None
         val = val * 10 + _CN_NUM_MAP[ch]
     return val
+
+
+def _is_toc_chapter(ch: Chapter) -> bool:
+    """只跳过具有明确目录标题、且正文含多条页码索引的目录单元。"""
+    if not _TOC_SECTION_RE.fullmatch(ch.title.strip()):
+        return False
+    return sum(bool(_TOC_PAGE_RE.search(line)) for line in ch.text.splitlines()) >= 3
+
+
+def _clean_serialized_heading(title: str, body: str) -> tuple[str, str]:
+    """分页标题已用作朗读标题时，剔除页首重复的章名行。"""
+    lines = body.splitlines()
+    if not lines:
+        return title, body
+    first = lines[0].strip()
+    compact_title = re.sub(r"\s+", "", title)
+    compact_first = re.sub(r"\s+", "", first)
+    if compact_first == compact_title:
+        return title, "\n".join(lines[1:]).strip()
+    if _LEADING_CHAPTER_RE.match(first):
+        number = re.sub(r"\s+", "", _LEADING_CHAPTER_RE.match(first).group())
+        if compact_first == number and len(lines) > 1:
+            second = lines[1].strip()
+            compact_second = re.sub(r"\s+", "", second)
+            if (compact_title.startswith(number) and compact_second
+                    and not _SECTION_PROSE_START_RE.match(second)
+                    and not re.search(r"[。！？!?；;]", second)
+                    and (
+                        compact_title[len(number):].startswith(compact_second)
+                        or compact_second.startswith(compact_title[len(number):])
+                    )):
+                return f"{number} {second}", "\n".join(lines[2:]).strip()
+        if compact_first.startswith(compact_title) or compact_first.endswith(compact_title):
+            return first, "\n".join(lines[1:]).strip()
+    return title, body
+
+
+def _strip_front_toc(text: str) -> str:
+    """移除书首有页码索引的目录；在分章前处理，防止目录条目变幽灵章。"""
+    for heading in _TOC_HEADING_RE.finditer(text, 0, min(len(text), 15_000)):
+        if heading.start() > len(text) // 3:
+            break
+        section = heading.group("section")
+        heading_start = heading.start()
+        if not section:
+            # 「第2节：目录」下一行再次印「目录」时，从外层节标题一起删。
+            previous_line_start = text.rfind("\n", 0, heading.start()) + 1
+            previous_line = text[previous_line_start:heading.start()].strip()
+            if _TOC_HEADING_RE.fullmatch(previous_line):
+                parent = _TOC_HEADING_RE.fullmatch(previous_line)
+                if parent and parent.group("section"):
+                    section = parent.group("section")
+                    heading_start = previous_line_start
+        end: int | None = None
+        if section:
+            for next_heading in _NUMBERED_SECTION_LINE_RE.finditer(text, heading.end()):
+                if int(next_heading.group(1)) == int(section) + 1:
+                    end = next_heading.start()
+                    break
+                if next_heading.start() - heading.end() > 15_000:
+                    break
+        else:
+            # 没有外层「第N节」时，找目录列表后的首个真实章标题：
+            # 它后面应紧跟一段有句读的正文，而非继续跟页码索引。
+            pos = heading.end()
+            page_lines = 0
+            seen_headings: set[str] = set()
+            lines = text[pos:pos + 15_000].splitlines(keepends=True)
+            for i, line in enumerate(lines):
+                if _TOC_PAGE_RE.search(line.strip()):
+                    page_lines += 1
+                if _BODY_HEADING_RE.match(line):
+                    compact = re.sub(r"\s+", "", line)
+                    following = [s.strip() for s in lines[i + 1:i + 5] if s.strip()]
+                    if page_lines >= 3 and (
+                        compact in seen_headings
+                        or any(len(s) >= 80 and re.search(r"[。！？!?]", s) for s in following)
+                    ):
+                        end = pos
+                        break
+                    seen_headings.add(compact)
+                pos += len(line)
+        if end is None or end <= heading.end():
+            continue
+        toc_body = text[heading.end():end]
+        if sum(bool(_TOC_PAGE_RE.search(line)) for line in toc_body.splitlines()) < 3:
+            continue
+        logger.info("[book_split] 跳过书首目录 chars=%s", end - heading_start)
+        return text[:heading_start].rstrip() + "\n\n" + text[end:].lstrip()
+    return text
+
+
+def _merge_serialized_sections(chapters: list[Chapter]) -> list[Chapter]:
+    """把下载站的「同一篇(1)/(2)」连续分页还原为一篇朗读单元。"""
+    result: list[Chapter] = []
+    i = 0
+    while i < len(chapters):
+        ch = chapters[i]
+        match = _SERIAL_SECTION_RE.fullmatch(ch.title.strip())
+        if match and match.group(3) == "1":
+            section_no, base = int(match.group(1)), match.group(2).strip()
+            texts = [ch.text]
+            j = i + 1
+            page_no = 2
+            while j < len(chapters):
+                next_match = _SERIAL_SECTION_RE.fullmatch(chapters[j].title.strip())
+                if (not next_match or int(next_match.group(1)) != section_no + page_no - 1
+                        or next_match.group(2).strip() != base
+                        or int(next_match.group(3)) != page_no):
+                    break
+                texts.append(chapters[j].text)
+                j += 1
+                page_no += 1
+            if len(texts) > 1:
+                title, first_body = _clean_serialized_heading(base, texts[0])
+                result.append(Chapter(
+                    idx=len(result), title=title,
+                    text="\n\n".join([first_body, *texts[1:]]),
+                ))
+                i = j
+                continue
+        front = _FRONT_SECTION_RE.fullmatch(ch.title.strip())
+        if front:
+            # 网页分页常在「第1节：前言」之后又重复一行「前言」。
+            title = front.group(1)
+            body = ch.text.strip()
+            lines = body.splitlines()
+            if lines and lines[0].strip() == title:
+                body = "\n".join(lines[1:]).strip()
+            ch = Chapter(idx=len(result), title=title, text=body)
+        else:
+            ch = Chapter(idx=len(result), title=ch.title, text=ch.text)
+        result.append(ch)
+        i += 1
+    return result
 
 
 def split_chapters_regex(text: str, *, min_matches: Optional[int] = None) -> list[Chapter]:
@@ -325,36 +486,61 @@ def split_chapters_regex(text: str, *, min_matches: Optional[int] = None) -> lis
             continue
         ch.idx = len(unique)
         unique.append(ch)
-    return unique
+    without_toc = [ch for ch in unique if not _is_toc_chapter(ch)]
+    if len(without_toc) != len(unique):
+        logger.info("[book_split] 跳过 %s 个目录朗读单元", len(unique) - len(without_toc))
+    return _merge_serialized_sections(without_toc)
 
 
-# 兜底：按字数硬切（保留句子边界）
-def split_chapters_by_size(text: str, max_chars: Optional[int] = None) -> list[Chapter]:
+# 无标题兜底：优先段落边界，单段过长才退到句子/行边界。
+def split_chapters_by_size(
+    text: str, max_chars: Optional[int] = None, *, target_chars: Optional[int] = None,
+) -> list[Chapter]:
     """
-    正则失败时按字数硬切，尽量在句子边界（。！？.!?）切。
+    无标题文本先按完整段落成组；超长段落才退到行、句子边界。
     每章 idx 自动递增，title 用「第 X 部分」。
     """
     max_chars = max(1000, int(max_chars if max_chars is not None else settings.CHAPTER_SPLIT_HARD_FALLBACK_MAX_CHARS))
     if not text.strip():
         return []
-    if len(text) <= max_chars:
+    target_chars = min(max_chars, max(1000, int(target_chars or 12_000)))
+    if len(text) <= target_chars:
         return [Chapter(idx=0, title="正文", text=text.strip())]
 
     chapters: list[Chapter] = []
     cursor = 0
     part_idx = 1
     while cursor < len(text):
-        end = min(cursor + max_chars, len(text))
-        if end < len(text):
-            # 先找段落边界；诗歌尽量不拆断行。没有段落再找句子边界。
-            para = text.rfind("\n\n", max(cursor, end - 3000), end)
-            if para > cursor + max_chars // 2:
-                end = para + 2
+        remaining = len(text) - cursor
+        hard_end = min(cursor + max_chars, len(text))
+        if remaining <= target_chars:
+            end = len(text)
+        else:
+            desired = min(target_chars, max(target_chars // 2, remaining // 2))
+            min_end = cursor + max(1, desired // 2)
+            target_end = cursor + desired
+            # 当前已到尾段时给最后一段至少留一些正文，避免 20k+1k 的碎片。
+            search_end = hard_end if hard_end < len(text) else hard_end - min(3000, desired // 3)
+            paragraph_ends = [
+                m.end() for m in _PARAGRAPH_BREAK_RE.finditer(text, min_end, search_end)
+            ]
+            after_target = [p for p in paragraph_ends if p >= target_end]
+            if after_target:
+                end = after_target[0]
+            elif paragraph_ends:
+                end = paragraph_ends[-1]
             else:
-                for j in range(end, max(cursor, end - 2000), -1):
-                    if text[j - 1] in "。！？!?\n":
-                        end = j
-                        break
+                # 只有单个长段落时，优先句末；没有句末再选行尾（诗歌）。
+                sentence_ends = [m.end() for m in _SENTENCE_BREAK_RE.finditer(text, min_end, search_end)]
+                if sentence_ends:
+                    end = min(sentence_ends, key=lambda p: abs(p - target_end))
+                else:
+                    line_ends = [i + 1 for i in range(min_end, search_end) if text[i] == "\n"]
+                    if line_ends:
+                        end = min(line_ends, key=lambda p: abs(p - target_end))
+                    else:
+                        # 没有自然边界时未超硬上限就保持整段，否则只能硬切。
+                        end = len(text) if hard_end == len(text) else hard_end
         chunk = text[cursor:end].strip()
         if chunk:
             chapters.append(Chapter(
@@ -374,7 +560,7 @@ def _limit_chapter_size(chapters: list[Chapter], max_chars: int = 30_000) -> lis
         if len(ch.text) <= max_chars:
             result.append(Chapter(idx=len(result), title=ch.title, text=ch.text))
             continue
-        parts = split_chapters_by_size(ch.text, max_chars=max_chars)
+        parts = split_chapters_by_size(ch.text, max_chars=max_chars, target_chars=max_chars)
         logger.warning("[book_split] 超长章节 %r chars=%s，拆成 %s 个朗读单元", ch.title, len(ch.text), len(parts))
         for i, part in enumerate(parts, 1):
             result.append(Chapter(
@@ -387,7 +573,7 @@ async def split_book_chapters(text: str) -> list[Chapter]:
     """
     书籍朗读单元识别主入口。
 
-    **完全不调用 LLM，零成本；无可靠标题时保留全文并按长度切分。**
+    **完全不调用 LLM，零成本；跳过明确目录，无可靠标题时按自然边界切分。**
 
     流程：
     1. 用 settings.CHAPTER_SPLIT_PATTERNS（用户可扩展）匹配常见章节标题
@@ -396,6 +582,7 @@ async def split_book_chapters(text: str) -> list[Chapter]:
     3. 标题不足时按段落和长度切成朗读单元；短篇保留为单单元。
     """
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _strip_front_toc(text)
     total_chars = len(text)
     logger.info(f"[book_split] START chars={total_chars}")
 
