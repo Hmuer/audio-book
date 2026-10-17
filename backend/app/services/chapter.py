@@ -111,6 +111,7 @@ _TITLE_HAS_CH_PREFIX_EN = re.compile(
     r"^\s*(Chapter|Episode|Ep|Volume|Vol|Ch)[\s\.\-:：]",
     re.IGNORECASE,
 )
+_UNTITLED_PART_RE = re.compile(r"^第\s*\d+\s*部分$")
 
 
 def _title_tts_text(ch: "Chapter") -> str:
@@ -118,11 +119,14 @@ def _title_tts_text(ch: "Chapter") -> str:
 
     规则：
     - 标题本身已是『第X章 XXX』/『序章 XXX』/『Chapter X』→ 直接读原文
-    - 否则（兜底占位标题如『序』『正文』『第 N 部分』等）才拼上章节序号
+    - 无标题短篇的『正文』不朗读；按字数切分的『第 N 部分』直接朗读
+    - 其他无章节标识的标题才拼上章节序号
     """
     title = (ch.title or "").strip()
-    if not title:
+    if not title or title == "正文":
         return ""
+    if _UNTITLED_PART_RE.fullmatch(title):
+        return title
     if (
         _TITLE_HAS_CH_PREFIX_NUM.match(title)
         or _TITLE_HAS_CH_PREFIX_SPECIAL.match(title)
@@ -130,7 +134,7 @@ def _title_tts_text(ch: "Chapter") -> str:
     ):
         # 原文已带章节标识，直接用
         return title
-    # 占位标题才加前缀
+    # 没有章节标识的原文标题加前缀
     return f"第{ch.idx + 1}章 {title}"
 
 
@@ -216,8 +220,8 @@ def _build_segments_for_chapter(
     idx = start_idx
 
     # 1. 标题段
-    # - "正文"：旧单章 synthesize 默认值，不读
-    # - 其他情况用 _title_tts_text() 智能拼，避免"第2章 第一章 林轩"双重章节号
+    # - "正文"：无标题短篇的占位标题，不读
+    # - 其他情况用 _title_tts_text() 智能拼，避免重复章节号
     title_tts = _title_tts_text(ch)
     if title_tts:
         _append_text_segs(segs, kind="title", idx_holder=[idx], voice_id=narrator_voice_id, text=title_tts)
