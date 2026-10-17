@@ -168,6 +168,12 @@ def _avoid_narrator_reuse(
         ] or [
             v for v in pool
             if v.get("id") != narrator_voice_id and v.get("id") not in used
+        ] or [
+            v for v in pool
+            if v.get("id") != narrator_voice_id
+            and _norm_gender_for_prompt(v.get("gender", "")) == want
+        ] or [
+            v for v in pool if v.get("id") != narrator_voice_id
         ]
         if not cands:
             logger.warning(
@@ -184,6 +190,57 @@ def _avoid_narrator_reuse(
         r.suggested_voice_id = new_id
         r.reason = f"{r.reason}（旁白音色不可复用，已改选）"
     return recs
+
+
+def _complete_batch_recommendations(
+    characters: list[Any],
+    returned: list[VoiceRecommendation],
+    pool: list[dict],
+    narrator_voice_id: str,
+    used_ids: set[str],
+) -> tuple[list[VoiceRecommendation], int]:
+    """校验模型输出，并用同厂商官方音色补齐漏掉或无效的角色。"""
+    candidates = [v for v in pool if v.get("id") and v.get("id") != narrator_voice_id]
+    if not candidates:
+        raise RuntimeError("旁白之外没有可用的官方音色，无法为角色分配音色")
+    allowed = {v["id"] for v in candidates}
+    names = {str(getattr(c, "name", "")).strip() for c in characters}
+    by_name: dict[str, VoiceRecommendation] = {}
+    for rec in returned:
+        name = rec.character_name.strip()
+        # 旁白 ID 由 _avoid_narrator_reuse 处理；这里先保留有效模型建议。
+        if name in names and name not in by_name and (
+            rec.suggested_voice_id in allowed or rec.suggested_voice_id == narrator_voice_id
+        ):
+            by_name[name] = rec.model_copy(update={"character_name": name})
+
+    occupied = used_ids | {r.suggested_voice_id for r in by_name.values()}
+    result: list[VoiceRecommendation] = []
+    filled = 0
+    for char in characters:
+        name = str(getattr(char, "name", "")).strip()
+        rec = by_name.get(name)
+        if rec is None:
+            gender = _norm_gender_for_prompt(getattr(char, "gender", ""))
+            if gender == "中性":
+                gender = "男声"
+            matching = [v for v in candidates if _norm_gender_for_prompt(v.get("gender", "")) == gender]
+            ordered = (
+                [v for v in matching if v["id"] not in occupied]
+                or matching
+                or [v for v in candidates if v["id"] not in occupied]
+                or candidates
+            )
+            voice_id = ordered[0]["id"]
+            rec = VoiceRecommendation(
+                character_name=name,
+                suggested_voice_id=voice_id,
+                reason="模型未返回有效推荐，按角色性别从当前 TTS 官方音色补全",
+            )
+            filled += 1
+        result.append(rec)
+        occupied.add(rec.suggested_voice_id)
+    return result, filled
 
 
 # ----------------------------------------------------------------------
@@ -210,8 +267,8 @@ async def recommend_voices_with_llm(
         narrator_voice_id: 旁白音色 id；显式传入时优先于项目设置
 
     Returns:
-        每个角色一条建议（LLM 输出）。角色按 _REC_CHAR_BATCH_SIZE 分批调用，
-        单批失败只损失该批（其余批次照常返回），配额耗尽仍然向上抛。
+        每个角色一条建议。模型漏项或无效结果用当前厂商官方音色补全；
+        配额耗尽仍然向上抛。
     """
     pool = await _aggregate_voice_pool(user_id)
     if not pool:
@@ -239,9 +296,7 @@ async def recommend_voices_with_llm(
         if remaining:
             pool = remaining
         else:
-            logger.warning(
-                f"[voice_recommender] 候选池只剩旁白音色 {narrator_id}，无法剔除"
-            )
+            raise RuntimeError("当前 TTS 只有旁白音色，没有可分配给角色的其他官方音色")
 
     # 标准化音色元数据（LLM prompt 输入）
     voices: list[VoiceMeta] = [
@@ -281,6 +336,7 @@ async def recommend_voices_with_llm(
     all_recs: list[VoiceRecommendation] = []
     used_ids: set[str] = set()
     failed_batches = 0
+    filled_count = 0
     total_prompt_chars = 0
     for bi, batch in enumerate(batches, 1):
         # 跨批去重提示：分批后 LLM 看不到其他批的角色，把已用音色以软约束传入，
@@ -302,6 +358,7 @@ async def recommend_voices_with_llm(
             + voices_json
         )
         total_prompt_chars += len(prompt)
+        raw_recs: list[VoiceRecommendation] = []
         try:
             wrapped = await llm.chat_structured(
                 prompt=prompt,
@@ -310,6 +367,7 @@ async def recommend_voices_with_llm(
                 max_tokens=8000,
                 use_fast_model=True,  # 音色推荐是"特征匹配"任务；M2.7-highspeed 准确率足够且速度快
             )
+            raw_recs = wrapped.data or []
         except LLMQuotaExhaustedError:
             # 配额耗尽必须穿透：调用方（prepare）要靠它阻止写下
             # voice_recs_done=True 的投毒 checkpoint
@@ -318,21 +376,20 @@ async def recommend_voices_with_llm(
             failed_batches += 1
             logger.warning(
                 f"[voice_recommender] 第 {bi}/{len(batches)} 批（{len(batch)} 角色）"
-                f"音色推荐失败，跳过: {type(e).__name__}: {e}"
+                f"音色推荐失败，使用官方音色补全: {type(e).__name__}: {e}"
             )
-            continue
-        # 允许 LLM 偶尔回填旁白 ID，由 _avoid_narrator_reuse 换成同厂商其他音色。
-        allowed_ids = {v.id for v in voices}
-        if narrator_id:
-            allowed_ids.add(narrator_id)
-        batch_recs = [r for r in (wrapped.data or []) if r.suggested_voice_id in allowed_ids]
+        batch_recs, batch_filled = _complete_batch_recommendations(
+            batch, raw_recs, pool, narrator_id, used_ids,
+        )
         all_recs.extend(batch_recs)
         used_ids.update(r.suggested_voice_id for r in batch_recs)
+        filled_count += batch_filled
 
-    if len(batches) > 1 or failed_batches:
+    if len(batches) > 1 or failed_batches or filled_count:
         logger.info(
             f"[voice_recommender] 分批推荐完成：{len(characters)} 角色 / {len(batches)} 批，"
-            f"成功推荐 {len(all_recs)} 条，失败 {failed_batches} 批"
+            f"最终分配 {len(all_recs)} 条（其中官方音色补全 {filled_count} 条），"
+            f"失败 {failed_batches} 批"
         )
 
     from .usage import track_llm

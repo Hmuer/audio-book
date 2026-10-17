@@ -71,7 +71,7 @@ def env(monkeypatch):
 
     llm = _FakeLLM()
     import backend.app.ai.factory as _factory
-    monkeypatch.setattr(_factory, "get_llm", lambda *a, **k: llm)
+    monkeypatch.setattr(_factory, "_llm_instance", llm)
     state["llm"] = llm
     return state
 
@@ -190,3 +190,71 @@ async def test_n5_no_narrator_known_means_no_exclusion(env):
     expected = {v["id"] for v in env["doubao"]} - {fallback}
     assert _prompt_voice_ids(prompt) == expected
     assert NARRATOR_HINT_MARK in prompt and fallback in prompt
+
+
+@pytest.mark.asyncio
+async def test_partial_minimax_response_fills_every_character_without_narrator(monkeypatch):
+    """模型漏掉 5/69 个角色时，按性别补齐当前厂商官方音色。"""
+    from backend.app.ai import factory as ai_factory
+    from backend.app.core import config
+    from backend.app.services import voice_recommender as vr
+    from backend.app.services.character import Character
+
+    pool = [
+        {"id": "minimax:narrator", "gender": "male", "provider": "minimax"},
+        {"id": "minimax:man", "gender": "male", "provider": "minimax"},
+        {"id": "minimax:woman", "gender": "female", "provider": "minimax"},
+    ]
+
+    async def fetch(_provider):
+        return pool
+
+    class PartialLLM:
+        async def chat_structured(self, *, prompt, output_schema, **_kwargs):
+            block = prompt.split("【角色列表】", 1)[1].split("【音色列表】", 1)[0]
+            names = json.loads(block.strip().split("【已用音色】")[0])
+            recs = [
+                {"character_name": c["name"],
+                 "suggested_voice_id": "minimax:woman" if c["gender"] == "女" else "minimax:man",
+                 "reason": "模型建议"}
+                for c in names if c["name"] not in {"角色3", "角色9", "角色41", "角色48", "角色60"}
+            ]
+            return output_schema.model_validate({"data": recs})
+
+    monkeypatch.setattr(config, "get_active", lambda _kind: ("minimax", "speech-2.8-hd", {}))
+    monkeypatch.setattr(vr, "_fetch_provider_voices", fetch)
+    monkeypatch.setattr(ai_factory, "_llm_instance", PartialLLM())
+    chars = [
+        Character(name=f"角色{i}", gender="女" if i % 2 else "男", age="成年", personality="")
+        for i in range(69)
+    ]
+    recs = await vr.recommend_voices_with_llm(chars, narrator_voice_id="minimax:narrator")
+    assert len(recs) == 69
+    assert [r.character_name for r in recs] == [c.name for c in chars]
+    assert sum("补全" in r.reason for r in recs) == 5
+    assert all(r.suggested_voice_id != "minimax:narrator" for r in recs)
+    for rec, char in zip(recs, chars):
+        assert rec.suggested_voice_id == ("minimax:woman" if char.gender == "女" else "minimax:man")
+
+
+@pytest.mark.asyncio
+async def test_invalid_and_failed_batch_recommendations_use_official_fallback(env, monkeypatch):
+    from backend.app.services.character import Character
+    from backend.app.services.voice_recommender import recommend_voices_with_llm
+
+    class FailedLLM:
+        async def chat_structured(self, **_kwargs):
+            raise RuntimeError("模拟模型批次失败")
+
+    env["llm"].recs = [
+        {"character_name": "李明", "suggested_voice_id": "doubao:invented", "reason": "无效"},
+    ]
+    chars = [Character(name="李明", gender="男", age="青年", personality="")]
+    recs = await recommend_voices_with_llm(chars)
+    assert len(recs) == 1
+    assert recs[0].suggested_voice_id == "doubao:zh_male_ruyaqingnian_uranus_bigtts"
+
+    monkeypatch.setattr(env["llm"], "chat_structured", FailedLLM().chat_structured)
+    recs = await recommend_voices_with_llm(chars)
+    assert len(recs) == 1
+    assert recs[0].suggested_voice_id == "doubao:zh_male_ruyaqingnian_uranus_bigtts"
