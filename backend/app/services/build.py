@@ -22,6 +22,7 @@ import os
 import random
 import re
 import shutil
+import tempfile
 import time as _time
 import uuid
 import zipfile
@@ -116,6 +117,48 @@ def _build_book_zip(
                 zf.writestr(f"{book_dir}/{base}.lrc", chapter_lrcs[i])
 
 
+async def _build_book_zip_remote(
+    zip_path: str, *, project_id: str, build_id: str,
+    job_title: str | None,
+    chapter_outputs: list[tuple[str | None, int | None]],
+    chapter_titles: list[str], chapter_lrcs: list[str],
+    start: int, end: int,
+) -> dict[int, int]:
+    """从 COS 逐章回源写入 ZIP；临时盘只占一个章节与当前 ZIP。"""
+    sizes: dict[int, int] = {}
+    book_dir = _sanitize_zip_entry(job_title or build_id, f"小说_{build_id[:8]}")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
+        for i in range(start, end + 1):
+            local_path, _ = chapter_outputs[i]
+            if not local_path:
+                raise RuntimeError(f"第 {i+1} 章没有音频产物，无法打包")
+            source = Path(local_path)
+            downloaded: Path | None = None
+            try:
+                if not source.is_file():
+                    with tempfile.NamedTemporaryFile(
+                        prefix=".zip_ch_", suffix=".mp3", dir=Path(settings.AUDIO_DIR),
+                        delete=False,
+                    ) as tmp:
+                        downloaded = Path(tmp.name)
+                    if not await _restore_from_object_storage(
+                        project_id, build_id, source.name, downloaded,
+                    ):
+                        raise RuntimeError(f"第 {i+1} 章对象存储回源失败，无法打包")
+                    source = downloaded
+                sizes[i] = source.stat().st_size
+                title = chapter_titles[i] if i < len(chapter_titles) else ""
+                clean = _sanitize_zip_entry(strip_chapter_prefix(title), f"章节{i+1}")
+                base = f"第{i+1:03d}章_{clean}"
+                await asyncio.to_thread(zf.write, source, f"{book_dir}/{base}.mp3")
+                if i < len(chapter_lrcs) and chapter_lrcs[i].strip():
+                    zf.writestr(f"{book_dir}/{base}.lrc", chapter_lrcs[i])
+            finally:
+                if downloaded is not None:
+                    downloaded.unlink(missing_ok=True)
+    return sizes
+
+
 async def _archive_file(key: str, local_path: Path, content_type: str) -> bool:
     """把本地产物归档到对象存储（G-3）。local 后端直接返回 False，不产生任何动作。
 
@@ -142,11 +185,17 @@ async def _restore_from_object_storage(
     st = get_storage()
     if not st.archives_remotely:
         return False
+    existed_before = dest.is_file() and dest.stat().st_size > 0
     try:
-        return await st.fetch_to(
+        restored = await st.fetch_to(
             key=media_key(project_id, build_id, filename), dest=dest
         )
+        if not restored and not existed_before:
+            dest.unlink(missing_ok=True)
+        return restored
     except Exception as e:
+        if not existed_before:
+            dest.unlink(missing_ok=True)
         logger.warning(
             f"[build_worker] 回源异常 key={filename}: {type(e).__name__}: {e}"
         )
@@ -775,14 +824,22 @@ def _link_or_copy(src: Path, dst: Path) -> bool:
 # 说明：
 # - 进程级内存缓存（LRU 上限 TTS_SEGMENT_CACHE_MAX_ENTRIES）；
 # - 同时落盘到 settings.AUDIO_DIR / "_seg_cache" / "{key}.mp3"，元数据 JSON 同目录，
-#   这样重启后仍能命中；
+#   这样本地存储模式重启后仍能命中；对象存储 + 本地清理模式只保留内存缓存；
 # - MP3 是不可压缩/不需要无损的媒体格式，二进制文件直接存即可；
 # - 命中时无需调用 TTS API（零花费、零延迟、零 429 风险）。
 # =====================================================================
 
-_TTS_SEG_CACHE_MAX_DEFAULT = 20_000
 _tts_seg_mem_cache: dict[str, tuple[bytes, int]] = {}
 _tts_seg_mem_lock = asyncio.Lock()
+
+
+def _seg_cache_disk_enabled() -> bool:
+    return not (get_storage().archives_remotely and cleanup_local_enabled())
+
+
+def _seg_cache_mem_limit() -> int:
+    configured = max(1, int(settings.TTS_SEGMENT_CACHE_MAX_ENTRIES))
+    return min(configured, 512) if not _seg_cache_disk_enabled() else configured
 
 
 def _seg_cache_dir() -> Path:
@@ -797,6 +854,12 @@ def _seg_cache_gc_ts_path() -> Path:
 
 def _run_seg_cache_gc_if_needed(force: bool = False) -> None:
     try:
+        if not _seg_cache_disk_enabled():
+            cache_dir = Path(settings.AUDIO_DIR) / "_seg_cache"
+            if cache_dir.is_dir() and not cache_dir.is_symlink():
+                shutil.rmtree(cache_dir)
+                logger.info("[seg_cache_gc] 对象存储模式已清理旧磁盘段缓存")
+            return
         ts_path = _seg_cache_gc_ts_path()
         now = datetime.now(UTC).replace(tzinfo=None)
         if not force:
@@ -959,9 +1022,13 @@ async def tts_segment_cache_get(
         sample_rate=sample_rate, tts_model=tts_model,
     )
     async with _tts_seg_mem_lock:
-        hit = _tts_seg_mem_cache.get(key)
+        hit = _tts_seg_mem_cache.pop(key, None)
+        if hit is not None:
+            _tts_seg_mem_cache[key] = hit
     if hit is not None:
         return hit
+    if not _seg_cache_disk_enabled():
+        return None
     mp3_p = _seg_cache_mp3_path(key)
     meta_p = _seg_cache_meta_path(key)
     try:
@@ -971,12 +1038,9 @@ async def tts_segment_cache_get(
             async with _tts_seg_mem_lock:
                 if key not in _tts_seg_mem_cache:
                     _tts_seg_mem_cache[key] = (mp3_bytes, dur_ms)
-                    max_entries = max(1000, int(
-                        getattr(settings, "TTS_SEGMENT_CACHE_MAX_ENTRIES", _TTS_SEG_CACHE_MAX_DEFAULT)
-                        or _TTS_SEG_CACHE_MAX_DEFAULT
-                    ))
+                    max_entries = _seg_cache_mem_limit()
                     while len(_tts_seg_mem_cache) > max_entries:
-                        _tts_seg_mem_cache.popitem(last=False)
+                        _tts_seg_mem_cache.pop(next(iter(_tts_seg_mem_cache)))
             return mp3_bytes, dur_ms
     except Exception:
         return None
@@ -990,7 +1054,7 @@ async def tts_segment_cache_put(
     sample_rate: int | str = "",
     tts_model: str = "",
 ) -> None:
-    """写 TTS 段缓存：内存 + 磁盘双写。
+    """写 TTS 段缓存：本地模式双写，对象存储清理模式只写内存。
     P1-7：model + context_texts_hash 参与键；P1-4：sample_rate 参与键。"""
     key = _seg_cache_key(
         voice_id, speed, text, emotion=emotion, instruction=instruction,
@@ -998,28 +1062,27 @@ async def tts_segment_cache_put(
         sample_rate=sample_rate, tts_model=tts_model,
     )
     async with _tts_seg_mem_lock:
+        _tts_seg_mem_cache.pop(key, None)
         _tts_seg_mem_cache[key] = (mp3_bytes, int(dur_ms))
-        max_entries = max(1000, int(
-            getattr(settings, "TTS_SEGMENT_CACHE_MAX_ENTRIES", _TTS_SEG_CACHE_MAX_DEFAULT)
-            or _TTS_SEG_CACHE_MAX_DEFAULT
-        ))
+        max_entries = _seg_cache_mem_limit()
         while len(_tts_seg_mem_cache) > max_entries:
-            _tts_seg_mem_cache.popitem(last=False)
-    try:
-        mp3_p = _seg_cache_mp3_path(key)
-        meta_p = _seg_cache_meta_path(key)
-        if not mp3_p.is_file():
-            mp3_p.write_bytes(mp3_bytes)
-        if not meta_p.is_file():
-            meta_p.write_text(
-                json.dumps({"dur_ms": int(dur_ms)}, ensure_ascii=False),
-                encoding="utf-8",
-            )
-    except Exception as e:
-        logger.warning(f"[tts_seg_cache] put disk fail key={key[:12]}... err={e}")
+            _tts_seg_mem_cache.pop(next(iter(_tts_seg_mem_cache)))
+    if _seg_cache_disk_enabled():
+        try:
+            mp3_p = _seg_cache_mp3_path(key)
+            meta_p = _seg_cache_meta_path(key)
+            if not mp3_p.is_file():
+                mp3_p.write_bytes(mp3_bytes)
+            if not meta_p.is_file():
+                meta_p.write_text(
+                    json.dumps({"dur_ms": int(dur_ms)}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+        except Exception as e:
+            logger.warning(f"[tts_seg_cache] put disk fail key={key[:12]}... err={e}")
 
-    if random.random() < 0.01:
-        _run_seg_cache_gc_if_needed(force=False)
+        if random.random() < 0.01:
+            _run_seg_cache_gc_if_needed(force=False)
 
 
 # =====================================================================
@@ -1780,7 +1843,13 @@ async def retry_failed_build(
             failed_ch_idxs = sorted(set(failed_ch_idxs) | set(explicit))
 
         if not failed_ch_idxs:
-            raise ValueError("没有失败章可重试")
+            # 失败 Build 的未完成章节可补跑；若所有章已完成，则仅重新打包。
+            art_states = list((await session.execute(select(
+                BuildArtifact.chapter_idx, BuildArtifact.status,
+            ).where(BuildArtifact.build_id == source_build_id))).all())
+            if source_build.status != "failed" or len(art_states) != len(chapters_all):
+                raise ValueError("没有失败章可重试")
+            failed_ch_idxs = sorted(idx for idx, status in art_states if status != "done")
 
         # 局部别名：下方建 BuildArtifact 循环沿用原变量名
         chapters = chapters_all
@@ -1823,7 +1892,9 @@ async def retry_failed_build(
             build_id=new_build_id,
             project_id=project_id,
             status="queued",
-            progress_msg=f"重试 Build {source_build_id[:8]}…，准备合成 {len(failed_ch_idxs)} 章",
+            progress_msg=(f"重试 Build {source_build_id[:8]}…，重新打包已完成章节"
+                          if not failed_ch_idxs else
+                          f"重试 Build {source_build_id[:8]}…，准备合成 {len(failed_ch_idxs)} 章"),
             completed_chapters=0,
             total_chapters=len(chapters),
             narrator_voice_id=narrator_voice_id,
@@ -1845,10 +1916,12 @@ async def retry_failed_build(
         session.add(new_b)
 
         new_completed = 0
+        remote_cleanup_mode = get_storage().archives_remotely and cleanup_local_enabled()
         for ch in chapters:
             src_art = source_art_by_idx.get(ch.idx)
             if ch.idx not in failed_ch_idxs and src_art and src_art.status == "done" and src_art.audio_filename:
                 expected_mp3 = audio_dir / src_art.audio_filename
+                source_was_local = expected_mp3.is_file()
                 # G-5：源 build 的本地副本可能已被 STORAGE_CLEANUP_LOCAL 清理 →
                 # 先从对象存储回源，再走下面「另存为自身命名」的既有逻辑。
                 # 回源失败（对象存储不可用/无此对象）则跳过该章，让它照常重新合成。
@@ -1861,6 +1934,8 @@ async def retry_failed_build(
                 if expected_mp3.is_file() and source_build.tts_provider == "minimax":
                     modes = mp3_channel_modes(expected_mp3.read_bytes())
                     if modes != {3}:
+                        if remote_cleanup_mode and not source_was_local:
+                            expected_mp3.unlink(missing_ok=True)
                         failed_ch_idxs = sorted(set(failed_ch_idxs) | {ch.idx})
                         logger.info(
                             "[retry_build] ch %d 声道模式=%s，重建以修复旧版 MP3",
@@ -1878,10 +1953,26 @@ async def retry_failed_build(
                 # 为复制），并同步另存时间轴 sidecar，使新 build 的下载/字幕自洽。
                 new_fname = _audio_filename(new_build_id, ch.idx, failed=False)
                 if _link_or_copy(expected_mp3, audio_dir / new_fname):
+                    if remote_cleanup_mode:
+                        copied = await _archive_file(
+                            media_key(project_id, new_build_id, new_fname),
+                            audio_dir / new_fname, "audio/mpeg",
+                        )
+                        if not copied:
+                            (audio_dir / new_fname).unlink(missing_ok=True)
+                            if not source_was_local:
+                                expected_mp3.unlink(missing_ok=True)
+                            raise _RemoteArchiveError(
+                                f"重试构建复用第 {ch.idx+1} 章上传对象存储失败"
+                            )
                     _link_or_copy(
                         audio_dir / _timings_filename_of_audio(src_art.audio_filename),
                         audio_dir / _timings_filename_of_audio(new_fname),
                     )
+                    if remote_cleanup_mode:
+                        (audio_dir / new_fname).unlink(missing_ok=True)
+                        if not source_was_local:
+                            expected_mp3.unlink(missing_ok=True)
                     session.add(BuildArtifact(
                         build_id=new_build_id,
                         chapter_idx=ch.idx,
@@ -1894,6 +1985,8 @@ async def retry_failed_build(
                     ))
                     new_completed += 1
                     continue
+                if remote_cleanup_mode and not source_was_local:
+                    expected_mp3.unlink(missing_ok=True)
             # 文件丢失或不可复用时必须加入实际合成集合，避免 pending 永远被跳过。
             failed_ch_idxs = sorted(set(failed_ch_idxs) | {ch.idx})
             session.add(BuildArtifact(
@@ -1905,7 +1998,9 @@ async def retry_failed_build(
 
         new_b.completed_chapters = new_completed
         new_b.failed_chapters_json = json.dumps(failed_ch_idxs)
-        new_b.progress_msg = f"重试 Build {source_build_id[:8]}…，准备合成 {len(failed_ch_idxs)} 章"
+        new_b.progress_msg = (f"重试 Build {source_build_id[:8]}…，重新打包已完成章节"
+                              if not failed_ch_idxs else
+                              f"重试 Build {source_build_id[:8]}…，准备合成 {len(failed_ch_idxs)} 章")
         await session.commit()
         await session.refresh(new_b)
         cur_resp = _build_to_resp(new_b)
@@ -2058,6 +2153,10 @@ class _MiniMaxQuotaWaitExceeded(RuntimeError):
     """持续限流超过构建允许的最长等待时间。"""
 
 
+class _RemoteArchiveError(RuntimeError):
+    """对象存储归档失败，不能将本地临时文件当作已交付产物。"""
+
+
 async def _gather_cancel_on_error(coroutines: list) -> list:
     """段级合成任一失败时停止其余请求，等待任务清理完毕后再重试。"""
     tasks = [asyncio.create_task(coro) for coro in coroutines]
@@ -2138,7 +2237,8 @@ async def _run_build_inner(
     )
 
     factory = get_session_factory()
-    only_set: set[int] | None = set(only_chapter_idxs) if only_chapter_idxs else None
+    only_set: set[int] | None = (set(only_chapter_idxs)
+                                 if only_chapter_idxs is not None else None)
 
     source_art_by_idx: dict[int, BuildArtifact] = {}
     if source_build_id:
@@ -2258,8 +2358,10 @@ async def _run_build_inner(
     sem = get_tts_sem()
     audio_dir = Path(settings.AUDIO_DIR)
     audio_dir.mkdir(parents=True, exist_ok=True)
+    remote_cleanup_mode = get_storage().archives_remotely and cleanup_local_enabled()
 
     chapter_outputs: list[tuple[str | None, int | None]] = [(None, None)] * total
+    chapter_sizes: list[int | None] = [None] * total
     # G-3/G-5：已成功归档到对象存储的产物名 → 打包完成后据此清理本地副本
     archived_files: set[str] = set()
     completed = 0
@@ -2295,7 +2397,16 @@ async def _run_build_inner(
             src_art = source_art_by_idx.get(ch.idx)
             ch_ok_path: Path | None = None
             ch_ok_duration_ms: int | None = None
-            if src_art and src_art.status == "done" and src_art.audio_filename:
+            if remote_cleanup_mode:
+                async with factory() as s:
+                    own_art = (await s.execute(select(BuildArtifact).where(
+                        BuildArtifact.build_id == build_id,
+                        BuildArtifact.chapter_idx == ch_idx,
+                    ))).scalar_one_or_none()
+                    if own_art and own_art.status == "done" and own_art.audio_filename:
+                        ch_ok_path = audio_dir / own_art.audio_filename
+                        ch_ok_duration_ms = own_art.duration_ms
+            if ch_ok_path is None and src_art and src_art.status == "done" and src_art.audio_filename:
                 p_src = audio_dir / src_art.audio_filename
                 if p_src.is_file():
                     ch_ok_path = p_src
@@ -2310,8 +2421,10 @@ async def _run_build_inner(
                     ch_ok_path = p_normal
 
             if ch_ok_path is not None:
-                mp3_bytes = ch_ok_path.read_bytes()
-                ch_ok_duration_ms = mp3_duration_ms(mp3_bytes) or int(ch_ok_duration_ms or 0)
+                if ch_ok_path.is_file():
+                    mp3_bytes = ch_ok_path.read_bytes()
+                    ch_ok_duration_ms = mp3_duration_ms(mp3_bytes) or int(ch_ok_duration_ms or 0)
+                    chapter_sizes[ch_idx] = len(mp3_bytes)
                 chapter_outputs[ch_idx] = (str(ch_ok_path), ch_ok_duration_ms)
                 completed += 1
                 chapter_ok_flag[ch_idx] = True
@@ -2364,7 +2477,7 @@ async def _run_build_inner(
 
             if art and art.status == "done" and art.audio_filename:
                 p = audio_dir / art.audio_filename
-                if p.is_file():
+                if p.is_file() or remote_cleanup_mode:
                     ch_ok_path = p
                     ch_ok_duration_ms = art.duration_ms
             if ch_ok_path is None:
@@ -2379,8 +2492,10 @@ async def _run_build_inner(
                         art.error_msg = None
 
             if ch_ok_path is not None:
-                mp3_bytes = ch_ok_path.read_bytes()
-                ch_ok_duration_ms = mp3_duration_ms(mp3_bytes) or int(ch_ok_duration_ms or 0)
+                if ch_ok_path.is_file():
+                    mp3_bytes = ch_ok_path.read_bytes()
+                    ch_ok_duration_ms = mp3_duration_ms(mp3_bytes) or int(ch_ok_duration_ms or 0)
+                    chapter_sizes[ch_idx] = len(mp3_bytes)
                 chapter_outputs[ch_idx] = (str(ch_ok_path), ch_ok_duration_ms)
                 completed += 1
                 chapter_ok_flag[ch_idx] = True
@@ -2571,15 +2686,22 @@ async def _run_build_inner(
             os.replace(tmp_fpath, ch_fpath)
             ch_dur_ms = mp3_duration_ms(ch_bytes)
             chapter_outputs[ch_idx] = (ch_fpath, ch_dur_ms)
+            chapter_sizes[ch_idx] = len(ch_bytes)
 
             # G-3：章节 MP3 归档到对象存储。
             # ⚠️ 此处**不能**删本地文件 —— 下面 _finalize 打包 ZIP 需要读本地 MP3，
             # 本地缺失会被当作失败章写入**静音占位**，等于静默损坏交付物。
             # 本地清理统一放在 _finalize 的「ZIP 也归档成功」之后。
-            if await _archive_file(
+            archived = await _archive_file(
                 media_key(project_id, build_id, ch_fname), Path(ch_fpath), "audio/mpeg"
-            ):
+            )
+            if archived:
                 archived_files.add(ch_fname)
+                if remote_cleanup_mode:
+                    Path(ch_fpath).unlink(missing_ok=True)
+            elif remote_cleanup_mode:
+                Path(ch_fpath).unlink(missing_ok=True)
+                raise _RemoteArchiveError(f"第 {ch_idx+1} 章 MP3 上传对象存储失败")
 
             # 章内时间轴 sidecar（SRT/LRC 用）：gather 保序 → results[i] 对应 segs[i]
             _write_chapter_timings(
@@ -2639,7 +2761,7 @@ async def _run_build_inner(
         except _BuildCancelledWhileWaiting:
             logger.info("[build_worker] 限额等待期间取消 build_id=%s", build_id[:8])
             break
-        except _MiniMaxQuotaWaitExceeded as quota_err:
+        except (_MiniMaxQuotaWaitExceeded, _RemoteArchiveError) as quota_err:
             # 直接终止构建；其余章不能继续落一秒静音占位。
             cancelled_during_timeout = False
             async with factory() as s:
@@ -2699,11 +2821,18 @@ async def _run_build_inner(
             with open(ph_fpath, "wb") as f:
                 f.write(placeholder_bytes)
             chapter_outputs[ch_idx] = (ph_fpath, 1000)
+            chapter_sizes[ch_idx] = len(placeholder_bytes)
             # 占位音频也要归档：它会被打进 ZIP（避免缺文件），单章下载也应能拿到
-            if await _archive_file(
+            archived = await _archive_file(
                 media_key(project_id, build_id, ph_fname), Path(ph_fpath), "audio/mpeg"
-            ):
+            )
+            if archived:
                 archived_files.add(ph_fname)
+                if remote_cleanup_mode:
+                    Path(ph_fpath).unlink(missing_ok=True)
+            elif remote_cleanup_mode:
+                Path(ph_fpath).unlink(missing_ok=True)
+                raise _RemoteArchiveError(f"第 {ch_idx+1} 章占位 MP3 上传对象存储失败")
 
             async with factory() as s:
                 stmt_art = select(BuildArtifact).where(
@@ -2764,13 +2893,7 @@ async def _run_build_inner(
         f"(completed={completed} failed={failed_count})"
     )
     total_ms = 0
-    total_size_bytes = 0
     for _p, _d in chapter_outputs:
-        if _p:
-            try:
-                total_size_bytes += os.path.getsize(_p)
-            except OSError:
-                pass
         total_ms += _d or 0
 
     # 打包前为每章生成 LRC 歌词（与 MP3 按位置对齐，供 ZIP 内同名 .lrc）。失败章 skip。
@@ -2797,11 +2920,13 @@ async def _run_build_inner(
             _lrc_text = lrc_by_chapter.get(_c.idx, "")
             if not (_lrc_text or "").strip():
                 continue
-            await get_storage().put_bytes(
+            archived = await get_storage().put_bytes(
                 key=media_key(project_id, build_id, f"ch{_c.idx:04d}.lrc"),
                 data=_lrc_text.encode("utf-8"),
                 content_type="text/plain; charset=utf-8",
             )
+            if remote_cleanup_mode and not archived:
+                raise _RemoteArchiveError(f"第 {_c.idx+1} 章 LRC 上传对象存储失败")
 
     # F-7：按 ZIP_SHARD_CHAPTERS 分片打包。每片自包含（内部章节序号保持全书统一编号），
     # 避免数千章时产出数十 GB 单包（本地峰值磁盘翻倍、浏览器也无法可靠下载）。
@@ -2809,6 +2934,8 @@ async def _run_build_inner(
         shard_size = _zip_shard_size()
     except Exception:
         shard_size = 0
+    if remote_cleanup_mode:
+        shard_size = min(shard_size, 10) if shard_size > 0 else 10
     shard_ranges = _zip_shard_ranges(total, shard_size)
     zip_shards: list[dict] = []
     chapter_titles = [c.title for c in chapters]
@@ -2842,17 +2969,29 @@ async def _run_build_inner(
         shard_name = _zip_shard_filename(build_id, _s, _e, total)
         shard_path = str(audio_dir / shard_name)
         try:
-            _build_book_zip(
-                shard_path,
-                job_id=build_id,
-                job_title=job_title,
-                chapter_outputs=chapter_outputs,
-                chapter_titles=chapter_titles,
-                chapter_lrcs=chapter_lrcs,
-                start=_s,
-                end=_e,
-            )
+            if remote_cleanup_mode:
+                sizes = await _build_book_zip_remote(
+                    shard_path, project_id=project_id, build_id=build_id,
+                    job_title=job_title, chapter_outputs=chapter_outputs,
+                    chapter_titles=chapter_titles, chapter_lrcs=chapter_lrcs,
+                    start=_s, end=_e,
+                )
+                for idx, size in sizes.items():
+                    chapter_sizes[idx] = size
+            else:
+                _build_book_zip(
+                    shard_path,
+                    job_id=build_id,
+                    job_title=job_title,
+                    chapter_outputs=chapter_outputs,
+                    chapter_titles=chapter_titles,
+                    chapter_lrcs=chapter_lrcs,
+                    start=_s,
+                    end=_e,
+                )
         except Exception as e:
+            if remote_cleanup_mode:
+                Path(shard_path).unlink(missing_ok=True)
             logger.error(
                 f"[build_worker] build_id={build_id[:8]}... 打包分片失败 "
                 f"ch{_s + 1}-{_e + 1}: {type(e).__name__}: {e}",
@@ -2886,15 +3025,22 @@ async def _run_build_inner(
                     completed_timings=_h13_completed_timings,
                 )
                 await s.commit()
-        # G-3：分片 ZIP 归档（在本地 MP3 清理之前 —— 打包必须读本地文件）
-        if await _archive_file(
+        # G-3：本地模式从章节文件打包；对象存储省盘模式逐章回源打包。
+        archived = await _archive_file(
             media_key(project_id, build_id, shard_name),
             Path(shard_path),
             "application/zip",
-        ):
+        )
+        if archived:
             archived_files.add(shard_name)
+            if remote_cleanup_mode:
+                Path(shard_path).unlink(missing_ok=True)
+        elif remote_cleanup_mode:
+            Path(shard_path).unlink(missing_ok=True)
+            raise _RemoteArchiveError(f"第 {shard_done} 卷 ZIP 上传对象存储失败")
     # zip_filename 保留为首个分片（旧代码路径 / 媒体签名兜底都依赖它）
     zip_fname = zip_shards[0]["filename"] if zip_shards else _zip_filename(build_id)
+    total_size_bytes = sum(size or 0 for size in chapter_sizes)
     if len(zip_shards) > 1:
         logger.info(
             f"[build_worker] build_id={build_id[:8]}... 已生成 {len(zip_shards)} 个 ZIP 分片"

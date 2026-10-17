@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import gzip
 import logging
 import re
@@ -171,6 +172,9 @@ async def lifespan(app: FastAPI):
         await migrate_legacy_runtime_settings_json_once()
         # 从 DB 回填到 settings.*
         await load_runtime_settings_async()
+        # 对象存储模式不再持久化 TTS 段缓存；此时配置已从 DB 回填。
+        from .services.build import _run_seg_cache_gc_if_needed
+        await asyncio.to_thread(_run_seg_cache_gc_if_needed, True)
     except Exception as e:
         logger.warning(f"[startup] 配置回填失败: {type(e).__name__}: {e}")
     # 启动时确保默认 admin 账号存在

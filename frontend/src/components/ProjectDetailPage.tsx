@@ -2109,10 +2109,11 @@ function BuildRow({
   };
 
   // 失败章重试：生成新 build，成功章节复用原 MP3，mode/tts_provider 原样继承
-  const hasFailedChapters =
+  const canRetryBuild =
     !isRunning &&
     (item.status === 'failed' || item.status === 'partial_success') &&
-    (detail?.failed_chapters?.length ?? 0) + (item.total_chapters - item.completed_chapters) > 0;
+    (item.status === 'failed' ||
+      (detail?.failed_chapters?.length ?? 0) + (item.total_chapters - item.completed_chapters) > 0);
   const onRetryFailed = async () => {
     setRetrying(true);
     try {
@@ -2205,7 +2206,7 @@ function BuildRow({
         <span className="text-xs text-ink-500 ml-auto tabular-nums shrink-0">
           {relativeTime(item.created_at)}
         </span>
-        {hasFailedChapters && (
+        {canRetryBuild && (
           <button
             onClick={onRetryFailed}
             disabled={retrying}
@@ -2214,7 +2215,7 @@ function BuildRow({
               hover:border-amber-500/50 hover:bg-amber-500/20
               transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
             style={{ width: 34, height: 34 }}
-            title="重试失败章节（生成新构建，成功章节复用原音频，合成模式与引擎保持不变）"
+            title="重试失败章节或打包（生成新构建，成功章节复用原音频）"
           >
             {retrying ? (
               <span className="inline-block w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />

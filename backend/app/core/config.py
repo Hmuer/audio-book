@@ -259,7 +259,7 @@ class Settings(BaseSettings):
     # 如果调用方遇到 TTS RPM 429，可下调到 50 / 20。
     TTS_MAX_CONCURRENCY: int = 200
     # TTS 段缓存：内存 LRU 上限（条）；超上限淘汰最旧。
-    # 注：磁盘缓存不限制大小（AUDIO_DIR/_seg_cache/），重启后仍可命中。
+    # 对象存储 + 本地清理模式最多保留 512 条内存段缓存，不再持久化到磁盘。
     TTS_SEGMENT_CACHE_MAX_ENTRIES: int = 20_000
     # TTS 段缓存磁盘过期天数（启动 GC 时 mtime 超过此天数字段被删）
     TTS_SEGMENT_CACHE_TTL_DAYS: int = 30
@@ -299,7 +299,7 @@ class Settings(BaseSettings):
     ZIP_SHARD_CHAPTERS: int = 50
 
     # ============ 对象存储（腾讯云 COS，走 S3 兼容协议）============
-    # 交付物（章节 MP3 / 每章 LRC / 分片 ZIP）镜像到对象存储并直连下载。
+    # 交付物（章节 MP3 / 每章 LRC / 分片 ZIP）归档到对象存储并直连下载。
     # local：默认，产物只落本地盘（行为与接入前完全一致，便于回滚）。
     STORAGE_BACKEND: str = "local"
     S3_ENDPOINT: str = ""          # 地域端点或含桶名的访问域名（会归一化）
