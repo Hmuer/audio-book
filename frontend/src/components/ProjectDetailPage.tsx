@@ -111,6 +111,8 @@ export default function ProjectDetailPage({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playingKey, setPlayingKey] = useState<string | null>(null);
   const [loadingVoice, setLoadingVoice] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const previewRequestRef = useRef(0);
 
   const narratorDefault = useMemo(
     () => voices.find(v => normalizeGender(v) === '男声') || voices[0],
@@ -192,6 +194,7 @@ export default function ProjectDetailPage({
       if (playingKeyRef.current === key) {
         playingKeyRef.current = null;
         setPlayingKey(null);
+        if (key.startsWith('voice_')) setPreviewError('音色试听播放失败');
       }
     };
     audioRef.current.src = url;
@@ -200,6 +203,7 @@ export default function ProjectDetailPage({
       if (playingKeyRef.current === key) {
         playingKeyRef.current = null;
         setPlayingKey(null);
+        if (key.startsWith('voice_')) setPreviewError('音色试听播放失败，请检查浏览器音频权限');
       }
     });
   };
@@ -215,23 +219,40 @@ export default function ProjectDetailPage({
 
   const togglePreviewVoice = async (voiceId: string, text: string, speed: number) => {
     const key = `voice_${voiceId}`;
+    const requestId = ++previewRequestRef.current;
     if (playingKeyRef.current === key) {
       stopPlayback();
       return;
     }
     stopPlayback();
+    setPreviewError(null);
     setLoadingVoice(voiceId);
     try {
       const r = await api.preview(text.slice(0, 80), voiceId, speed);
       // /media 挂载点要求鉴权，而 <audio src> 无法携带请求头 → 先取字节转 Blob URL，
       // 否则直接塞 /media/xxx.mp3 会 401（试听全线播不出）
       const objUrl = await fetchMediaObjectUrl(r.audio_url);
+      if (requestId !== previewRequestRef.current) {
+        URL.revokeObjectURL(objUrl);
+        return;
+      }
       revokePreviewObjUrl();
       previewObjUrlRef.current = objUrl;
       playUrl(key, objUrl);
+    } catch (e: any) {
+      if (requestId === previewRequestRef.current) {
+        setPreviewError(`音色试听失败：${e?.message || e}`);
+      }
     } finally {
-      setLoadingVoice(prev => (prev === voiceId ? null : prev));
+      if (requestId === previewRequestRef.current) setLoadingVoice(null);
     }
+  };
+
+  const dismissPreview = () => {
+    previewRequestRef.current += 1;
+    setLoadingVoice(null);
+    setPreviewError(null);
+    stopPlayback();
   };
 
   const goBack = () => {
@@ -359,6 +380,7 @@ export default function ProjectDetailPage({
               narratorDefault={narratorDefault}
               playingKey={playingKey}
               loadingVoice={loadingVoice}
+              previewError={previewError}
               onPreviewVoice={togglePreviewVoice}
               onReload={reload}
             />
@@ -371,6 +393,10 @@ export default function ProjectDetailPage({
               voices={voices}
               narratorDefault={narratorDefault}
               playingKey={playingKey}
+              loadingVoice={loadingVoice}
+              previewError={previewError}
+              onPreviewVoice={togglePreviewVoice}
+              onDismissPreview={dismissPreview}
               onTogglePlay={togglePlay}
               onReload={reload}
             />
@@ -1666,13 +1692,14 @@ function ChaptersTab({
 
 // =================== Voices Tab ===================
 function VoicesTab({
-  project, voices, narratorDefault, playingKey, loadingVoice, onPreviewVoice, onReload,
+  project, voices, narratorDefault, playingKey, loadingVoice, previewError, onPreviewVoice, onReload,
 }: {
   project: ProjectDetailResp;
   voices: Voice[];
   narratorDefault: Voice | undefined;
   playingKey: string | null;
   loadingVoice: string | null;
+  previewError: string | null;
   onPreviewVoice: (voiceId: string, text: string, speed: number) => void;
   onReload: () => void;
 }) {
@@ -1729,6 +1756,11 @@ function VoicesTab({
 
   return (
     <div className="space-y-4">
+      {previewError && (
+        <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          {previewError}
+        </div>
+      )}
       <div className="glass-panel space-y-5 p-5 sm:p-6 relative overflow-hidden">
         <h3 className="font-semibold text-ink-800 flex items-center gap-2 relative">
           <div className="w-8 h-8 rounded-md grid place-items-center bg-brand-500/20 text-brand-300">
@@ -1845,15 +1877,6 @@ function VoicesTab({
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-start gap-3 min-w-0">
-                      <div
-                        className="w-10 h-10 rounded-md grid place-items-center shrink-0 text-white font-bold"
-                        style={{
-                          background: `linear-gradient(135deg, ${genderColor}, ${genderColor}aa)`,
-                          boxShadow: `0 0 0 1px rgba(var(--color-white), 0.12) inset, 0 6px 12px -6px ${genderColor}66`,
-                        }}
-                      >
-                        {c.name?.trim()?.[0] || '?'}
-                      </div>
                       <div className="min-w-0">
                         <div className="font-semibold text-ink-800 truncate">{c.name}</div>
                         <div className="text-[11px] text-ink-500 mt-0.5">
@@ -1901,7 +1924,7 @@ function VoicesTab({
 
 // =================== Builds Tab ===================
 function BuildsTab({
-  projectId, project, builds, voices, narratorDefault, playingKey, onTogglePlay, onReload,
+  projectId, project, builds, voices, narratorDefault, playingKey, loadingVoice, previewError, onPreviewVoice, onDismissPreview, onTogglePlay, onReload,
 }: {
   projectId: string;
   project: ProjectDetailResp;
@@ -1909,6 +1932,10 @@ function BuildsTab({
   voices: Voice[];
   narratorDefault: Voice | undefined;
   playingKey: string | null;
+  loadingVoice: string | null;
+  previewError: string | null;
+  onPreviewVoice: (voiceId: string, text: string, speed: number) => void;
+  onDismissPreview: () => void;
   onTogglePlay: (key: string, url: string | null) => void;
   onReload: () => void;
 }) {
@@ -1934,6 +1961,7 @@ function BuildsTab({
   }, [hasRunning, onReload]);
 
   const onCreateSuccess = async () => {
+    onDismissPreview();
     setShowCreate(false);
     await onReload();
   };
@@ -2006,7 +2034,11 @@ function BuildsTab({
           existingBuilds={builds}
           voices={voices}
           narratorDefault={narratorDefault}
-          onClose={() => setShowCreate(false)}
+          playingKey={playingKey}
+          loadingVoice={loadingVoice}
+          previewError={previewError}
+          onPreviewVoice={onPreviewVoice}
+          onClose={() => { onDismissPreview(); setShowCreate(false); }}
           onCreated={onCreateSuccess}
           onHistoryChanged={onReload}
         />
@@ -2578,13 +2610,17 @@ function BuildArtifactStatusIcon({ status }: { status: string }) {
 
 // =================== Create Build Modal ===================
 function CreateBuildModal({
-  projectId, project, existingBuilds, voices, narratorDefault, onClose, onCreated, onHistoryChanged,
+  projectId, project, existingBuilds, voices, narratorDefault, playingKey, loadingVoice, previewError, onPreviewVoice, onClose, onCreated, onHistoryChanged,
 }: {
   projectId: string;
   project: ProjectDetailResp;
   existingBuilds: BuildListItem[];
   voices: Voice[];
   narratorDefault: Voice | undefined;
+  playingKey: string | null;
+  loadingVoice: string | null;
+  previewError: string | null;
+  onPreviewVoice: (voiceId: string, text: string, speed: number) => void;
   onClose: () => void;
   onCreated: () => void;
   onHistoryChanged: () => void;
@@ -2712,6 +2748,12 @@ function CreateBuildModal({
           可在生成前做最后调整；保存到项目的默认配置不会被改动。
         </p>
 
+        {previewError && (
+          <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 mb-5 text-sm text-red-200">
+            {previewError}
+          </div>
+        )}
+
         {existingBuilds.length > 0 && (
           <label className="flex items-start gap-2 rounded-lg border border-ink-300/70 bg-ink-100 px-4 py-3 mb-5 text-sm text-ink-700 cursor-pointer">
             <input type="checkbox" checked={clearPrevious} onChange={e => setClearPrevious(e.target.checked)}
@@ -2763,10 +2805,18 @@ function CreateBuildModal({
             <div className="grid sm:grid-cols-2 gap-3">
               <div><div className="text-xs text-ink-500 mb-1">男声（未知性别也使用男声）</div>
                 <VoicePicker voices={maleVoices.filter(v => v.id !== narrator)} value={defaultMale}
-                  onChange={setDefaultMale} onPreview={() => {}} /></div>
+                  onChange={setDefaultMale}
+                  onPreview={id => onPreviewVoice(id, '你好，这是一段默认男声音色的试听示例。', speed)}
+                  isPlaying={playingKey === `voice_${defaultMale}`} isLoading={loadingVoice === defaultMale}
+                  playingVoiceId={playingKey?.startsWith('voice_') ? playingKey.slice(6) : null}
+                  loadingVoiceId={loadingVoice} /></div>
               <div><div className="text-xs text-ink-500 mb-1">女声</div>
                 <VoicePicker voices={femaleVoices.filter(v => v.id !== narrator)} value={defaultFemale}
-                  onChange={setDefaultFemale} onPreview={() => {}} /></div>
+                  onChange={setDefaultFemale}
+                  onPreview={id => onPreviewVoice(id, '你好，这是一段默认女声音色的试听示例。', speed)}
+                  isPlaying={playingKey === `voice_${defaultFemale}`} isLoading={loadingVoice === defaultFemale}
+                  playingVoiceId={playingKey?.startsWith('voice_') ? playingKey.slice(6) : null}
+                  loadingVoiceId={loadingVoice} /></div>
             </div>
           </div>
 
@@ -2779,7 +2829,10 @@ function CreateBuildModal({
               voices={voices}
               value={narrator}
               onChange={setNarrator}
-              onPreview={() => {}}
+              onPreview={id => onPreviewVoice(id, '这是一段旁白示例文本，用于试听所选音色的朗读效果。', speed)}
+              isPlaying={playingKey === `voice_${narrator}`} isLoading={loadingVoice === narrator}
+              playingVoiceId={playingKey?.startsWith('voice_') ? playingKey.slice(6) : null}
+              loadingVoiceId={loadingVoice}
             />
             {/* 旁白情感/语气（可选） */}
             <div className="rounded-lg border border-ink-300/70 bg-ink-100 p-3 space-y-2">
@@ -2859,10 +2912,6 @@ function CreateBuildModal({
               </div>
               <div className="grid md:grid-cols-2 gap-2.5 max-h-[300px] overflow-y-auto pr-1 p-1">
                 {project.characters.map(c => {
-                  const genderColor =
-                    c.gender === '男' ? 'rgb(var(--status-info-bg))'
-                    : c.gender === '女' ? 'rgb(var(--status-error-bg))'
-                    : 'rgb(var(--brand-500))';
                   return (
                     <div
                       key={c.id}
@@ -2870,14 +2919,6 @@ function CreateBuildModal({
                     >
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0">
-                          <div
-                            className="w-7 h-7 rounded-lg grid place-items-center shrink-0 text-white text-xs font-bold"
-                            style={{
-                              background: `linear-gradient(135deg, ${genderColor}, ${genderColor}aa)`,
-                            }}
-                          >
-                            {c.name?.trim()?.[0] || '?'}
-                          </div>
                           <div className="min-w-0">
                             <span className="font-medium text-sm text-ink-800 truncate block">{c.name}</span>
                             <span className="text-[11px] text-ink-500">{c.gender || '—'}</span>

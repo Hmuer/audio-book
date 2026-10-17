@@ -18,56 +18,12 @@ import {
 
 /**
  * ElevenLabs 风格音色选择器
- *  - 触发器：玻璃态卡片，左侧有圆形头像（按性别品牌色）+ 名称 + 性别标签
+ *  - 触发器：玻璃态卡片，名称 + 性别标签
  *  - 试听按钮：与触发器并列，同高，小图标，hover 变品牌紫
  *  - 下拉面板：浮岛式，多维筛选（厂商 Tab / 性别 chip / 场景 / 年龄 / 方言）
  *    + 搜索框 + 分组（男声 / 女声 / 中性）
- *  - 每个音色行：avatar + 名称 + 描述，行尾试听 icon；选中行带紫色左边条
+ *  - 每个音色行：名称 + 描述，行尾试听 icon；选中行带紫色左边条
  */
-
-function avatarBg(gender: string, id: string): string {
-  // 品牌色背景，基于 id 取模让同一音色头像颜色稳定
-  // 8 种"莫兰迪灰调"palette：从 globals.css 的 --palette-xxx-bg 通道变量取，
-  // 随主题深浅模式自动变，不再写死高饱和 candy 色。
-  const g: GenderKey = normalizeGender({ gender } as Voice);
-  const palettes: Record<string, string[]> = {
-    '男声': [
-      'rgb(var(--palette-blue-bg))',   'rgb(var(--palette-cyan-bg))',
-      'rgb(var(--palette-mint-bg))',   'rgb(var(--status-info-bg))',
-    ],
-    '女声': [
-      'rgb(var(--palette-rose-bg))',   'rgb(var(--palette-pink-bg))',
-      'rgb(var(--palette-purple-bg))', 'rgb(var(--palette-yellow-bg))',
-    ],
-    '中性': [
-      'rgb(var(--brand-500))',         'rgb(var(--palette-green-bg))',
-      'rgb(var(--palette-yellow-bg))', 'rgb(var(--status-synth-bg))',
-    ],
-  };
-  const pals = palettes[g] || palettes['中性'];
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
-  return pals[hash % pals.length];
-}
-
-function Avatar({ voice, size = 32 }: { voice: Voice; size?: number }) {
-  const bg = avatarBg(voice.gender, voice.id);
-  const initial = voice.name?.trim()?.[0] || '音';
-  return (
-    <div
-      className="shrink-0 grid place-items-center rounded-full font-semibold text-white select-none"
-      style={{
-        width: size,
-        height: size,
-        fontSize: Math.floor(size * 0.42),
-        background: `linear-gradient(135deg, ${bg} 0%, ${bg}bb 100%)`,
-        boxShadow: `0 0 0 1px rgba(var(--color-white), 0.12) inset, 0 4px 10px -4px ${bg}77`,
-      }}
-    >
-      {initial}
-    </div>
-  );
-}
 
 export default function VoicePicker({
   voices,
@@ -173,7 +129,6 @@ export default function VoicePicker({
         >
           {selected ? (
             <>
-              <Avatar voice={selected} size={compact ? 30 : 36} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-semibold text-ink-800 truncate">
@@ -200,9 +155,6 @@ export default function VoicePicker({
             </>
           ) : (
             <>
-              <div className="shrink-0 w-9 h-9 rounded-full grid place-items-center bg-ink-200 border border-ink-300/70 text-ink-500">
-                ?
-              </div>
               <div className="flex-1 text-sm text-ink-600">请选择音色…</div>
             </>
           )}
@@ -389,7 +341,6 @@ export default function VoicePicker({
                           {active && (
                             <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-full bg-brand-500" />
                           )}
-                          <Avatar voice={v} size={34} />
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
                               <span className="text-sm font-medium text-ink-800 truncate">

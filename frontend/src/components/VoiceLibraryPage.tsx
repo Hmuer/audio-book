@@ -32,47 +32,6 @@ function previewTextFor(voice: Voice): string {
   return PREVIEW_TEXT_EN;
 }
 
-function avatarBg(gender: string, id: string): string {
-  const g: GenderKey = normalizeGender({ gender } as Voice);
-  const palettes: Record<string, string[]> = {
-    '男声': [
-      'rgb(var(--palette-blue-bg))', 'rgb(var(--palette-cyan-bg))',
-      'rgb(var(--palette-mint-bg))', 'rgb(var(--status-info-bg))',
-    ],
-    '女声': [
-      'rgb(var(--palette-rose-bg))', 'rgb(var(--palette-pink-bg))',
-      'rgb(var(--palette-purple-bg))', 'rgb(var(--palette-yellow-bg))',
-    ],
-    '中性': [
-      'rgb(var(--brand-500))', 'rgb(var(--palette-green-bg))',
-      'rgb(var(--palette-yellow-bg))', 'rgb(var(--status-synth-bg))',
-    ],
-  };
-  const pals = palettes[g] || palettes['中性'];
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
-  return pals[hash % pals.length];
-}
-
-function VoiceAvatar({ voice, size = 40 }: { voice: Voice; size?: number }) {
-  const bg = avatarBg(voice.gender, voice.id);
-  const initial = voice.name?.trim()?.[0] || '音';
-  return (
-    <div
-      className="shrink-0 grid place-items-center rounded-full font-semibold text-white select-none"
-      style={{
-        width: size,
-        height: size,
-        fontSize: Math.floor(size * 0.42),
-        background: `linear-gradient(135deg, ${bg} 0%, ${bg}bb 100%)`,
-        boxShadow: `0 0 0 1px rgba(var(--color-white), 0.12) inset, 0 4px 10px -4px ${bg}77`,
-      }}
-    >
-      {initial}
-    </div>
-  );
-}
-
 // =====================================================================
 // 主组件
 // =====================================================================
@@ -337,7 +296,6 @@ function LibraryTab({ voices }: { voices: Voice[] }) {
                 pv ? 'bg-brand-500/[0.06]' : ''
               }`}
             >
-              <VoiceAvatar voice={v} size={32} />
               <div className="flex-1 min-w-0 flex items-center gap-3 flex-wrap">
                 <span className="text-sm font-semibold text-ink-800 truncate">{v.name}</span>
                 <span className="chip-soft !px-1.5 !py-0.5 !text-[10px] !font-medium">
