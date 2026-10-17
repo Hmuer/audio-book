@@ -1,7 +1,9 @@
 """激活 TTS、官方音色和构建兜底音色的关键契约。"""
 from __future__ import annotations
 
+import asyncio
 import json
+import uuid
 from types import SimpleNamespace
 
 import httpx
@@ -121,6 +123,198 @@ async def test_minimax_rpm_failure_cools_down_other_requests_after_last_attempt(
 
 
 @pytest.mark.asyncio
+async def test_minimax_http_429_with_retry_after_returns_to_build_without_long_provider_sleep(monkeypatch):
+    from backend.app.ai.providers.minimax import tts as module
+
+    monkeypatch.setattr(module, "get_provider", lambda _id: {"api_key": "test-key"})
+    monkeypatch.setattr(module, "get_active", lambda _kind: ("minimax", "speech-2.8-hd", {}))
+    provider = module.MiniMaxTTSProvider()
+    provider._voices = [{"id": "minimax:male-qn-qingse"}]
+    provider._voices_at = module.time.monotonic()
+    requests = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(429, headers={"Retry-After": "18000"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kwargs: real_client(
+        transport=httpx.MockTransport(handle), **kwargs,
+    ))
+    with pytest.raises(module.MiniMaxTTSRateLimitError) as exc:
+        await provider.synthesize_to_bytes("你好", "minimax:male-qn-qingse")
+    assert exc.value.retry_after == 18000
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_build_quota_wait_exposes_progress_and_honors_cancel(_isolate_data_dir, monkeypatch):
+    from backend.app.db.models import Build, Project
+    from backend.app.db.session import get_session_factory, init_db
+    from backend.app.services import build as module
+
+    await init_db()
+    project_id, build_id = uuid.uuid4().hex, uuid.uuid4().hex
+    factory = get_session_factory()
+    async with factory() as session:
+        session.add(Project(project_id=project_id, name="额度等待", status="ready"))
+        session.add(Build(
+            build_id=build_id, project_id=project_id, status="running",
+            total_chapters=1, completed_chapters=0, narrator_voice_id="minimax:male-1",
+            mode="classic", tts_provider="minimax", speed=1.0,
+        ))
+        await session.commit()
+
+    async def fake_sleep(_seconds):
+        async with factory() as session:
+            row = await session.get(Build, build_id)
+            assert "MiniMax TTS 限额等待" in row.progress_msg
+            row.status = "cancelled"
+            await session.commit()
+
+    monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+    assert not await module._wait_for_minimax_quota(
+        build_id, 1, 1, 1, None, module._time.monotonic(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_stops_other_segments_when_one_is_rate_limited():
+    from backend.app.ai.providers.minimax.tts import MiniMaxTTSRateLimitError
+    from backend.app.services.build import _gather_cancel_on_error
+
+    stopped = asyncio.Event()
+
+    async def blocked_segment():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    async def limited_segment():
+        await asyncio.sleep(0)
+        raise MiniMaxTTSRateLimitError("rate limit exceeded")
+
+    with pytest.raises(MiniMaxTTSRateLimitError):
+        await _gather_cancel_on_error([blocked_segment(), limited_segment()])
+    assert stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_minimax_build_retries_same_chapter_without_placeholder(_isolate_data_dir, monkeypatch):
+    from sqlalchemy import select
+    from backend.app.ai.providers.minimax.tts import MiniMaxTTSRateLimitError
+    from backend.app.core.mp3_util import make_silent_mp3
+    from backend.app.db.models import Build, BuildArtifact, Project, ProjectChapter
+    from backend.app.db.session import get_session_factory, init_db
+    from backend.app.services import build as module
+
+    await init_db()
+    project_id, build_id = uuid.uuid4().hex, uuid.uuid4().hex
+    factory = get_session_factory()
+    async with factory() as session:
+        session.add(Project(project_id=project_id, name="限额恢复", status="ready"))
+        for idx in range(2):
+            session.add(ProjectChapter(
+                project_id=project_id, idx=idx, title=f"第{idx + 1}章",
+                text=f"正文{idx + 1}。", text_len=4,
+            ))
+            session.add(BuildArtifact(
+                build_id=build_id, chapter_idx=idx, title=f"第{idx + 1}章", status="pending",
+            ))
+        session.add(Build(
+            build_id=build_id, project_id=project_id, status="queued",
+            total_chapters=2, completed_chapters=0, narrator_voice_id="minimax:male-1",
+            mode="classic", tts_provider="minimax", tts_model_id="speech-2.8-hd",
+            speed=1.0,
+        ))
+        await session.commit()
+
+    calls = 0
+    async def synthesize(_text, _voice_id, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise MiniMaxTTSRateLimitError("rate limit exceeded(RPM)")
+        return make_silent_mp3(150, sample_rate=32000), 150
+
+    waits = []
+    async def fake_wait(*_args):
+        waits.append(True)
+        return True
+
+    async def no_archive(*_args):
+        return False
+
+    monkeypatch.setattr(module, "get_tts", lambda _provider: SimpleNamespace(synthesize_to_bytes=synthesize))
+    monkeypatch.setattr(module, "_wait_for_minimax_quota", fake_wait)
+    monkeypatch.setattr(module, "_archive_file", no_archive)
+    await module._run_build_inner(build_id, project_id, {}, "minimax:male-1")
+
+    async with factory() as session:
+        row = await session.get(Build, build_id)
+        arts = (await session.execute(select(BuildArtifact).where(
+            BuildArtifact.build_id == build_id,
+        ).order_by(BuildArtifact.chapter_idx))).scalars().all()
+        assert row.status == "success"
+        assert [art.status for art in arts] == ["done", "done"]
+        assert all(art.audio_filename and "failed" not in art.audio_filename for art in arts)
+    assert waits == [True]
+    assert calls >= 3
+
+
+@pytest.mark.asyncio
+async def test_minimax_quota_timeout_stops_build_and_keeps_retry_targets(_isolate_data_dir, monkeypatch):
+    from sqlalchemy import select
+    from backend.app.ai.providers.minimax.tts import MiniMaxTTSRateLimitError
+    from backend.app.db.models import Build, BuildArtifact, Project, ProjectChapter
+    from backend.app.db.session import get_session_factory, init_db
+    from backend.app.services import build as module
+
+    await init_db()
+    project_id, build_id = uuid.uuid4().hex, uuid.uuid4().hex
+    factory = get_session_factory()
+    async with factory() as session:
+        session.add(Project(project_id=project_id, name="限额超时", status="ready"))
+        for idx in range(2):
+            session.add(ProjectChapter(
+                project_id=project_id, idx=idx, title=f"第{idx + 1}章",
+                text=f"正文{idx + 1}。", text_len=4,
+            ))
+            session.add(BuildArtifact(
+                build_id=build_id, chapter_idx=idx, title=f"第{idx + 1}章", status="pending",
+            ))
+        session.add(Build(
+            build_id=build_id, project_id=project_id, status="queued",
+            total_chapters=2, completed_chapters=0, narrator_voice_id="minimax:male-2",
+            mode="classic", tts_provider="minimax", tts_model_id="speech-2.8-hd",
+            speed=1.0,
+        ))
+        await session.commit()
+
+    async def always_limited(*_args, **_kwargs):
+        raise MiniMaxTTSRateLimitError("rate limit exceeded(RPM)")
+
+    async def timeout(*_args):
+        raise module._MiniMaxQuotaWaitExceeded("限额等待超时")
+
+    monkeypatch.setattr(module, "get_tts", lambda _provider: SimpleNamespace(
+        synthesize_to_bytes=always_limited,
+    ))
+    monkeypatch.setattr(module, "_wait_for_minimax_quota", timeout)
+    with pytest.raises(module._MiniMaxQuotaWaitExceeded):
+        await module._run_build_inner(build_id, project_id, {}, "minimax:male-2")
+
+    async with factory() as session:
+        row = await session.get(Build, build_id)
+        first = (await session.execute(select(BuildArtifact).where(
+            BuildArtifact.build_id == build_id, BuildArtifact.chapter_idx == 0,
+        ))).scalar_one()
+        assert json.loads(row.failed_chapters_json) == [0, 1]
+        assert first.status == "failed" and first.audio_filename is None
+
+
+@pytest.mark.asyncio
 async def test_minimax_pacer_spreads_concurrent_requests(monkeypatch):
     from backend.app.ai.providers.minimax import tts as module
 
@@ -141,6 +335,20 @@ async def test_minimax_pacer_spreads_concurrent_requests(monkeypatch):
     assert sleeps == [2.0, 2.0]
     pacer.cooldown(seconds=0)
     assert pacer._adaptive_rpm == 15
+
+
+def test_minimax_pacer_recovers_after_quota_is_available(monkeypatch):
+    from backend.app.ai.providers.minimax import tts as module
+
+    monkeypatch.setattr(module.settings, "MINIMAX_TTS_RPM_LIMIT", 10)
+    pacer = module._MiniMaxTTSPacer()
+    pacer.cooldown(seconds=0)
+    pacer.cooldown(seconds=0)
+    pacer.cooldown(seconds=0)
+    assert pacer._adaptive_rpm == 1
+    for _ in range(27):
+        pacer.note_success()
+    assert pacer._adaptive_rpm is None
 
 
 @pytest.mark.asyncio

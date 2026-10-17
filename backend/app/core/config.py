@@ -121,6 +121,9 @@ class Settings(BaseSettings):
     DOUBAO_TTS_RPM_LIMIT: int = 60
     # 官方 T2A v2：免费账号 10 RPM、充值账号 20 RPM；默认按免费额度匀速发送。
     MINIMAX_TTS_RPM_LIMIT: int = 10
+    # 短时 RPM 重试耗尽后，构建每隔多久探测一次额度；连续等待上限默认 6 小时。
+    MINIMAX_TTS_QUOTA_RETRY_SECONDS: int = 300
+    MINIMAX_TTS_QUOTA_WAIT_MAX_SECONDS: int = 21600
 
     # =====================================================================
     # 多厂商模型配置（PROVIDERS_CONFIG）

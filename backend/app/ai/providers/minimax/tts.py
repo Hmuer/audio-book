@@ -6,6 +6,8 @@ import json
 import logging
 import time
 from contextvars import ContextVar
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,29 @@ SUPPORTED_TTS_MODELS = frozenset({
 logger = logging.getLogger(__name__)
 
 
+class MiniMaxTTSRateLimitError(RuntimeError):
+    """短时重试后仍被限流；构建 worker 可等待额度恢复后重试本章。"""
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
 class _MiniMaxTTSPacer:
     """所有 MiniMax TTS 调用共享的匀速节流器，含上游 429 冷却窗口。"""
 
@@ -34,6 +59,7 @@ class _MiniMaxTTSPacer:
         self._next_allowed = 0.0
         self._cooldown_until = 0.0
         self._adaptive_rpm: int | None = None
+        self._success_streak = 0
 
     async def acquire(self) -> None:
         if self._lock is None:
@@ -56,13 +82,27 @@ class _MiniMaxTTSPacer:
         self._cooldown_until = max(self._cooldown_until, until)
         configured_rpm = max(1, int(settings.MINIMAX_TTS_RPM_LIMIT))
         self._adaptive_rpm = max(1, min(configured_rpm, self._adaptive_rpm or configured_rpm) // 2)
+        self._success_streak = 0
         logger.warning("MiniMax TTS 节流已自动降至 %d RPM", self._adaptive_rpm)
+
+    def note_success(self) -> None:
+        """限流恢复后逐步回升，避免一次限流让本进程永久停在 1 RPM。"""
+        if self._adaptive_rpm is None:
+            return
+        self._success_streak += 1
+        if self._success_streak < 3:
+            return
+        self._success_streak = 0
+        configured_rpm = max(1, int(settings.MINIMAX_TTS_RPM_LIMIT))
+        next_rpm = self._adaptive_rpm + 1
+        self._adaptive_rpm = None if next_rpm >= configured_rpm else next_rpm
 
     def reset(self) -> None:
         self._lock = None
         self._next_allowed = 0.0
         self._cooldown_until = 0.0
         self._adaptive_rpm = None
+        self._success_streak = 0
 
 
 _tts_pacer = _MiniMaxTTSPacer()
@@ -183,10 +223,15 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                 await _tts_pacer.acquire()
                 response = await client.post(self._url("/t2a_v2"), headers=self._headers(), json=payload)
                 if response.status_code == 429:
+                    retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+                    # 长 Retry-After 交给构建层等待，那里能展示进度并响应取消。
                     _tts_pacer.cooldown()
+                    if retry_after is not None and retry_after > 65:
+                        raise MiniMaxTTSRateLimitError("MiniMax TTS HTTP 429：请求受限", retry_after)
                     if attempt < 2:
-                        logger.warning("MiniMax TTS HTTP 429，冷却 65 秒后重试（%d/2）", attempt + 1)
+                        logger.warning("MiniMax TTS HTTP 429，冷却后重试（%d/2）", attempt + 1)
                         continue
+                    raise MiniMaxTTSRateLimitError("MiniMax TTS HTTP 429：请求受限", retry_after)
                 response.raise_for_status()
                 data = response.json()
                 base_resp = data.get("base_resp") or {}
@@ -197,6 +242,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                         if attempt < 2:
                             logger.warning("MiniMax TTS RPM 限流，冷却 65 秒后重试（%d/2）", attempt + 1)
                             continue
+                        raise MiniMaxTTSRateLimitError(f"MiniMax 合成失败: {status_msg}")
                     raise RuntimeError(f"MiniMax 合成失败: {status_msg}")
                 break
         audio_hex = (data.get("data") or {}).get("audio")
@@ -204,6 +250,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             raise RuntimeError("MiniMax 合成返回空音频")
         audio = bytes.fromhex(audio_hex)
         duration = int((data.get("extra_info") or {}).get("audio_length") or 0) or mp3_duration_ms(audio)
+        _tts_pacer.note_success()
         return audio, duration
 
     async def synthesize_to_file(

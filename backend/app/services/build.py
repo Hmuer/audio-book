@@ -1623,14 +1623,17 @@ async def _start_build_impl(
                         f2 = get_session_factory()
                         async with f2() as s:
                             b2 = await s.get(Build, build_id)
-                            if b2:
+                            if b2 and b2.status != "cancelled":
                                 b2.status = "failed"
                                 b2.progress_msg = f"合成失败: {type(e).__name__}: {e}"[:200]
                                 b2.completed_at = datetime.now(UTC).replace(tzinfo=None)
                                 await s.commit()
+                            elif b2:
+                                final_status = "cancelled"
                     except Exception as e2:
                         logger.error(f"[build_worker] final status write fail: {e2}")
-                    final_status = "failed"
+                    if final_status != "cancelled":
+                        final_status = "failed"
         except asyncio.CancelledError:
             final_status = "cancelled"
             final_error = "build worker cancelled"
@@ -1957,14 +1960,17 @@ async def retry_failed_build(
                         f2 = get_session_factory()
                         async with f2() as s:
                             b2 = await s.get(Build, new_build_id)
-                            if b2:
+                            if b2 and b2.status != "cancelled":
                                 b2.status = "failed"
                                 b2.progress_msg = f"合成失败: {type(e).__name__}: {e}"[:200]
                                 b2.completed_at = datetime.now(UTC).replace(tzinfo=None)
                                 await s.commit()
+                            elif b2:
+                                final_status = "cancelled"
                     except Exception as e2:
                         logger.error(f"[retry_worker] final status write fail: {e2}")
-                    final_status = "failed"
+                    if final_status != "cancelled":
+                        final_status = "failed"
         except asyncio.CancelledError:
             final_status = "cancelled"
             final_error = "retry worker cancelled"
@@ -2042,6 +2048,70 @@ def _write_chapter_timings(
             f"[build_worker] 写章节时间轴失败 build_id={build_id[:8]}... ch={ch_idx}: "
             f"{type(e).__name__}: {e}"
         )
+
+
+class _BuildCancelledWhileWaiting(Exception):
+    """用户在 MiniMax 限额等待期间取消构建。"""
+
+
+class _MiniMaxQuotaWaitExceeded(RuntimeError):
+    """持续限流超过构建允许的最长等待时间。"""
+
+
+async def _gather_cancel_on_error(coroutines: list) -> list:
+    """段级合成任一失败时停止其余请求，等待任务清理完毕后再重试。"""
+    tasks = [asyncio.create_task(coro) for coro in coroutines]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+
+async def _wait_for_minimax_quota(
+    build_id: str, chapter_number: int, total: int, attempt: int,
+    retry_after: float | None, started_at: float,
+) -> bool:
+    """等待下一次额度探测，并在等待期间检查用户取消；返回 False 表示已取消。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        b = await s.get(Build, build_id)
+        if not b or b.status == "cancelled":
+            return False
+    max_wait = max(0, int(settings.MINIMAX_TTS_QUOTA_WAIT_MAX_SECONDS))
+    remaining = max_wait - (_time.monotonic() - started_at)
+    if remaining <= 0:
+        raise _MiniMaxQuotaWaitExceeded(
+            f"MiniMax TTS 持续限流等待已达 {max_wait} 秒；"
+            "本次构建已停止，请检查账号额度后重试失败章节"
+        )
+    probe_interval = max(65.0, float(settings.MINIMAX_TTS_QUOTA_RETRY_SECONDS))
+    delay = min(remaining, max(65.0, retry_after) if retry_after is not None else probe_interval)
+    async with factory() as s:
+        b = await s.get(Build, build_id)
+        if not b or b.status == "cancelled":
+            return False
+        b.progress_msg = (
+            f"MiniMax TTS 限额等待：第 {chapter_number}/{total} 章，"
+            f"约 {int(delay)} 秒后第 {attempt} 次探测；可取消构建"
+        )
+        await s.commit()
+    logger.warning(
+        "[build_worker] MiniMax TTS 限额等待 build_id=%s ch=%d/%d attempt=%d delay=%.0fs",
+        build_id[:8], chapter_number, total, attempt, delay,
+    )
+    deadline = _time.monotonic() + delay
+    while True:
+        async with factory() as s:
+            b = await s.get(Build, build_id)
+            if not b or b.status == "cancelled":
+                return False
+        left = deadline - _time.monotonic()
+        if left <= 0:
+            return True
+        await asyncio.sleep(min(10.0, left))
 
 
 async def _run_build_inner(
@@ -2388,6 +2458,15 @@ async def _run_build_inner(
                     seg.voice_id = (default_female_snapshot if gender in ("女", "female", "女声")
                                     else default_male_snapshot)
 
+            # 重试同一章时不能重复应用发音规则（例如 A→AA 会逐次膨胀）。
+            if pronunciation_rules:
+                for seg in segs:
+                    if seg.kind != "silence":
+                        char_id = speaker_to_char_id.get(seg.speaker or "")
+                        seg.text = apply_pronunciation_rules(
+                            seg.text, pronunciation_rules, character_id=char_id,
+                        )
+
             async def _synth_seg(s: _Segment) -> tuple[_Segment, bytes, int]:
                 nonlocal tts_calls_used, tts_chars_used
                 if s.kind == "silence":
@@ -2395,10 +2474,6 @@ async def _run_build_inner(
                     # 采样率补齐（见下方 _matched_silence），消除拼接点采样率不一致
                     return s, b"", s.silence_ms
                 vid = s.voice_id or narrator_voice_id
-                # 应用发音规则
-                if pronunciation_rules:
-                    char_id = speaker_to_char_id.get(s.speaker or "")
-                    s.text = apply_pronunciation_rules(s.text, pronunciation_rules, character_id=char_id)
                 seg_emo = (s.emotion or "").strip()
                 seg_ins = (s.instruction or "").strip()
                 # P1-7：model + context_texts_hash 参与缓存键（切 model / 切 instruction 必须失效）
@@ -2439,8 +2514,31 @@ async def _run_build_inner(
                 )
                 return s, data, dur
 
-            tasks = [_synth_seg(seg) for seg in segs]
-            results = await asyncio.gather(*tasks)
+            from ..ai.providers.minimax.tts import MiniMaxTTSRateLimitError
+            quota_wait_started: float | None = None
+            quota_probe = 0
+            while True:
+                try:
+                    results = await _gather_cancel_on_error([_synth_seg(seg) for seg in segs])
+                    break
+                except MiniMaxTTSRateLimitError as rate_err:
+                    if tts_provider_label != "minimax":
+                        raise
+                    if quota_wait_started is None:
+                        quota_wait_started = _time.monotonic()
+                    quota_probe += 1
+                    if not await _wait_for_minimax_quota(
+                        build_id, ch_idx + 1, total, quota_probe,
+                        rate_err.retry_after, quota_wait_started,
+                    ):
+                        raise _BuildCancelledWhileWaiting()
+                    async with factory() as s:
+                        b = await s.get(Build, build_id)
+                        if b and b.status == "cancelled":
+                            raise _BuildCancelledWhileWaiting()
+                        if b:
+                            b.progress_msg = f"重新尝试合成第 {ch_idx+1}/{total} 章：{ch.title}"
+                            await s.commit()
 
             # 按本章第一个真实音频段的采样率补齐静音帧；无真实段时用豆包默认采样率
             silence_ms_rate: int = int(settings.DOUBAO_AUDIO_SAMPLE_RATE)
@@ -2538,6 +2636,41 @@ async def _run_build_inner(
                 f"ms={int((_time.perf_counter()-ch_t0)*1000)}"
             )
 
+        except _BuildCancelledWhileWaiting:
+            logger.info("[build_worker] 限额等待期间取消 build_id=%s", build_id[:8])
+            break
+        except _MiniMaxQuotaWaitExceeded as quota_err:
+            # 直接终止构建；其余章不能继续落一秒静音占位。
+            cancelled_during_timeout = False
+            async with factory() as s:
+                art = (await s.execute(select(BuildArtifact).where(
+                    BuildArtifact.build_id == build_id,
+                    BuildArtifact.chapter_idx == ch_idx,
+                ))).scalar_one_or_none()
+                if art:
+                    art.status = "failed"
+                    art.error_msg = str(quota_err)[:500]
+                b = await s.get(Build, build_id)
+                if b and b.status == "cancelled":
+                    cancelled_during_timeout = True
+                elif b:
+                    remaining_failed = {
+                        item.idx for item in chapters[ch_idx:]
+                        if only_set is None or item.idx in only_set
+                    }
+                    remaining_failed.update(
+                        idx for idx, ok in chapter_ok_flag.items() if not ok
+                    )
+                    b.failed_chapters_json = json.dumps(sorted(remaining_failed))
+                    b.tts_calls = tts_calls_used
+                    b.tts_chars = tts_chars_used
+                await s.commit()
+            if cancelled_during_timeout:
+                break
+            await _record_build_usage(
+                build_id, project_id, build_mode, tts_calls_used, tts_chars_used,
+            )
+            raise
         except Exception as ch_err:
             logger.error(
                 f"[build_worker] build_id={build_id[:8]}... ch {ch_idx+1}/{total} "
