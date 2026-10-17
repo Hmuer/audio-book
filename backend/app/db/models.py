@@ -120,6 +120,12 @@ class Project(Base):
     # 元信息
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     tags: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    book_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    selling_points: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cover_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    cover_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    cover_progress: Mapped[int] = mapped_column(Integer, default=0)
+    cover_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
     cover_color: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)

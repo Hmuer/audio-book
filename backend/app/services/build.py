@@ -581,6 +581,7 @@ async def _ensure_default_narrator(narrator_voice_id: str | None) -> str:
 async def _resolve_build_voice_defaults(
     provider: str, narrator_voice_id: str,
     male_voice_id: str = "", female_voice_id: str = "",
+    book_category: str = "",
 ) -> tuple[str, str, str, set[str]]:
     """从激活厂商的官方音色中选旁白和男女兜底音色。"""
     voices = [v for v in await get_tts(provider).list_voices() if v.get("provider") == provider]
@@ -601,7 +602,8 @@ async def _resolve_build_voice_defaults(
 
     narrator = canonical(narrator_voice_id)
     if not narrator:
-        narrator = next((v["id"] for v in voices if v.get("gender") == "male"), voices[0]["id"])
+        preferred = "female" if book_category == "女频" else "male"
+        narrator = next((v["id"] for v in voices if v.get("gender") == preferred), voices[0]["id"])
 
     def pick(value: str, gender: str) -> str:
         selected = canonical(value)
@@ -1436,9 +1438,16 @@ async def _start_build_impl(
         from ..ai.providers.minimax.tts import SUPPORTED_TTS_MODELS
         if active_model not in SUPPORTED_TTS_MODELS:
             raise RuntimeError("设置页未激活有效的 MiniMax 语音模型")
+    factory_voice = get_session_factory()
+    async with factory_voice() as voice_session:
+        voice_project = await voice_session.get(Project, project_id)
+        book_category = (voice_project.book_category or "") if voice_project else ""
+        if not narrator_voice_id and voice_project:
+            narrator_voice_id = voice_project.default_narrator_voice_id or ""
     narrator_voice_id, default_male_voice_id, default_female_voice_id, allowed_voice_ids = (
         await _resolve_build_voice_defaults(
             effective_provider, narrator_voice_id, default_male_voice_id, default_female_voice_id,
+            book_category,
         )
     )
 

@@ -251,6 +251,14 @@ export const api = {
   projectList: () => _fetch<ProjectListItem[]>('/api/projects'),
   // 项目详情
   projectGet: (id: string) => _fetch<ProjectDetailResp>(`/api/projects/${id}`),
+  projectCoverStatus: (id: string) => _fetch<CoverStatus>(`/api/projects/${id}/cover/status`),
+  projectCoverGenerate: (id: string) => _fetch<CoverStatus>(`/api/projects/${id}/cover/generate`, { method: 'POST' }),
+  projectCoverRemove: (id: string) => _fetch<CoverStatus>(`/api/projects/${id}/cover`, { method: 'DELETE' }),
+  projectCoverUpload: (id: string, file: File) => {
+    const body = new FormData();
+    body.append('file', file);
+    return _fetch<CoverStatus>(`/api/projects/${id}/cover/upload`, { method: 'POST', body });
+  },
   // 修改项目元信息
   projectUpdate: (id: string, patch: Record<string, any>) =>
     _fetch<ProjectResp>(`/api/projects/${id}`, {
@@ -516,6 +524,12 @@ export interface ProjectDetailResp {
   description: string | null;
   /** 逗号分隔的标签字符串（后端 schema 为 `str | None`，非数组；展示时用 splitTags 拆分） */
   tags: string | null;
+  book_category: string | null;
+  selling_points: string | null;
+  has_cover: boolean;
+  cover_status: string | null;
+  cover_progress: number;
+  cover_error: string | null;
   default_narrator_voice_id: string | null;
   default_speed: number | null;
   created_at: string;
@@ -887,7 +901,7 @@ export interface SettingItem {
 export interface ProviderModel {
   id: string;
   label: string;
-  kind: 'tts' | 'llm';
+  kind: 'tts' | 'llm' | 'image';
 }
 export interface ProviderConfig {
   id: string;
@@ -917,7 +931,15 @@ export interface ProvidersConfig {
   active: {
     tts: ActiveModel;
     llm: ActiveModel;
+    image: ActiveModel;
   };
+}
+
+export interface CoverStatus {
+  status: string;
+  progress: number;
+  error?: string | null;
+  has_cover?: boolean;
 }
 
 // ---------- 豆包模型选项（静态枚举，前端启动时拉一次） ----------

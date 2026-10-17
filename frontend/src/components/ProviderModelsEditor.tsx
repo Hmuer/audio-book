@@ -156,7 +156,7 @@ function makeEmptyProvider(label?: string): ProviderConfig {
   };
 }
 
-function getModelsOfKind(p: ProviderConfig, kind: 'tts' | 'llm'): ProviderModel[] {
+function getModelsOfKind(p: ProviderConfig, kind: 'tts' | 'llm' | 'image'): ProviderModel[] {
   return p.models.filter(m => m.kind === kind);
 }
 
@@ -239,6 +239,9 @@ export default function ProviderModelsEditor() {
     if (newActive.llm.provider_id === removed.id) {
       newActive.llm = { provider_id: null, model_id: null };
     }
+    if (newActive.image?.provider_id === removed.id) {
+      newActive.image = { provider_id: null, model_id: null };
+    }
     setDraft({ ...draft, providers: next, active: newActive });
   };
 
@@ -262,16 +265,19 @@ export default function ProviderModelsEditor() {
       if (newActive.llm.provider_id === p.id && newActive.llm.model_id === m.id && m.kind !== 'llm') {
         newActive.llm = { provider_id: null, model_id: null };
       }
+      if (newActive.image?.provider_id === p.id && newActive.image.model_id === m.id && m.kind !== 'image') {
+        newActive.image = { provider_id: null, model_id: null };
+      }
     }
     setDraft({ ...draft, providers: next, active: newActive });
   };
 
-  const addModel = (pIdx: number, kind: 'tts' | 'llm') => {
+  const addModel = (pIdx: number, kind: 'tts' | 'llm' | 'image') => {
     const next = [...draft.providers];
     const p = { ...next[pIdx] };
     const newModel: ProviderModel = {
       id: '',
-      label: kind === 'tts' ? '新语音模型' : '新语言模型',
+      label: kind === 'tts' ? '新语音模型' : kind === 'llm' ? '新语言模型' : '新图片模型',
       kind,
     };
     p.models = [...p.models, newModel];
@@ -293,11 +299,14 @@ export default function ProviderModelsEditor() {
     if (newActive.llm.provider_id === p.id && newActive.llm.model_id === removed.id) {
       newActive.llm = { provider_id: null, model_id: null };
     }
+    if (newActive.image?.provider_id === p.id && newActive.image.model_id === removed.id) {
+      newActive.image = { provider_id: null, model_id: null };
+    }
     setDraft({ ...draft, providers: next, active: newActive });
   };
 
   // ---------- active 操作 ----------
-  const setActive = (kind: 'tts' | 'llm', provider_id: string | null, model_id: string | null) => {
+  const setActive = (kind: 'tts' | 'llm' | 'image', provider_id: string | null, model_id: string | null) => {
     setDraft({
       ...draft,
       active: { ...draft.active, [kind]: { provider_id, model_id } },
@@ -311,7 +320,7 @@ export default function ProviderModelsEditor() {
     setMsg(null);
     try {
       // 校验：激活项必须能找到对应模型且 kind 匹配
-      for (const kind of ['tts', 'llm'] as const) {
+      for (const kind of ['tts', 'llm', 'image'] as const) {
         const a = draft.active[kind];
         if (!a?.provider_id || !a?.model_id) continue;
         const p = draft.providers.find(x => x.id === a.provider_id);
@@ -340,6 +349,7 @@ export default function ProviderModelsEditor() {
   // 计算可激活的厂商（已启用 + 含对应 kind 模型）
   const ttsProviders = draft.providers.filter(p => p.enabled && getModelsOfKind(p, 'tts').length > 0);
   const llmProviders = draft.providers.filter(p => p.enabled && getModelsOfKind(p, 'llm').length > 0);
+  const imageProviders = draft.providers.filter(p => p.enabled && getModelsOfKind(p, 'image').length > 0);
 
   return (
     <div className="space-y-5">
@@ -348,7 +358,7 @@ export default function ProviderModelsEditor() {
         <div>
           <h2 className="text-[22px] font-semibold text-white leading-tight">模型厂商</h2>
           <p className="mt1 text-sm text-ink-500">
-            配置多家 AI 厂商的 API Key 与模型 · 选择激活的 TTS / LLM 模型
+            配置多家 AI 厂商的 API Key 与模型 · 选择激活的 TTS / LLM / 图片模型
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -379,10 +389,10 @@ export default function ProviderModelsEditor() {
           </span>
           <div>
             <div className="text-sm font-semibold text-white">当前激活</div>
-            <div className="text-xs text-ink-500">选择项目实际使用的 TTS / LLM 模型（仅启用且含对应类型模型的厂商可选）</div>
+            <div className="text-xs text-ink-500">选择项目实际使用的 TTS / LLM / 图片模型（仅启用且含对应类型模型的厂商可选）</div>
           </div>
         </div>
-        <div className="p-4 grid gap-4 md:grid-cols-2">
+        <div className="p-4 grid gap-4 md:grid-cols-3">
           <ActiveSelector
             kind="tts"
             icon={<MicIcon />}
@@ -398,6 +408,14 @@ export default function ProviderModelsEditor() {
             providers={llmProviders}
             value={draft.active.llm}
             onChange={(pid, mid) => setActive('llm', pid, mid)}
+          />
+          <ActiveSelector
+            kind="image"
+            icon={<BrainIcon />}
+            label="图片模型"
+            providers={imageProviders}
+            value={draft.active.image || { provider_id: null, model_id: null }}
+            onChange={(pid, mid) => setActive('image', pid, mid)}
           />
         </div>
       </div>
@@ -529,7 +547,7 @@ function ProviderCard({
   onUpdateProvider: (idx: number, patch: Partial<ProviderConfig>) => void;
   onRemove: (idx: number) => void;
   onUpdateModel: (pIdx: number, globalMIdx: number, patch: Partial<ProviderModel>) => void;
-  onAddModel: (pIdx: number, kind: 'tts' | 'llm') => void;
+  onAddModel: (pIdx: number, kind: 'tts' | 'llm' | 'image') => void;
   onRemoveModel: (pIdx: number, globalMIdx: number) => void;
   /** 豆包 TTS 模型下拉选项（已存在的官方 resource_id）。未提供时回退到自由文本。 */
   doubaoTtsOptions?: { id: string; label: string; description: string }[];
@@ -540,6 +558,7 @@ function ProviderCard({
   const useDoubaoTtsSelect = isDoubao && !!doubaoTtsOptions;
   const ttsModels = getModelsOfKind(p, 'tts');
   const llmModels = getModelsOfKind(p, 'llm');
+  const imageModels = getModelsOfKind(p, 'image');
 
   /** 已配置的敏感字段徽标（脱敏值与 configured 标记由后端 GET 提供） */
   const configuredBadge = (field: string, raw: string | undefined) => {
@@ -712,6 +731,19 @@ function ProviderCard({
           }}
           allModels={p.models}
         />
+        <ModelSection
+          title="图片模型（兼容 /images/generations）"
+          icon={<BrainIcon />}
+          accent="text-cyan-300 bg-cyan-500/10 border-cyan-500/20"
+          models={imageModels}
+          onAdd={() => onAddModel(pIdx, 'image')}
+          onUpdate={(globalMIdx, patch) => onUpdateModel(pIdx, globalMIdx, patch)}
+          onRemove={(mIdxInSection) => {
+            const m = imageModels[mIdxInSection];
+            onRemoveModel(pIdx, p.models.indexOf(m));
+          }}
+          allModels={p.models}
+        />
       </div>
     </div>
   );
@@ -723,7 +755,7 @@ function ProviderCard({
 function ActiveSelector({
   kind, icon, label, providers, value, onChange,
 }: {
-  kind: 'tts' | 'llm';
+  kind: 'tts' | 'llm' | 'image';
   icon: React.ReactNode;
   label: string;
   providers: ProviderConfig[];

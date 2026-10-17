@@ -55,6 +55,24 @@ def test_get_providers_default_shape(client_and_state):
     assert body["active"]["tts"]["model_id"] == "volcano_tts"
     assert body["active"]["llm"]["provider_id"] == "minimax"
     assert body["active"]["llm"]["model_id"] == "MiniMax-M3"
+    assert "image" in body["active"]
+
+
+def test_image_model_can_be_activated_and_kind_is_checked(client_and_state):
+    client, _ = client_and_state
+    token = _login(client)
+    cfg = client.get("/api/providers", headers=_auth(token)).json()
+    cfg["providers"].append({
+        "id": "cover_provider", "label": "封面图片", "enabled": True,
+        "api_key": "test-key", "base_url": "https://images.example/v1",
+        "models": [{"id": "cover-v1", "label": "封面模型", "kind": "image"}],
+    })
+    cfg["active"]["image"] = {"provider_id": "cover_provider", "model_id": "cover-v1"}
+    assert client.put("/api/providers", headers=_auth(token), json=cfg).status_code == 200
+    result = client.get("/api/providers", headers=_auth(token)).json()
+    assert result["active"]["image"] == cfg["active"]["image"]
+    cfg["active"]["image"]["model_id"] = "MiniMax-M3"
+    assert client.put("/api/providers", headers=_auth(token), json=cfg).status_code == 400
 
 
 def test_put_providers_add_new_model_and_switch_active(client_and_state):

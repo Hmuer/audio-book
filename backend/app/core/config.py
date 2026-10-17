@@ -456,12 +456,13 @@ def _parse_providers_config() -> dict[str, Any]:
     try:
         cfg = _json.loads(settings.PROVIDERS_CONFIG or "{}")
         if not isinstance(cfg, dict):
-            return {"providers": [], "active": {"tts": {}, "llm": {}}}
+            return {"providers": [], "active": {"tts": {}, "llm": {}, "image": {}}}
         cfg.setdefault("providers", [])
-        cfg.setdefault("active", {"tts": {}, "llm": {}})
+        cfg.setdefault("active", {"tts": {}, "llm": {}, "image": {}})
+        cfg["active"].setdefault("image", {})
         return cfg
     except Exception:
-        return {"providers": [], "active": {"tts": {}, "llm": {}}}
+        return {"providers": [], "active": {"tts": {}, "llm": {}, "image": {}}}
 
 
 def list_providers() -> list[dict[str, Any]]:
@@ -478,15 +479,15 @@ def get_provider(provider_id: str) -> dict[str, Any] | None:
 
 def get_active(kind: str) -> tuple[str | None, str | None, dict[str, Any] | None]:
     """返回 (provider_id, model_id, provider_dict)；找不到则 (None, None, None)。
-    kind ∈ {"tts", "llm"}。
+    kind ∈ {"tts", "llm", "image"}。
     """
     cfg = _parse_providers_config()
     active = cfg.get("active", {}).get(kind, {}) or {}
     pid = active.get("provider_id") or (
-        settings.ACTIVE_TTS_PROVIDER if kind == "tts" else settings.ACTIVE_LLM_PROVIDER
+        settings.ACTIVE_TTS_PROVIDER if kind == "tts" else settings.ACTIVE_LLM_PROVIDER if kind == "llm" else ""
     )
     mid = active.get("model_id") or (
-        settings.ACTIVE_TTS_MODEL if kind == "tts" else settings.ACTIVE_LLM_MODEL
+        settings.ACTIVE_TTS_MODEL if kind == "tts" else settings.ACTIVE_LLM_MODEL if kind == "llm" else ""
     )
     prov = get_provider(pid) if pid else None
     return pid, mid, prov

@@ -514,8 +514,10 @@ class ImportTextRequest(BaseModel):
 
 class UpdateProjectRequest(BaseModel):
     name: str | None = Field(default=None, max_length=256)
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=5000)
     tags: str | None = Field(default=None, max_length=256)
+    book_category: str | None = Field(default=None, max_length=64)
+    selling_points: str | None = Field(default=None, max_length=1000)
     default_narrator_voice_id: str | None = None
     default_speed: float | None = Field(default=None, ge=0.5, le=2.0)
     cover_color: str | None = None
@@ -662,6 +664,8 @@ async def api_update_project(
             name=req.name,
             description=req.description,
             tags=req.tags,
+            book_category=req.book_category,
+            selling_points=req.selling_points,
             default_narrator_voice_id=req.default_narrator_voice_id,
             default_speed=req.default_speed,
             cover_color=req.cover_color,
@@ -674,6 +678,67 @@ async def api_update_project(
             exc_info=True,
         )
         raise HTTPException(500, f"更新失败: {type(e).__name__}: {e}")
+
+
+@router.post("/projects/{project_id}/cover/upload")
+async def api_upload_cover(
+    project_id: str, file: UploadFile = File(...), current: User = Depends(get_current_user),
+):
+    from ..services.cover import MAX_IMAGE_BYTES, upload_cover, cover_status
+    async with get_session_factory()() as session:
+        await assert_project_writable(session, project_id, current)
+    data = await _read_upload_with_limit(file, MAX_IMAGE_BYTES)
+    try:
+        await upload_cover(project_id, data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return await cover_status(project_id)
+
+
+@router.post("/projects/{project_id}/cover/generate")
+async def api_generate_cover(project_id: str, current: User = Depends(get_current_user)):
+    from ..services.cover import start_cover_generation
+    async with get_session_factory()() as session:
+        await assert_project_writable(session, project_id, current)
+    try:
+        return await start_cover_generation(project_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.delete("/projects/{project_id}/cover")
+async def api_remove_cover(project_id: str, current: User = Depends(get_current_user)):
+    from ..services.cover import remove_cover, cover_status
+    async with get_session_factory()() as session:
+        await assert_project_writable(session, project_id, current)
+    try:
+        await remove_cover(project_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return await cover_status(project_id)
+
+
+@router.get("/projects/{project_id}/cover/status")
+async def api_cover_status(project_id: str, current: User = Depends(get_current_user)):
+    from ..services.cover import cover_status
+    async with get_session_factory()() as session:
+        await get_project_for_user(session, project_id, current)
+    return await cover_status(project_id)
+
+
+@router.get("/projects/{project_id}/cover")
+async def api_get_cover(project_id: str, current: User = Depends(get_current_user)):
+    from ..services.cover import read_cover
+    async with get_session_factory()() as session:
+        await get_project_for_user(session, project_id, current)
+    try:
+        result = await read_cover(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    if not result:
+        raise HTTPException(404, "尚未设置封面")
+    data, mime = result
+    return Response(data, media_type=mime, headers={"Cache-Control": "private, no-store"})
 
 
 @router.delete("/projects/{project_id}")
@@ -2024,6 +2089,7 @@ async def get_providers(current: User = Depends(get_current_user)):
     from ..core.config import list_providers, get_active
     tts_pid, tts_mid, _ = get_active("tts")
     llm_pid, llm_mid, _ = get_active("llm")
+    image_pid, image_mid, _ = get_active("image")
     providers = list_providers()
     for p in providers:
         if p.get("id") == "minimax":
@@ -2041,6 +2107,7 @@ async def get_providers(current: User = Depends(get_current_user)):
         "active": {
             "tts": {"provider_id": tts_pid, "model_id": tts_mid},
             "llm": {"provider_id": llm_pid, "model_id": llm_mid},
+            "image": {"provider_id": image_pid, "model_id": image_mid},
         },
     }
 
@@ -2083,7 +2150,7 @@ async def update_providers(
                 p[f] = (old_prov or {}).get(f, "")
 
     # 激活项：必须是已存在的 provider，且 model_id 必须是该 provider 下的 model 且 kind 一致
-    for kind in ("tts", "llm"):
+    for kind in ("tts", "llm", "image"):
         a = (active_in.get(kind) or {})
         pid = a.get("provider_id")
         mid = a.get("model_id")

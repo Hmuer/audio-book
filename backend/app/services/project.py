@@ -81,6 +81,9 @@ class ProjectResp(BaseModel):
     cover_color: str | None = None
     description: str | None = None
     tags: str | None = None
+    book_category: str | None = None
+    selling_points: str | None = None
+    has_cover: bool = False
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -153,6 +156,12 @@ class ProjectDetailResp(BaseModel):
     cover_color: str | None
     description: str | None
     tags: str | None
+    book_category: str | None = None
+    selling_points: str | None = None
+    has_cover: bool = False
+    cover_status: str | None = None
+    cover_progress: int = 0
+    cover_error: str | None = None
     default_narrator_voice_id: str | None
     default_speed: float
     created_at: str | None
@@ -253,6 +262,30 @@ def _quota_retry_minutes() -> float:
 class _QuotaProbeModel(BaseModel):
     """配额探测用的最小响应 schema（H-28 探测降本）。"""
     ok: bool = True
+
+
+class _BookCategoryModel(BaseModel):
+    category: str
+
+
+async def _infer_book_category(title: str, chapters: list[Chapter]) -> str:
+    """小样本判断受众类型；无法确定时不猜测。分类失败不阻断识别。"""
+    from ..ai.factory import get_llm
+    samples = [chapters[i] for i in sorted({0, len(chapters) // 2, len(chapters) - 1})] if chapters else []
+    excerpt = "\n".join(f"{c.title}\n{c.text[:650]}" for c in samples)
+    prompt = (
+        "根据书名和正文判断该书的读者类型。仅当可以明确判断为男频或女频网络小说时输出相应分类；"
+        "散文、诗集、自传、纪实、无法确定的作品输出其他。返回 JSON：{\"category\":\"男频|女频|其他\"}。\n"
+        f"书名：{title[:150]}\n正文样本：{excerpt}"
+    )
+    try:
+        result = await get_llm().chat_structured(
+            prompt, _BookCategoryModel, max_tokens=80, use_fast_model=True, max_retries=1,
+        )
+        return result.category if result.category in {"男频", "女频", "其他"} else "其他"
+    except Exception as exc:
+        logger.warning("自动判断书籍分类失败：%s", exc)
+        return ""
 
 
 async def _probe_llm_quota() -> bool:
@@ -393,6 +426,9 @@ def _to_project_resp(p: Project) -> ProjectResp:
         cover_color=p.cover_color,
         description=p.description,
         tags=p.tags,
+        book_category=p.book_category,
+        selling_points=p.selling_points,
+        has_cover=bool(p.cover_key),
         created_at=p.created_at.isoformat() if p.created_at else None,
         updated_at=p.updated_at.isoformat() if p.updated_at else None,
     )
@@ -2623,6 +2659,12 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             ensure_ascii=False,
         )
 
+        async with factory() as category_session:
+            category_project = await category_session.get(Project, project_id)
+            needs_category = bool(category_project and not category_project.book_category)
+            category_title = (category_project.book_title or category_project.name) if category_project else ""
+        inferred_category = await _infer_book_category(category_title, chapters) if needs_category else ""
+
         async with factory() as session:
             p = await session.get(Project, project_id)
             assert p is not None
@@ -2687,6 +2729,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             p.chapters_json = chapters_json
             p.chapter_count = len(chapters)
             p.book_title = p.book_title or Path(original_filename).stem
+            if not p.book_category and inferred_category:
+                p.book_category = inferred_category
             p.status = "partial_success" if incomplete else "ready"
             # F-4：正文落到 project_chapters（读取主路径），chapters_json 仅作兼容快照
             await save_chapters(session, project_id, chapters)
@@ -3374,6 +3418,12 @@ async def get_project(project_id: str) -> ProjectDetailResp:
             cover_color=p.cover_color,
             description=p.description,
             tags=p.tags,
+            book_category=p.book_category,
+            selling_points=p.selling_points,
+            has_cover=bool(p.cover_key),
+            cover_status=p.cover_status,
+            cover_progress=p.cover_progress or 0,
+            cover_error=p.cover_error,
             default_narrator_voice_id=p.default_narrator_voice_id,
             default_speed=p.default_speed,
             created_at=p.created_at.isoformat() if p.created_at else None,
@@ -3463,6 +3513,8 @@ async def update_project(
     name: str | None = None,
     description: str | None = None,
     tags: str | None = None,
+    book_category: str | None = None,
+    selling_points: str | None = None,
     default_narrator_voice_id: str | None = None,
     default_speed: float | None = None,
     cover_color: str | None = None,
@@ -3486,6 +3538,10 @@ async def update_project(
             p.description = description
         if tags is not None:
             p.tags = tags
+        if book_category is not None:
+            p.book_category = book_category
+        if selling_points is not None:
+            p.selling_points = selling_points
         if default_narrator_voice_id is not None:
             p.default_narrator_voice_id = default_narrator_voice_id
         if default_speed is not None:
@@ -3518,6 +3574,9 @@ async def delete_project(project_id: str) -> None:
         )).scalar_one_or_none()
         if active_build:
             raise ValueError("项目正在合成，请先取消构建后再删除项目")
+        from .cover import _tasks as cover_tasks
+        if project_id in cover_tasks:
+            raise ValueError("封面正在生成，请完成后再删除项目")
 
         # 收集所有 build 产物文件名，用于稍后删磁盘
         stmt_art = select(BuildArtifact.audio_filename).where(

@@ -115,8 +115,8 @@ export default function ProjectDetailPage({
   const previewRequestRef = useRef(0);
 
   const narratorDefault = useMemo(
-    () => voices.find(v => normalizeGender(v) === '男声') || voices[0],
-    [voices]
+    () => voices.find(v => normalizeGender(v) === (project?.book_category === '女频' ? '女声' : '男声')) || voices[0],
+    [voices, project?.book_category]
   );
 
   const reload = async () => {
@@ -639,6 +639,95 @@ function PipelineTimeline({
   );
 }
 
+function CoverPanel({ project, onReload }: { project: ProjectDetailResp; onReload: () => void }) {
+  const [status, setStatus] = useState({
+    status: project.cover_status || 'empty', progress: project.cover_progress || 0,
+    error: project.cover_error || null,
+  });
+  const [url, setUrl] = useState<string | null>(null);
+  const [version, setVersion] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl: string | null = null;
+    if (project.has_cover) {
+      fetchMediaObjectUrl(`/api/projects/${project.project_id}/cover`)
+        .then(next => { if (active) { objectUrl = next; setUrl(next); } else URL.revokeObjectURL(next); })
+        .catch(e => { if (active) setStatus(s => ({ ...s, error: String(e?.message || e) })); });
+    } else setUrl(null);
+    return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [project.project_id, project.has_cover, version]);
+
+  useEffect(() => {
+    if (status.status !== 'generating') return;
+    const timer = window.setInterval(() => {
+      api.projectCoverStatus(project.project_id).then(next => {
+        setStatus({ status: next.status, progress: next.progress, error: next.error || null });
+        if (next.status === 'done') { setVersion(v => v + 1); onReload(); }
+      }).catch(e => setStatus({ status: 'failed', progress: 0, error: String(e?.message || e) }));
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [project.project_id, status.status, onReload]);
+
+  const upload = async (file?: File) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const next = await api.projectCoverUpload(project.project_id, file);
+      setStatus({ status: next.status, progress: next.progress, error: null });
+      setVersion(v => v + 1);
+      await onReload();
+    } catch (e: any) { setStatus(s => ({ ...s, error: String(e?.message || e) })); }
+    finally { setBusy(false); if (fileRef.current) fileRef.current.value = ''; }
+  };
+  const generate = async () => {
+    setBusy(true);
+    try {
+      const next = await api.projectCoverGenerate(project.project_id);
+      setStatus({ status: next.status, progress: next.progress, error: null });
+    } catch (e: any) { setStatus(s => ({ ...s, error: String(e?.message || e) })); }
+    finally { setBusy(false); }
+  };
+  const remove = async () => {
+    if (!window.confirm('确认删除当前封面吗？')) return;
+    setBusy(true);
+    try {
+      const next = await api.projectCoverRemove(project.project_id);
+      setStatus({ status: next.status, progress: 0, error: null });
+      setUrl(null);
+      await onReload();
+    } catch (e: any) { setStatus(s => ({ ...s, error: String(e?.message || e) })); }
+    finally { setBusy(false); }
+  };
+  const generating = status.status === 'generating';
+  return (
+    <div className="glass-panel flex flex-col sm:flex-row gap-5">
+      <div className="relative w-36 h-52 shrink-0 rounded-md border border-ink-300/70 bg-ink-200 overflow-hidden flex items-center justify-center">
+        {url ? <img src={url} alt={`${project.book_title || project.name}封面`} className="w-full h-full object-cover" />
+          : <span className="text-sm text-ink-500">暂无封面</span>}
+        {generating && <div className="absolute inset-x-0 bottom-0 bg-ink-100/95 p-2">
+          <div className="h-2 rounded bg-ink-300 overflow-hidden"><div className="h-full bg-brand-500 transition-all" style={{ width: `${status.progress}%` }} /></div>
+          <div className="text-xs text-ink-700 mt-1">生成中 · {status.progress}%</div>
+        </div>}
+      </div>
+      <div className="space-y-3 min-w-0">
+        <h3 className="font-semibold text-ink-800">书籍封面</h3>
+        <p className="text-xs text-ink-500">支持 PNG、JPEG、WebP，最大 8 MB；上传或生成成功后保存到对象存储。</p>
+        <div className="flex gap-2 flex-wrap">
+          <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden"
+            onChange={e => upload(e.target.files?.[0])} />
+          <button className="btn-ghost text-xs" disabled={busy || generating} onClick={() => fileRef.current?.click()}>上传自定义封面</button>
+          <button className="btn-ghost text-xs" disabled={busy || generating} onClick={generate}>一键 AI 生成</button>
+          {project.has_cover && <button className="btn-ghost text-xs" disabled={busy || generating} onClick={remove}>删除封面</button>}
+        </div>
+        {status.error && <p className="text-xs text-rose-400">{status.error}</p>}
+      </div>
+    </div>
+  );
+}
+
 function OverviewTab({
   project,
   buildRunning,
@@ -1076,12 +1165,16 @@ function OverviewTab({
           color="rgb(var(--ink-600))" />
       </div>
 
-      {(project.description || tagList.length > 0) && (
+      <CoverPanel project={project} onReload={onReload} />
+
+      {(project.description || project.book_category || project.selling_points || tagList.length > 0) && (
         <div className="glass-panel space-y-3">
+          {project.book_category && <div><span className="text-xs text-ink-500 mr-2">书籍分类</span><span className="text-sm text-ink-700">{project.book_category}</span></div>}
+          {project.selling_points && <div><div className="text-xs text-ink-500 mb-1">卖点</div><div className="text-sm text-ink-700">{project.selling_points}</div></div>}
           {project.description && (
             <div>
-              <div className="text-xs text-ink-500 mb-1 tracking-wider uppercase">描述</div>
-              <div className="text-sm text-ink-700 leading-relaxed">{project.description}</div>
+              <div className="text-xs text-ink-500 mb-1 tracking-wider uppercase">介绍</div>
+              <div className="text-sm text-ink-700 leading-relaxed whitespace-pre-wrap">{project.description.slice(0, 150)}{project.description.length > 150 && <details className="inline"><summary className="inline cursor-pointer text-brand-400">…展开全文</summary><span className="block whitespace-pre-wrap mt-2">{project.description.slice(150)}</span></details>}</div>
             </div>
           )}
           {tagList.length > 0 && (
@@ -2988,9 +3081,11 @@ function SettingsTab({
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description || '');
   const [tagsInput, setTagsInput] = useState(project.tags || '');
+  const [bookCategory, setBookCategory] = useState(project.book_category || '');
+  const [sellingPoints, setSellingPoints] = useState(project.selling_points || '');
   const [narratorVoice, setNarratorVoice] = useState(
     voices.some(v => v.id === project.default_narrator_voice_id)
-      ? project.default_narrator_voice_id! : voices.find(v => normalizeGender(v) === '男声')?.id || voices[0]?.id || ''
+      ? project.default_narrator_voice_id! : ''
   );
   const [speed, setSpeed] = useState(project.default_speed ?? 1.0);
 
@@ -3004,10 +3099,12 @@ function SettingsTab({
     setName(project.name);
     setDescription(project.description || '');
     setTagsInput(project.tags || '');
+    setBookCategory(project.book_category || '');
+    setSellingPoints(project.selling_points || '');
     setNarratorVoice(voices.some(v => v.id === project.default_narrator_voice_id)
-      ? project.default_narrator_voice_id! : voices.find(v => normalizeGender(v) === '男声')?.id || voices[0]?.id || '');
+      ? project.default_narrator_voice_id! : '');
     setSpeed(project.default_speed ?? 1.0);
-  }, [project.project_id, project.name, project.description, project.tags, project.default_narrator_voice_id, project.default_speed, voices]);
+  }, [project.project_id, project.name, project.description, project.tags, project.book_category, project.selling_points, project.default_narrator_voice_id, project.default_speed, voices]);
 
   const save = async () => {
     setErr(null);
@@ -3019,7 +3116,9 @@ function SettingsTab({
         name: name.trim(),
         description,
         tags,
-        default_narrator_voice_id: narratorVoice || null,
+        book_category: bookCategory,
+        selling_points: sellingPoints,
+        default_narrator_voice_id: narratorVoice,
         default_speed: speed,
       });
       setSavedTip(true);
@@ -3067,13 +3166,33 @@ function SettingsTab({
         </div>
 
         <div className="space-y-2 relative">
-          <label className="block text-sm text-ink-700">描述</label>
+          <label className="block text-sm text-ink-700">书籍分类</label>
+          <select className="w-full" value={bookCategory} onChange={e => setBookCategory(e.target.value)}>
+            <option value="">未分类</option>
+            <option value="男频">男频</option>
+            <option value="女频">女频</option>
+            <option value="文学">文学</option>
+            <option value="非虚构">非虚构</option>
+            <option value="其他">其他</option>
+          </select>
+          <p className="text-xs text-ink-500">男频优先男声旁白，女频优先女声；手动选定的旁白优先。</p>
+        </div>
+
+        <div className="space-y-2 relative">
+          <label className="block text-sm text-ink-700">卖点</label>
+          <textarea className="textarea min-h-[60px]" value={sellingPoints}
+            onChange={e => setSellingPoints(e.target.value)} maxLength={1000}
+            placeholder="用一两句话突出本书亮点" />
+        </div>
+
+        <div className="space-y-2 relative">
+          <label className="block text-sm text-ink-700">介绍</label>
           <textarea
             className="textarea min-h-[90px]"
             value={description}
             onChange={e => setDescription(e.target.value)}
-            placeholder="可选：填写项目描述、备注等"
-            maxLength={500}
+            placeholder="前 150 字会在概览外显，建议重要信息前置"
+            maxLength={5000}
           />
         </div>
 
@@ -3095,7 +3214,7 @@ function SettingsTab({
             value={narratorVoice}
             onChange={e => setNarratorVoice(e.target.value)}
           >
-            <option value="">未设置</option>
+            <option value="">按分类自动推荐</option>
             {voices.map(v => (
               <option key={v.id} value={v.id}>
                 {v.name} ({v.gender})

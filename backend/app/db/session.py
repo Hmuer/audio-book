@@ -87,6 +87,12 @@ _JOB_NEW_COLUMNS = {
 
 # Doubao 扩展：项目/构建新增列（FR-18/FR-19）
 _PROJECT_NEW_COLUMNS = {
+    "book_category": "VARCHAR(64)",
+    "selling_points": "TEXT",
+    "cover_key": "VARCHAR(512)",
+    "cover_status": "VARCHAR(24)",
+    "cover_progress": "INTEGER DEFAULT 0",
+    "cover_error": "VARCHAR(512)",
     "default_tts_provider": "VARCHAR(32)",
     "default_build_mode": "VARCHAR(32)",
     # P1 #5：资源归属字段
