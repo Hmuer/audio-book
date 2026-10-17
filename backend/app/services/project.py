@@ -1718,7 +1718,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
 
         # 4. 全书角色识别（50k 切片串行 + checkpoint：逐片写入 progress_json，
         #    重跑 prepare_project 时跳过已完成切片）
-        pt = _time.perf_counter()
+        characters_t0 = _time.perf_counter()
         full_text = "\n".join(c.text for c in chapters)
 
         # 4a. 加载/初始化 checkpoint
@@ -2159,8 +2159,14 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         if not characters_merged:
             logger.info("[project_prepare] 未识别到角色，按纯旁白书籍继续")
 
+        logger.info(
+            f"[project_prepare] project_id={project_id[:8]}... "
+            f"characters={len(characters_merged)} ms={int((_time.perf_counter()-characters_t0)*1000)}"
+        )
+
         # 4c. dedup（完成后 checkpoint 跳到 dedup=done）
         # H-13：dedup 阶段计时（命中 checkpoint 则 start+end 同刻，elapsed≈0）
+        dedup_t0 = _time.perf_counter()
         _stage_timing_touch(prog, "dedup")
         if prog.get("stage") in ("resume", "partial", "dedup", "dialogues", "instructions", "voice_recs", "done") and prog.get("dedup_done"):
             name_map: dict[str, str] = dict(prog.get("name_map", {}) or {})
@@ -2190,7 +2196,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             await _write_progress(prog)
         logger.info(
             f"[project_prepare] project_id={project_id[:8]}... "
-            f"characters={len(characters)} ms={int((_time.perf_counter()-pt)*1000)}"
+            f"dedup characters={len(characters)} ms={int((_time.perf_counter()-dedup_t0)*1000)}"
         )
 
         # 5. 对白归属：14 章/批批量 + DIALOGUE_BATCH_CONCURRENCY 并发跑批，

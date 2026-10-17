@@ -64,6 +64,13 @@ def _quota_402_payload() -> dict:
     }
 
 
+def _token_plan_429_payload() -> dict:
+    return {
+        "request_id": "req-2062",
+        "error": {"message": "已达到 Token Plan 速率限制，请升级 Token Plan 套餐或切换为按量付费 API 使用。 (2062)"},
+    }
+
+
 def _make_fake_client(script: list[_FakeResp]):
     """按脚本回放响应的假 httpx.AsyncClient；脚本耗尽后重复最后一个响应。"""
     state = {"post_calls": 0, "next": 0}
@@ -114,17 +121,29 @@ async def test_h22_402_raises_once_without_retry(monkeypatch, caplog):
             "test", _TinyResult, max_retries=3
         )
 
-    # 不重试：恰好 1 次 HTTP（旧实现 3 次尝试）
     assert fake.state["post_calls"] == 1, (
         f"402 不应重试，HTTP 调用 {fake.state['post_calls']} 次"
     )
-    # 熔断已打开
     assert llm_mod._quota_blocked_until > time.monotonic()
-    # 日志恰好 1 行 WARNING、无 ERROR（无 exhausted、无 traceback）
     warns = [r for r in caplog.records if r.levelno == logging.WARNING and "402" in r.message]
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
-    assert len(warns) == 1, f"402 应只记 1 行 WARNING，实际 {len(warns)}"
+    assert len(warns) == 1, f"402 应只记 1 行 WARNING、实际 {len(warns)}"
     assert not errors, f"402 不应产生 ERROR 日志：{[r.message for r in errors]}"
+    llm_mod.reset_quota_breaker()
+
+
+@pytest.mark.asyncio
+async def test_token_plan_2062_429_opens_quota_breaker_without_three_retries(monkeypatch):
+    """2062 套餐级 429 不应按普通瞬时 429 重试 2/4 秒。"""
+    llm_mod = _get_llm_mod()
+    llm_mod.reset_quota_breaker()
+    fake = _make_fake_client([_FakeResp(429, _token_plan_429_payload())])
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", fake)
+
+    with pytest.raises(LLMQuotaExhaustedError, match="Token Plan"):
+        await _make_provider().chat_structured("test", _TinyResult, max_retries=3)
+    assert fake.state["post_calls"] == 1
+    assert llm_mod._quota_blocked_until > time.monotonic()
     llm_mod.reset_quota_breaker()
 
 

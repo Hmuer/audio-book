@@ -178,8 +178,8 @@ class Settings(BaseSettings):
     # 业务层可能并发调用（如每章对白归属 asyncio.gather），这里在 provider 层强制串行
     LLM_MAX_CONCURRENCY: int = 1
 
-    # 402 配额耗尽熔断时长（秒）：MiniMax Token Plan 等按周期计费套餐额度
-    # 用完时（HTTP 402），窗口内重试毫无意义只会刷日志。收到 402 后该时长
+    # LLM 配额/套餐级限流熔断时长（秒）：MiniMax Token Plan 等按周期计费套餐额度
+    # 用完时（HTTP 402 或 2062 Token Plan 429），窗口内重试毫无意义只会刷日志。收到后该时长
     # 内的所有 LLM 调用**不发 HTTP、瞬间失败**（LLMQuotaExhaustedError）；
     # 到期后放一次真实调用探测——配额已重置则自动恢复，仍未重置则重新熔断。
     # 周期未知（Token Plan 约 5h/窗口），默认 300s 意味着窗口内最多 ~60 次

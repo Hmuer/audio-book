@@ -38,6 +38,18 @@ _llm_sem_value: int = 0
 _quota_blocked_until: float = 0.0
 
 
+def _is_token_plan_rate_limit(status_code: int | None, message: str) -> bool:
+    """识别 MiniMax 2062：Token Plan 套餐级限流，不是普通瞬时 429。
+
+    普通 429 仍按指数退避重试；2062/Token Plan 文案在窗口内持续返回，
+    若按普通 429 处理，会让每个章节再发 3 次请求并浪费大量时间。
+    """
+    if status_code != 429:
+        return False
+    text = (message or "").lower()
+    return "2062" in text or "token plan" in text or "token_plan" in text
+
+
 def reset_quota_breaker() -> None:
     """手动/测试用：清掉 402 熔断状态（下一次调用直接发真实 HTTP）。"""
     global _quota_blocked_until
@@ -450,11 +462,35 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                         try:
                             err_data = resp.json()
                             req_id = err_data.get("request_id") or req_id
-                            err_msg = err_data.get("error", {}).get("message") or body_preview
+                            err_obj = err_data.get("error") or {}
+                            base_resp = err_data.get("base_resp") or {}
+                            err_msg = (
+                                err_obj.get("message")
+                                or err_obj.get("status_msg")
+                                or base_resp.get("status_msg")
+                                or body_preview
+                            )
+                            err_code = (
+                                err_obj.get("code") or err_obj.get("status_code")
+                                or base_resp.get("status_code")
+                            )
+                            if err_code is not None:
+                                err_msg = f"{err_msg} ({err_code})"
                         except Exception:
                             err_msg = body_preview
-                        # 429 速率限制：标记走指数退避路径
+                        # 429 速率限制：普通 429 走指数退避；MiniMax 2062
+                        # 是 Token Plan 套餐级限流，按配额熔断处理。
                         if resp.status_code == 429:
+                            if _is_token_plan_rate_limit(resp.status_code, err_msg):
+                                _open_quota_breaker()
+                                logger.warning(
+                                    f"[LLM] Token Plan 速率限制（model={model}）："
+                                    f"熔断 {_quota_breaker_secs()}s，已完成 checkpoint，暂停后续调用。"
+                                    f"err={err_msg}"
+                                )
+                                raise LLMQuotaExhaustedError(
+                                    f"LLM HTTP 429 Token Plan 速率限制: {err_msg}"
+                                )
                             is_rate_limited = True
                         # H-22 402 配额耗尽：**不重试**（周期内重试必然再 402，
                         # 只会刷日志），打开熔断让窗口内后续调用零成本快速失败。
