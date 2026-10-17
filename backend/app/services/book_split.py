@@ -1,5 +1,5 @@
 """
-章节识别：从整本小说文本中切分出章节。**完全不调用 LLM，零成本。**
+章节识别：从书籍文本中切分朗读单元。**完全不调用 LLM，零成本。**
 
 策略：
 1. 按配置 CHAPTER_SPLIT_PATTERNS（支持用户扩展正则）匹配章节标题行
@@ -13,10 +13,8 @@
      保持原行为
 3. 剥离纯分隔线行（------ / ──── / ***** 等）：零朗读价值，不剥离会被
    narrator 段念出来，白占润色/对白归属的 token
-4. 命中数 < CHAPTER_SPLIT_MIN_MATCHES：
-   - CHAPTER_SPLIT_HARD_FALLBACK_ENABLED=True → 按字数硬切（保留旧行为）
-   - CHAPTER_SPLIT_HARD_FALLBACK_ENABLED=False（默认）→ 抛 ChapterSplitError
-     （绝不回退 LLM，直接提示用户补自定义正则后重试）
+4. 无编号的散文、诗集或自传：优先使用 Markdown/连续编号标题；没有可靠
+   标题时按段落/句子切成朗读单元，原文仍完整保留。
 
 章节切分规则可在 .env 中扩展 CHAPTER_SPLIT_PATTERNS 覆盖，也可直接改
 config.py 默认值。
@@ -39,7 +37,7 @@ class ChapterSplitError(RuntimeError):
 
 # 章节编号前缀正则：用于从标题中去掉 "第X章"/"Chapter X" 等编号前缀，只保留标题正文
 _CHAPTER_PREFIX_RE = re.compile(
-    r'^\s*第\s*[零〇一二三四五六七八九十百千0-9]+\s*'
+    r'^\s*第\s*[零〇一二三四五六七八九十百千两0-9]+\s*'
     r'(?:章|回|节|卷|篇|部)\s*[:：、\.]*\s*'
     r'|^\s*(?:Ep|Episode|Vol|Volume|Ch|Chapter)\s*[\.\-:：]?\s*'
     r'[0-9IVXLCDM]+[\.\t \-:：]*'
@@ -68,11 +66,28 @@ def strip_chapter_prefix(title: str) -> str:
 # 章级标记（第X章/回/节）：一行内出现即按章处理；合体行标题从它起截取。
 # 数字字符组与 CHAPTER_SPLIT_PATTERNS 第 1 条保持一致。
 _CH_MARKER_RE = re.compile(
-    r"第[ \t]*[零〇一二三四五六七八九十百千0-9]+[ \t]*(?:章|回|节)"
+    r"第[ \t]*[零〇一二三四五六七八九十百千两0-9]+[ \t]*(?:章|回(?!合)|节)"
 )
 # 卷级标记（第X卷/篇/部）：仅当行内没有章级标记时才是「卷分组头」
 _VOL_MARKER_RE = re.compile(
-    r"第[ \t]*[零〇一二三四五六七八九十百千0-9]+[ \t]*(?:卷|篇|部)"
+    r"第[ \t]*[零〇一二三四五六七八九十百千两0-9]+[ \t]*(?:卷|篇|部|集)"
+)
+_EXTRA_NUMBERED_RE = re.compile(
+    r"^[ \t\u3000]*(?:[☆★＊*][、.]?[ \t\u3000]*)?"
+    r"(?:(?:正文[ \t\u3000_]+){0,2})?(?:[0-9]{1,4}\.[ \t\u3000]*)?"
+    r"(?:第[零〇一二三四五六七八九十百千两0-9]+"
+    r"[ \t]*(?:卷|篇|部|集)[^\n]{0,40}?[ \t\u3000]+)?"
+    r"第[ \t]*[零〇一二三四五六七八九十百千两0-9]+[ \t]*(?:章|回(?!合)|节)"
+    r"[^\n]{0,90}$", re.MULTILINE,
+)
+_MARKDOWN_HEADING_RE = re.compile(r"^[ \t\u3000]*#{1,6}[ \t\u3000]+([^\n]{1,80})$", re.MULTILINE)
+_PLAIN_NUMBERED_RE = re.compile(
+    r"^[ \t\u3000]*([0-9]{1,4})[ \t\u3000]*[.．、][ \t\u3000]*([^\n]{2,70})$"
+    r"|^[ \t\u3000]*([0-9]{1,4})[ \t\u3000]+([^\n]{2,70})$", re.MULTILINE,
+)
+_PROLOGUE_RE = re.compile(
+    r"^[ \t\u3000]*第[零〇一二三四五六七八九十百千两0-9]+[ \t]*(?:卷|篇|部|集)"
+    r"[^\n]{0,40}[ \t\u3000]+(?:引子|楔子|序章)(?:[ \t\u3000]+[^\n]{0,50})?$", re.MULTILINE,
 )
 # 纯分隔线：整行只有 3 个及以上连续排版符号（------ / ──── / ***** / _____）
 # 含半角/全角变体。不匹配行内带正文的破折号对白（—— 你说什么）。
@@ -166,10 +181,10 @@ def split_chapters_regex(text: str, *, min_matches: Optional[int] = None) -> lis
     用配置里的正则识别章节。命中数 >= min_matches 才认为识别成功。
 
     关于开头内容（广告/书名/作者/简介/卷头）：
-    - **一律忽略**。只有明确命中标题正则的行（第X章 / 序章 / 楔子 等）才算章节。
+    - 首标题前短内容通常是书名/广告，超过 1000 字的开篇正文保留。
     - 纯卷行（第X卷/篇/部）在全书存在章级/关键词级标题时同样不作为章节
       （H-20 分组头，见模块 docstring）；全书只有卷行时卷即章，保持原行为。
-    - 不再把第一章前面的非标题内容自动合并成一个"序"章。
+    - 原文标题单独朗读，不保留在正文中重复朗读。
 
     Args:
         text: 全文（已归一化换行符）
@@ -182,16 +197,53 @@ def split_chapters_regex(text: str, *, min_matches: Optional[int] = None) -> lis
     min_matches = int(min_matches if min_matches is not None else settings.CHAPTER_SPLIT_MIN_MATCHES)
     # 找所有命中位置
     matches: list[tuple[int, int, str]] = []  # (start, end, matched_line)
-    for pat in get_chapter_patterns():
+    seen_starts: set[int] = set()
+    # 内置补充规则也作用于持久化过旧版 CHAPTER_SPLIT_PATTERNS 的安装。
+    for pat in [*get_chapter_patterns(), _EXTRA_NUMBERED_RE, _PROLOGUE_RE]:
         for m in pat.finditer(text):
-            # 去重：同一位置可能被多个模式命中（位置差 < 5 视为同一行）
             start = m.start()
-            if any(abs(start - s) < 5 for s, _, _ in matches):
+            if start in seen_starts:
                 continue
+            if len(m.group(0).strip()) > 110:
+                continue
+            if re.match(r"第[^\n]{0,20}回合", m.group(0).strip()):
+                continue
+            seen_starts.add(start)
             matches.append((start, m.end(), m.group(0).strip()))
+
+    # 无明确章标题时，再尝试排版标题。数字标题必须构成连续序列，避免把
+    # 正文中的列表项目或日期误当章节。Markdown 标题本身就是强排版信号。
+    if len(matches) < min_matches:
+        md = [(m.start(), m.end(), m.group(1).strip()) for m in _MARKDOWN_HEADING_RE.finditer(text)]
+        if md:
+            matches = md
+        else:
+            numbered = []
+            for m in _PLAIN_NUMBERED_RE.finditer(text):
+                n = int(m.group(1) or m.group(3))
+                title = (m.group(2) or m.group(4)).strip()
+                if (n <= 10000 and re.search(r"[\u4e00-\u9fff]", title)
+                        and not title[0].isdigit()
+                        and not re.search(r"[。！？!?；;]", title)):
+                    numbered.append((m.start(), m.end(), f"{n} {title}", n))
+            runs: list[list[tuple[int, int, str, int]]] = []
+            for item in numbered:
+                if not runs or item[3] != runs[-1][-1][3] + 1:
+                    runs.append([])
+                runs[-1].append(item)
+            best = max(runs, key=len, default=[])
+            gaps = [b[0] - a[0] for a, b in zip(best, best[1:])]
+            if len(best) >= 5 and sum(gap >= 300 for gap in gaps) >= len(gaps) * 3 // 4:
+                matches = [(s, e, title) for s, e, title, _ in best]
 
     # 按位置排序
     matches.sort(key=lambda x: x[0])
+
+    # 下载站传记常以「第1节、第2节……」包住一份目录；目录里的
+    # 「第一章」只是列表项。数字节序列占主导时按节切，避免目录幽灵章。
+    arabic_sections = [m for m in matches if re.match(r"(?:正文\s+)?第\d+节", m[2])]
+    if len(arabic_sections) >= 5 and len(arabic_sections) >= len(matches) // 2:
+        matches = arabic_sections
 
     # ---- H-20 章/卷分级 ----
     # 「全书存在任何非卷级标题」= 卷行只是分组头，应剔除；否则（全书只有
@@ -209,7 +261,7 @@ def split_chapters_regex(text: str, *, min_matches: Optional[int] = None) -> lis
             # 章级（含『第X卷 XXX 第X章 YYY』合体行）：
             # 标题归一为从章级标记起的原文子串 →『第一章 惊蛰』
             kept.append((start, end, line[ch_m.start():].strip()))
-        elif _VOL_MARKER_RE.search(line) and has_chapter_level:
+        elif _VOL_MARKER_RE.search(line) and has_chapter_level and not _PROLOGUE_RE.match(line):
             volume_spans.append((start, end))
         else:
             kept.append((start, end, line))
@@ -226,6 +278,14 @@ def split_chapters_regex(text: str, *, min_matches: Optional[int] = None) -> lis
 
     # 切分章节
     chapters: list[Chapter] = []
+    # 若首个标题前已有成篇正文（常见于无编号的开篇，再从第二章才有编号），
+    # 将其保留为开篇单元；短书名/作者/下载站声明仍不当正文。
+    preamble = text[:matches[0][0]]
+    if "用户上传之内容开始" in preamble:
+        preamble = preamble.split("用户上传之内容开始", 1)[1]
+    preamble = _SEPARATOR_LINE_RE.sub("", preamble).strip()
+    if len(preamble) >= 1000:
+        chapters.append(Chapter(idx=0, title="开篇", text=preamble))
     for i, (start, end, title_line) in enumerate(matches):
         # 章节内容：标题行之后到下一个标题行开头（match span 即标题行本身，
         # 正文从 end 起切片 —— 标题段在 chapter.py 里单独朗读，留在 text 里
@@ -254,10 +314,18 @@ def split_chapters_regex(text: str, *, min_matches: Optional[int] = None) -> lis
             text=chapter_text,
         ))
 
-    # 注意：第一章前的广告/书名/作者/简介/卷头/版权页一律丢弃，不再合并为"序"章。
-    # 如果原文里真的有"序章/楔子"这类标题行，CONFIG 正则本身已经能命中为独立章节。
+    # 序章/楔子等明确标题按原规则单独成章；长开篇由上方 preamble 保留。
 
-    return chapters
+    unique: list[Chapter] = []
+    for ch in chapters:
+        if (unique and len(ch.text) > 500
+                and ch.title.strip() == unique[-1].title.strip()
+                and ch.text == unique[-1].text):
+            logger.info("[book_split] 跳过相邻重复章节 %r", ch.title)
+            continue
+        ch.idx = len(unique)
+        unique.append(ch)
+    return unique
 
 
 # 兜底：按字数硬切（保留句子边界）
@@ -266,7 +334,7 @@ def split_chapters_by_size(text: str, max_chars: Optional[int] = None) -> list[C
     正则失败时按字数硬切，尽量在句子边界（。！？.!?）切。
     每章 idx 自动递增，title 用「第 X 部分」。
     """
-    max_chars = int(max_chars if max_chars is not None else settings.CHAPTER_SPLIT_HARD_FALLBACK_MAX_CHARS)
+    max_chars = max(1000, int(max_chars if max_chars is not None else settings.CHAPTER_SPLIT_HARD_FALLBACK_MAX_CHARS))
     if not text.strip():
         return []
     if len(text) <= max_chars:
@@ -278,11 +346,15 @@ def split_chapters_by_size(text: str, max_chars: Optional[int] = None) -> list[C
     while cursor < len(text):
         end = min(cursor + max_chars, len(text))
         if end < len(text):
-            # 在 [cursor, end] 范围内找最后一个句子结束符
-            for j in range(end, max(cursor, end - 2000), -1):
-                if text[j - 1] in "。！？!?":
-                    end = j
-                    break
+            # 先找段落边界；诗歌尽量不拆断行。没有段落再找句子边界。
+            para = text.rfind("\n\n", max(cursor, end - 3000), end)
+            if para > cursor + max_chars // 2:
+                end = para + 2
+            else:
+                for j in range(end, max(cursor, end - 2000), -1):
+                    if text[j - 1] in "。！？!?\n":
+                        end = j
+                        break
         chunk = text[cursor:end].strip()
         if chunk:
             chapters.append(Chapter(
@@ -295,42 +367,33 @@ def split_chapters_by_size(text: str, max_chars: Optional[int] = None) -> list[C
     return chapters
 
 
-def _build_user_hint(text_chars: int, matched_count: int) -> str:
-    """切章失败时拼一段给用户看的提示，含配置指引 + 建议补充的正则写法。"""
-    min_needed = settings.CHAPTER_SPLIT_MIN_MATCHES
-    patterns_preview = "\n".join(
-        f"  {i+1}. {p!r}" for i, p in enumerate(settings.CHAPTER_SPLIT_PATTERNS[:5])
-    )
-    more_count = len(settings.CHAPTER_SPLIT_PATTERNS) - 5
-    if more_count > 0:
-        patterns_preview += f"\n  ...（另有 {more_count} 条规则，详见 config.py / .env）"
-    return (
-        f"未能识别出有效章节（共 {text_chars} 字，命中 {matched_count} 个标题 < 阈值 {min_needed}）。\n"
-        "小说正文可能未使用常见的「第X章 / 第X回 / Chapter X / 楔子 等」标题格式。\n\n"
-        "🔧 解决方案（无需写代码，改配置即可）：\n"
-        "  1. 打开后端 .env（或 config.py 中的 Settings）\n"
-        "  2. 在 CHAPTER_SPLIT_PATTERNS 列表里添加一条能匹配你小说标题行的正则，\n"
-        "     行首用 ^[ \t]* 锁定（避免正文误命中），整条匹配标题行。\n"
-        "     例：r\"^[ \\t]*第一百[零〇一二三四五六七八九十]+局[ \\t]*[^\\n]*$\"\n"
-        "  3. 保存后重试，不必重新启动整本书导入。\n\n"
-        f"当前已生效的 CHAPTER_SPLIT_PATTERNS 预览：\n{patterns_preview}\n"
-    )
+def _limit_chapter_size(chapters: list[Chapter], max_chars: int = 30_000) -> list[Chapter]:
+    """即使书中缺失部分标题，也不把几十万字送给单次润色/对白请求。"""
+    result: list[Chapter] = []
+    for ch in chapters:
+        if len(ch.text) <= max_chars:
+            result.append(Chapter(idx=len(result), title=ch.title, text=ch.text))
+            continue
+        parts = split_chapters_by_size(ch.text, max_chars=max_chars)
+        logger.warning("[book_split] 超长章节 %r chars=%s，拆成 %s 个朗读单元", ch.title, len(ch.text), len(parts))
+        for i, part in enumerate(parts, 1):
+            result.append(Chapter(
+                idx=len(result), title=f"{ch.title}（第 {i} 部分）", text=part.text,
+            ))
+    return result
 
 
 async def split_book_chapters(text: str) -> list[Chapter]:
     """
-    整本小说章节识别主入口。
+    书籍朗读单元识别主入口。
 
-    **完全不调用 LLM，零成本；切章失败也绝不回退 LLM，直接提示用户补自定义正则。**
+    **完全不调用 LLM，零成本；无可靠标题时保留全文并按长度切分。**
 
     流程：
     1. 用 settings.CHAPTER_SPLIT_PATTERNS（用户可扩展）匹配常见章节标题
        → 命中时直接复用**原文标题**，不做任何改写
     2. 命中数 >= CHAPTER_SPLIT_MIN_MATCHES → 返回章节列表
-    3. 命中数 < 阈值：
-       - CHAPTER_SPLIT_HARD_FALLBACK_ENABLED=True → 按字数硬切（保留旧行为，标题占位）
-       - CHAPTER_SPLIT_HARD_FALLBACK_ENABLED=False（默认）→ 抛 ChapterSplitError
-         （异常附带用户可操作的配置指引，直接显示给前端）
+    3. 标题不足时按段落和长度切成朗读单元；短篇保留为单单元。
     """
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     total_chars = len(text)
@@ -338,41 +401,29 @@ async def split_book_chapters(text: str) -> list[Chapter]:
 
     # 1. 正则 → 复用原文标题（完全不调 LLM）
     chapters = split_chapters_regex(text)
-    if len(chapters) >= settings.CHAPTER_SPLIT_MIN_MATCHES:
+    if not chapters:
+        # 短篇或单篇散文集可能恰好只有一个明确标题。
+        single = split_chapters_regex(text, min_matches=1)
+        if len(single) == 1 and 0 <= text.find(single[0].title) < 1000:
+            chapters = single
+    if chapters:
         logger.info(
             f"[book_split] regex ok: chapters={len(chapters)} "
             f"first={chapters[0].title!r} last={chapters[-1].title!r}"
         )
+        chapters = _limit_chapter_size(chapters)
         for i, c in enumerate(chapters):
             c.idx = i
         return chapters
 
-    matched_count = len(chapters)  # 这里 chapters 是 split_chapters_regex 返回的，可能是 []
-    # 如果正则完全没命中（返回 []），我们没法直接从 chapters 拿到 matched 数，
-    # 再走一次统计仅用于提示（split_chapters_regex min_matches=1 时能拿到所有命中）。
-    # 这里退而求其次：仅记录 log。
     logger.info(
-        f"[book_split] regex 命中不足：matched_count={matched_count} "
-        f"< min={settings.CHAPTER_SPLIT_MIN_MATCHES} "
-        f"HARD_FALLBACK_ENABLED={settings.CHAPTER_SPLIT_HARD_FALLBACK_ENABLED}"
+        f"[book_split] 标题不足：chapters={len(chapters)} "
+        f"< min={settings.CHAPTER_SPLIT_MIN_MATCHES}，按段落切分"
     )
 
-    # 2. 是否允许字数硬切兜底（默认 False = 不兜底，直接提示用户）
-    if settings.CHAPTER_SPLIT_HARD_FALLBACK_ENABLED:
-        chapters = split_chapters_by_size(text)
-        if len(chapters) >= 2:
-            logger.info(
-                f"[book_split] size_split fallback: chapters={len(chapters)} "
-                f"first={chapters[0].title!r} last={chapters[-1].title!r} "
-                f"(标题「第 N 部分」占位)"
-            )
-            return chapters
-        # 硬切也不足 2 章 → 单章
-        if chapters:
-            logger.info("[book_split] fallback single chapter")
-            return chapters
-
-    # 3. 默认分支：不兜底，直接提示用户
-    hint = _build_user_hint(total_chars, matched_count)
-    logger.warning(f"[book_split] ChapterSplitError:\n{hint}")
-    raise ChapterSplitError(hint)
+    # 散文、诗集、自传可以没有编号或统一标题格式。不能把整本书判为导入失败。
+    chapters = split_chapters_by_size(text)
+    if chapters:
+        logger.info(f"[book_split] structural fallback chapters={len(chapters)} chars={total_chars}")
+        return chapters
+    raise ChapterSplitError("源文件没有可朗读的正文")

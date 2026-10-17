@@ -211,16 +211,15 @@ def test_cs7_prepare_llm_estimate_counts_and_warns(monkeypatch, caplog):
         POLISH_ENABLED = False
         LLM_MAX_CONCURRENCY = 1
 
-    # 100 章 × 2500 字 = 25 万字 → 5 片；对白 ceil(100/14)=8；指令 ceil(100/6)=17；+1 推荐
+    # 100 章 × 2500 字 = 25 万字；对白每次最多 12000 字，4 章/批。
     chapters = [Chapter(idx=i, title=f"第{i}章", text="字" * 2500) for i in range(100)]
     with caplog.at_level("INFO"):
         est = _log_prepare_llm_estimate("pid12345", chapters, _Cfg)
-    # H-3：返回 dict（透出前端 llm_estimate），total_calls 即旧口径的调用次数
-    assert est["total_calls"] == 5 + 8 + 17 + 1
+    assert est["total_calls"] == 5 + 25 + 17 + 1
 
     msgs = [r.getMessage() for r in caplog.records]
     assert any("LLM 调用量估算" in m for m in msgs), msgs
-    # 100 章调用量 31 < 200 → 不刷 WARNING
+    # 100 章调用量仍 < 200 → 不刷 WARNING
     assert not any(r.levelname == "WARNING" for r in caplog.records)
 
 

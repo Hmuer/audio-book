@@ -1896,6 +1896,8 @@ _EDITABLE_SETTINGS = {
     "LLM_CHAR_EXTRACT_SLICE_SIZE": ("int", "限流配置", "角色识别切片大小（字符）"),
     "CHAR_EXTRACT_CONCURRENCY": ("int", "限流配置", "角色识别切片并发度（实际=min(本值, LLM 最大并发)；改后立即生效）"),
     "DIALOGUE_BATCH_CHAPTERS": ("int", "限流配置", "对白归属批大小（章/批）"),
+    "DIALOGUE_BATCH_MAX_CHARS": ("int", "限流配置", "对白归属单次请求正文字符上限"),
+    "DIALOGUE_BATCH_TIMEOUT_SECONDS": ("int", "限流配置", "对白归属单批超时秒数"),
     "DIALOGUE_BATCH_CONCURRENCY": ("int", "限流配置", "对白归属批并发度"),
     "DIALOGUE_BATCH_RETRY_COUNT": ("int", "限流配置", "对白归属重试次数"),
     # 逐段语音指令（豆包 2.0 context_texts，LLM 生成）
@@ -1910,7 +1912,7 @@ _EDITABLE_SETTINGS = {
     # 章节切分
     "CHAPTER_SPLIT_PATTERNS": ("list[str]", "章节切分", "切章正则匹配规则（每条一行）"),
     "CHAPTER_SPLIT_MIN_MATCHES": ("int", "章节切分", "最少匹配章节数"),
-    "CHAPTER_SPLIT_HARD_FALLBACK_ENABLED": ("bool", "章节切分", "硬切兜底开关"),
+    "CHAPTER_SPLIT_HARD_FALLBACK_ENABLED": ("bool", "章节切分", "旧版兼容项：无标题书籍现始终按段落切分"),
     "CHAPTER_SPLIT_HARD_FALLBACK_MAX_CHARS": ("int", "章节切分", "硬切每块字符上限"),
     # 合成质量
     "TTS_MAX_SEGMENT_CHARS": ("int", "合成质量", "单段最大字符数（超长自动按句读切分）"),

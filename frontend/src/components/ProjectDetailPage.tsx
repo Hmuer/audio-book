@@ -490,6 +490,8 @@ const PIPELINE_STAGES = [
 
 function stageLabel(s?: string): string {
   if (s === 'cancelled') return '已取消';
+  if (s === 'resume') return '断点续跑';
+  if (s === 'partial') return '部分完成';
   const found = PIPELINE_STAGES.find(st => st.key === s);
   if (found) return found.label;
   return s ? `运行中（${s}）` : '运行中';
@@ -530,13 +532,13 @@ function PipelineTimeline({
   // H-13b：优先用 stage_timings 推断运行阶段（split/polish 期间 stage 还停在
   // "start"，页面会卡在「初始化」）；无计时数据（老项目）退化用 prog.stage
   const displayStage = inferRunningStage(prog) ?? prog?.stage;
-  const currentIdx = displayStage
-    ? PIPELINE_STAGES.findIndex(s => s.key === displayStage)
-    : -1;
+  const currentIdx = displayStage === 'partial'
+    ? PIPELINE_STAGES.length - 1
+    : displayStage ? PIPELINE_STAGES.findIndex(s => s.key === displayStage) : -1;
   return (
     <div className="flex items-center gap-0 overflow-x-auto pb-1">
       {PIPELINE_STAGES.map((st, i) => {
-        const isDone = currentIdx > i || (prog?.stage === 'done' && i === PIPELINE_STAGES.length - 1);
+        const isDone = currentIdx > i || ((prog?.stage === 'done' || prog?.stage === 'partial') && i === PIPELINE_STAGES.length - 1);
         const isCurrent = currentIdx === i;
         const isFailed = isCurrent && !!prog?.last_error;
         // H-13：阶段耗时 —— elapsed_ms 有值（已完成）直接显示；
@@ -642,6 +644,7 @@ function OverviewTab({
 
   const failedCharSlicesN = prog?.char_failed_slices_n ?? 0;
   const failedDialogueBatchesN = prog?.dialogue_failed_batch_count ?? 0;
+  const missingVoiceRecsN = prog?.voice_recs_missing_count ?? 0;
   // 润色纠错：3 次重试仍失败 → 该章静默保留原文，必须让用户看见
   const polishFailedN = prog?.polish_failed_n ?? 0;
   const polishTotalN = prog?.polish_total ?? 0;
@@ -649,7 +652,7 @@ function OverviewTab({
   // 单独展示，避免用户误以为重跑能救回
   const polishContentRejectedN = prog?.polish_content_rejected_n ?? 0;
   const hasPartialFailures =
-    failedCharSlicesN > 0 || failedDialogueBatchesN > 0 || polishFailedN > 0;
+    failedCharSlicesN > 0 || failedDialogueBatchesN > 0 || polishFailedN > 0 || missingVoiceRecsN > 0;
   const hasContentRejected = polishContentRejectedN > 0;
 
   // 后端 tags 是逗号分隔字符串，展示前拆成数组（不能直接 .map）
@@ -968,7 +971,7 @@ function OverviewTab({
         </div>
       )}
 
-      {project.status === 'ready' && hasPartialFailures && !isPreparing && (
+      {(project.status === 'ready' || project.status === 'partial_success') && hasPartialFailures && !isPreparing && (
         <div className="glass-panel !border-orange-500/30 !bg-orange-500/[0.05]">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="text-sm">
@@ -979,6 +982,8 @@ function OverviewTab({
                 {failedDialogueBatchesN > 0 && <>对白归属失败批 {failedDialogueBatchesN} 个</>}
                 {(failedCharSlicesN > 0 || failedDialogueBatchesN > 0) && polishFailedN > 0 && '，'}
                 {polishFailedN > 0 && <>润色纠错失败 {polishFailedN}/{polishTotalN} 章</>}
+                {(failedCharSlicesN > 0 || failedDialogueBatchesN > 0 || polishFailedN > 0) && missingVoiceRecsN > 0 && '，'}
+                {missingVoiceRecsN > 0 && <>缺少音色推荐 {missingVoiceRecsN} 人</>}
               </span>
             </div>
             <button className="btn-ghost text-xs !py-1.5" onClick={handlePrepare}>
@@ -990,7 +995,7 @@ function OverviewTab({
       )}
 
       {/* H-26：审核拒绝章（422）在 ready 态也要单独说明，不混进「可补跑」 */}
-      {project.status === 'ready' && hasContentRejected && !isPreparing && (
+      {(project.status === 'ready' || project.status === 'partial_success') && hasContentRejected && !isPreparing && (
         <div className="glass-panel !border-ink-400/40 !bg-ink-500/[0.04]">
           <div className="text-sm flex items-start gap-2">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5 text-ink-500"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
@@ -1007,7 +1012,7 @@ function OverviewTab({
       )}
 
       {/* H-13：识别完成后各阶段耗时汇总（热点定位：一眼看出时间花在哪） */}
-      {project.status === 'ready' && !isPreparing && prog?.stage_timings && (
+      {(project.status === 'ready' || project.status === 'partial_success') && !isPreparing && prog?.stage_timings && (
         <div className="glass-panel">
           <div className="text-xs text-ink-500 flex flex-wrap items-center gap-x-3 gap-y-1">
             <span className="font-medium text-ink-600 shrink-0">识别耗时：</span>

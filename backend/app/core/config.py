@@ -225,6 +225,9 @@ class Settings(BaseSettings):
     # 能显著降低 HTTP 开销和 LLM 调度耗时。M2.7-highspeed 1M 上下文
     # 3000 字/章 × 14 章 ≈ 42k 字 + prompt ≈ 50k，远低于上限。
     DIALOGUE_BATCH_CHAPTERS: int = 14
+    # 单次对白归属请求的正文字符上限；超长单章在 dialogue.py 内再分块。
+    DIALOGUE_BATCH_MAX_CHARS: int = 12_000
+    DIALOGUE_BATCH_TIMEOUT_SECONDS: int = 180
 
     # 对白归属批并发度：同时在飞的批数量。LLM_MAX_CONCURRENCY=1 时这里多高都
     # 会被 provider semaphore 串行，但大于 1 时可在多个"批"之间让 HTTP/响应解析
@@ -359,7 +362,9 @@ class Settings(BaseSettings):
         # X 支持汉字数字（一二三四五十百千万〇）、阿拉伯数字
         # 卷/篇/部级（H-20）：纯卷行在全书存在章级标题时不作为章节（分组头）；
         # 『第一卷 笼中雀 第一章 惊蛰』合体行按章处理，标题归一为『第一章 惊蛰』
-        r"^[ \t]*第[ \t]*([零〇一二三四五六七八九十百千0-9]+)[ \t]*(章|回|节|卷|篇|部)[ \t]*[:：、\.]*[ \t]*([^\n]*)$",
+        r"^[ \t\u3000]*(?:正文[ \t\u3000]+)?第[ \t]*([零〇一二三四五六七八九十百千两0-9]+)[ \t]*(章|回|节|卷|篇|部|集)[ \t]*[:：、\.]*[ \t]*([^\n]*)$",
+        # 网文下载本常见的「第一集 XXX 第一章 YYY」「正文 第一章 YYY」。
+        r"^[ \t\u3000]*(?:正文[ \t\u3000]+)?第[零〇一二三四五六七八九十百千两0-9]+[ \t]*(?:卷|篇|部|集)[^\n]{0,40}?[ \t\u3000]+第[零〇一二三四五六七八九十百千两0-9]+[ \t]*(?:章|回|节)[^\n]{0,90}$",
         # 半角变体：Ep.X / Vol.X / Ch.X
         r"^[ \t]*(Ep|Episode|Vol|Volume|Ch|Chapter)[ \t]*[\.\-:：]?[ \t]*([0-9IVXLCDM]+)[\.\t \-:：]*([^\n]*)$",
         # 英文小说通用：Chapter X Title / CHAPTER I. Title
@@ -379,13 +384,10 @@ class Settings(BaseSettings):
     # 通常 2 即可（证明文本中至少存在两个独立标题段）。
     CHAPTER_SPLIT_MIN_MATCHES: int = 2
 
-    # 切章失败时是否启用 3 万字/块 硬切兜底。
-    # - False（默认）：切章失败直接提醒用户，**不**调用 LLM 也不硬切，
-    #   用户可在配置 CHAPTER_SPLIT_PATTERNS 中补自定义正则后重试。
-    # - True：切章失败时仍按字数硬切（标题用「第 N 部分」占位），保留旧行为。
+    # 旧版兼容项：无明确标题时现始终按段落切分，不再用本开关拒绝书籍。
     CHAPTER_SPLIT_HARD_FALLBACK_ENABLED: bool = False
 
-    # 硬切每块字符上限（CHAPTER_SPLIT_HARD_FALLBACK_ENABLED=True 时生效）
+    # 无可靠标题时每个朗读单元的字符上限
     CHAPTER_SPLIT_HARD_FALLBACK_MAX_CHARS: int = 30_000
 
 

@@ -568,6 +568,7 @@ export interface PrepareProgress {
   // 音色推荐进度
   voice_recs_done?: boolean;
   voice_recs_count?: number;
+  voice_recs_missing_count?: number;
   /** 润色纠错（POLISH_ENABLED）：本次 prepare 的润色统计（未润色章数 > 0 时需提示用户） */
   polish_total?: number;
   polish_changed_n?: number;

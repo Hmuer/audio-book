@@ -1,8 +1,11 @@
 from __future__ import annotations
+import asyncio
 import logging
+import re
 from pydantic import BaseModel
 
 from ..ai.factory import get_llm
+from ..core.config import settings
 from .character import Character
 from .usage import track_llm
 
@@ -49,9 +52,10 @@ class Anchor(BaseModel):
 
 
 class DialogueAttribution(BaseModel):
-    anchor: Anchor
+    # 模型偶发只给 text/speaker；本地用原文定位，定位不到才丢弃该条。
+    anchor: Anchor | None = None
     speaker: str
-    confidence: float
+    confidence: float = 0.5
     # H-12：对白 text 同样可选化（M3 偶发省略）；_backfill_anchor_text
     # 会用 anchor 切片去引号兜底 → 流出的对象 text 永远非空
     text: str | None = None
@@ -109,12 +113,35 @@ def _backfill_anchor_text(
     relocated = 0
     ch_len = len(chapter_text)
     where = f"chapter_idx={chapter_idx} " if chapter_idx is not None else ""
+    search_from = 0
     for d in dialogues:
         a = d.anchor
+        if a is None:
+            # 缺 anchor 时用模型给的对白文本在原文中寻找带引号的片段。
+            # 先向后找，避免同一句对白多次出现时全部锚到首次出现位置。
+            needle = (d.text or "").strip().strip('「」『』“”"')
+            if not needle:
+                dropped += 1
+                continue
+            candidates = [left + needle + right for left, right in _QUOTE_PAIRS]
+            hits = [(pos, candidate) for candidate in candidates
+                    if (pos := chapter_text.find(candidate, search_from)) >= 0]
+            if not hits:
+                hits = [(pos, candidate) for candidate in candidates
+                        if (pos := chapter_text.find(candidate)) >= 0]
+            if not hits:
+                dropped += 1
+                continue
+            pos, match_text = min(hits, key=lambda item: item[0])
+            a = Anchor(text=match_text, start=pos, end=pos + len(match_text))
+            d.anchor = a
         text_ok = bool(a.text and a.text.strip())
         pos_ok = 0 <= a.start < a.end <= ch_len
         if text_ok and pos_ok:
+            if not (d.text and d.text.strip()):
+                d.text = (a.text or "").strip().strip("「」『』“”\"'")
             kept.append(d)
+            search_from = max(search_from, a.end)
             continue
         if not pos_ok:
             # 位置非法 → 用文本在正文中二次定位重建 anchor
@@ -154,6 +181,7 @@ def _backfill_anchor_text(
                 d.text = stripped
             relocated += 1
             kept.append(d)
+            search_from = max(search_from, end)
             continue
         # text 缺失但位置合法 → 切片回填（并同时修正对白 text 缺引号场景）
         backfilled = chapter_text[a.start:a.end]
@@ -163,6 +191,7 @@ def _backfill_anchor_text(
             stripped = backfilled.strip().strip("「」『』“”\"'")
             d.text = stripped
         kept.append(d)
+        search_from = max(search_from, d.anchor.end)
     if dropped or relocated:
         logger.warning(
             f"[dialogue] {where}anchor 越界/无效：{relocated} 条已按对白文本"
@@ -244,7 +273,7 @@ _BATCH_PROLOGUE = r"""
 """
 
 
-async def attribute_dialogues_batch_with_llm(
+async def _attribute_dialogues_batch_direct(
     chapters: list[tuple[int, str]],
     characters: list[Character],
 ) -> list[ChapterDialogueBatchResult]:
@@ -289,14 +318,16 @@ async def attribute_dialogues_batch_with_llm(
     )
 
     llm = get_llm()
-    wrapped = await llm.chat_structured(
-        prompt=prompt,
-        output_schema=DialogueBatchResponse,
-        temperature=0.1,
-        # 单章 16k × 14 章 ≈ 224k tokens 输出上限。正常情况下对白远没那么多，
-        # 这里设 96k 既能容纳异常长输出又不至于触发模型本身 max_tokens 限制。
-        max_tokens=96000,
-        use_fast_model=True,
+    wrapped = await asyncio.wait_for(
+        llm.chat_structured(
+            prompt=prompt,
+            output_schema=DialogueBatchResponse,
+            temperature=0.1,
+            max_tokens=24000,
+            max_retries=2,
+            use_fast_model=True,
+        ),
+        timeout=max(30, int(settings.DIALOGUE_BATCH_TIMEOUT_SECONDS)),
     )
     track_llm(calls=1, chars=len(prompt), detail="dialogue_batch")
     results = wrapped.data
@@ -329,6 +360,11 @@ async def attribute_dialogues_batch_with_llm(
     final: list[ChapterDialogueBatchResult] = []
     for idx, _ in chapters:
         if idx in got_map:
+            # 成章内存在多处明确对白线索却返回空列表，不能写成「已完成」。
+            # 非虚构作品中的引文可能也带引号，所以要求多处引号且伴随说话动词。
+            text = text_by_idx[idx]
+            if not got_map[idx].dialogues and _has_likely_dialogue(text):
+                raise ValueError(f"chapter_idx={idx} 含多处对白线索，但模型返回 0 条对白")
             final.append(got_map[idx])
         else:
             logger.warning(
@@ -336,3 +372,78 @@ async def attribute_dialogues_batch_with_llm(
                 f"该章不计入本批结果（保持未完成，重跑 prepare 自动补跑）"
             )
     return final
+
+
+_SPEECH_NEAR_QUOTE_RE = re.compile(
+    r"(?:说|问|道|答|喊|叫|开口|低声)[^\n]{0,30}[“「『]"
+    r"|[”」』][^\n]{0,30}(?:说|问|道|答|喊|叫|开口|低声)"
+)
+
+
+def _has_likely_dialogue(text: str) -> bool:
+    if len(text) < 300:
+        return False
+    pairs = sum(text.count(left) for left, _ in _QUOTE_PAIRS)
+    return pairs >= 4 and bool(_SPEECH_NEAR_QUOTE_RE.search(text))
+
+
+def _text_chunks_with_offsets(text: str, limit: int) -> list[tuple[int, str]]:
+    """保留所有字符，优先在段落边界拆开；偏移供锚点回写原章。"""
+    chunks: list[tuple[int, str]] = []
+    start = 0
+    while start < len(text):
+        end = min(start + limit, len(text))
+        if end < len(text):
+            boundary = text.rfind("\n", start + limit // 2, end)
+            if boundary >= 0:
+                end = boundary + 1
+        chunks.append((start, text[start:end]))
+        start = end
+    return chunks
+
+
+async def attribute_dialogues_batch_with_llm(
+    chapters: list[tuple[int, str]], characters: list[Character],
+) -> list[ChapterDialogueBatchResult]:
+    """限制请求正文长度；超长单章分块后把锚点还原到原章坐标。"""
+    limit = max(1000, int(settings.DIALOGUE_BATCH_MAX_CHARS))
+    if sum(len(t) for _, t in chapters) <= limit and all(len(t) <= limit for _, t in chapters):
+        return await _attribute_dialogues_batch_direct(chapters, characters)
+
+    by_idx: dict[int, ChapterDialogueBatchResult] = {}
+    group: list[tuple[int, str]] = []
+    group_chars = 0
+
+    async def flush_group() -> None:
+        nonlocal group, group_chars
+        if group:
+            for item in await _attribute_dialogues_batch_direct(group, characters):
+                by_idx[item.chapter_idx] = item
+            group = []
+            group_chars = 0
+
+    for idx, text in chapters:
+        if len(text) <= limit:
+            if group and group_chars + len(text) > limit:
+                await flush_group()
+            group.append((idx, text))
+            group_chars += len(text)
+            continue
+        await flush_group()
+        attrs: list[DialogueAttribution] = []
+        complete = True
+        for offset, chunk in _text_chunks_with_offsets(text, limit):
+            # 同一章的块各自调用，避免按 chapter_idx 去重时丢掉其余块。
+            response = await _attribute_dialogues_batch_direct([(idx, chunk)], characters)
+            if not response:
+                complete = False
+                break
+            for attr in response[0].dialogues:
+                assert attr.anchor is not None
+                attr.anchor.start += offset
+                attr.anchor.end += offset
+                attrs.append(attr)
+        if complete:
+            by_idx[idx] = ChapterDialogueBatchResult(chapter_idx=idx, dialogues=attrs)
+    await flush_group()
+    return [by_idx[idx] for idx, _ in chapters if idx in by_idx]

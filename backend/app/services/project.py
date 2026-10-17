@@ -579,12 +579,21 @@ async def trigger_prepare_project(project_id: str) -> ProjectPrepareTriggerResp:
                 prog = {}
         except Exception:
             prog = {}
+        can_resume = bool(prog.get("char_slice_mode") and prog.get("char_extract_raw_list"))
         prog.update({
             "version": 1,
-            "stage": "start",
+            "stage": "resume" if can_resume else "start",
             "started_at": _fmt_time_now(),
             "updated_at": _fmt_time_now(),
+            "stage_timings": {},
         })
+        # 有失败切片时，补出的角色会改变去重与音色推荐；有失败对白时，
+        # 豆包逐段指令必须补齐新对白。保留逐章/逐片 checkpoint。
+        if prog.get("char_failed_slices"):
+            prog.pop("dedup_done", None)
+            prog.pop("voice_recs_done", None)
+        if prog.get("dialogue_failed_batches"):
+            prog.pop("instructions_done", None)
         # 保留 checkpoint 字段，让重跑能恢复；把上一次的 last_error 归档到 prev_error
         if "last_error" in prog:
             prog.setdefault("prev_error", {
@@ -1197,7 +1206,26 @@ def _log_prepare_llm_estimate(project_id: str, chapters: list[Chapter], cfg) -> 
     else:
         # 无润色 → 无名单 → 全量切片扫描（旧口径）
         char_calls = _ceil_div(total_chars, slice_size)
-    dialogue_calls = _ceil_div(n_ch, dbatch)
+    dialogue_char_cap = max(1000, int(getattr(cfg, "DIALOGUE_BATCH_MAX_CHARS", 12_000)))
+    dialogue_calls = 0
+    packed_chars = 0
+    packed_chapters = 0
+    for ch in chapters:
+        size = len(ch.text or "")
+        if size > dialogue_char_cap:
+            if packed_chapters:
+                dialogue_calls += 1
+                packed_chars = packed_chapters = 0
+            dialogue_calls += _ceil_div(size, dialogue_char_cap)
+        else:
+            if packed_chapters and (packed_chapters >= dbatch
+                                    or packed_chars + size > dialogue_char_cap):
+                dialogue_calls += 1
+                packed_chars = packed_chapters = 0
+            packed_chars += size
+            packed_chapters += 1
+    if packed_chapters:
+        dialogue_calls += 1
     from ..core.config import get_active
     instruction_calls = (_ceil_div(n_ch, ibatch)
                          if get_active("tts")[0] != "minimax"
@@ -1323,7 +1351,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             chapters = await split_book_chapters(raw_text)
         except ChapterSplitError as e:
             # 切章失败：不回退 LLM，不调用后续角色识别/对白归属，直接把错误信息提示给用户
-            # （CHAPTER_SPLIT_HARD_FALLBACK_ENABLED 控制是否启用硬切兜底，默认关闭）
+            # 无统一章节标题的散文/诗集会按段落切为朗读单元。
             logger.warning(
                 f"[project_prepare] project_id={project_id[:8]}... chapter split failed, "
                 f"no LLM fallback → raise directly"
@@ -1349,6 +1377,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         from .polish import polish_sidecar_fingerprint as _polish_fp
         polish_sidecar_path = Path(settings.DATA_DIR) / f"polish_{project_id}.json"
         polish_src_fp = _polish_fp([c.text or "" for c in chapters])
+        chapter_split_fingerprint = polish_src_fp
         try:
             async with factory() as s:
                 p_prog = await s.get(Project, project_id)
@@ -1681,6 +1710,23 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     await sess.commit()
 
         prog = await _read_progress()
+        previous_fingerprint = prog.get("chapter_split_fingerprint")
+        previous_chapter_count = prog.get("dialogue_total_chapters") or prog.get("polish_total")
+        # 标题规则或源文本变化后，旧 chapter_idx / 角色片号不再对应新章节。
+        # 润色 sidecar 自带同一指纹，此处同步使其他 checkpoint 失效。
+        if ((previous_fingerprint and previous_fingerprint != chapter_split_fingerprint)
+                or (not previous_fingerprint and previous_chapter_count
+                    and int(previous_chapter_count) != len(chapters))):
+            logger.info("[project_prepare] 章节指纹变化，重置角色/对白/音色 checkpoint")
+            prog = {
+                k: v for k, v in prog.items()
+                if k in ("stage_timings", "polish_total", "polish_changed_n",
+                         "polish_reused_n", "polish_clean_n", "polish_rejected_n",
+                         "polish_failed_n", "polish_content_rejected_n",
+                         "polish_content_rejected_chapters", "restart_count", "prev_error")
+            }
+            prog["version"] = 1
+        prog["chapter_split_fingerprint"] = chapter_split_fingerprint
         # 4b. 角色识别（按「完整章节」装桶，逐桶 checkpoint + 单桶级异常不崩整体）
         char_slice_size = max(10000, int(settings.LLM_CHAR_EXTRACT_SLICE_SIZE) or 50000)
 
@@ -1782,7 +1828,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         prog["char_mention_covered_n"] = len(polish_mentions)
         await _write_progress(prog)
 
-        if (prog.get("stage") in ("characters", "dedup", "dialogues", "instructions", "voice_recs", "done")
+        if (prog.get("stage") in ("resume", "partial", "characters", "dedup", "dialogues", "instructions", "voice_recs", "done")
                 and char_raw_list and _bucket_ckpt_ok):
             logger.info(
                 f"[project_prepare] project_id={project_id[:8]}... "
@@ -1806,6 +1852,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 # 下次 prepare 必被误判「口径不兼容」而重置角色 checkpoint
                 # （H-25 的名单档案跨次复用依赖它存活）。
                 "char_slice_mode": _CHAR_SLICE_MODE,
+                "chapter_split_fingerprint": chapter_split_fingerprint,
                 "char_slice_total": len(char_slices),
                 "char_slice_completed": [],
                 "char_slice_completed_n": 0,
@@ -2069,23 +2116,16 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 f"重跑 prepare 会自动补跑这些切片。"
             )
 
-        # 角色识别完全无结果则抛业务异常，避免进入 dedup 阶段。
-        # H-25：旧条件「切片全失败」→ 新条件「最终角色列表为空」——名单档案
-        # 也能独立构成结果（纯名单路径下切片数本来就是 0），两者都空才算失败。
-        if not characters_merged and chapters:
-            bad = "; ".join(
-                f"slice {int(k)+1}/{len(char_slices)}: {v.get('last_err')}"
-                for k, v in failed_slice_idxs.items()
-            ) or "无详细错误"
-            raise RuntimeError(
-                f"角色识别无结果（切片失败 {len(failed_slice_idxs)}/{len(char_slices)}，"
-                f"润色名单覆盖 {len(polish_mentions)} 章）：{bad}"
-            )
+        # 散文/诗集/非虚构作品可能没有任何角色，旁白仍可正常合成。
+        if not characters_merged and failed_slice_idxs:
+            raise RuntimeError("角色识别切片全部失败，无法判断这是无角色书籍；请补跑失败切片")
+        if not characters_merged:
+            logger.info("[project_prepare] 未识别到角色，按纯旁白书籍继续")
 
         # 4c. dedup（完成后 checkpoint 跳到 dedup=done）
         # H-13：dedup 阶段计时（命中 checkpoint 则 start+end 同刻，elapsed≈0）
         _stage_timing_touch(prog, "dedup")
-        if prog.get("stage") in ("dedup", "dialogues", "instructions", "voice_recs", "done") and prog.get("dedup_done"):
+        if prog.get("stage") in ("resume", "partial", "dedup", "dialogues", "instructions", "voice_recs", "done") and prog.get("dedup_done"):
             name_map: dict[str, str] = dict(prog.get("name_map", {}) or {})
             characters = [Character(**d) for d in prog.get("deduped_characters", []) or []]
             if not name_map:
@@ -2159,16 +2199,34 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     f"dialogue_attr chapter={ch_idx+1}/{len(chapters)} 跳过（checkpoint）"
                 )
 
-        # 5b. 未完成的章节 → 按 DIALOGUE_BATCH_CHAPTERS 切批
-        pending_chapters: list[tuple[int, str]] = [
-            (ch.idx, ch.text)
-            for ch in chapters
-            if ch.idx not in completed_ch_idxs
-        ]
-        batches: list[list[tuple[int, str]]] = [
-            pending_chapters[i : i + batch_chapters_n]
-            for i in range(0, len(pending_chapters), batch_chapters_n)
-        ]
+        # 历史空结果若与章内明显对白线索冲突，应重新识别，不能永久跳过。
+        from .dialogue import _has_likely_dialogue
+        for ch_idx in list(completed_ch_idxs):
+            if (0 <= ch_idx < len(chapters)
+                    and not chapter_attrs_cache.get(ch_idx)
+                    and _has_likely_dialogue(chapters[ch_idx].text)):
+                completed_ch_idxs.remove(ch_idx)
+                chapter_attrs_cache.pop(ch_idx, None)
+                logger.warning("[project_prepare] chapter=%s 历史空对白可疑，已加入补跑", ch_idx + 1)
+
+        # 5b. 未完成章节按章数和总字符数双重上限切批。
+        pending_chapters: list[tuple[int, str]] = []
+        for ch in chapters:
+            if ch.idx in completed_ch_idxs:
+                continue
+            # 当前归属器只标注带引号的对白；无引号正文无需付费调用模型。
+            if not any(mark in ch.text for mark in ('“', '「', '『', '"')):
+                completed_ch_idxs.add(ch.idx)
+                chapter_attrs_cache[ch.idx] = []
+            else:
+                pending_chapters.append((ch.idx, ch.text))
+        batch_char_cap = max(1000, int(settings.DIALOGUE_BATCH_MAX_CHARS))
+        batches: list[list[tuple[int, str]]] = []
+        for item in pending_chapters:
+            if (not batches or len(batches[-1]) >= batch_chapters_n
+                    or sum(len(t) for _, t in batches[-1]) + len(item[1]) > batch_char_cap):
+                batches.append([])
+            batches[-1].append(item)
 
         # 并发 semaphore 限制批并发（provider 层另有全局 LLM semaphore 兜底串行）
         dialogue_batch_sem = asyncio.Semaphore(batch_concurrency)
@@ -2220,6 +2278,10 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                             f"{dialogue_batch_retries+1} start"
                         )
                         results = await attribute_dialogues_batch_with_llm(batch, characters)
+                    returned = {r.chapter_idx for r in results}
+                    missing = {idx for idx, _ in batch} - returned
+                    if missing:
+                        raise ValueError(f"对白结果缺少章节 {sorted(missing)}")
                     out: list[tuple[int, list]] = []
                     for r in results:
                         attrs = r.dialogues
@@ -2239,7 +2301,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     quota_hit.set()
                     return batch_idx, None, "quota_exhausted: 配额耗尽跳过"
                 except Exception as e:
-                    last_err = f"{type(e).__name__}: {e}"
+                    last_err = f"{type(e).__name__}: {str(e)[:500]}"
                     logger.warning(
                         f"[project_prepare] project_id={project_id[:8]}... "
                         f"dialogue batch {batch_idx+1}/{len(batches)} attempt={attempt+1} "
@@ -2397,7 +2459,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             prog["instructions_raw"] = {}
             prog["instructions_provider"] = active_tts
             await _write_progress(prog)
-        elif (prog.get("stage") in ("instructions", "voice_recs", "done")
+        elif (prog.get("stage") in ("resume", "partial", "instructions", "voice_recs", "done")
               and prog.get("instructions_done")
               and prog.get("instructions_provider") in (None, active_tts)):
             raw_instr = prog.get("instructions_raw", {}) or {}
@@ -2468,7 +2530,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         # 有角色却 0 条推荐的 done checkpoint 视为未完成，强制重试
         _vr_raw = prog.get("voice_recs_raw", []) or []
         _vr_hit = (
-            prog.get("stage") in ("voice_recs", "done")
+            prog.get("stage") in ("resume", "partial", "voice_recs", "done")
             and prog.get("voice_recs_done")
             and (bool(_vr_raw) or not characters)
             and prog.get("voice_recs_provider") == active_tts
@@ -2477,6 +2539,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             voice_recs: list[VoiceRecommendation] = [
                 VoiceRecommendation(**d) for d in _vr_raw
             ]
+            prog["voice_recs_missing_count"] = len({c.name for c in characters}
+                                                    - {r.character_name for r in voice_recs})
             logger.info(
                 f"[project_prepare] project_id={project_id[:8]}... "
                 f"命中音色推荐 checkpoint：voice_recs={len(voice_recs)}"
@@ -2489,12 +2553,13 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 )
             voice_recs = []
             try:
-                # 推荐仅从当前激活厂商的官方音色中选择
-                voice_recs = await recommend_voices_with_llm(
-                    characters,
-                    user_id=owner_user_id_for_recommend,
-                    project_id=project_id,
-                )
+                # 纯旁白书籍无需角色音色推荐，也无需请求音色池或 LLM。
+                if characters:
+                    voice_recs = await recommend_voices_with_llm(
+                        characters,
+                        user_id=owner_user_id_for_recommend,
+                        project_id=project_id,
+                    )
             except LLMQuotaExhaustedError:
                 # H-22：配额耗尽穿透（否则全空推荐会写成 voice_recs_done=True
                 # 的投毒 checkpoint，重跑直接跳过）
@@ -2506,16 +2571,19 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             # 否则重跑 prepare 永远跳过音色推荐（真实案例：798 角色单批输出超限
             # 全废，写成 done=True 后所有角色永远无自动音色）。
             # characters 为空（无角色）时 0 推荐是合法终态，正常写 done。
-            if voice_recs or not characters:
+            recommended_names = {r.character_name for r in voice_recs}
+            missing_voice_recs = sum(c.name not in recommended_names for c in characters)
+            prog["voice_recs_missing_count"] = missing_voice_recs
+            if not missing_voice_recs:
                 prog["voice_recs_done"] = True
                 prog["voice_recs_raw"] = [r.model_dump() for r in voice_recs]
                 prog["voice_recs_provider"] = active_tts
             else:
                 prog["voice_recs_done"] = False
-                prog.pop("voice_recs_raw", None)
+                prog["voice_recs_raw"] = [r.model_dump() for r in voice_recs]
                 logger.warning(
                     f"[project_prepare] project_id={project_id[:8]}... "
-                    f"{len(characters)} 个角色 0 条音色推荐，不写 checkpoint（重跑将重试）"
+                    f"{len(characters)} 个角色中 {missing_voice_recs} 个缺少音色推荐，重跑将重试"
                 )
             await _write_progress(prog)
         # H-13：voice_recs 阶段结束
@@ -2527,8 +2595,11 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
 
         # H-2：全部阶段跑完 → stage=done（终态，与 status=ready 对齐；
         # 旧行为停在 voice_recs，前端无法从 progress 判断「真的完成了」）
-        if prog.get("stage") != "done":
-            prog["stage"] = "done"
+        incomplete = (len(completed_ch_idxs) < len(chapters) or bool(failed_batches_by_idx)
+                      or bool(failed_slice_idxs) or bool(prog.get("polish_failed_n"))
+                      or bool(prog.get("voice_recs_missing_count")))
+        if prog.get("stage") != ("partial" if incomplete else "done"):
+            prog["stage"] = "partial" if incomplete else "done"
             prog["updated_at"] = _fmt_time_now()
             # H-23：prepare 完整跑通 → 恢复计数清零（语义是「连续失败恢复」；
             # 成功后若再遇崩溃，重新享有完整恢复额度）
@@ -2615,7 +2686,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             p.chapters_json = chapters_json
             p.chapter_count = len(chapters)
             p.book_title = p.book_title or Path(original_filename).stem
-            p.status = "ready"
+            p.status = "partial_success" if incomplete else "ready"
             # F-4：正文落到 project_chapters（读取主路径），chapters_json 仅作兼容快照
             await save_chapters(session, project_id, chapters)
             await session.commit()
@@ -2715,6 +2786,7 @@ _PREPARE_PROGRESS_PUBLIC_KEYS: tuple[str, ...] = (
     "dialogue_total_dialogues",
     "voice_recs_done",
     "voice_recs_count",
+    "voice_recs_missing_count",
     # 润色纠错（POLISH_ENABLED）：把"未润色章数"透出，避免失败静默
     "polish_total",
     "polish_changed_n",
