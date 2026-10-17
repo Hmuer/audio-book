@@ -348,3 +348,148 @@ async def test_os8_delete_build_without_zip_does_not_raise(
     monkeypatch.setattr(build_mod.settings, "AUDIO_DIR", tmp_path)
     # 关键：不得抛异常（历史实现引用了循环变量 zip_fname，空列表时是 NameError）
     await build_mod.delete_build(pid, empty_bid)
+
+
+@pytest.mark.asyncio
+async def test_remote_prefix_delete_removes_untracked_objects(monkeypatch):
+    from backend.app.services import storage as st
+
+    class Paginator:
+        def paginate(self, **kwargs):
+            assert kwargs["Prefix"] == "p/b/"
+            return [
+                {"Contents": [{"Key": "p/b/ch0000.lrc"}]},
+                {"Contents": [{"Key": "p/b/orphan.mp3"}]},
+            ]
+
+    class Client:
+        deleted = []
+
+        def get_paginator(self, operation):
+            assert operation == "list_objects_v2"
+            return Paginator()
+
+        def delete_objects(self, **kwargs):
+            self.deleted.extend(obj["Key"] for obj in kwargs["Delete"]["Objects"])
+            return {"Errors": []}
+
+    client = Client()
+    remote = st.S3Storage()
+    monkeypatch.setattr(remote, "_ensure_client", lambda: client)
+    assert await remote.delete_prefix("p/b/") == 2
+    assert client.deleted == ["p/b/ch0000.lrc", "p/b/orphan.mp3"]
+    with pytest.raises(ValueError):
+        await remote.delete_prefix("p/b")
+
+
+@pytest.mark.asyncio
+async def test_delete_build_remote_failure_keeps_record_and_local_files(
+    build_for_sign, monkeypatch, tmp_path
+):
+    from backend.app.services import build as build_mod
+    from backend.app.db.session import get_session_factory
+    from backend.app.db.models import Build
+
+    pid, bid, _ = build_for_sign
+    local = tmp_path / f"build_{bid}_ch0000.mp3"
+    local.write_bytes(b"audio")
+    monkeypatch.setattr(build_mod.settings, "AUDIO_DIR", tmp_path)
+
+    class Remote:
+        archives_remotely = True
+
+        async def delete_prefix(self, prefix):
+            assert prefix.endswith(f"{pid}/{bid}/")
+            raise RuntimeError("COS 暂时不可用")
+
+    monkeypatch.setattr(build_mod, "get_storage", lambda: Remote())
+    with pytest.raises(RuntimeError, match="COS 暂时不可用"):
+        await build_mod.delete_build(pid, bid)
+    async with get_session_factory()() as session:
+        assert await session.get(Build, bid) is not None
+    assert local.is_file()
+
+
+@pytest.mark.asyncio
+async def test_delete_build_cleans_remote_and_untracked_local_products(
+    build_for_sign, monkeypatch, tmp_path
+):
+    from backend.app.services import build as build_mod
+    from backend.app.db.session import get_session_factory
+    from backend.app.db.models import Build
+
+    pid, bid, _ = build_for_sign
+    preview = tmp_path / f"build_{bid}_ch0000_preview_v2.mp3"
+    preview.write_bytes(b"preview")
+    monkeypatch.setattr(build_mod.settings, "AUDIO_DIR", tmp_path)
+    prefixes = []
+
+    class Remote:
+        archives_remotely = True
+
+        async def delete_prefix(self, prefix):
+            prefixes.append(prefix)
+            return 2
+
+    monkeypatch.setattr(build_mod, "get_storage", lambda: Remote())
+    await build_mod.delete_build(pid, bid)
+    assert prefixes == [build_mod.media_key(pid, bid, "") + "/"]
+    assert not preview.exists()
+    async with get_session_factory()() as session:
+        assert await session.get(Build, bid) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_project_removes_remote_and_untracked_local_products(
+    build_for_sign, monkeypatch, tmp_path
+):
+    from backend.app.services import project as project_mod
+    from backend.app.db.session import get_session_factory
+    from backend.app.db.models import Project
+
+    pid, bid, _ = build_for_sign
+    orphan = tmp_path / f"build_{bid}_ch0000_preview_v2.mp3"
+    orphan.write_bytes(b"preview")
+    monkeypatch.setattr(project_mod.settings, "AUDIO_DIR", tmp_path)
+    prefixes = []
+
+    class Remote:
+        archives_remotely = True
+
+        async def delete_prefix(self, prefix):
+            prefixes.append(prefix)
+            return 1
+
+    monkeypatch.setattr(project_mod, "get_storage", lambda: Remote())
+    await project_mod.delete_project(pid)
+    assert prefixes == [project_mod.media_key(pid, "", "") + "/"]
+    assert not orphan.exists()
+    async with get_session_factory()() as session:
+        assert await session.get(Project, pid) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_project_remote_failure_keeps_record_and_local_files(
+    build_for_sign, monkeypatch, tmp_path
+):
+    from backend.app.services import project as project_mod
+    from backend.app.db.session import get_session_factory
+    from backend.app.db.models import Project
+
+    pid, bid, _ = build_for_sign
+    local = tmp_path / f"build_{bid}_ch0000.mp3"
+    local.write_bytes(b"audio")
+    monkeypatch.setattr(project_mod.settings, "AUDIO_DIR", tmp_path)
+
+    class Remote:
+        archives_remotely = True
+
+        async def delete_prefix(self, prefix):
+            raise RuntimeError("COS 暂时不可用")
+
+    monkeypatch.setattr(project_mod, "get_storage", lambda: Remote())
+    with pytest.raises(RuntimeError, match="COS 暂时不可用"):
+        await project_mod.delete_project(pid)
+    async with get_session_factory()() as session:
+        assert await session.get(Project, pid) is not None
+    assert local.is_file()

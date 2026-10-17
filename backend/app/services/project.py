@@ -50,6 +50,7 @@ from .dialogue import (
 )
 from .voice_recommender import VoiceRecommendation, recommend_voices_with_llm
 from .voice_instruction import generate_dialogue_instructions
+from .storage import get_storage, media_key
 
 logger = logging.getLogger(__name__)
 
@@ -3499,7 +3500,7 @@ async def update_project(
 async def delete_project(project_id: str) -> None:
     """
     级联删除：DB（Project + Builds + BuildArtifacts + ProjectCharacters + ProjectDialogues）
-    + 磁盘文件（源文件 + 所有 build 产生的 MP3/ZIP/时间轴/预告片）。
+    + 源文件 + 所有构建的本地产物及对象存储产物。
     """
     factory = get_session_factory()
     async with factory() as session:
@@ -3547,6 +3548,11 @@ async def delete_project(project_id: str) -> None:
 
         source_path = p.source_file_path
 
+        # 先删远端，失败时保留项目与构建记录，避免桶内文件变成无主对象。
+        st = get_storage()
+        if st.archives_remotely:
+            await st.delete_prefix(media_key(project_id, "", "") + "/")
+
         # F-4：章节正文是独立表，用**批量 DELETE** 清理（不加 relationship 级联，
         # 否则会话会先把数千行正文全 load 进内存再逐行删，反而更慢更占内存）
         await session.execute(
@@ -3559,24 +3565,16 @@ async def delete_project(project_id: str) -> None:
 
     # 删磁盘文件（在 session 关闭后做，避免占用 DB 连接）
     audio_dir = Path(settings.AUDIO_DIR)
-    for fname in art_filenames + zip_filenames:
+    local_names = {fname for fname in [*art_filenames, *zip_filenames] if Path(fname).name == fname}
+    for bid in build_ids:
+        local_names.update(p.name for p in audio_dir.glob(f"build_{bid}_*") if p.is_file())
+    for fname in local_names:
         try:
             fpath = audio_dir / fname
             if fpath.is_file():
                 fpath.unlink()
         except OSError as e:
             logger.warning(f"[project_delete] 删音频文件失败: {fname} -> {e}")
-    for bid in build_ids:
-        for sidecar in audio_dir.glob(f"build_{bid}_ch*_timings.json"):
-            try:
-                sidecar.unlink()
-            except OSError as e:
-                logger.warning("[project_delete] 删时间轴失败 %s: %s", sidecar.name, e)
-        for preview in audio_dir.glob(f"build_{bid}_ch*_preview*.mp3"):
-            try:
-                preview.unlink()
-            except OSError as e:
-                logger.warning("[project_delete] 删预告片失败 %s: %s", preview.name, e)
 
     if source_path:
         try:

@@ -69,6 +69,10 @@ class StorageBackend(ABC):
         """删除远端对象。不存在/失败都只告警，不抛。"""
 
     @abstractmethod
+    async def delete_prefix(self, prefix: str) -> int:
+        """删除前缀下全部对象；失败时抛错，供删除项目/构建阻止丢失清理线索。"""
+
+    @abstractmethod
     def url(self, key: str) -> str | None:
         """远端下载直链；local 后端返回 None（调用方回落到媒体 token）。"""
 
@@ -90,6 +94,9 @@ class LocalStorage(StorageBackend):
 
     async def delete_key(self, key: str) -> None:
         return None
+
+    async def delete_prefix(self, prefix: str) -> int:
+        return 0
 
     def url(self, key: str) -> str | None:
         return None
@@ -215,6 +222,42 @@ class S3Storage(StorageBackend):
             )
         except Exception as e:
             logger.warning(f"[storage] 删除失败 key={key}: {type(e).__name__}: {e}")
+
+    async def delete_prefix(self, prefix: str) -> int:
+        """清理整个构建或项目目录，包含数据库未记录的中途上传产物。"""
+        if not prefix or not prefix.endswith("/"):
+            raise ValueError("对象存储删除前缀必须是非空目录")
+        client = self._ensure_client()
+
+        def _delete() -> int:
+            count = 0
+            batch: list[dict[str, str]] = []
+
+            def flush() -> None:
+                nonlocal count
+                if not batch:
+                    return
+                response = client.delete_objects(
+                    Bucket=self._bucket,
+                    Delete={"Objects": batch.copy(), "Quiet": True},
+                )
+                if response.get("Errors"):
+                    raise RuntimeError(f"对象存储批量删除失败: {response['Errors'][:3]}")
+                count += len(batch)
+                batch.clear()
+
+            paginator = client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    batch.append({"Key": obj["Key"]})
+                    if len(batch) == 1000:
+                        flush()
+            flush()
+            return count
+
+        count = await asyncio.to_thread(_delete)
+        logger.info("[storage] 已清理 prefix=%s objects=%d", prefix, count)
+        return count
 
     # ---------- 远端下载链接 ----------
     def public_base(self) -> str:

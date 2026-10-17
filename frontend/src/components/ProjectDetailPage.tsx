@@ -2003,10 +2003,12 @@ function BuildsTab({
         <CreateBuildModal
           projectId={projectId}
           project={project}
+          existingBuilds={builds}
           voices={voices}
           narratorDefault={narratorDefault}
           onClose={() => setShowCreate(false)}
           onCreated={onCreateSuccess}
+          onHistoryChanged={onReload}
         />
       )}
     </div>
@@ -2026,8 +2028,8 @@ function BuildRow({
 }) {
   const [detail, setDetail] = useState<BuildDetailResp | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const pct =
     item.total_chapters > 0
@@ -2062,13 +2064,15 @@ function BuildRow({
   }, [expanded, isRunning]);
 
   const onDelete = async () => {
+    if (!window.confirm('确认删除该构建及全部已生成内容吗？章节 MP3、LRC、ZIP、预告片和时间轴会从本地及已配置的对象存储中删除，操作不可恢复。')) return;
+    setDeleting(true);
     try {
       await api.buildDelete(projectId, item.build_id);
-      setConfirmDelete(false);
       await onReload();
     } catch (e: any) {
       alert(`删除失败: ${e?.message || e}`);
-      setConfirmDelete(false);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -2188,7 +2192,8 @@ function BuildRow({
           </button>
         )}
         <button
-          onClick={() => setConfirmDelete(true)}
+          onClick={onDelete}
+          disabled={deleting}
           className="inline-flex items-center justify-center shrink-0 rounded-md
             border border-ink-300/70 bg-ink-200 text-ink-500
             hover:border-red-500/40 hover:bg-red-500/15 hover:text-red-300
@@ -2228,19 +2233,6 @@ function BuildRow({
         </div>
       )}
 
-      {confirmDelete && (
-        <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 flex items-center justify-between gap-3 flex-wrap">
-          <span className="text-sm text-red-200">确认删除该构建？删除后所有音频产物不可恢复。</span>
-          <div className="flex gap-2">
-            <button className="btn-ghost !py-1.5 text-xs" onClick={() => setConfirmDelete(false)}>
-              取消
-            </button>
-            <button className="btn-danger !py-1.5 !px-3 text-xs" onClick={onDelete}>
-              确认删除
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -2586,14 +2578,16 @@ function BuildArtifactStatusIcon({ status }: { status: string }) {
 
 // =================== Create Build Modal ===================
 function CreateBuildModal({
-  projectId, project, voices, narratorDefault, onClose, onCreated,
+  projectId, project, existingBuilds, voices, narratorDefault, onClose, onCreated, onHistoryChanged,
 }: {
   projectId: string;
   project: ProjectDetailResp;
+  existingBuilds: BuildListItem[];
   voices: Voice[];
   narratorDefault: Voice | undefined;
   onClose: () => void;
   onCreated: () => void;
+  onHistoryChanged: () => void;
 }) {
   const [narrator, setNarrator] = useState<string>(
     voices.some(v => v.id === project.default_narrator_voice_id)
@@ -2632,6 +2626,7 @@ function CreateBuildModal({
   const [estimate, setEstimate] = useState<BuildEstimateResp | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [clearPrevious, setClearPrevious] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -2652,8 +2647,20 @@ function CreateBuildModal({
       setErr('请选择与旁白不同的默认男声和女声');
       return;
     }
+    if (clearPrevious && existingBuilds.some(b => isBuildRunning(b.status))) {
+      setErr('旧构建仍在运行，请先取消并等待结束后再清理');
+      return;
+    }
+    if (clearPrevious && !window.confirm(
+      `将先删除此前 ${existingBuilds.length} 次构建的记录，以及本地和对象存储中的 MP3、LRC、ZIP 等全部产物，然后启动新构建。删除不可恢复；若新构建启动失败，旧产物也无法恢复。确定继续吗？`
+    )) return;
     setBusy(true);
     try {
+      if (clearPrevious) {
+        for (const old of existingBuilds) {
+          await api.buildDelete(projectId, old.build_id);
+        }
+      }
       await api.buildCreate(projectId, {
         voice_assignments: charVoices,
         narrator_voice_id: narrator,
@@ -2667,6 +2674,7 @@ function CreateBuildModal({
       onCreated();
     } catch (e: any) {
       setErr(String(e?.message || e));
+      if (clearPrevious) await onHistoryChanged();
     } finally {
       setBusy(false);
     }
@@ -2703,6 +2711,16 @@ function CreateBuildModal({
         <p className="text-sm text-ink-500 mb-5 relative">
           可在生成前做最后调整；保存到项目的默认配置不会被改动。
         </p>
+
+        {existingBuilds.length > 0 && (
+          <label className="flex items-start gap-2 rounded-lg border border-ink-300/70 bg-ink-100 px-4 py-3 mb-5 text-sm text-ink-700 cursor-pointer">
+            <input type="checkbox" checked={clearPrevious} onChange={e => setClearPrevious(e.target.checked)}
+              disabled={busy || existingBuilds.some(b => isBuildRunning(b.status))} className="mt-1" />
+            <span>删除此前 {existingBuilds.length} 次构建及全部产物
+              <span className="block text-xs text-ink-500 mt-1">勾选后会先删除旧构建的本地文件和对象存储文件，再启动本次构建。默认保留旧构建。</span>
+            </span>
+          </label>
+        )}
 
         {/* 合成前预估（零成本接口）：规模 / 时长 / 调用量参考 */}
         {estimate && (
@@ -2938,7 +2956,6 @@ function SettingsTab({
   const [savedTip, setSavedTip] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
@@ -2974,13 +2991,13 @@ function SettingsTab({
   };
 
   const doDelete = async () => {
+    if (!window.confirm(`确认删除项目「${project.name}」及其所有已构建内容吗？源文件、识别结果，以及本地和对象存储中的 MP3、LRC、ZIP、预告片、时间轴都会删除，操作不可恢复。`)) return;
     setDeleting(true);
     try {
       await api.projectDelete(project.project_id);
       window.location.hash = '#/audiobooks';
     } catch (e: any) {
       setErr(`删除失败: ${e?.message || e}`);
-      setConfirmDelete(false);
     } finally {
       setDeleting(false);
     }
@@ -3109,39 +3126,12 @@ function SettingsTab({
           危险区
         </h3>
         <p className="text-sm text-ink-500 relative">
-          删除项目会同时删除所有章节、角色音色配置与构建历史，操作不可恢复。
+          删除项目会同时删除源文件、章节、角色音色配置、所有构建记录，以及本地和对象存储中的 MP3、LRC、ZIP、预告片、时间轴等产物，操作不可恢复。
         </p>
-        {!confirmDelete ? (
-          <button
-            className="btn-danger relative"
-            onClick={() => setConfirmDelete(true)}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-            删除该项目
-          </button>
-        ) : (
-          <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 space-y-3 relative">
-            <div className="text-sm text-red-200">
-              确认要删除项目「{project.name}」吗？
-            </div>
-            <div className="flex gap-2">
-              <button
-                className="btn-ghost"
-                onClick={() => setConfirmDelete(false)}
-                disabled={deleting}
-              >
-                取消
-              </button>
-              <button
-                className="btn-danger"
-                onClick={doDelete}
-                disabled={deleting}
-              >
-                {deleting ? '删除中…' : '确认删除'}
-              </button>
-            </div>
-          </div>
-        )}
+        <button className="btn-danger relative" onClick={doDelete} disabled={deleting}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          {deleting ? '删除中…' : '删除该项目'}
+        </button>
       </div>
     </div>
   );

@@ -2973,7 +2973,7 @@ async def get_build_status(build_id: str) -> BuildStatusResp:
 
 
 async def delete_build(project_id: str, build_id: str) -> None:
-    """删除 build + 磁盘 MP3 / ZIP 文件。"""
+    """删除构建记录及其本地、对象存储中的全部产物。"""
     await _ensure_project_not_running(project_id, "删除 Build")
 
     factory = get_session_factory()
@@ -2989,49 +2989,28 @@ async def delete_build(project_id: str, build_id: str) -> None:
         )
         _art_rows = (await session.execute(stmt_art)).all()
         art_filenames = [af for _ci, af in _art_rows if af]
-        # G-5：删对象时要连每章 LRC 一起删，故保留章节号
-        art_idxs = [ci for ci, _af in _art_rows]
         # F-7：删除该 build 的**全部分片**（含旧的单包场景 —— _parse_zip_shards 会兜底）
         zip_fnames = [s["filename"] for s in _parse_zip_shards(b)]
+
+        # 先清远端：失败时保留数据库记录和本地文件，用户可重试删除。
+        # 前缀覆盖 MP3、LRC、ZIP 及上传成功但尚未落库的中途产物。
+        st = get_storage()
+        if st.archives_remotely:
+            await st.delete_prefix(media_key(project_id, build_id, "") + "/")
 
         await session.delete(b)
         await session.commit()
 
     audio_dir = Path(settings.AUDIO_DIR)
-    for fname in art_filenames:
+    local_names = {fname for fname in [*art_filenames, *zip_fnames] if Path(fname).name == fname}
+    local_names.update(p.name for p in audio_dir.glob(f"build_{build_id}_*") if p.is_file())
+    for fname in local_names:
         try:
             fpath = audio_dir / fname
             if fpath.is_file():
                 fpath.unlink()
         except OSError as e:
-            logger.warning(f"[build_delete] 删音频文件失败: {fname} -> {e}")
-        # 同名时间轴 sidecar 一并清理
-        sidecar = audio_dir / _timings_filename_of_audio(fname)
-        try:
-            if sidecar.is_file():
-                sidecar.unlink()
-        except OSError as e:
-            logger.warning(f"[build_delete] 删时间轴文件失败: {sidecar.name} -> {e}")
-    for _zf in zip_fnames:
-        try:
-            fpath = audio_dir / _zf
-            if fpath.is_file():
-                fpath.unlink()
-        except OSError as e:
-            logger.warning(f"[build_delete] 删 ZIP 失败: {_zf} -> {e}")
-    for preview in audio_dir.glob(f"build_{build_id}_ch*_preview*.mp3"):
-        try:
-            preview.unlink()
-        except OSError as e:
-            logger.warning("[build_delete] 删预告片失败 %s: %s", preview.name, e)
-
-    # G-5：对象存储里的对象也要删（公有读桶不会有「本地已清理」的兜底）
-    st = get_storage()
-    if st.archives_remotely:
-        for fname in [*art_filenames, *zip_fnames]:
-            await st.delete_key(media_key(project_id, build_id, fname))
-        for _idx in art_idxs:
-            await st.delete_key(media_key(project_id, build_id, f"ch{_idx:04d}.lrc"))
+            logger.warning(f"[build_delete] 删本地产物失败: {fname} -> {e}")
 
     logger.info(
         f"[build_delete] build_id={build_id[:8]}... "
