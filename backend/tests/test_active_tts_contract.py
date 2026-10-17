@@ -49,6 +49,73 @@ async def test_minimax_lists_only_chinese_system_voices_and_synthesizes(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_minimax_rpm_response_retries_after_cooldown(monkeypatch):
+    from backend.app.ai.providers.minimax import tts as module
+
+    monkeypatch.setattr(module, "get_provider", lambda _id: {
+        "api_key": "test-key", "base_url": "https://api.minimax.cn/v1",
+    })
+    monkeypatch.setattr(module, "get_active", lambda _kind: ("minimax", "speech-2.8-hd", {}))
+    monkeypatch.setattr(module.settings, "MINIMAX_TTS_RPM_LIMIT", 600)
+    provider = module.MiniMaxTTSProvider()
+    provider._voices = [{"id": "minimax:male-qn-qingse"}]
+    provider._voices_at = module.time.monotonic()
+    seen = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx.Response(200, json={"base_resp": {
+                "status_code": 1001, "status_msg": "rate limit exceeded(RPM)",
+            }})
+        return httpx.Response(200, json={"base_resp": {"status_code": 0},
+                                         "data": {"audio": "494433"},
+                                         "extra_info": {"audio_length": 1000}})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kwargs: real_client(
+        transport=httpx.MockTransport(handle), **kwargs,
+    ))
+    waits = []
+    original_acquire = module._tts_pacer.acquire
+
+    async def fake_acquire():
+        waits.append(True)
+        if len(waits) > 1:
+            module._tts_pacer.reset()
+        else:
+            await original_acquire()
+
+    monkeypatch.setattr(module._tts_pacer, "acquire", fake_acquire)
+    audio, duration = await provider.synthesize_to_bytes("你好", "minimax:male-qn-qingse")
+    assert (audio, duration) == (b"ID3", 1000)
+    assert len(seen) == 2 and len(waits) == 2
+
+
+@pytest.mark.asyncio
+async def test_minimax_pacer_spreads_concurrent_requests(monkeypatch):
+    from backend.app.ai.providers.minimax import tts as module
+
+    monkeypatch.setattr(module.settings, "MINIMAX_TTS_RPM_LIMIT", 30)
+    pacer = module._MiniMaxTTSPacer()
+    clock = [100.0]
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+    await pacer.acquire()
+    await pacer.acquire()
+    await pacer.acquire()
+    assert sleeps == [2.0, 2.0]
+    pacer.cooldown(seconds=0)
+    assert pacer._adaptive_rpm == 15
+
+
+@pytest.mark.asyncio
 async def test_build_defaults_are_current_provider_and_different_from_narrator(monkeypatch):
     from backend.app.services import build
     voices = [

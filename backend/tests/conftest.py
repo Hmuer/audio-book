@@ -82,6 +82,10 @@ def _reset_global_singletons() -> None:
         # H-1：并发值缓存一并清零，保证下个用例按自己的 settings 重建
         fd._tts_sem_value = 0
 
+    mm_tts = _get("backend.app.ai.providers.minimax.tts")
+    if mm_tts is not None:
+        mm_tts._tts_pacer.reset()
+
     m = _get("backend.app.ai.providers.minimax.llm")
     if m is not None:
         m._llm_sem = None

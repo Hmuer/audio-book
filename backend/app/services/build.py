@@ -47,6 +47,7 @@ from ..core.mp3_util import (
     make_silent_mp3,
     concat_mp3_files,
     mp3_duration_ms,
+    mp3_channel_modes,
 )
 from .chapter import Chapter, _Segment, _build_segments_for_chapter
 from .book_split import strip_chapter_prefix
@@ -1852,6 +1853,21 @@ async def retry_failed_build(
                     await _restore_from_object_storage(
                         project_id, source_build_id, src_art.audio_filename, expected_mp3
                     )
+                # 旧版静音帧误标为双声道。重试失败章时若直接复制成功章，
+                # 新 Build 仍会带着无法在浏览器播放的音频；段缓存可复用，无需重调 TTS。
+                if expected_mp3.is_file() and source_build.tts_provider == "minimax":
+                    modes = mp3_channel_modes(expected_mp3.read_bytes())
+                    if modes != {3}:
+                        failed_ch_idxs = sorted(set(failed_ch_idxs) | {ch.idx})
+                        logger.info(
+                            "[retry_build] ch %d 声道模式=%s，重建以修复旧版 MP3",
+                            ch.idx + 1, sorted(modes),
+                        )
+                        session.add(BuildArtifact(
+                            build_id=new_build_id, chapter_idx=ch.idx,
+                            title=ch.title, status="pending",
+                        ))
+                        continue
                 # B-5：不再直接复用 source build 的 audio_filename（两个 build 共享
                 # 同一文件名 → delete_build 按 audio_filename 无条件 unlink，删任一方
                 # 都会连带删掉另一方仍在引用的章节 MP3 / 时间轴 sidecar）。改为把源
@@ -1875,6 +1891,8 @@ async def retry_failed_build(
                     ))
                     new_completed += 1
                     continue
+            # 文件丢失或不可复用时必须加入实际合成集合，避免 pending 永远被跳过。
+            failed_ch_idxs = sorted(set(failed_ch_idxs) | {ch.idx})
             session.add(BuildArtifact(
                 build_id=new_build_id,
                 chapter_idx=ch.idx,
@@ -1883,6 +1901,8 @@ async def retry_failed_build(
             ))
 
         new_b.completed_chapters = new_completed
+        new_b.failed_chapters_json = json.dumps(failed_ch_idxs)
+        new_b.progress_msg = f"重试 Build {source_build_id[:8]}…，准备合成 {len(failed_ch_idxs)} 章"
         await session.commit()
         await session.refresh(new_b)
         cur_resp = _build_to_resp(new_b)
@@ -2401,6 +2421,8 @@ async def _run_build_inner(
                     mp3_b, dur_ms = cached
                     return s, mp3_b, dur_ms
                 async with sem:
+                    # gather 可能同时创建数百个段任务。上游 RPM 节流在 provider 内，
+                    # semaphore 保持到请求完成，防止等待队列无限膨胀。
                     data, dur = await build_tts.synthesize_to_bytes(
                         s.text, vid, speed=speed,
                         # 未配置时传 provider 默认（"calm"），与历史行为一致
@@ -2435,6 +2457,13 @@ async def _run_build_inner(
                 filled.append((_s, _b, _d))
 
             ch_bytes = concat_mp3_files(*[r[1] for r in filled])
+            if tts_provider_label == "minimax":
+                modes = mp3_channel_modes(ch_bytes)
+                if modes != {3}:
+                    raise RuntimeError(
+                        f"MiniMax 章节音频声道模式不一致: {sorted(modes)}，"
+                        "请检查上游音频或段级缓存"
+                    )
             ch_fname = _audio_filename(build_id, ch_idx, failed=False)
             ch_fpath = str(audio_dir / ch_fname)
             # 原子写：先写 .tmp 再 os.replace，避免崩溃留半成品

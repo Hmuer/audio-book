@@ -1,7 +1,9 @@
 """MiniMax 官方系统中文音色与非流式 T2A 合成。"""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import time
 from contextvars import ContextVar
 from pathlib import Path
@@ -10,7 +12,7 @@ from typing import Any
 import httpx
 
 from ...base import BaseTTSProvider
-from ....core.config import get_active, get_provider
+from ....core.config import get_active, get_provider, settings
 from ....core.mp3_util import mp3_duration_ms
 
 
@@ -21,6 +23,46 @@ SUPPORTED_TTS_MODELS = frozenset({
     "speech-2.8-hd", "speech-2.8-turbo", "speech-2.6-hd", "speech-2.6-turbo",
     "speech-02-hd", "speech-02-turbo",
 })
+logger = logging.getLogger(__name__)
+
+
+class _MiniMaxTTSPacer:
+    """所有 MiniMax TTS 调用共享的匀速节流器，含上游 429 冷却窗口。"""
+
+    def __init__(self) -> None:
+        self._lock: asyncio.Lock | None = None
+        self._next_allowed = 0.0
+        self._cooldown_until = 0.0
+        self._adaptive_rpm: int | None = None
+
+    async def acquire(self) -> None:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            now = time.monotonic()
+            target = max(now, self._next_allowed, self._cooldown_until)
+            if target > now:
+                await asyncio.sleep(target - now)
+            # 锁保持到请求放行，避免大量等待者提前预约并绕过后续冷却。
+            configured_rpm = max(1, int(settings.MINIMAX_TTS_RPM_LIMIT))
+            effective_rpm = min(configured_rpm, self._adaptive_rpm or configured_rpm)
+            self._next_allowed = time.monotonic() + 60.0 / effective_rpm
+
+    def cooldown(self, seconds: float = 65.0) -> None:
+        until = time.monotonic() + seconds
+        self._cooldown_until = max(self._cooldown_until, until)
+        configured_rpm = max(1, int(settings.MINIMAX_TTS_RPM_LIMIT))
+        self._adaptive_rpm = max(1, min(configured_rpm, self._adaptive_rpm or configured_rpm) // 2)
+        logger.warning("MiniMax TTS 节流已自动降至 %d RPM", self._adaptive_rpm)
+
+    def reset(self) -> None:
+        self._lock = None
+        self._next_allowed = 0.0
+        self._cooldown_until = 0.0
+        self._adaptive_rpm = None
+
+
+_tts_pacer = _MiniMaxTTSPacer()
 
 
 def _gender_for_system_voice(voice_id: str, name: str, description: str) -> str:
@@ -131,13 +173,27 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             "voice_setting": voice_setting,
             "audio_setting": {"sample_rate": 32000, "bitrate": 128000, "format": "mp3", "channel": 1},
         }
+        # 并发 semaphore 只限制在飞数量，无法限制每分钟调用次数。
+        # 在这里统一节流，覆盖构建和音色试听；上游限流时冷却后重试同一段。
         async with httpx.AsyncClient(timeout=180) as client:
-            response = await client.post(self._url("/t2a_v2"), headers=self._headers(), json=payload)
-            response.raise_for_status()
-            data = response.json()
-        base_resp = data.get("base_resp") or {}
-        if base_resp.get("status_code", 0) != 0:
-            raise RuntimeError(f"MiniMax 合成失败: {base_resp.get('status_msg') or base_resp.get('status_code')}")
+            for attempt in range(3):
+                await _tts_pacer.acquire()
+                response = await client.post(self._url("/t2a_v2"), headers=self._headers(), json=payload)
+                if response.status_code == 429 and attempt < 2:
+                    logger.warning("MiniMax TTS HTTP 429，冷却 65 秒后重试（%d/2）", attempt + 1)
+                    _tts_pacer.cooldown()
+                    continue
+                response.raise_for_status()
+                data = response.json()
+                base_resp = data.get("base_resp") or {}
+                status_msg = str(base_resp.get("status_msg") or base_resp.get("status_code") or "")
+                if base_resp.get("status_code", 0) != 0:
+                    if "rate limit" in status_msg.lower() and attempt < 2:
+                        logger.warning("MiniMax TTS RPM 限流，冷却 65 秒后重试（%d/2）", attempt + 1)
+                        _tts_pacer.cooldown()
+                        continue
+                    raise RuntimeError(f"MiniMax 合成失败: {status_msg}")
+                break
         audio_hex = (data.get("data") or {}).get("audio")
         if not audio_hex:
             raise RuntimeError("MiniMax 合成返回空音频")

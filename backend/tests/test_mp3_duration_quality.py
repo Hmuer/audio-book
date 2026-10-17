@@ -3,7 +3,9 @@ import json
 
 import pytest
 
-from backend.app.core.mp3_util import make_silent_mp3, mp3_duration_ms
+from backend.app.core.mp3_util import (
+    concat_mp3_files, make_silent_mp3, mp3_channel_modes, mp3_duration_ms,
+)
 
 
 def _id3_tag(body_size: int) -> bytes:
@@ -18,6 +20,26 @@ def test_mp3_duration_reads_all_segments_with_repeated_id3():
     frame_part = make_silent_mp3(12500, sample_rate=24000, kbps=64)
     audio = b"".join(_id3_tag(80) + frame_part for _ in range(36))
     assert 450_000 <= mp3_duration_ms(audio) <= 452_000
+
+
+def test_chapter_mp3_keeps_mono_channel_mode_and_strips_midstream_id3():
+    # MiniMax 请求 channel=1；旧静音帧却写成 stereo(0)，浏览器会报 midstream change。
+    voice = _id3_tag(80) + make_silent_mp3(1000, sample_rate=32000)
+    pause = make_silent_mp3(250, sample_rate=32000)
+    chapter = concat_mp3_files(voice, pause, voice)
+    assert mp3_channel_modes(chapter) == {3}
+    assert b"ID3" not in chapter
+    assert 2200 <= mp3_duration_ms(chapter) <= 2350
+
+
+def test_channel_modes_detect_old_stereo_silence_for_retry():
+    mono = make_silent_mp3(100, sample_rate=32000)
+    stereo = bytearray(mono)
+    # 模拟旧版 32kHz 双声道静音帧（第 4 字节 mode 位为 0）。
+    frame_len = 576
+    for pos in range(0, len(stereo), frame_len):
+        stereo[pos + 3] &= 0x3F
+    assert mp3_channel_modes(mono + stereo + mono) == {0, 3}
 
 
 def test_mp3_duration_resync_limit_is_consecutive():

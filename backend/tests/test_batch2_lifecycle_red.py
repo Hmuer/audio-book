@@ -49,6 +49,67 @@ async def _setup_project(name: str) -> str:
     return pid
 
 
+@pytest.mark.asyncio
+async def test_retry_repairs_old_minimax_mixed_channel_chapter(
+    _isolate_data_dir, monkeypatch,
+):
+    """重试失败章时，旧成功章若夹有双声道静音，也必须重建。"""
+    from backend.app.core.mp3_util import make_silent_mp3
+    from backend.app.core.config import settings
+    from backend.app.db.models import Build, BuildArtifact, Project, ProjectChapter
+    from backend.app.db.session import get_session_factory, init_db
+    from backend.app.services import build as build_mod
+    from backend.app.core import config
+    from sqlalchemy import select
+
+    await init_db()
+    pid, bid = uuid.uuid4().hex, uuid.uuid4().hex
+    audio_dir = settings.AUDIO_DIR
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    old = bytearray(make_silent_mp3(100, 32000))
+    for pos in range(0, len(old), 576):
+        old[pos + 3] &= 0x3F
+    fname = f"build_{bid}_ch0000.mp3"
+    (audio_dir / fname).write_bytes(make_silent_mp3(100, 32000) + old)
+
+    factory = get_session_factory()
+    async with factory() as session:
+        session.add(Project(project_id=pid, name="旧 MiniMax", status="ready"))
+        session.add(ProjectChapter(project_id=pid, idx=0, title="前言", text="内容", text_len=2))
+        session.add(ProjectChapter(project_id=pid, idx=1, title="第一章", text="内容", text_len=2))
+        session.add(Build(build_id=bid, project_id=pid, status="partial_success",
+                          total_chapters=2, completed_chapters=1,
+                          narrator_voice_id="minimax:male-1", speed=1.0,
+                          mode="classic", tts_provider="minimax",
+                          failed_chapters_json="[1]"))
+        session.add(BuildArtifact(build_id=bid, chapter_idx=0, title="前言", status="done",
+                                  audio_filename=fname))
+        session.add(BuildArtifact(build_id=bid, chapter_idx=1, title="第一章", status="failed"))
+        await session.commit()
+
+    monkeypatch.setattr(config, "get_active", lambda _kind: ("minimax", "speech-2.8-hd", {}))
+    async def voices(_provider, *_args):
+        return "minimax:male-1", "minimax:male-2", "minimax:female-1", {
+            "minimax:male-1", "minimax:male-2", "minimax:female-1",
+        }
+    monkeypatch.setattr(build_mod, "_resolve_build_voice_defaults", voices)
+    async def noop(*_args, **_kwargs):
+        return None
+    monkeypatch.setattr(build_mod, "_register_active_build", noop)
+    async def ignored_worker():
+        return None
+    monkeypatch.setattr(build_mod, "_run_build_inner", lambda **_kwargs: ignored_worker())
+
+    retry = await build_mod.retry_failed_build(bid)
+    assert retry.build_id != bid
+    async with factory() as session:
+        rows = (await session.execute(select(BuildArtifact).where(
+            BuildArtifact.build_id == retry.build_id,
+        ).order_by(BuildArtifact.chapter_idx))).scalars().all()
+        assert [row.status for row in rows] == ["pending", "pending"]
+    await _wait_active_gone(retry.build_id, timeout=5.0)
+
+
 async def _wait_terminal(build_id: str, timeout: float = 15.0) -> str:
     from backend.app.services.build import get_build_status
 

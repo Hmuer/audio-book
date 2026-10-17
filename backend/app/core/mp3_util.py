@@ -180,16 +180,44 @@ def mp3_sample_rate(mp3_bytes: bytes) -> int | None:
     return None
 
 
-def concat_mp3_files(*parts: bytes) -> bytes:
-    """按段顺序拼接多段 MP3 字节（空段跳过）。
+def _iter_mp3_frames(data: bytes):
+    """逐帧遍历，跳过各段自带的 ID3 标签及末尾非音频字节。"""
+    pos = 0
+    n = len(data)
+    while pos + 4 <= n:
+        tag_end = _skip_id3v2(data, pos) if data[pos:pos + 3] == b"ID3" else pos
+        if tag_end > pos:
+            pos = tag_end
+            continue
+        parsed = (
+            _parse_frame_header(data, pos)
+            if data[pos] == 0xFF and (data[pos + 1] & 0xE0) == 0xE0
+            else None
+        )
+        if parsed and pos + parsed[0] <= n:
+            yield pos, parsed[0], parsed[1], (data[pos + 3] >> 6) & 0x03
+            pos += parsed[0]
+        else:
+            pos += 1
 
-    为什么放在 core：MiniMax TTS 弃用后，这里不再是"MiniMax 专属工具"，
-    而是 build 流水线通用的拼接原语，归属 core 避免对已删除 provider 的反向依赖。
-    """
+
+def mp3_channel_modes(mp3_bytes: bytes) -> set[int]:
+    """返回所有帧的声道模式；3 为单声道，0/1/2 为双声道。"""
+    return {mode for _, _, _, mode in _iter_mp3_frames(mp3_bytes)}
+
+
+def concat_mp3_files(*parts: bytes) -> bytes:
+    """按段顺序拼接 MP3 帧，剔除段内 ID3/尾部元数据。"""
     out = bytearray()
     for p in parts:
-        if p:
-            out.extend(p)
+        if not p:
+            continue
+        frame_count = 0
+        for pos, frame_len, _, _ in _iter_mp3_frames(p):
+            out.extend(p[pos:pos + frame_len])
+            frame_count += 1
+        if not frame_count:
+            raise ValueError("MP3 段没有有效音频帧，无法拼接")
     return bytes(out)
 
 
@@ -221,7 +249,9 @@ def _frame_bytes(sample_rate: int, kbps: int) -> tuple[int, int, int, bytes]:
     # byte1 = [sync 3bit=111][version 2bit][layer 2bit=01(L3)][protection 1bit=1(无CRC)]
     b2 = 0xE0 | (version_bits << 3) | 0x03
     b3 = (bitrate_idx << 4) | (sr_idx << 2)  # padding=0
-    header = struct.pack("BBB", b1, b2, b3) + b"\x00"
+    # 第 4 字节高两位是 channel_mode；3=mono。旧值 0=stereo，
+    # 与 MiniMax 的单声道 TTS 交替出现时浏览器会拒绝解码。
+    header = struct.pack("BBBB", b1, b2, b3, 0xC0)
     return frame_len, samples, sample_rate, header
 
 
