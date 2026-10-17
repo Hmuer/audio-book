@@ -93,6 +93,34 @@ async def test_minimax_rpm_response_retries_after_cooldown(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_minimax_rpm_failure_cools_down_other_requests_after_last_attempt(monkeypatch):
+    from backend.app.ai.providers.minimax import tts as module
+
+    monkeypatch.setattr(module, "get_provider", lambda _id: {"api_key": "test-key"})
+    monkeypatch.setattr(module, "get_active", lambda _kind: ("minimax", "speech-2.8-hd", {}))
+    provider = module.MiniMaxTTSProvider()
+    provider._voices = [{"id": "minimax:male-qn-qingse"}]
+    provider._voices_at = module.time.monotonic()
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kwargs: real_client(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={
+            "base_resp": {"status_code": 1001, "status_msg": "rate limit exceeded(RPM)"},
+        })), **kwargs,
+    ))
+
+    async def no_wait():
+        pass
+
+    cooldowns = []
+    monkeypatch.setattr(module._tts_pacer, "acquire", no_wait)
+    monkeypatch.setattr(module._tts_pacer, "cooldown", lambda: cooldowns.append(True))
+    with pytest.raises(RuntimeError, match="rate limit exceeded"):
+        await provider.synthesize_to_bytes("你好", "minimax:male-qn-qingse")
+    assert len(cooldowns) == 3
+
+
+@pytest.mark.asyncio
 async def test_minimax_pacer_spreads_concurrent_requests(monkeypatch):
     from backend.app.ai.providers.minimax import tts as module
 
@@ -113,6 +141,29 @@ async def test_minimax_pacer_spreads_concurrent_requests(monkeypatch):
     assert sleeps == [2.0, 2.0]
     pacer.cooldown(seconds=0)
     assert pacer._adaptive_rpm == 15
+
+
+@pytest.mark.asyncio
+async def test_minimax_pacer_honors_cooldown_started_while_waiting(monkeypatch):
+    from backend.app.ai.providers.minimax import tts as module
+
+    monkeypatch.setattr(module.settings, "MINIMAX_TTS_RPM_LIMIT", 10)
+    pacer = module._MiniMaxTTSPacer()
+    clock = [100.0]
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+        if len(sleeps) == 1:
+            pacer.cooldown(seconds=65)
+
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+    await pacer.acquire()
+    await pacer.acquire()
+    assert sleeps == [6.0, 65.0]
+    assert pacer._next_allowed == 183.0  # 171 + 60 / 5 RPM
 
 
 @pytest.mark.asyncio

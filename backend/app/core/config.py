@@ -119,8 +119,8 @@ class Settings(BaseSettings):
 
     # RPM 限流（多厂商独立桶）
     DOUBAO_TTS_RPM_LIMIT: int = 60
-    # MiniMax 账号额度可能低于构建并发；默认匀速 20 RPM，遇到上游限流再冷却重试。
-    MINIMAX_TTS_RPM_LIMIT: int = 20
+    # 官方 T2A v2：免费账号 10 RPM、充值账号 20 RPM；默认按免费额度匀速发送。
+    MINIMAX_TTS_RPM_LIMIT: int = 10
 
     # =====================================================================
     # 多厂商模型配置（PROVIDERS_CONFIG）

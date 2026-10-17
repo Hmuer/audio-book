@@ -1940,7 +1940,7 @@ _EDITABLE_SETTINGS = {
     # ---- 豆包运行参数（页面化 P-env）----
     "DOUBAO_TTS_USE_V3": ("bool", "豆包配置", "豆包 TTS 切 v3 协议（默认 True；关掉会退回 v1 老端点）"),
     "DOUBAO_TTS_RPM_LIMIT": ("int", "豆包配置", "豆包 TTS RPM 限流"),
-    "MINIMAX_TTS_RPM_LIMIT": ("int", "限流配置", "MiniMax TTS 每分钟请求上限（默认 20，遇限流自动冷却重试）"),
+    "MINIMAX_TTS_RPM_LIMIT": ("int", "限流配置", "MiniMax T2A v2 请求预算（默认 10 RPM；免费 10、充值 20，主/子账号共享）"),
     "DOUBAO_AUDIO_SAMPLE_RATE": ("int", "豆包配置", "豆包合成采样率（Hz，默认 24000）"),
     "DOUBAO_AUDIO_LOUDNESS_RATE": ("int", "豆包配置", "豆包合成响度（-50~100，默认 0）"),
     "DOUBAO_TTS_V3_BASE_URL": ("str", "豆包配置", "豆包 v3 TTS 端点（留空走 provider）"),

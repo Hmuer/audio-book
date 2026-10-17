@@ -39,11 +39,14 @@ class _MiniMaxTTSPacer:
         if self._lock is None:
             self._lock = asyncio.Lock()
         async with self._lock:
-            now = time.monotonic()
-            target = max(now, self._next_allowed, self._cooldown_until)
-            if target > now:
+            # 等待期间也可能有另一个请求触发限流；醒来后重新检查冷却截止时间。
+            while True:
+                now = time.monotonic()
+                target = max(self._next_allowed, self._cooldown_until)
+                if target <= now:
+                    break
                 await asyncio.sleep(target - now)
-            # 锁保持到请求放行，避免大量等待者提前预约并绕过后续冷却。
+            # 锁保持到请求放行，避免大量等待者提前预约。
             configured_rpm = max(1, int(settings.MINIMAX_TTS_RPM_LIMIT))
             effective_rpm = min(configured_rpm, self._adaptive_rpm or configured_rpm)
             self._next_allowed = time.monotonic() + 60.0 / effective_rpm
@@ -179,19 +182,21 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             for attempt in range(3):
                 await _tts_pacer.acquire()
                 response = await client.post(self._url("/t2a_v2"), headers=self._headers(), json=payload)
-                if response.status_code == 429 and attempt < 2:
-                    logger.warning("MiniMax TTS HTTP 429，冷却 65 秒后重试（%d/2）", attempt + 1)
+                if response.status_code == 429:
                     _tts_pacer.cooldown()
-                    continue
+                    if attempt < 2:
+                        logger.warning("MiniMax TTS HTTP 429，冷却 65 秒后重试（%d/2）", attempt + 1)
+                        continue
                 response.raise_for_status()
                 data = response.json()
                 base_resp = data.get("base_resp") or {}
                 status_msg = str(base_resp.get("status_msg") or base_resp.get("status_code") or "")
                 if base_resp.get("status_code", 0) != 0:
-                    if "rate limit" in status_msg.lower() and attempt < 2:
-                        logger.warning("MiniMax TTS RPM 限流，冷却 65 秒后重试（%d/2）", attempt + 1)
+                    if "rate limit" in status_msg.lower():
                         _tts_pacer.cooldown()
-                        continue
+                        if attempt < 2:
+                            logger.warning("MiniMax TTS RPM 限流，冷却 65 秒后重试（%d/2）", attempt + 1)
+                            continue
                     raise RuntimeError(f"MiniMax 合成失败: {status_msg}")
                 break
         audio_hex = (data.get("data") or {}).get("audio")
