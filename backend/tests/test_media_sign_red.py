@@ -141,6 +141,36 @@ async def test_token_reusable_within_ttl(project_with_build):
 
 
 @pytest.mark.asyncio
+async def test_old_chapter_repairs_seek_index_and_serves_byte_ranges(project_with_build):
+    from httpx import ASGITransport, AsyncClient
+    from backend.app.core import config as cfg
+    from backend.app.core.mp3_util import has_mp3_seek_header, make_silent_mp3
+    from backend.app.main import app
+
+    _, bid, idx, tok = project_with_build
+    chapter = cfg.settings.AUDIO_DIR / f"build_{bid}_ch0000.mp3"
+    segment = bytearray(make_silent_mp3(1000, sample_rate=32000))
+    segment[21:25] = b"Info"
+    chapter.write_bytes(bytes(segment) * 2)
+    assert has_mp3_seek_header(chapter.read_bytes()[:1024])
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sign = await client.get(
+            f"/api/media/sign?build_id={bid}&kind=chapter_mp3&idx={idx}",
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        url = sign.json()["url"]
+        first = await client.get(url, headers={"Range": "bytes=576-1151"})
+        assert first.status_code == 206
+        assert first.headers["content-range"] == f"bytes 576-1151/{chapter.stat().st_size}"
+        assert first.content == chapter.read_bytes()[576:1152]
+        assert not has_mp3_seek_header(chapter.read_bytes()[:1024])
+        second = await client.get(url, headers={"Range": "bytes=0-575"})
+        assert second.status_code == 206
+        assert second.content == chapter.read_bytes()[:576]
+
+
+@pytest.mark.asyncio
 async def test_stream_rejects_full_login_jwt(project_with_build):
     """/api/media/stream 不接受 sub_kind=access 的完整登录 JWT（必须有 sub_kind=media）。"""
     from backend.app.main import app

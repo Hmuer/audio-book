@@ -270,6 +270,75 @@ async def test_os7_sign_returns_direct_url_when_remote(build_for_sign, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_remote_old_chapter_is_repaired_before_direct_playback(build_for_sign, monkeypatch):
+    from httpx import AsyncClient, ASGITransport
+    from backend.app.main import app
+    from backend.app.api import routes
+    from backend.app.services import audio_seek
+    from backend.app.core.mp3_util import has_mp3_seek_header, make_silent_mp3
+
+    pid, bid, token = build_for_sign
+    segment = bytearray(make_silent_mp3(1000, sample_rate=32000))
+    segment[21:25] = b"Info"
+
+    class Remote:
+        archives_remotely = True
+
+        def __init__(self):
+            self.data = bytes(segment) * 2
+            self.uploads = 0
+
+        def url(self, key):
+            return f"https://cdn.example.com/{key}"
+
+        async def peek_bytes(self, key, count):
+            return self.data[:count]
+
+        async def fetch_to(self, *, key, dest):
+            dest.write_bytes(self.data)
+            return True
+
+        async def archive(self, *, key, local_path, content_type):
+            self.uploads += 1
+            self.data = local_path.read_bytes()
+            return True
+
+    remote = Remote()
+    monkeypatch.setattr(routes, "get_storage", lambda: remote)
+    monkeypatch.setattr(audio_seek, "get_storage", lambda: remote)
+    monkeypatch.setattr(audio_seek, "cleanup_local_enabled", lambda: True)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get(
+            "/api/media/sign",
+            params={"build_id": bid, "kind": "chapter_mp3", "idx": 0},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["direct"] is True
+    assert remote.uploads == 1
+    assert not has_mp3_seek_header(remote.data)
+
+
+@pytest.mark.asyncio
+async def test_cos_peek_reads_only_requested_prefix(monkeypatch):
+    from io import BytesIO
+    from backend.app.services.storage import S3Storage
+
+    storage = S3Storage()
+    storage._bucket = "test-bucket"
+
+    class Client:
+        def get_object(self, **kwargs):
+            assert kwargs == {
+                "Bucket": "test-bucket", "Key": "p/b/chapter.mp3", "Range": "bytes=0-127",
+            }
+            return {"Body": BytesIO(b"first bytes")}
+
+    monkeypatch.setattr(storage, "_ensure_client", lambda: Client())
+    assert await storage.peek_bytes("p/b/chapter.mp3", 128) == b"first bytes"
+
+
+@pytest.mark.asyncio
 async def test_os7_sign_uses_local_file_when_remote_archive_failed(build_for_sign, monkeypatch):
     from pathlib import Path
     from httpx import AsyncClient, ASGITransport

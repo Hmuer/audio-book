@@ -201,20 +201,62 @@ def _iter_mp3_frames(data: bytes):
             pos += 1
 
 
+def _seek_header_offset(data: bytes, pos: int, frame_len: int) -> int | None:
+    """Xing/Info 位于首帧 side info 之后；仅匹配该位置，避免误改语音数据。"""
+    version = (data[pos + 1] >> 3) & 0x03
+    mono = (data[pos + 3] >> 6) == 3
+    side_info = (17 if mono else 32) if version == 3 else (9 if mono else 17)
+    offset = 4 + (0 if data[pos + 1] & 1 else 2) + side_info
+    return pos + offset if offset + 4 <= frame_len else None
+
+
+def has_mp3_seek_header(prefix: bytes) -> bool:
+    """检查文件首帧是否带段级 Xing/Info 索引，供远端旧产物快速探测。"""
+    pos = _skip_id3v2(prefix)
+    if pos + 4 > len(prefix) or prefix[pos] != 0xFF or prefix[pos + 1] & 0xE0 != 0xE0:
+        return False
+    parsed = _parse_frame_header(prefix, pos)
+    if parsed is None:
+        return False
+    marker = _seek_header_offset(prefix, pos, parsed[0])
+    return marker is not None and prefix[marker:marker + 4] in (b"Xing", b"Info")
+
+
+def neutralize_mp3_seek_headers(data: bytes) -> tuple[bytes, int]:
+    """清除拼接后失效的段级索引标记，保留整帧和音频时间轴。"""
+    patched: bytearray | None = None
+    count = 0
+    for pos, frame_len, _, _ in _iter_mp3_frames(data):
+        marker = _seek_header_offset(data, pos, frame_len)
+        if marker is None or data[marker:marker + 4] not in (b"Xing", b"Info"):
+            continue
+        if patched is None:
+            patched = bytearray(data)
+        patched[marker:marker + 4] = b"\x00" * 4
+        count += 1
+    return (bytes(patched) if patched is not None else data), count
+
+
 def mp3_channel_modes(mp3_bytes: bytes) -> set[int]:
     """返回所有帧的声道模式；3 为单声道，0/1/2 为双声道。"""
     return {mode for _, _, _, mode in _iter_mp3_frames(mp3_bytes)}
 
 
 def concat_mp3_files(*parts: bytes) -> bytes:
-    """按段顺序拼接 MP3 帧，剔除段内 ID3/尾部元数据。"""
+    """按段顺序拼接 MP3 帧，剔除 ID3，并使各段 Xing/Info 索引失效。"""
     out = bytearray()
     for p in parts:
         if not p:
             continue
         frame_count = 0
         for pos, frame_len, _, _ in _iter_mp3_frames(p):
-            out.extend(p[pos:pos + frame_len])
+            marker = _seek_header_offset(p, pos, frame_len)
+            if marker is not None and p[marker:marker + 4] in (b"Xing", b"Info"):
+                out.extend(p[pos:marker])
+                out.extend(b"\x00" * 4)
+                out.extend(p[marker + 4:pos + frame_len])
+            else:
+                out.extend(p[pos:pos + frame_len])
             frame_count += 1
         if not frame_count:
             raise ValueError("MP3 段没有有效音频帧，无法拼接")

@@ -86,6 +86,7 @@ from ..services.build import (
 )
 from ..services.book_split import strip_chapter_prefix
 from ..services.storage import get_storage, media_key
+from ..services.audio_seek import ensure_chapter_seekable
 
 logger = logging.getLogger(__name__)
 
@@ -1180,6 +1181,9 @@ async def api_media_sign(
             # 归档失败时本地副本仍在；此时直链可能指向根本不存在的对象。
             # 优先用本地签名下载，仅在本地已清理时返回 COS 直链。
             if filename and not (Path(settings.AUDIO_DIR) / filename).is_file():
+                if kind_norm == "chapter_mp3":
+                    await ensure_chapter_seekable(b.project_id, build_id, filename)
+            if filename and not (Path(settings.AUDIO_DIR) / filename).is_file():
                 direct = st.url(media_key(b.project_id, build_id, filename))
                 if direct:
                     # COS 链接已签名，不需要媒体 token 记录。
@@ -1311,6 +1315,8 @@ async def api_media_stream(
 
     audio_dir = Path(settings.AUDIO_DIR)
     fpath = audio_dir / audio_filename
+    if kind == "chapter_mp3":
+        await ensure_chapter_seekable(b.project_id, build_id, audio_filename)
     if not fpath.is_file():
         # G-5：对象存储 + 本地已清理 → 重定向到 COS 签名链接。
         direct = _direct_object_url(b.project_id, build_id, audio_filename)
@@ -1519,6 +1525,7 @@ async def api_build_chapter_download(
 
     audio_dir = Path(settings.AUDIO_DIR)
     fpath = audio_dir / audio_filename
+    await ensure_chapter_seekable(project_id, build_id, audio_filename)
     if not fpath.is_file():
         # G-5：对象存储 + 本地已清理 → 重定向到 COS 签名链接。
         direct = _direct_object_url(project_id, build_id, audio_filename)

@@ -214,6 +214,19 @@ class S3Storage(StorageBackend):
             logger.warning(f"[storage] 回源失败 key={key}: {type(e).__name__}: {e}")
             return False
 
+    async def peek_bytes(self, key: str, count: int = 1024) -> bytes:
+        """仅读取对象开头，判断旧 MP3 是否带失效的段级 seek 索引。"""
+        from contextlib import closing
+
+        def _read() -> bytes:
+            response = self._ensure_client().get_object(
+                Bucket=self._bucket, Key=key, Range=f"bytes=0-{count - 1}",
+            )
+            with closing(response["Body"]) as body:
+                return body.read(count)
+
+        return await asyncio.to_thread(_read)
+
     async def delete_key(self, key: str) -> None:
         try:
             client = self._ensure_client()

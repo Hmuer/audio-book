@@ -4,7 +4,8 @@ import json
 import pytest
 
 from backend.app.core.mp3_util import (
-    concat_mp3_files, make_silent_mp3, mp3_channel_modes, mp3_duration_ms,
+    concat_mp3_files, has_mp3_seek_header, make_silent_mp3, mp3_channel_modes,
+    mp3_duration_ms, neutralize_mp3_seek_headers,
 )
 
 
@@ -30,6 +31,71 @@ def test_chapter_mp3_keeps_mono_channel_mode_and_strips_midstream_id3():
     assert mp3_channel_modes(chapter) == {3}
     assert b"ID3" not in chapter
     assert 2200 <= mp3_duration_ms(chapter) <= 2350
+
+
+def test_chapter_concat_removes_stale_segment_seek_headers():
+    # 模拟 MiniMax 每段首帧的 Info 索引；拼接后索引仍指向短段，会让播放器跳转到错误位置。
+    segment = bytearray(make_silent_mp3(1000, sample_rate=32000))
+    segment[21:25] = b"Info"  # MPEG1 单声道 side info 之后
+    segment[25:29] = (15).to_bytes(4, "big")
+    segment[29:33] = (3).to_bytes(4, "big")
+    source = bytes(segment)
+    assert has_mp3_seek_header(source)
+
+    old_chapter = source + source
+    fixed, count = neutralize_mp3_seek_headers(old_chapter)
+    assert count == 2
+    assert not has_mp3_seek_header(fixed)
+    assert len(fixed) == len(old_chapter)
+    assert mp3_duration_ms(fixed) == mp3_duration_ms(old_chapter)
+    assert fixed == concat_mp3_files(source, source)
+    # 误碰普通语音负载里的字符串不会清除有效字节。
+    plain = bytearray(make_silent_mp3(1000, sample_rate=32000))
+    plain[100:104] = b"Info"
+    assert neutralize_mp3_seek_headers(bytes(plain)) == (bytes(plain), 0)
+
+
+@pytest.mark.asyncio
+async def test_old_remote_chapter_repairs_once_without_tts(tmp_path, monkeypatch):
+    from backend.app.core.config import settings
+    from backend.app.services import audio_seek
+
+    segment = bytearray(make_silent_mp3(1000, sample_rate=32000))
+    segment[21:25] = b"Info"
+
+    class Remote:
+        archives_remotely = True
+
+        def __init__(self):
+            self.data = bytes(segment) * 2
+            self.fetches = 0
+            self.uploads = 0
+
+        async def peek_bytes(self, _key, count):
+            return self.data[:count]
+
+        async def fetch_to(self, *, key, dest):
+            self.fetches += 1
+            dest.write_bytes(self.data)
+            return True
+
+        async def archive(self, *, key, local_path, content_type):
+            self.uploads += 1
+            self.data = local_path.read_bytes()
+            return True
+
+    remote = Remote()
+    monkeypatch.setattr(settings, "AUDIO_DIR", tmp_path)
+    monkeypatch.setattr(audio_seek, "get_storage", lambda: remote)
+    monkeypatch.setattr(audio_seek, "cleanup_local_enabled", lambda: True)
+
+    assert await audio_seek.ensure_chapter_seekable("p", "b", "chapter.mp3") is None
+    assert (remote.fetches, remote.uploads) == (1, 1)
+    assert not has_mp3_seek_header(remote.data)
+    assert len(remote.data) == 2 * len(segment)
+    assert not (tmp_path / "chapter.mp3").exists()
+    assert await audio_seek.ensure_chapter_seekable("p", "b", "chapter.mp3") is None
+    assert (remote.fetches, remote.uploads) == (1, 1)
 
 
 def test_channel_modes_detect_old_stereo_silence_for_retry():
