@@ -12,6 +12,8 @@
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import uuid
 
 import pytest
@@ -107,6 +109,37 @@ def test_os3_public_base_derivation(monkeypatch):
         "get_object", Params={"Bucket": "mybucket", "Key": "a/b.mp3"},
     )
     assert signed.startswith("https://mybucket.cos.ap-guangzhou.myqcloud.com/a/b.mp3?")
+
+
+def test_cos_delete_objects_signs_serialized_xml_content_md5(monkeypatch):
+    """COS 要求 Content-MD5；botocore 默认 CRC32 不能替代它。"""
+    from backend.app.services import storage as st
+
+    monkeypatch.setattr(st.settings, "S3_ENDPOINT", "https://cos.ap-guangzhou.myqcloud.com")
+    monkeypatch.setattr(st.settings, "S3_BUCKET", "test-bucket-1250000000")
+    monkeypatch.setattr(st.settings, "S3_ACCESS_KEY", "test-key")
+    monkeypatch.setattr(st.settings, "S3_SECRET_KEY", "test-secret")
+    client = st.S3Storage()._ensure_client()
+
+    class RequestCaptured(Exception):
+        pass
+
+    def inspect(request, **_kwargs):
+        expected = base64.b64encode(
+            hashlib.md5(request.body, usedforsecurity=False).digest()
+        ).decode("ascii")
+        assert request.headers["Content-MD5"].decode("ascii") == expected
+        signed = request.headers["Authorization"].decode("ascii")
+        assert "content-md5" in signed.lower()
+        assert b"<Key>project/build/ch0001.mp3</Key>" in request.body
+        raise RequestCaptured
+
+    client.meta.events.register("before-send.s3.DeleteObjects", inspect)
+    with pytest.raises(RequestCaptured):
+        client.delete_objects(
+            Bucket="test-bucket-1250000000",
+            Delete={"Objects": [{"Key": "project/build/ch0001.mp3"}], "Quiet": True},
+        )
 
 
 # =====================================================================

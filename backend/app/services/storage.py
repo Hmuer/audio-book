@@ -20,6 +20,8 @@ key 与本地文件名一一对应，排查时不需要额外映射表。
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -29,6 +31,15 @@ from urllib.parse import urlparse
 from ..core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _add_cos_delete_objects_md5(request, **_kwargs) -> None:
+    """COS 的 DeleteObjects 必须带请求 XML 的 Content-MD5。"""
+    body = request.body or b""
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    digest = hashlib.md5(body, usedforsecurity=False).digest()
+    request.headers["Content-MD5"] = base64.b64encode(digest).decode("ascii")
 
 
 def media_key(project_id: str, build_id: str, filename: str) -> str:
@@ -169,6 +180,11 @@ class S3Storage(StorageBackend):
                 request_checksum_calculation="when_required",
                 response_checksum_validation="when_required",
             ),
+        )
+        # botocore 可能仅发送 CRC32；COS 批量删除仍要求 Content-MD5。
+        # 在签名前读取已序列化的 XML 请求体，确保 MD5 参与 SigV4 签名。
+        self._client.meta.events.register(
+            "before-sign.s3.DeleteObjects", _add_cos_delete_objects_md5,
         )
         return self._client
 
