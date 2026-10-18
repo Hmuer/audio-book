@@ -39,6 +39,15 @@ class MockLLMProvider(BaseLLMProvider):
 
         schema_name = output_schema.__name__
 
+        if schema_name == "BookMetadata":
+            return output_schema.model_validate({
+                "category": "女频" if "已有人工分类（必须沿用）：女频" in prompt else "文学",
+                "tags": ["成长", "温暖", "人生"],
+                "selling_points": "以细腻的人物关系呈现成长。",
+                "description": "一部围绕成长与选择展开的作品，讲述人物如何面对生活中的变化。",
+                "narrator_voice_id": "",
+            })
+
         # Polish: 默认 is_reasonable=true。测试 2 通过 "过度修改标记" 让其返回 false
         if schema_name == "PolishResult":
             # H-25：顺带产出人物名单（扫描测试文本里的固定角色名 + 角色N号标记）

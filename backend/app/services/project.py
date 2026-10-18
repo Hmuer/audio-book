@@ -34,7 +34,8 @@ from ..ai.base import LLMQuotaExhaustedError, LLMContentRejectedError
 from ..db.session import get_session_factory
 from .book_split import ChapterSplitError, split_book_chapters
 from .chapter import Chapter
-from .chapter_store import load_chapter, load_chapter_rows, save_chapters
+from .chapter_store import load_chapter, load_chapter_rows, load_chapters, save_chapters
+from .book_metadata import BOOK_CATEGORIES, generate_book_metadata
 from .epub_reader import read_epub as _read_epub
 from .character import (
     Character,
@@ -264,28 +265,64 @@ class _QuotaProbeModel(BaseModel):
     ok: bool = True
 
 
-class _BookCategoryModel(BaseModel):
-    category: str
+async def generate_project_metadata(
+    project_id: str, *, chapters: list[Chapter] | None = None, overwrite: bool = False,
+) -> ProjectResp:
+    """识别时填补空字段；手动点击 AI 生成时重写资料与旁白。"""
+    from ..core.config import get_active
+    from ..ai.factory import get_tts
 
-
-async def _infer_book_category(title: str, chapters: list[Chapter]) -> str:
-    """小样本判断受众类型；无法确定时不猜测。分类失败不阻断识别。"""
-    from ..ai.factory import get_llm
-    samples = [chapters[i] for i in sorted({0, len(chapters) // 2, len(chapters) - 1})] if chapters else []
-    excerpt = "\n".join(f"{c.title}\n{c.text[:650]}" for c in samples)
-    prompt = (
-        "根据书名和正文判断该书的读者类型。仅当可以明确判断为男频或女频网络小说时输出相应分类；"
-        "散文、诗集、自传、纪实、无法确定的作品输出其他。返回 JSON：{\"category\":\"男频|女频|其他\"}。\n"
-        f"书名：{title[:150]}\n正文样本：{excerpt}"
-    )
+    factory = get_session_factory()
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        if not p:
+            raise ValueError(f"项目不存在: {project_id}")
+        if chapters is None:
+            chapters = await load_chapters(session, project_id)
+        if not chapters:
+            raise ValueError("请先完成书籍识别，再生成书籍资料")
+        title = p.book_title or p.name
+        existing_category = (p.book_category or "").strip()
+        needs = overwrite or not all((p.book_category, p.tags, p.selling_points, p.description,
+                                       p.default_narrator_voice_id))
+        current_voice_id = p.default_narrator_voice_id or ""
+    provider = get_active("tts")[0] or "doubao"
     try:
-        result = await get_llm().chat_structured(
-            prompt, _BookCategoryModel, max_tokens=80, use_fast_model=True, max_retries=1,
-        )
-        return result.category if result.category in {"男频", "女频", "其他"} else "其他"
+        voices = [v for v in await get_tts(provider).list_voices()
+                  if v.get("provider") == provider]
     except Exception as exc:
-        logger.warning("自动判断书籍分类失败：%s", exc)
-        return ""
+        logger.warning("书籍资料读取 %s 音色失败：%s", provider, exc)
+        voices = []
+    # 更换激活 TTS 后，旧厂商旁白不再有效，需要为当前厂商重新选择。
+    if voices and current_voice_id and current_voice_id not in {v.get("id") for v in voices}:
+        needs = True
+    if needs:
+        metadata = await generate_book_metadata(
+            title, chapters, voices,
+            category_override=existing_category if not overwrite and existing_category in BOOK_CATEGORIES else "",
+        )
+        async with factory() as session:
+            p = await session.get(Project, project_id)
+            if not p:
+                raise ValueError(f"项目不存在: {project_id}")
+            if overwrite or not p.book_category:
+                p.book_category = metadata.category
+            if overwrite or not p.tags:
+                p.tags = ",".join(metadata.tags)
+            if overwrite or not p.selling_points:
+                p.selling_points = metadata.selling_points
+            if overwrite or not p.description:
+                p.description = metadata.description
+            if voices and (overwrite or not p.default_narrator_voice_id
+                           or p.default_narrator_voice_id not in {v.get("id") for v in voices}):
+                p.default_narrator_voice_id = metadata.narrator_voice_id or None
+            await session.commit()
+            await session.refresh(p)
+            return _to_project_resp(p)
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        assert p is not None
+        return _to_project_resp(p)
 
 
 async def _probe_llm_quota() -> bool:
@@ -393,6 +430,13 @@ async def _store_imported_source(
             p.source_charset = charset
             if book_title_hint:
                 p.book_title = book_title_hint
+            if old_path:
+                # 更换书籍正文后，旧书的资料与旁白不再适用；下次识别重新生成。
+                p.description = None
+                p.tags = None
+                p.book_category = None
+                p.selling_points = None
+                p.default_narrator_voice_id = None
             p.status = "imported"
             await session.commit()
             await session.refresh(p)
@@ -2564,7 +2608,23 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             f"ms={int((_time.perf_counter()-pt)*1000)}"
         )
 
-        # 6. 音色推荐（完成后 checkpoint 跳过）
+        # 6. 书籍资料和旁白先于角色音色推荐落库，推荐器才能排除旁白专用音色。
+        try:
+            await generate_project_metadata(project_id, chapters=chapters)
+        except LLMQuotaExhaustedError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "[project_prepare] project_id=%s... AI 书籍资料生成失败，保留已有资料：%s: %s",
+                project_id[:8], type(exc).__name__, exc,
+            )
+        async with factory() as metadata_session:
+            metadata_project = await metadata_session.get(Project, project_id)
+            narrator_for_recommend = (
+                metadata_project.default_narrator_voice_id or "" if metadata_project else ""
+            )
+
+        # 7. 音色推荐（完成后 checkpoint 跳过）
         pt = _time.perf_counter()
         # H-13：voice_recs 阶段计时（命中 checkpoint 则 start+end 同刻）
         _stage_timing_touch(prog, "voice_recs")
@@ -2577,6 +2637,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             and prog.get("voice_recs_done")
             and (bool(_vr_raw) or not characters)
             and prog.get("voice_recs_provider") == active_tts
+            and prog.get("voice_recs_narrator_id") == narrator_for_recommend
         )
         if _vr_hit:
             voice_recs: list[VoiceRecommendation] = [
@@ -2621,6 +2682,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 prog["voice_recs_done"] = True
                 prog["voice_recs_raw"] = [r.model_dump() for r in voice_recs]
                 prog["voice_recs_provider"] = active_tts
+                prog["voice_recs_narrator_id"] = narrator_for_recommend
             else:
                 prog["voice_recs_done"] = False
                 prog["voice_recs_raw"] = [r.model_dump() for r in voice_recs]
@@ -2664,12 +2726,6 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             [{"idx": c.idx, "title": c.title, "text": c.text} for c in chapters],
             ensure_ascii=False,
         )
-
-        async with factory() as category_session:
-            category_project = await category_session.get(Project, project_id)
-            needs_category = bool(category_project and not category_project.book_category)
-            category_title = (category_project.book_title or category_project.name) if category_project else ""
-        inferred_category = await _infer_book_category(category_title, chapters) if needs_category else ""
 
         async with factory() as session:
             p = await session.get(Project, project_id)
@@ -2735,8 +2791,6 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             p.chapters_json = chapters_json
             p.chapter_count = len(chapters)
             p.book_title = p.book_title or Path(original_filename).stem
-            if not p.book_category and inferred_category:
-                p.book_category = inferred_category
             p.status = "partial_success" if incomplete else "ready"
             # F-4：正文落到 project_chapters（读取主路径），chapters_json 仅作兼容快照
             await save_chapters(session, project_id, chapters)

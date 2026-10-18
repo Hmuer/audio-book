@@ -3090,6 +3090,7 @@ function SettingsTab({
   const [speed, setSpeed] = useState(project.default_speed ?? 1.0);
 
   const [saving, setSaving] = useState(false);
+  const [generatingMetadata, setGeneratingMetadata] = useState(false);
   const [savedTip, setSavedTip] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -3131,6 +3132,19 @@ function SettingsTab({
     }
   };
 
+  const generateMetadata = async () => {
+    setErr(null);
+    setGeneratingMetadata(true);
+    try {
+      await api.projectGenerateMetadata(project.project_id);
+      await onReload();
+    } catch (e: any) {
+      setErr(`AI 生成失败: ${e?.message || e}`);
+    } finally {
+      setGeneratingMetadata(false);
+    }
+  };
+
   const doDelete = async () => {
     if (!window.confirm(`确认删除项目「${project.name}」及其所有已构建内容吗？源文件、识别结果，以及本地和对象存储中的 MP3、LRC、ZIP、预告片、时间轴都会删除，操作不可恢复。`)) return;
     setDeleting(true);
@@ -3154,6 +3168,14 @@ function SettingsTab({
           项目设置
         </h3>
 
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-brand-400/5 px-4 py-3">
+          <p className="text-xs text-ink-600">书籍识别时自动生成分类、卖点、介绍、标签和旁白音色。已有书籍可在这里重新生成。</p>
+          <button type="button" className="btn-secondary text-sm" onClick={generateMetadata}
+            disabled={generatingMetadata || saving || project.chapters.length === 0}>
+            {generatingMetadata ? 'AI 正在生成…' : 'AI 重新生成并覆盖'}
+          </button>
+        </div>
+
         <div className="space-y-2 relative">
           <label className="block text-sm text-ink-700">项目名</label>
           <input
@@ -3175,7 +3197,7 @@ function SettingsTab({
             <option value="非虚构">非虚构</option>
             <option value="其他">其他</option>
           </select>
-          <p className="text-xs text-ink-500">男频优先男声旁白，女频优先女声；手动选定的旁白优先。</p>
+          <p className="text-xs text-ink-500">识别时由 AI 判断；男频使用男声旁白，女频使用女声旁白。可手动调整。</p>
         </div>
 
         <div className="space-y-2 relative">

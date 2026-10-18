@@ -265,6 +265,8 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(patch),
     }),
+  projectGenerateMetadata: (id: string) =>
+    _fetch<ProjectResp>(`/api/projects/${id}/metadata/generate`, { method: 'POST' }),
   // 删除项目
   projectDelete: (id: string) =>
     _fetch<{ ok: boolean }>(`/api/projects/${id}`, { method: 'DELETE' }),

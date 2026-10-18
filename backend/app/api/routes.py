@@ -34,6 +34,7 @@ from ..services.project import (
     get_project,
     list_projects,
     update_project,
+    generate_project_metadata,
     delete_project,
     get_project_chapters,
     get_project_chapter_detail,
@@ -678,6 +679,19 @@ async def api_update_project(
             exc_info=True,
         )
         raise HTTPException(500, f"更新失败: {type(e).__name__}: {e}")
+
+
+@router.post("/projects/{project_id}/metadata/generate", response_model=ProjectResp)
+async def api_generate_project_metadata(
+    project_id: str, current: User = Depends(get_current_user),
+):
+    """用当前 LLM 重新生成书籍资料与当前 TTS 旁白，供已有项目补填。"""
+    async with get_session_factory()() as session:
+        await assert_project_writable(session, project_id, current)
+    try:
+        return await generate_project_metadata(project_id, overwrite=True)
+    except ValueError as exc:
+        raise HTTPException(404 if str(exc).startswith("项目不存在") else 400, str(exc))
 
 
 @router.post("/projects/{project_id}/cover/upload")
