@@ -5,9 +5,9 @@
 - **s3**：腾讯云 COS，走 S3 兼容协议（boto3）。上传/回源/删除都丢到线程池执行，
   不阻塞事件循环；下载使用 COS 签名直链（配置了公开 CDN 域名时用该域名）。
 
-设计前提：对象存储保存章节 MP3、LRC、分片 ZIP；合成期间仍需临时文件。
+设计前提：对象存储保存章节 MP3、LRC、整书 ZIP；合成期间仍需临时文件。
 `STORAGE_CLEANUP_LOCAL` 开启时，章节上传后立即清除本地副本，打包时逐章回源，
-每次只保留当前 ZIP 分卷和一个章节 MP3 的临时文件。
+ZIP 通过管道直接上传对象存储，本地仅暂存当前章节 MP3。
 
 key 规划（决策 4：仅交付物）
     {prefix}/{project_id}/{build_id}/{filename}
@@ -26,6 +26,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Any, Awaitable, BinaryIO, Callable
 from urllib.parse import urlparse
 
 from ..core.config import settings
@@ -207,6 +208,63 @@ class S3Storage(StorageBackend):
         except Exception as e:
             logger.warning(f"[storage] 归档失败 key={key}: {type(e).__name__}: {e}")
             return False
+
+    async def archive_stream(
+        self, *, key: str, producer: Callable[[BinaryIO], Awaitable[Any]],
+        content_type: str | None = None,
+    ) -> tuple[Any, int]:
+        """从 ZIP 生成器流式上传；大文件由 boto3 分片，本地不落整包。"""
+        client = self._ensure_client()
+        read_fd, write_fd = os.pipe()
+        reader = os.fdopen(read_fd, "rb", buffering=0)
+        writer = os.fdopen(write_fd, "wb", buffering=0)
+
+        class CountingWriter:
+            def __init__(self, stream: BinaryIO) -> None:
+                self.stream = stream
+                self.count = 0
+
+            def write(self, data: bytes) -> int:
+                written = self.stream.write(data)
+                self.count += written
+                return written
+
+            def flush(self) -> None:
+                self.stream.flush()
+
+        sink = CountingWriter(writer)
+
+        def upload() -> None:
+            with reader:
+                client.upload_fileobj(
+                    reader, self._bucket, key,
+                    ExtraArgs={"ContentType": content_type} if content_type else {},
+                )
+
+        upload_task = asyncio.create_task(asyncio.to_thread(upload))
+        try:
+            result = await producer(sink)
+        except BaseException as producer_error:
+            writer.close()
+            upload_error = None
+            try:
+                await upload_task
+            except Exception as error:
+                upload_error = error
+            # 管道 EOF 也可能被上传器视为完整文件；失败时不能留下残缺 ZIP。
+            await self.delete_key(key)
+            if isinstance(producer_error, BrokenPipeError) and upload_error is not None:
+                raise upload_error from producer_error
+            raise
+        else:
+            writer.close()
+            try:
+                await upload_task
+            except Exception:
+                await self.delete_key(key)
+                raise
+            logger.info("[storage] 已流式归档 key=%s size=%d", key, sink.count)
+            return result, sink.count
 
     async def put_bytes(self, *, key: str, data: bytes, content_type: str | None = None) -> bool:
         try:

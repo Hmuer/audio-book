@@ -292,14 +292,11 @@ class Settings(BaseSettings):
     # 保留且带章节指纹 —— 重跑只补录上次 rejected/failed 的章。
     POLISH_CONCURRENCY: int = 4
 
-    # 每个 ZIP 分片包含的章节数（F-7）。
-    # 动机：整包 ZIP 在数千章规模下会到数十 GB，本地峰值磁盘翻倍、浏览器也基本
-    # 无法可靠下载（无分片/断点续传）。改为「每 N 章一个自包含 ZIP」：
-    # 5000 章 × 50 = 100 卷、单卷约数百 MB。设为 0 或负数表示不分片（退回单包）。
-    ZIP_SHARD_CHAPTERS: int = 50
+    # 旧分卷配置保留解析兼容；新构建始终生成一个整书 ZIP。
+    ZIP_SHARD_CHAPTERS: int = 0
 
     # ============ 对象存储（腾讯云 COS，走 S3 兼容协议）============
-    # 交付物（章节 MP3 / 每章 LRC / 分片 ZIP）归档到对象存储并直连下载。
+    # 交付物（章节 MP3 / 每章 LRC / 整书 ZIP）归档到对象存储并直连下载。
     # local：默认，产物只落本地盘（行为与接入前完全一致，便于回滚）。
     STORAGE_BACKEND: str = "local"
     S3_ENDPOINT: str = ""          # 地域端点或含桶名的访问域名（会归一化）

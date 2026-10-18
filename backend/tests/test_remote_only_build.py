@@ -29,6 +29,15 @@ class _MemoryObjectStorage:
         self.objects[key] = local_path.read_bytes()
         return True
 
+    async def archive_stream(self, *, key: str, producer, content_type: str | None = None):
+        if self.fail_zip and key.endswith(".zip"):
+            raise RuntimeError("模拟 ZIP 上传失败")
+        output = BytesIO()
+        result = await producer(output)
+        data = output.getvalue()
+        self.objects[key] = data
+        return result, len(data)
+
     async def put_bytes(self, *, key: str, data: bytes, content_type: str | None = None) -> bool:
         self.objects[key] = data
         return True
@@ -78,6 +87,7 @@ async def test_remote_build_keeps_only_sidecars_locally(_isolate_data_dir, monke
     remote = _MemoryObjectStorage()
     monkeypatch.setattr(build, "get_storage", lambda: remote)
     monkeypatch.setattr(settings, "STORAGE_CLEANUP_LOCAL", True)
+    monkeypatch.setattr(settings, "ZIP_SHARD_CHAPTERS", 1)  # 旧设置不应影响新构建。
 
     async def synth(*_args, **_kwargs):
         return make_silent_mp3(180, sample_rate=24000), 180
@@ -85,7 +95,7 @@ async def test_remote_build_keeps_only_sidecars_locally(_isolate_data_dir, monke
     monkeypatch.setattr(build, "get_tts", lambda _provider: SimpleNamespace(
         synthesize_to_bytes=synth,
     ))
-    project_id, build_id = await _seed_build()
+    project_id, build_id = await _seed_build(chapters=12)
     await build._run_build_inner(build_id, project_id, {}, "female-tianmei")
 
     async with get_session_factory()() as session:
@@ -94,14 +104,16 @@ async def test_remote_build_keeps_only_sidecars_locally(_isolate_data_dir, monke
             BuildArtifact.build_id == build_id,
         ).order_by(BuildArtifact.chapter_idx))).scalars().all()
         assert row.status == "success"
-        assert [art.status for art in arts] == ["done", "done"]
-        assert json.loads(row.zip_filenames_json)
+        assert [art.status for art in arts] == ["done"] * 12
+        assert len(json.loads(row.zip_filenames_json)) == 1
         assert row.total_size_bytes > 0
-    assert len([key for key in remote.objects if key.endswith(".mp3")]) == 2
+    assert len([key for key in remote.objects if key.endswith(".mp3")]) == 12
+    assert len([key for key in remote.objects if key.endswith(".zip")]) == 1
+    assert next(key for key in remote.objects if key.endswith(".zip")).endswith(f"build_{build_id}_all.zip")
     zip_data = next(data for key, data in remote.objects.items() if key.endswith(".zip"))
     with zipfile.ZipFile(BytesIO(zip_data)) as archive:
         mp3_names = [name for name in archive.namelist() if name.endswith(".mp3")]
-        assert len(mp3_names) == 2
+        assert len(mp3_names) == 12
         assert all(archive.read(name).startswith(b"\xff") for name in mp3_names)
     assert not list(Path(settings.AUDIO_DIR).glob(f"build_{build_id}_*.mp3"))
     assert not list(Path(settings.AUDIO_DIR).glob(f"build_{build_id}_*.zip"))

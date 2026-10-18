@@ -29,6 +29,7 @@ import zipfile
 from collections import deque
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
+from typing import BinaryIO
 
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -118,16 +119,17 @@ def _build_book_zip(
 
 
 async def _build_book_zip_remote(
-    zip_path: str, *, project_id: str, build_id: str,
+    zip_target: str | BinaryIO, *, project_id: str, build_id: str,
     job_title: str | None,
     chapter_outputs: list[tuple[str | None, int | None]],
     chapter_titles: list[str], chapter_lrcs: list[str],
     start: int, end: int,
 ) -> dict[int, int]:
-    """从 COS 逐章回源写入 ZIP；临时盘只占一个章节与当前 ZIP。"""
+    """从 COS 逐章回源写入 ZIP；流式目标不占用整包临时磁盘。"""
     sizes: dict[int, int] = {}
     book_dir = _sanitize_zip_entry(job_title or build_id, f"小说_{build_id[:8]}")
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
+    zf = zipfile.ZipFile(zip_target, "w", compression=zipfile.ZIP_STORED, allowZip64=True)
+    try:
         for i in range(start, end + 1):
             local_path, _ = chapter_outputs[i]
             if not local_path:
@@ -152,10 +154,12 @@ async def _build_book_zip_remote(
                 base = f"第{i+1:03d}章_{clean}"
                 await asyncio.to_thread(zf.write, source, f"{book_dir}/{base}.mp3")
                 if i < len(chapter_lrcs) and chapter_lrcs[i].strip():
-                    zf.writestr(f"{book_dir}/{base}.lrc", chapter_lrcs[i])
+                    await asyncio.to_thread(zf.writestr, f"{book_dir}/{base}.lrc", chapter_lrcs[i])
             finally:
                 if downloaded is not None:
                     downloaded.unlink(missing_ok=True)
+    finally:
+        await asyncio.to_thread(zf.close)
     return sizes
 
 
@@ -200,14 +204,6 @@ async def _restore_from_object_storage(
             f"[build_worker] 回源异常 key={filename}: {type(e).__name__}: {e}"
         )
         return False
-
-
-def _zip_shard_size() -> int:
-    """每个 ZIP 分片的章节数；<=0 表示不分片（退回单包）。"""
-    try:
-        return int(getattr(settings, "ZIP_SHARD_CHAPTERS", 0) or 0)
-    except Exception:
-        return 0
 
 
 def _zip_shard_ranges(total: int, shard_size: int) -> list[tuple[int, int]]:
@@ -2937,15 +2933,9 @@ async def _run_build_inner(
             if remote_cleanup_mode and not archived:
                 raise _RemoteArchiveError(f"第 {_c.idx+1} 章 LRC 上传对象存储失败")
 
-    # F-7：按 ZIP_SHARD_CHAPTERS 分片打包。每片自包含（内部章节序号保持全书统一编号），
-    # 避免数千章时产出数十 GB 单包（本地峰值磁盘翻倍、浏览器也无法可靠下载）。
-    try:
-        shard_size = _zip_shard_size()
-    except Exception:
-        shard_size = 0
-    if remote_cleanup_mode:
-        shard_size = min(shard_size, 10) if shard_size > 0 else 10
-    shard_ranges = _zip_shard_ranges(total, shard_size)
+    # 新构建只生成一个整书 ZIP；旧版分卷清单仍由下载/删除逻辑兼容。
+    # 对象存储省盘模式直接流式上传，避免先在本地生成整包。
+    shard_ranges = _zip_shard_ranges(total, 0)
     zip_shards: list[dict] = []
     chapter_titles = [c.title for c in chapters]
 
@@ -2961,7 +2951,7 @@ async def _run_build_inner(
     async with factory() as s:
         b = await s.get(Build, build_id)
         if b and b.status == "running":
-            b.progress_msg = f"打包中：0/{len(shard_ranges)} 卷…"
+            b.progress_msg = "正在生成整书 ZIP…"
             b.progress_meta_json = _h4_progress_meta_json(
                 phase="packaging",
                 processed=processed,
@@ -2979,14 +2969,19 @@ async def _run_build_inner(
         shard_path = str(audio_dir / shard_name)
         try:
             if remote_cleanup_mode:
-                sizes = await _build_book_zip_remote(
-                    shard_path, project_id=project_id, build_id=build_id,
-                    job_title=job_title, chapter_outputs=chapter_outputs,
-                    chapter_titles=chapter_titles, chapter_lrcs=chapter_lrcs,
-                    start=_s, end=_e,
+                sizes, _size = await get_storage().archive_stream(
+                    key=media_key(project_id, build_id, shard_name),
+                    content_type="application/zip",
+                    producer=lambda sink: _build_book_zip_remote(
+                        sink, project_id=project_id, build_id=build_id,
+                        job_title=job_title, chapter_outputs=chapter_outputs,
+                        chapter_titles=chapter_titles, chapter_lrcs=chapter_lrcs,
+                        start=_s, end=_e,
+                    ),
                 )
                 for idx, size in sizes.items():
                     chapter_sizes[idx] = size
+                archived_files.add(shard_name)
             else:
                 _build_book_zip(
                     shard_path,
@@ -2998,19 +2993,16 @@ async def _run_build_inner(
                     start=_s,
                     end=_e,
                 )
+                _size = os.path.getsize(shard_path)
         except Exception as e:
-            if remote_cleanup_mode:
-                Path(shard_path).unlink(missing_ok=True)
             logger.error(
-                f"[build_worker] build_id={build_id[:8]}... 打包分片失败 "
+                f"[build_worker] build_id={build_id[:8]}... 整书 ZIP 打包失败 "
                 f"ch{_s + 1}-{_e + 1}: {type(e).__name__}: {e}",
                 exc_info=True,
             )
+            if remote_cleanup_mode:
+                raise _RemoteArchiveError(f"整书 ZIP 流式上传失败: {e}") from e
             raise
-        try:
-            _size = os.path.getsize(shard_path)
-        except OSError:
-            _size = None
         zip_shards.append({
             "filename": shard_name,
             "start": _s,
@@ -3022,7 +3014,7 @@ async def _run_build_inner(
         async with factory() as s:
             b = await s.get(Build, build_id)
             if b and b.status == "running":
-                b.progress_msg = f"打包中：{shard_done}/{len(shard_ranges)} 卷…"
+                b.progress_msg = "整书 ZIP 已生成，正在完成构建…"
                 b.progress_meta_json = _h4_progress_meta_json(
                     phase="packaging",
                     processed=processed,
@@ -3034,27 +3026,19 @@ async def _run_build_inner(
                     completed_timings=_h13_completed_timings,
                 )
                 await s.commit()
-        # G-3：本地模式从章节文件打包；对象存储省盘模式逐章回源打包。
-        archived = await _archive_file(
-            media_key(project_id, build_id, shard_name),
-            Path(shard_path),
-            "application/zip",
-        )
-        if archived:
-            archived_files.add(shard_name)
-            if remote_cleanup_mode:
-                Path(shard_path).unlink(missing_ok=True)
-        elif remote_cleanup_mode:
-            Path(shard_path).unlink(missing_ok=True)
-            raise _RemoteArchiveError(f"第 {shard_done} 卷 ZIP 上传对象存储失败")
-    # zip_filename 保留为首个分片（旧代码路径 / 媒体签名兜底都依赖它）
+        # 本地模式保留 ZIP；对象存储省盘模式已在上方流式上传完成。
+        if not remote_cleanup_mode:
+            archived = await _archive_file(
+                media_key(project_id, build_id, shard_name),
+                Path(shard_path),
+                "application/zip",
+            )
+            if archived:
+                archived_files.add(shard_name)
+    # zip_filename 保留为整书包文件名（旧代码路径 / 媒体签名兜底都依赖它）。
     zip_fname = zip_shards[0]["filename"] if zip_shards else _zip_filename(build_id)
     total_size_bytes = sum(size or 0 for size in chapter_sizes)
-    if len(zip_shards) > 1:
-        logger.info(
-            f"[build_worker] build_id={build_id[:8]}... 已生成 {len(zip_shards)} 个 ZIP 分片"
-            f"（每片 {shard_size} 章）"
-        )
+    logger.info("[build_worker] build_id=%s... 已生成整书 ZIP", build_id[:8])
 
     # G-5：所有产物都已归档 → 按 STORAGE_CLEANUP_LOCAL 清理本地副本（决策 6）。
     # 只删「确认归档成功」的文件；**保留 timings sidecar**（KB 级，是 LRC 生成与

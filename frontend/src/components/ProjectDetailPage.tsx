@@ -2475,7 +2475,7 @@ function BuildDetailContent({
         )}
       </div>
 
-      {/* F-7：分片 ZIP 下载列表（章节数超过分片阈值时才有多个） */}
+      {/* 历史构建的分卷 ZIP 下载列表；新构建仅生成整书 ZIP。 */}
       {zipShards.length > 1 && (
         <div className="rounded-lg border border-ink-300/70 bg-ink-200 p-3 space-y-2">
           <div className="text-xs text-ink-600">
