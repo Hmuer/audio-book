@@ -36,6 +36,19 @@ class MiniMaxTTSRateLimitError(RuntimeError):
         self.retry_after = retry_after
 
 
+def _is_quota_exhausted(status_code: int | None, message: str) -> bool:
+    """MiniMax 套餐用量上限可能以 HTTP 429，也可能以 200 + base_resp 返回。"""
+    normalized = message.lower()
+    return (
+        status_code == 2062
+        or "token plan" in normalized
+        or "token_plan" in normalized
+        or "用量上限" in message
+        or "额度用尽" in message
+        or "额度不足" in message
+    )
+
+
 def _retry_after_seconds(value: str | None) -> float | None:
     if not value:
         return None
@@ -224,6 +237,12 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                 response = await client.post(self._url("/t2a_v2"), headers=self._headers(), json=payload)
                 if response.status_code == 429:
                     retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+                    # 套餐额度耗尽时，本地 65 秒 RPM 冷却和同段短重试都无用。
+                    # 交给 build 的长等待循环；试听调用方收到明确的限额错误。
+                    if _is_quota_exhausted(None, response.text):
+                        raise MiniMaxTTSRateLimitError(
+                            "MiniMax TTS Token Plan 用量上限，等待额度恢复", retry_after,
+                        )
                     # 长 Retry-After 交给构建层等待，那里能展示进度并响应取消。
                     _tts_pacer.cooldown()
                     if retry_after is not None and retry_after > 65:
@@ -237,6 +256,11 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                 base_resp = data.get("base_resp") or {}
                 status_msg = str(base_resp.get("status_msg") or base_resp.get("status_code") or "")
                 if base_resp.get("status_code", 0) != 0:
+                    if _is_quota_exhausted(base_resp.get("status_code"), status_msg):
+                        raise MiniMaxTTSRateLimitError(
+                            f"MiniMax TTS 用量上限：{status_msg}",
+                            _retry_after_seconds(response.headers.get("Retry-After")),
+                        )
                     if "rate limit" in status_msg.lower():
                         _tts_pacer.cooldown()
                         if attempt < 2:

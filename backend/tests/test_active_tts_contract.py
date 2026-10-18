@@ -148,6 +148,70 @@ async def test_minimax_http_429_with_retry_after_returns_to_build_without_long_p
 
 
 @pytest.mark.asyncio
+async def test_minimax_token_plan_body_uses_build_quota_wait(monkeypatch):
+    from backend.app.ai.providers.minimax import tts as module
+
+    monkeypatch.setattr(module, "get_provider", lambda _id: {"api_key": "test-key"})
+    monkeypatch.setattr(module, "get_active", lambda _kind: ("minimax", "speech-2.8-hd", {}))
+    provider = module.MiniMaxTTSProvider()
+    provider._voices = [{"id": "minimax:male-qn-qingse"}]
+    provider._voices_at = module.time.monotonic()
+    calls = []
+
+    async def no_wait():
+        return None
+
+    monkeypatch.setattr(module._tts_pacer, "acquire", no_wait)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"base_resp": {
+            "status_code": 1004,
+            "status_msg": "当前已达到 Token Plan 用量上限。为避免调用中断，请升级 Token Plan 套餐，或购买积分补充用量并开启积分自动消耗。",
+        }})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kwargs: real_client(
+        transport=httpx.MockTransport(handle), **kwargs,
+    ))
+    with pytest.raises(module.MiniMaxTTSRateLimitError, match="用量上限"):
+        await provider.synthesize_to_bytes("你好", "minimax:male-qn-qingse")
+    assert len(calls) == 1  # 套餐限额无需段级短重试；构建层负责等待
+
+
+@pytest.mark.asyncio
+async def test_minimax_token_plan_http_429_skips_rpm_cooldown(monkeypatch):
+    from backend.app.ai.providers.minimax import tts as module
+
+    monkeypatch.setattr(module, "get_provider", lambda _id: {"api_key": "test-key"})
+    monkeypatch.setattr(module, "get_active", lambda _kind: ("minimax", "speech-2.8-hd", {}))
+    provider = module.MiniMaxTTSProvider()
+    provider._voices = [{"id": "minimax:male-qn-qingse"}]
+    provider._voices_at = module.time.monotonic()
+    calls = []
+    cooldowns = []
+
+    async def no_wait():
+        return None
+
+    monkeypatch.setattr(module._tts_pacer, "acquire", no_wait)
+    monkeypatch.setattr(module._tts_pacer, "cooldown", lambda: cooldowns.append(True))
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(429, text="Token Plan usage limit exceeded", headers={"Retry-After": "18000"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kwargs: real_client(
+        transport=httpx.MockTransport(handle), **kwargs,
+    ))
+    with pytest.raises(module.MiniMaxTTSRateLimitError) as exc:
+        await provider.synthesize_to_bytes("你好", "minimax:male-qn-qingse")
+    assert exc.value.retry_after == 18000
+    assert len(calls) == 1 and not cooldowns
+
+
+@pytest.mark.asyncio
 async def test_build_quota_wait_exposes_progress_and_honors_cancel(_isolate_data_dir, monkeypatch):
     from backend.app.db.models import Build, Project
     from backend.app.db.session import get_session_factory, init_db
