@@ -732,7 +732,7 @@ function ProviderCard({
           allModels={p.models}
         />
         <ModelSection
-          title="图片模型（兼容 /images/generations）"
+          title="图片模型（MiniMax 官方接口或兼容 /images/generations）"
           icon={<BrainIcon />}
           accent="text-cyan-300 bg-cyan-500/10 border-cyan-500/20"
           models={imageModels}

@@ -202,17 +202,19 @@ async def start_cover_generation(project_id: str) -> dict:
         project.cover_progress = 5
         project.cover_error = None
         await session.commit()
-    task = asyncio.create_task(_generate(project_id, model, dict(provider), title, description, category, tags, selling_points))
+    task = asyncio.create_task(_generate(project_id, pid, model, dict(provider), title, description, category, tags, selling_points))
     _tasks[project_id] = task
     task.add_done_callback(lambda _: _tasks.pop(project_id, None))
     return {"status": "generating", "progress": 5}
 
 
-async def _generate(project_id: str, model: str, provider: dict, title: str,
+async def _generate(project_id: str, provider_id: str, model: str, provider: dict, title: str,
                     description: str, category: str, tags: str, selling_points: str) -> None:
     try:
         await _set_progress(project_id, "generating", 20)
-        base_url = str(provider["base_url"]).rstrip("/")
+        is_minimax = provider_id == "minimax"
+        # MiniMax 图片接口与其 LLM 共用厂商卡片，但官方图片 API 位于 cn 域名。
+        base_url = "https://api.minimax.cn/v1" if is_minimax else str(provider["base_url"]).rstrip("/")
         if not base_url.startswith("https://"):
             raise ValueError("图片模型 Base URL 必须使用 HTTPS")
         prompt = (
@@ -221,12 +223,19 @@ async def _generate(project_id: str, model: str, provider: dict, title: str,
             f"书名：{title[:120]}\n分类：{category[:64]}\n标签：{tags[:256]}\n"
             f"卖点：{selling_points[:500]}\n介绍：{description[:1200]}"
         )
+        if is_minimax:
+            prompt = prompt[:1500]  # 官方文生图 prompt 上限。
         headers = {"Authorization": f"Bearer {provider['api_key']}"}
         headers.update({str(k): str(v) for k, v in (provider.get("extra_headers") or {}).items()})
+        endpoint = f"{base_url}/image_generation" if is_minimax else f"{base_url}/images/generations"
+        request_body = (
+            {"model": model, "prompt": prompt, "aspect_ratio": "2:3", "response_format": "base64", "n": 1}
+            if is_minimax else
+            {"model": model, "prompt": prompt, "size": "1024x1536", "response_format": "b64_json", "n": 1}
+        )
         async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=15.0)) as client:
             async with client.stream(
-                "POST", f"{base_url}/images/generations", headers=headers,
-                json={"model": model, "prompt": prompt, "size": "1024x1536", "response_format": "b64_json", "n": 1},
+                "POST", endpoint, headers=headers, json=request_body,
             ) as response:
                 response.raise_for_status()
                 parts, total = [], 0
@@ -238,9 +247,20 @@ async def _generate(project_id: str, model: str, provider: dict, title: str,
         import json
         payload = json.loads(b"".join(parts))
         await _set_progress(project_id, "generating", 75)
-        encoded = (payload.get("data") or [{}])[0].get("b64_json")
+        if is_minimax:
+            base_resp = payload.get("base_resp") or {}
+            if base_resp.get("status_code") != 0:
+                raise RuntimeError(
+                    f"MiniMax 图片生成失败（{base_resp.get('status_code', '未知状态')}）："
+                    f"{base_resp.get('status_msg') or '请检查模型、额度及提示词'}"
+                )
+            images = (payload.get("data") or {}).get("image_base64") or []
+            encoded = images[0] if images else None
+        else:
+            images = payload.get("data") or []
+            encoded = images[0].get("b64_json") if images else None
         if not isinstance(encoded, str) or len(encoded) > MAX_IMAGE_BYTES * 2:
-            raise ValueError("图片模型未返回有效的 b64_json 图片")
+            raise ValueError("图片模型未返回有效的 Base64 图片")
         try:
             data = base64.b64decode(encoded, validate=True)
         except (ValueError, binascii.Error) as exc:

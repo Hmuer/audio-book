@@ -2109,9 +2109,11 @@ async def get_providers(current: User = Depends(get_current_user)):
             p = dict(p)
             models = list(p.get("models") or [])
             for mid, label in (("speech-2.8-hd", "MiniMax Speech 2.8 HD"),
-                               ("speech-2.8-turbo", "MiniMax Speech 2.8 Turbo")):
+                               ("speech-2.8-turbo", "MiniMax Speech 2.8 Turbo"),
+                               ("image-01", "MiniMax Image 01"),
+                               ("image-01-live", "MiniMax Image 01 Live")):
                 if not any(m.get("id") == mid for m in models):
-                    models.append({"id": mid, "label": label, "kind": "tts"})
+                    models.append({"id": mid, "label": label, "kind": "image" if mid.startswith("image-") else "tts"})
             p["models"] = models
             providers = [p if item.get("id") == "minimax" else item for item in providers]
             break

@@ -94,7 +94,11 @@ def test_cover_upload_read_and_delete_use_object_storage(monkeypatch):
         assert fake.objects == {}
 
 
-def test_ai_cover_uses_book_metadata_and_archives_result(monkeypatch):
+@pytest.mark.parametrize("provider_id, model", [
+    ("image_provider", "cover-model"),
+    ("minimax", "image-01"),
+])
+def test_ai_cover_uses_book_metadata_and_archives_result(monkeypatch, provider_id, model):
     class FakeStorage:
         archives_remotely = True
         objects = {}
@@ -109,7 +113,7 @@ def test_ai_cover_uses_book_metadata_and_archives_result(monkeypatch):
     fake = FakeStorage()
     monkeypatch.setattr(cover, "get_storage", lambda: fake)
     monkeypatch.setattr(cover, "get_active", lambda kind: (
-        "image_provider", "cover-model", {
+        provider_id, model, {
             "enabled": True, "api_key": "test-key", "base_url": "https://images.example/v1",
         }
     ))
@@ -125,6 +129,12 @@ def test_ai_cover_uses_book_metadata_and_archives_result(monkeypatch):
 
     def respond(request):
         requests.append(json.loads(request.content))
+        if provider_id == "minimax":
+            assert str(request.url) == "https://api.minimax.cn/v1/image_generation"
+            return httpx.Response(200, json={
+                "data": {"image_base64": [base64.b64encode(png).decode()]},
+                "base_resp": {"status_code": 0, "status_msg": "success"},
+            })
         assert request.url.path == "/v1/images/generations"
         return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(png).decode()}]})
 
@@ -149,6 +159,41 @@ def test_ai_cover_uses_book_metadata_and_archives_result(monkeypatch):
             time.sleep(0.05)
         assert status["status"] == "done", status
         assert len(fake.objects) == 1
-        assert requests[0]["model"] == "cover-model"
+        assert requests[0]["model"] == model
         assert "海边故事" in requests[0]["prompt"]
         assert "温暖治愈" in requests[0]["prompt"]
+        if provider_id == "minimax":
+            assert requests[0]["aspect_ratio"] == "2:3"
+            assert requests[0]["response_format"] == "base64"
+            assert "size" not in requests[0]
+            assert len(requests[0]["prompt"]) <= 1500
+        else:
+            assert requests[0]["size"] == "1024x1536"
+
+
+@pytest.mark.asyncio
+async def test_minimax_cover_surfaces_provider_error(monkeypatch):
+    progress = []
+
+    async def set_progress(*args):
+        progress.append(args)
+
+    async def save_cover(*args):
+        pytest.fail("失败响应不应保存封面")
+
+    monkeypatch.setattr(cover, "_set_progress", set_progress)
+    monkeypatch.setattr(cover, "_save_cover", save_cover)
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={
+        "base_resp": {"status_code": 1008, "status_msg": "insufficient balance"},
+        "data": {},
+    }))
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(cover.httpx, "AsyncClient", lambda **kw: original_client(transport=transport, **kw))
+
+    await cover._generate(
+        "book-id", "minimax", "image-01", {"api_key": "test-key", "base_url": "https://api.minimaxi.com/v1"},
+        "书名", "简介", "文学", "标签", "卖点",
+    )
+    assert progress[-1][1:3] == ("failed", 0)
+    assert "1008" in progress[-1][3]
+    assert "insufficient balance" in progress[-1][3]

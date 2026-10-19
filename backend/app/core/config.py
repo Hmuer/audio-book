@@ -22,6 +22,8 @@ DEFAULT_PROVIDERS_TEMPLATE: list[dict[str, Any]] = [
             {"id": "MiniMax-M3", "label": "MiniMax-M3", "kind": "llm"},
             {"id": "speech-2.8-hd", "label": "MiniMax Speech 2.8 HD", "kind": "tts"},
             {"id": "speech-2.8-turbo", "label": "MiniMax Speech 2.8 Turbo", "kind": "tts"},
+            {"id": "image-01", "label": "MiniMax Image 01", "kind": "image"},
+            {"id": "image-01-live", "label": "MiniMax Image 01 Live", "kind": "image"},
         ],
     },
     {

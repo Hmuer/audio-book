@@ -56,6 +56,9 @@ def test_get_providers_default_shape(client_and_state):
     assert body["active"]["llm"]["provider_id"] == "minimax"
     assert body["active"]["llm"]["model_id"] == "MiniMax-M3"
     assert "image" in body["active"]
+    minimax = next(p for p in providers if p["id"] == "minimax")
+    image_models = {m["id"] for m in minimax["models"] if m["kind"] == "image"}
+    assert {"image-01", "image-01-live"} <= image_models
 
 
 def test_image_model_can_be_activated_and_kind_is_checked(client_and_state):
