@@ -381,14 +381,15 @@ cd /path/to/audio-book
 ./deploy.sh
 ```
 
-`deploy.sh` 要求工作区没有未提交修改，只接受 `origin/main` 的快进更新；随后执行 `npm ci`、`npm run build`、`start.sh --restart`（安装后端依赖并以后台模式启动），最后按 `.env` 中的监听地址和端口检查 `/api/health`。这台服务器的 `/opt/audio-book/reinstall.sh` 是调用仓库内 `deploy.sh` 的本地入口。
+`deploy.sh` 要求工作区没有未提交修改，只接受 `origin/main` 的快进更新；随后执行 `npm ci`、`npm run build`。如果 `audio-book.service` 已启用，它会先停 systemd 服务、安装后端依赖、再启动服务；未启用 systemd 时回退到 `start.sh --restart`。最后按 `.env` 中的监听地址和端口轮询 `/api/health`。这台服务器的 `/opt/audio-book/reinstall.sh` 是调用仓库内 `deploy.sh` 的本地入口。
 
-手动升级时也要重建前端：
+手动升级时也要重建前端；systemd 托管时用 `systemctl restart`：
 
 ```bash
 git pull --ff-only origin main
 (cd frontend && npm ci && npm run build)
-./start.sh --restart
+sudo systemctl restart audio-book
+# 未使用 systemd 时： ./start.sh --restart
 ```
 
 `.env`、数据库、音频和训练样本默认在 `$NOVEL_TTS_HOME` 下，不受仓库内的快进拉取影响。
@@ -434,11 +435,33 @@ if [ -f .env ]; then mv .env "$NOVEL_TTS_HOME/.env"; fi
 
 ## 停服 / 重启 / 状态
 
-`start.sh` 现在是带子命令的服务管理器：
+### systemd 托管（推荐，支持崩溃自愈与开机自启）
+
+仓库自带 `deploy/audio-book.service`，使用 `Restart=always` 和
+`WantedBy=multi-user.target`：
+
+```bash
+sudo cp deploy/audio-book.service /etc/systemd/system/audio-book.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now audio-book
+
+systemctl status audio-book          # 当前状态 / 最近日志
+journalctl -u audio-book -f          # 实时日志
+sudo systemctl restart audio-book    # 重启
+sudo systemctl stop audio-book       # 停止
+```
+
+`ExecStart` 使用 `start.sh --systemd`：前台 `exec` uvicorn，跳过
+`pip install` 和前端构建（升级时由 `deploy.sh` 负责），也不写
+`uvicorn.pid`。启用 systemd 后请优先使用 `systemctl` 管理，
+不要再用 `./start.sh --stop/--restart`，避免和 `Restart=always` 互相打架。
+
+### 直接使用 start.sh（未启用 systemd 时）
 
 ```bash
 ./start.sh              # 后台启动（默认）
 ./start.sh --foreground # 前台启动（Ctrl+C 停止）
+./start.sh --systemd    # 供 systemd 调用：前台运行，跳过安装/构建
 ./start.sh --stop       # 停后台进程
 ./start.sh --restart    # 停止旧进程并在后台启动；不会自动重建已有前端产物
 ./start.sh --status     # 看运行状态、PID 和日志位置

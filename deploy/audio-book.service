@@ -1,0 +1,26 @@
+[Unit]
+Description=AI Audio Book (novel-tts)
+Documentation=file:///opt/audio-book/audio-book/README.md
+After=network-online.target
+Wants=network-online.target
+# Restart=always 时不受默认 5 次/10 秒的启动频率限制。
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/audio-book/audio-book
+Environment=NOVEL_TTS_HOME=/root/.novel-tts
+Environment=PYTHONUNBUFFERED=1
+# start.sh --systemd：前台 exec uvicorn；跳过 pip install / 前端构建，
+# 也不写 uvicorn.pid，避免与 systemd 的进程管理冲突。
+ExecStart=/opt/audio-book/audio-book/start.sh --systemd
+Restart=always
+RestartSec=5
+TimeoutStopSec=120
+KillSignal=SIGTERM
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

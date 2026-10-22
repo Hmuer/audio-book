@@ -54,17 +54,27 @@ VENV_DIR="$VENV_DIR_NTH"
 ENV_FILE="$ENV_FILE_NTH"
 
 ACTION="daemon"
+NO_INSTALL=0
+NO_BUILD=0
+SYSTEMD_MODE=0
 case "${1:-}" in
   --daemon|-d)          ACTION="daemon" ;;
   --foreground|-f|--fg) ACTION="foreground" ;;
+  --systemd)            ACTION="foreground"; SYSTEMD_MODE=1; NO_INSTALL=1; NO_BUILD=1 ;;
   --stop)               ACTION="stop" ;;
   --restart)            ACTION="restart" ;;
   --status)             ACTION="status" ;;
   --paths)              ACTION="paths" ;;
   --help|-h)            ACTION="help" ;;
   "")                   ACTION="daemon" ;;
-  *) echo "未知参数: $1（支持 --foreground / --daemon / --stop / --restart / --status / --paths / --help）"; exit 1 ;;
+  *) echo "未知参数: $1（支持 --foreground / --systemd / --daemon / --stop / --restart / --status / --paths / --help）"; exit 1 ;;
 esac
+
+# systemd 模式下不写 uvicorn.pid：systemd 是唯一可信的进程管理器，
+# 避免 start.sh --stop 与 Restart=always 互相打架。
+if [ "$SYSTEMD_MODE" = "1" ]; then
+  rm -f "$PID_FILE"
+fi
 
 is_running() {
   [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
@@ -77,6 +87,7 @@ start.sh — AI 有声小说生成器启动脚本
 
 子命令:
   --foreground / -f    前台运行（Ctrl+C 停止）
+  --systemd            由 systemd 托管（前台运行；跳过 pip install 与前端构建）
   --daemon / -d        后台运行（默认）
   --stop               停止后台进程
   --restart            重启后台进程
@@ -207,7 +218,7 @@ if [ "$UVICORN_TIMEOUT" = "0" ]; then
 fi
 
 # ---------- 前端构建 ----------
-if [ ! -d frontend/out ] || [ ! -f frontend/out/index.html ]; then
+if [ "$NO_BUILD" = "0" ] && { [ ! -d frontend/out ] || [ ! -f frontend/out/index.html ]; }; then
   echo "[frontend] 首次构建 Next.js（static export）…"
   if [ ! -d frontend/node_modules ]; then
     (cd frontend && npm install --no-audit --no-fund --loglevel=error)
@@ -249,7 +260,9 @@ else
   exit 1
 fi
 
-"$VENV_PY" -m pip install --quiet --disable-pip-version-check -r backend/requirements.txt
+if [ "$NO_INSTALL" = "0" ]; then
+  "$VENV_PY" -m pip install --quiet --disable-pip-version-check -r backend/requirements.txt
+fi
 
 # ---------- 启动 ----------
 UVICORN_ARGS=(
