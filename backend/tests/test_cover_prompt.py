@@ -10,6 +10,7 @@ def test_cover_prompt_requires_exact_title_and_genre_scene():
         "大周王朝的少年周元，从边城走向诸天战场。",
     )
     assert 'Title (must be displayed exactly, in correct Chinese characters): "元尊"' in prompt
+    assert "square 1:1" in prompt
     assert "giant azure dragon" in prompt
     assert "ancient Chinese fantasy" in prompt
     assert "圣龙气运" in prompt

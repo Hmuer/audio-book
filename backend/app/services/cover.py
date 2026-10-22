@@ -255,19 +255,19 @@ async def _generate(project_id: str, provider_id: str, model: str, provider: dic
                 "contents": [{"role": "user", "parts": [{"text": gemini_prompt}]}],
                 "generationConfig": {
                     "responseModalities": ["TEXT", "IMAGE"],
-                    "imageConfig": {"aspectRatio": "2:3"},
+                    "imageConfig": {"aspectRatio": "1:1"},
                 },
             }
         elif is_minimax:
             endpoint = f"{base_url}/image_generation"
             request_body = {
-                "model": model, "prompt": prompt, "aspect_ratio": "2:3",
+                "model": model, "prompt": prompt, "aspect_ratio": "1:1",
                 "response_format": "base64", "n": 1,
             }
         else:
             endpoint = f"{base_url}/images/generations"
             request_body = {
-                "model": model, "prompt": prompt, "size": "1024x1536",
+                "model": model, "prompt": prompt, "size": "1024x1024",
                 "response_format": "b64_json", "n": 1,
             }
 

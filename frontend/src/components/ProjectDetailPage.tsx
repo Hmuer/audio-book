@@ -704,7 +704,7 @@ function CoverPanel({ project, onReload }: { project: ProjectDetailResp; onReloa
   const generating = status.status === 'generating';
   return (
     <div className="glass-panel flex flex-col sm:flex-row gap-5">
-      <div className="relative w-36 h-52 shrink-0 rounded-md border border-ink-300/70 bg-ink-200 overflow-hidden flex items-center justify-center">
+      <div className="relative w-40 h-40 shrink-0 rounded-md border border-ink-300/70 bg-ink-200 overflow-hidden flex items-center justify-center">
         {url ? <img src={url} alt={`${project.book_title || project.name}封面`} className="w-full h-full object-cover" />
           : <span className="text-sm text-ink-500">暂无封面</span>}
         {generating && <div className="absolute inset-x-0 bottom-0 bg-ink-100/95 p-2">

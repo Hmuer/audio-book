@@ -147,7 +147,7 @@ def build_cover_prompt(
     scene = style.scene + (f", {hints}" if hints else "")
     story_block = f"\nStory cues: {cues}" if cues else ""
 
-    prompt = f"""Anime-style Chinese audiobook cover illustration, vertical 2:3 portrait.
+    prompt = f"""Anime-style Chinese audiobook album cover illustration, square 1:1 format.
 
 Title (must be displayed exactly, in correct Chinese characters): "{safe_title}"
 
@@ -157,9 +157,11 @@ Genre style: {style.mood}
 Lighting: {style.lighting}{story_block}
 
 Composition requirements:
+- Square 1:1 album cover composition, designed for Ximalaya-style podcast/album artwork
 - Professional Chinese anime illustration, highly detailed characters and background
 - The exact title "{safe_title}" prominently displayed at the top center in elegant Chinese calligraphy
 - Every Chinese character of the title must be correct; no misspelling and no extra words
+- Centered composition with balanced negative space, suitable for a square crop
 - Cinematic composition, dramatic depth of field, vibrant harmonious colors
 - Full-body or half-body protagonist, epic scale background
 - 4K quality, masterpiece, best quality, official art
