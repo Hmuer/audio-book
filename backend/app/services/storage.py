@@ -234,14 +234,43 @@ class S3Storage(StorageBackend):
 
         sink = CountingWriter(writer)
 
+        class _FullReadPipe:
+            """让 boto3 的“大小探测”读到完整阈值。
+
+            管道 read(n) 是短读：boto3 的 UploadNonSeekableInputManager 先
+            read(multipart_threshold) 判断是否分片；如果只返回当前管道里的
+            几 KB，它会误判为小文件，随后 read() 把整个 ZIP 读进内存
+            （5GB 级整书 ZIP 会直接把进程 OOM）。
+            这里循环读满 n 字节（EOF 才提前返回），保证 >=8MB 的 ZIP 走分片。
+            """
+
+            def __init__(self, stream: BinaryIO) -> None:
+                self._stream = stream
+
+            def read(self, size: int = -1) -> bytes:
+                if size is None or size < 0:
+                    return self._stream.read()
+                chunks: list[bytes] = []
+                remaining = size
+                while remaining > 0:
+                    chunk = self._stream.read(remaining)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                return b"".join(chunks)
+
         def upload() -> None:
             with reader:
                 client.upload_fileobj(
-                    reader, self._bucket, key,
+                    _FullReadPipe(reader), self._bucket, key,
                     ExtraArgs={"ContentType": content_type} if content_type else {},
                 )
 
         upload_task = asyncio.create_task(asyncio.to_thread(upload))
+        # 先让 upload 线程跑起来，再开始写管道：producer 第一段写入是同步
+        # os.write，如果此时读端还没启动，>=64KB 的写入会阻塞事件循环。
+        await asyncio.sleep(0)
         try:
             result = await producer(sink)
         except BaseException as producer_error:

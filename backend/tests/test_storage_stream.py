@@ -72,3 +72,41 @@ async def test_archive_stream_removes_partial_object_after_failure(fail_upload):
     with pytest.raises(RuntimeError):
         await asyncio.wait_for(storage.archive_stream(key="book.zip", producer=produce), timeout=10)
     assert "book.zip" not in client.objects
+
+
+class _ThresholdClient:
+    """模拟 boto3 的非 seekable 大小探测：第一次 read(threshold) 必须是满读。"""
+
+    def __init__(self) -> None:
+        self.first_read = 0
+        self.total = 0
+
+    def upload_fileobj(self, source, bucket, key, ExtraArgs=None) -> None:
+        self.first_read = len(source.read(8 * 1024 * 1024))
+        self.total = self.first_read
+        while chunk := source.read(1024 * 1024):
+            self.total += len(chunk)
+
+    def delete_object(self, *, Bucket, Key) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_archive_stream_fills_boto3_threshold_read():
+    """管道短读会让 boto3 误判为小文件并把整包读进内存（OOM）。"""
+    client = _ThresholdClient()
+    storage = S3Storage()
+    storage._client = client
+    storage._bucket = "test-bucket"
+    payload = b"x" * (9 * 1024 * 1024)
+
+    async def produce(sink):
+        await asyncio.to_thread(sink.write, payload)
+        return "done"
+
+    result, size = await asyncio.wait_for(
+        storage.archive_stream(key="book.zip", producer=produce), timeout=10,
+    )
+    assert result == "done"
+    assert client.first_read == 8 * 1024 * 1024
+    assert size == client.total == len(payload)
