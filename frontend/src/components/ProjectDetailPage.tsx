@@ -3082,7 +3082,7 @@ function SettingsTab({
   const [description, setDescription] = useState(project.description || '');
   const [tagsInput, setTagsInput] = useState(project.tags || '');
   const [bookCategory, setBookCategory] = useState(project.book_category || '');
-  const [sellingPoints, setSellingPoints] = useState(project.selling_points || '');
+  const [sellingPoints, setSellingPoints] = useState((project.selling_points || '').slice(0, 20));
   const [narratorVoice, setNarratorVoice] = useState(
     voices.some(v => v.id === project.default_narrator_voice_id)
       ? project.default_narrator_voice_id! : ''
@@ -3101,7 +3101,7 @@ function SettingsTab({
     setDescription(project.description || '');
     setTagsInput(project.tags || '');
     setBookCategory(project.book_category || '');
-    setSellingPoints(project.selling_points || '');
+    setSellingPoints((project.selling_points || '').slice(0, 20));
     setNarratorVoice(voices.some(v => v.id === project.default_narrator_voice_id)
       ? project.default_narrator_voice_id! : '');
     setSpeed(project.default_speed ?? 1.0);
@@ -3201,10 +3201,15 @@ function SettingsTab({
         </div>
 
         <div className="space-y-2 relative">
-          <label className="block text-sm text-ink-700">卖点</label>
+          <div className="flex items-center justify-between gap-3">
+            <label className="block text-sm text-ink-700">卖点（喜马拉雅专辑要求 20 字以内）</label>
+            <span className={`text-xs tabular-nums ${sellingPoints.length > 20 ? 'text-rose-400' : 'text-ink-500'}`}>
+              {sellingPoints.length}/20
+            </span>
+          </div>
           <textarea className="textarea min-h-[60px]" value={sellingPoints}
-            onChange={e => setSellingPoints(e.target.value)} maxLength={1000}
-            placeholder="用一两句话突出本书亮点" />
+            onChange={e => setSellingPoints(e.target.value.slice(0, 20))} maxLength={20}
+            placeholder="一句不超过 20 字的话，例如：圣龙气运被夺，废龙逆天改命" />
         </div>
 
         <div className="space-y-2 relative">

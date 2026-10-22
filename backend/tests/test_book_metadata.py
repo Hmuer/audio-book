@@ -5,6 +5,16 @@ from backend.app.services.book_metadata import BookMetadata, clean_metadata
 from backend.app.services.chapter import Chapter
 
 
+def test_metadata_truncates_selling_points_to_20_chars():
+    raw = BookMetadata(
+        category="男频", tags=["玄幻"],
+        selling_points="这是一段明显超过二十个字的专辑卖点，用来验证落库前会被截断。",
+        description="介绍", narrator_voice_id="",
+    )
+    cleaned = clean_metadata(raw, [])
+    assert len(cleaned.selling_points) <= 20
+
+
 def test_metadata_rejects_fabricated_voice_and_enforces_category_gender():
     voices = [
         {"id": "demo:m1", "gender": "male"},

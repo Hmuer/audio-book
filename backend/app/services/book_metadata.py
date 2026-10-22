@@ -62,7 +62,8 @@ def clean_metadata(raw: BookMetadata, voices: list[dict], *, category_override: 
     return BookMetadata(
         category=category,
         tags=tags,
-        selling_points=raw.selling_points.strip()[:1000],
+        # 喜马拉雅专辑卖点限制 20 字；模型偶尔会写长，落库前统一截断。
+        selling_points=raw.selling_points.strip()[:20],
         description=raw.description.strip()[:5000],
         narrator_voice_id=voice_id,
     )
@@ -81,7 +82,8 @@ async def generate_book_metadata(
         "你是中文有声书编辑。根据书名和跨章节正文样本，生成真实、简洁的书籍资料。"
         "不要编造作者、奖项或样本中没有依据的情节；不透露重大结局。"
         "category 只能是男频、女频、文学、非虚构、其他之一；男频/女频只用于受众明确的网络小说。"
-        "tags 输出 3 到 6 个中文短标签；selling_points 用一到两句话说明具体吸引点；"
+        "tags 输出 3 到 6 个中文短标签；selling_points 用一句不超过 20 个汉字的话说明具体吸引点，"
+        "适合喜马拉雅专辑卖点；"
         "description 用 150 到 300 字介绍内容，把核心信息放在前 150 字，适合详情页外显。"
         "narrator_voice_id 必须从给定的当前 TTS 官方音色里选一个适合本书气质的 ID；"
         "男频选男声、女频选女声，其余类型按作品气质决定。没有候选音色时输出空串。"

@@ -518,7 +518,8 @@ class UpdateProjectRequest(BaseModel):
     description: str | None = Field(default=None, max_length=5000)
     tags: str | None = Field(default=None, max_length=256)
     book_category: str | None = Field(default=None, max_length=64)
-    selling_points: str | None = Field(default=None, max_length=1000)
+    # 喜马拉雅专辑卖点限制 20 字（中文按字符计）。
+    selling_points: str | None = Field(default=None, max_length=20)
     default_narrator_voice_id: str | None = None
     default_speed: float | None = Field(default=None, ge=0.5, le=2.0)
     cover_color: str | None = None
