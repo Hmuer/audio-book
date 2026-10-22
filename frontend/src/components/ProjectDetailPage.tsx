@@ -20,7 +20,9 @@ import {
 import { parseTime, relativeTime, fmtElapsed } from '@/lib/time';
 import { normalizeGender } from '@/lib/voiceUtils';
 import VoicePicker from './VoicePicker';
-import WaveformPlayer from './WaveformPlayer';
+import AudioPlayerBar, { AudioPlayerHandle, PlayerTrack } from './AudioPlayerBar';
+import ChapterPlaylist, { PlaylistItem } from './ChapterPlaylist';
+import ChapterActions from './ChapterActions';
 import { StatusBadge } from './ProjectListPage';
 
 type Tab = 'overview' | 'chapters' | 'voices' | 'builds' | 'settings';
@@ -110,6 +112,10 @@ export default function ProjectDetailPage({
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playingKey, setPlayingKey] = useState<string | null>(null);
+  const [playerTrack, setPlayerTrack] = useState<PlayerTrack | null>(null);
+  const [playerPlaying, setPlayerPlaying] = useState(false);
+  const [playerLoadingId, setPlayerLoadingId] = useState<string | null>(null);
+  const playerRef = useRef<AudioPlayerHandle | null>(null);
   const [loadingVoice, setLoadingVoice] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const previewRequestRef = useRef(0);
@@ -217,6 +223,71 @@ export default function ProjectDetailPage({
     playUrl(key, url);
   };
 
+  const playChapter = async (buildId: string | null, item: PlaylistItem) => {
+    if (!buildId) return;
+    if (playerTrack?.id === item.id) {
+      playerRef.current?.toggle();
+      return;
+    }
+    // 章节播放与音色试听共用页面里的声音，切换时先停掉试听/旧章节。
+    stopPlayback();
+    playerRef.current?.pause();
+    setPlayerLoadingId(item.id);
+    try {
+      const src = await api.buildChapterAudioUrl(projectId, buildId, item.chapterIdx);
+      setPlayerTrack({
+        id: item.id,
+        title: item.title,
+        subtitle: item.meta,
+        src,
+        buildId,
+        chapterIdx: item.chapterIdx,
+      });
+    } catch (e: any) {
+      alert(`播放失败: ${e?.message || e}`);
+    } finally {
+      setPlayerLoadingId(null);
+    }
+  };
+
+  const refreshPlayerSrc = async (track: PlayerTrack): Promise<string | null> => {
+    if (!track.buildId || track.chapterIdx == null) return null;
+    try {
+      return await api.buildChapterAudioUrl(projectId, track.buildId, track.chapterIdx);
+    } catch {
+      return null;
+    }
+  };
+
+  const downloadChapterMp3 = async (buildId: string | null, idx: number) => {
+    if (!buildId) return;
+    try {
+      const url = await api.buildChapterDownload(projectId, buildId, idx);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = '';
+      a.click();
+    } catch (e: any) {
+      alert(`下载失败: ${e?.message || e}`);
+    }
+  };
+
+  const downloadChapterLrc = async (buildId: string | null, idx: number) => {
+    if (!buildId) return;
+    try {
+      const { filename, content } = await api.buildChapterLrc(projectId, buildId, idx);
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      alert(`歌词生成失败: ${e?.message || e}`);
+    }
+  };
+
   const togglePreviewVoice = async (voiceId: string, text: string, speed: number) => {
     const key = `voice_${voiceId}`;
     const requestId = ++previewRequestRef.current;
@@ -270,8 +341,20 @@ export default function ProjectDetailPage({
     );
   }
 
+  const overviewBuildId = project?.last_build
+    && BUILD_DONE_STATES.includes(project.last_build.status)
+    ? project.last_build.build_id
+    : null;
+  const overviewItems: PlaylistItem[] = (project?.chapters || []).map(c => ({
+    id: `ch_${c.idx}`,
+    chapterIdx: c.idx,
+    title: c.title || '(无标题)',
+    meta: `${c.text_len} 字`,
+    playable: Boolean(overviewBuildId),
+  }));
+
   return (
-    <section className="animate-fade-in">
+    <section className={`animate-fade-in ${playerTrack ? 'pb-28' : ''}`}>
       <audio ref={audioRef} className="hidden" />
 
       {err && (
@@ -360,8 +443,11 @@ export default function ProjectDetailPage({
           </div>
         </nav>
 
-        {/* 内容区 */}
-        <div className="min-w-0 space-y-5">
+        {/* 内容区：概览时右侧固定章节播放列表 */}
+        <div className={tab === 'overview'
+          ? 'grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px] items-start'
+          : 'space-y-5'}>
+          <div className="min-w-0 space-y-5">
           {tab === 'overview' && (
             <OverviewTab project={project!} buildRunning={builds.some(b => isBuildRunning(b.status))}
               onTab={setTab} onReload={reload} />
@@ -369,8 +455,12 @@ export default function ProjectDetailPage({
           {tab === 'chapters' && (
             <ChaptersTab
               project={project!}
-              playingKey={playingKey}
-              onTogglePlay={togglePlay}
+              onPlayChapter={playChapter}
+              onDownloadMp3={downloadChapterMp3}
+              onDownloadLrc={downloadChapterLrc}
+              activeTrackId={playerTrack?.id ?? null}
+              playerPlaying={playerPlaying}
+              playerLoadingId={playerLoadingId}
             />
           )}
           {tab === 'voices' && (
@@ -397,15 +487,50 @@ export default function ProjectDetailPage({
               previewError={previewError}
               onPreviewVoice={togglePreviewVoice}
               onDismissPreview={dismissPreview}
-              onTogglePlay={togglePlay}
+              onPlayChapter={playChapter}
+              onDownloadMp3={downloadChapterMp3}
+              onDownloadLrc={downloadChapterLrc}
+              activeTrackId={playerTrack?.id ?? null}
+              playerPlaying={playerPlaying}
+              playerLoadingId={playerLoadingId}
               onReload={reload}
             />
           )}
           {tab === 'settings' && (
             <SettingsTab project={project!} voices={voices} onReload={reload} />
           )}
+          </div>
+          {tab === 'overview' && project && (
+            <aside className="min-w-0">
+              <div className="glass-panel p-3 space-y-2 xl:sticky xl:top-4">
+                <div className="flex items-center justify-between gap-2 px-1">
+                  <h3 className="text-sm font-semibold text-ink-800">章节播放列表</h3>
+                  <span className="text-[11px] text-ink-500">{project.chapters.length} 章</span>
+                </div>
+                <ChapterPlaylist
+                  items={overviewItems}
+                  activeId={playerTrack?.id}
+                  playing={playerPlaying}
+                  loadingId={playerLoadingId}
+                  onPlay={item => playChapter(overviewBuildId, item)}
+                  onDownloadMp3={item => downloadChapterMp3(overviewBuildId, item.chapterIdx)}
+                  onDownloadLrc={item => downloadChapterLrc(overviewBuildId, item.chapterIdx)}
+                  className="max-h-[calc(100vh-230px)] overflow-y-auto pr-1"
+                  emptyText="识别出章节后显示播放列表"
+                />
+              </div>
+            </aside>
+          )}
         </div>
       </div>
+
+      <AudioPlayerBar
+        ref={playerRef}
+        track={playerTrack}
+        onClose={() => { setPlayerTrack(null); setPlayerPlaying(false); }}
+        onPlayingChange={setPlayerPlaying}
+        onNeedNewSrc={refreshPlayerSrc}
+      />
     </section>
   );
 }
@@ -1405,25 +1530,31 @@ function Avatar({ name, size = 28 }: { name: string; size?: number }) {
 // =================== Chapters Tab ===================
 function ChaptersTab({
   project,
-  playingKey,
-  onTogglePlay,
+  onPlayChapter,
+  onDownloadMp3,
+  onDownloadLrc,
+  activeTrackId,
+  playerPlaying,
+  playerLoadingId,
 }: {
   project: ProjectDetailResp;
-  playingKey: string | null;
-  onTogglePlay: (key: string, url: string | null) => void;
+  onPlayChapter: (buildId: string | null, item: PlaylistItem) => void;
+  onDownloadMp3: (buildId: string | null, idx: number) => void;
+  onDownloadLrc: (buildId: string | null, idx: number) => void;
+  activeTrackId: string | null;
+  playerPlaying: boolean;
+  playerLoadingId: string | null;
 }) {
   const chapters: ChapterSummary[] = project.chapters;
   const lastBuild = project.last_build;
   const hasAudio = !!(lastBuild && (lastBuild.status === 'success' || lastBuild.status === 'done' || lastBuild.status === 'partial_success'));
+  const buildId = lastBuild?.build_id ?? null;
   const characters = project.characters || [];
 
   // 展开的章节 idx
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [chapterDetail, setChapterDetail] = useState<ChapterDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
-  // P1 #6：每个章节的签名音频 URL（一次性 token，5 分钟过期）
-  const [audioUrls, setAudioUrls] = useState<Record<number, string>>({});
-  // F-5：分批渲染 —— 章节数可能上千，一次性渲染全部节点会卡死页面
   const [visibleCount, setVisibleCount] = useState(CHAPTERS_PAGE_SIZE);
 
   // speaker 归属 map（dialogue 里 anchor_text/text → 原始归属行，含 id/confidence 供逐行修正）
@@ -1471,57 +1602,6 @@ function ChaptersTab({
       .finally(() => { if (!cancelled) setLoadingDetail(false); });
     return () => { cancelled = true; };
   }, [expandedIdx, project.project_id]);
-
-  // 单章 LRC 歌词下载
-  const downloadChapterLrc = async (pid: string, bid: string, idx: number) => {
-    try {
-      const { filename, content } = await api.buildChapterLrc(pid, bid, idx);
-      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e: any) {
-      alert(`歌词生成失败: ${e?.message || e}`);
-    }
-  };
-
-  // P1 #6 / F-5：只给「当前可见的章节」签发一次性音频 URL。
-  // 数千章规模下逐章签发是数千次串行请求（>100s，且会超过签名 5 分钟 TTL，
-  // 先签的还没播就过期）；这里改为：分批渲染 + 每次批量签发一整段。
-  const signedUntilRef = useRef(0);
-  useEffect(() => {
-    if (!hasAudio || !lastBuild) return;
-    let cancelled = false;
-    const run = async () => {
-      const end = Math.min(visibleCount, chapters.length);
-      const CHUNK = 120; // 与后端 count 上限 200 匹配，一次往返覆盖一批
-      const updates: Record<number, string> = {};
-      let okUntil = signedUntilRef.current;
-      for (let s0 = signedUntilRef.current; s0 < end; s0 += CHUNK) {
-        const cnt = Math.min(CHUNK, end - s0);
-        try {
-          Object.assign(
-            updates,
-            await api.buildChapterSigns(project.project_id, lastBuild.build_id, s0, cnt)
-          );
-          okUntil = s0 + cnt;
-        } catch (e) {
-          console.warn('batch sign chapters failed', s0, e);
-          break; // 保留 okUntil，下次（如展开/加载更多）重试
-        }
-      }
-      if (!cancelled && Object.keys(updates).length) {
-        setAudioUrls(prev => ({ ...prev, ...updates }));
-      }
-      signedUntilRef.current = okUntil;
-    };
-    run();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasAudio, lastBuild?.build_id, visibleCount, chapters.length]);
 
   // 展开：逐行文本标注中正在修正说话人的行 key
   const [editingLineKey, setEditingLineKey] = useState<number | null>(null);
@@ -1589,8 +1669,7 @@ function ChaptersTab({
           {chapters.slice(0, visibleCount).map(c => {
             const isOpen = expandedIdx === c.idx;
             const key = `ch_${c.idx}`;
-            const playing = playingKey === key;
-            const audioUrl = hasAudio ? (audioUrls[c.idx] ?? null) : null;
+            const isActive = activeTrackId === key;
             return (
               <div key={c.idx} className="rounded-lg border bg-ink-200 border-ink-300/70 overflow-hidden transition-all duration-200">
                 {/* 章首行（始终可见） */}
@@ -1601,9 +1680,9 @@ function ChaptersTab({
                   <span
                     className="text-[11px] font-mono tabular-nums shrink-0 rounded-lg px-2 py-1 border"
                     style={{
-                      background: playing ? 'rgba(var(--brand-500), 0.15)' : 'rgba(var(--color-white), 0.04)',
-                      color: playing ? 'rgb(var(--brand-500))' : 'rgba(var(--color-white), 0.5)',
-                      borderColor: playing ? 'rgba(var(--brand-500), 0.3)' : 'rgba(var(--color-white), 0.05)',
+                      background: isActive ? 'rgba(var(--brand-500), 0.15)' : 'rgba(var(--color-white), 0.04)',
+                      color: isActive ? 'rgb(var(--brand-500))' : 'rgba(var(--color-white), 0.5)',
+                      borderColor: isActive ? 'rgba(var(--brand-500), 0.3)' : 'rgba(var(--color-white), 0.05)',
                     }}
                   >
                     #{String(c.idx + 1).padStart(3, '0')}
@@ -1617,42 +1696,23 @@ function ChaptersTab({
                   </span>
                 </button>
 
-                {/* 波形 + 下载（始终可见如果有音频） */}
-                {hasAudio && audioUrl && (
-                  <div className="px-3 pb-3">
-                    <WaveformPlayer
-                      src={audioUrl}
-                      compact
-                      onNeedNewSrc={async () => {
-                        // 签名 URL 过期（TTL 5 分钟）后为该章重新签发
-                        const u = await api.buildChapterAudioUrl(
-                          project.project_id, lastBuild!.build_id, c.idx
-                        );
-                        setAudioUrls(prev => ({ ...prev, [c.idx]: u }));
-                      }}
-                      onDownload={() => {
-                        // P1 #6：先签发一次性下载 URL，再触发浏览器下载
-                        api.buildChapterDownload(project.project_id, lastBuild!.build_id, c.idx)
-                          .then(url => {
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = '';
-                            a.click();
-                          })
-                          .catch(e => console.error('sign download url:', e));
-                      }}
-                      extraActions={
-                        <button
-                          type="button"
-                          onClick={() => downloadChapterLrc(project.project_id, lastBuild!.build_id, c.idx)}
-                          className="shrink-0 h-8 px-2.5 rounded-md border border-ink-300/70 bg-ink-200
-                            text-ink-600 hover:text-brand-300 hover:bg-brand-500/10 hover:border-brand-500/30
-                            transition-all font-medium text-[11.5px]"
-                          title="下载本章 LRC 歌词（时间轴与本章 MP3 对齐）"
-                        >
-                          LRC
-                        </button>
-                      }
+                {/* 播放列表操作：只在点击时才签发本章媒体 URL，不预取/不缓存 */}
+                {hasAudio && (
+                  <div className="px-3 pb-2 flex justify-end">
+                    <ChapterActions
+                      playable={hasAudio}
+                      active={isActive}
+                      playing={playerPlaying}
+                      loading={playerLoadingId === key}
+                      onToggle={() => onPlayChapter(buildId, {
+                        id: key,
+                        chapterIdx: c.idx,
+                        title: c.title || '(无标题)',
+                        meta: `${c.text_len} 字`,
+                        playable: hasAudio,
+                      })}
+                      onDownloadMp3={() => onDownloadMp3(buildId, c.idx)}
+                      onDownloadLrc={() => onDownloadLrc(buildId, c.idx)}
                     />
                   </div>
                 )}
@@ -2054,7 +2114,8 @@ function VoicesTab({
 
 // =================== Builds Tab ===================
 function BuildsTab({
-  projectId, project, builds, voices, narratorDefault, playingKey, loadingVoice, previewError, onPreviewVoice, onDismissPreview, onTogglePlay, onReload,
+  projectId, project, builds, voices, narratorDefault, playingKey, loadingVoice, previewError, onPreviewVoice, onDismissPreview,
+  onPlayChapter, onDownloadMp3, onDownloadLrc, activeTrackId, playerPlaying, playerLoadingId, onReload,
 }: {
   projectId: string;
   project: ProjectDetailResp;
@@ -2066,7 +2127,12 @@ function BuildsTab({
   previewError: string | null;
   onPreviewVoice: (voiceId: string, text: string, speed: number) => void;
   onDismissPreview: () => void;
-  onTogglePlay: (key: string, url: string | null) => void;
+  onPlayChapter: (buildId: string | null, item: PlaylistItem) => void;
+  onDownloadMp3: (buildId: string | null, idx: number) => void;
+  onDownloadLrc: (buildId: string | null, idx: number) => void;
+  activeTrackId: string | null;
+  playerPlaying: boolean;
+  playerLoadingId: string | null;
   onReload: () => void;
 }) {
   const [showCreate, setShowCreate] = useState(false);
@@ -2149,8 +2215,12 @@ function BuildsTab({
               onToggleExpand={() =>
                 setExpandedId(prev => (prev === b.build_id ? null : b.build_id))
               }
-              playingKey={playingKey}
-              onTogglePlay={onTogglePlay}
+              onPlayChapter={onPlayChapter}
+              onDownloadMp3={onDownloadMp3}
+              onDownloadLrc={onDownloadLrc}
+              activeTrackId={activeTrackId}
+              playerPlaying={playerPlaying}
+              playerLoadingId={playerLoadingId}
               onReload={onReload}
             />
           ))}
@@ -2178,14 +2248,19 @@ function BuildsTab({
 }
 
 function BuildRow({
-  projectId, item, expanded, onToggleExpand, playingKey, onTogglePlay, onReload,
+  projectId, item, expanded, onToggleExpand,
+  onPlayChapter, onDownloadMp3, onDownloadLrc, activeTrackId, playerPlaying, playerLoadingId, onReload,
 }: {
   projectId: string;
   item: BuildListItem;
   expanded: boolean;
   onToggleExpand: () => void;
-  playingKey: string | null;
-  onTogglePlay: (key: string, url: string | null) => void;
+  onPlayChapter: (buildId: string | null, item: PlaylistItem) => void;
+  onDownloadMp3: (buildId: string | null, idx: number) => void;
+  onDownloadLrc: (buildId: string | null, idx: number) => void;
+  activeTrackId: string | null;
+  playerPlaying: boolean;
+  playerLoadingId: string | null;
   onReload: () => void;
 }) {
   const [detail, setDetail] = useState<BuildDetailResp | null>(null);
@@ -2386,8 +2461,12 @@ function BuildRow({
             <BuildDetailContent
               detail={detail}
               projectId={projectId}
-              playingKey={playingKey}
-              onTogglePlay={onTogglePlay}
+              onPlayChapter={onPlayChapter}
+              onDownloadMp3={onDownloadMp3}
+              onDownloadLrc={onDownloadLrc}
+              activeTrackId={activeTrackId}
+              playerPlaying={playerPlaying}
+              playerLoadingId={playerLoadingId}
               onReload={onReload}
             />
           ) : (
@@ -2401,22 +2480,24 @@ function BuildRow({
 }
 
 function BuildDetailContent({
-  detail, projectId, playingKey, onTogglePlay, onReload,
+  detail, projectId, onPlayChapter, onDownloadMp3, onDownloadLrc,
+  activeTrackId, playerPlaying, playerLoadingId, onReload,
 }: {
   detail: BuildDetailResp;
   projectId: string;
-  playingKey: string | null;
-  onTogglePlay: (key: string, url: string | null) => void;
+  onPlayChapter: (buildId: string | null, item: PlaylistItem) => void;
+  onDownloadMp3: (buildId: string | null, idx: number) => void;
+  onDownloadLrc: (buildId: string | null, idx: number) => void;
+  activeTrackId: string | null;
+  playerPlaying: boolean;
+  playerLoadingId: string | null;
   onReload: () => void;
 }) {
-  // P1 #6：每个 BuildArtifact 的签名音频 URL（一次性 token，5 分钟过期）
-  const [signedUrls, setSignedUrls] = useState<Record<number, string>>({});
   // F-7：ZIP 可能是多分片，按分片下标存放签名 URL
   const [zipUrls, setZipUrls] = useState<Record<number, string>>({});
   const zipShards = detail.zip_shards ?? [];
   // F-5：分批渲染 + 只签发可见区间
   const [visibleCount, setVisibleCount] = useState(ARTIFACTS_PAGE_SIZE);
-  const signedUntilRef = useRef(0);
   // H-5：质检可疑章重跑（单章 / 全部）
   const [rerunning, setRerunning] = useState(false);
   const quality = detail.quality_report ?? null;
@@ -2436,53 +2517,27 @@ function BuildDetailContent({
     }
   };
 
+  // 只为整书 ZIP 签发下载地址；章节音频改为点击播放时单章签发，避免 COS 预取。
   useEffect(() => {
     let cancelled = false;
-    const signAll = async () => {
-      // F-5：只为「当前可见的产物」签发（分批渲染 + 批量签发），
-      // 否则数千章时是数千次串行请求，且会超过签名 TTL。
-      const arts = (detail.artifacts ?? []).slice(0, visibleCount);
-      const end = arts.length;
-      const CHUNK = 120;
+    const shards = detail.zip_shards ?? [];
+    if (shards.length === 0) return;
+    const run = async () => {
       const updates: Record<number, string> = {};
-      let okUntil = signedUntilRef.current;
-      for (let s0 = signedUntilRef.current; s0 < end; s0 += CHUNK) {
-        const cnt = Math.min(CHUNK, end - s0);
+      for (const s of shards) {
         try {
-          Object.assign(
-            updates,
-            await api.buildChapterSigns(projectId, detail.build_id, s0, cnt)
-          );
-          okUntil = s0 + cnt;
+          updates[s.idx] = await api.buildDownloadAll(projectId, detail.build_id, s.idx);
         } catch (e) {
-          console.warn('batch sign chapters failed', s0, e);
-          break;
+          console.warn('sign zip url failed', s.idx, e);
         }
       }
-      signedUntilRef.current = okUntil;
       if (!cancelled && Object.keys(updates).length) {
-        setSignedUrls(prev => ({ ...prev, ...updates }));
-      }
-
-      // F-7：ZIP 分片（单包时数组长度为 1）——逐个签发下载 URL
-      const shards = detail.zip_shards ?? [];
-      if (shards.length > 0) {
-        const zUpdates: Record<number, string> = {};
-        for (const s of shards) {
-          try {
-            zUpdates[s.idx] = await api.buildDownloadAll(projectId, detail.build_id, s.idx);
-          } catch (e) {
-            console.warn('sign zip url failed', s.idx, e);
-          }
-        }
-        if (!cancelled && Object.keys(zUpdates).length) {
-          setZipUrls(prev => ({ ...prev, ...zUpdates }));
-        }
+        setZipUrls(prev => ({ ...prev, ...updates }));
       }
     };
-    signAll();
+    run();
     return () => { cancelled = true; };
-  }, [detail.build_id, projectId, visibleCount, (detail.artifacts ?? []).length, (detail.zip_shards ?? []).length]);
+  }, [detail.build_id, projectId, (detail.zip_shards ?? []).length]);
 
   return (
     <div className="space-y-3">
@@ -2611,12 +2666,22 @@ function BuildDetailContent({
       <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
         {detail.artifacts.slice(0, visibleCount).map(a => {
           const key = `art_${a.chapter_idx}`;
-          const playing = playingKey === key;
+          const isActive = activeTrackId === key;
+          const playable = a.status === 'done';
+          const item: PlaylistItem = {
+            id: key,
+            chapterIdx: a.chapter_idx,
+            title: a.title || '(无标题)',
+            meta: a.duration_ms != null ? formatMs(a.duration_ms) : undefined,
+            playable,
+            status: a.status,
+            error: a.error_msg,
+          };
           return (
             <div
               key={a.chapter_idx}
               className={`rounded-lg p-3 transition-all duration-150 border
-                ${playing
+                ${isActive
                   ? 'bg-brand-500/10 border-brand-500/40'
                   : 'bg-ink-200 border-ink-300/70 hover:bg-ink-200 hover:border-ink-400'
                 }`}
@@ -2626,7 +2691,7 @@ function BuildDetailContent({
                   className="text-[11px] font-mono tabular-nums shrink-0 rounded-lg px-2 py-1"
                   style={{
                     background: 'rgba(var(--color-white), 0.04)',
-                    color: playing ? 'rgb(var(--brand-500))' : 'rgba(var(--color-white), 0.45)',
+                    color: isActive ? 'rgb(var(--brand-500))' : 'rgba(var(--color-white), 0.45)',
                     border: '1px solid rgba(var(--color-white), 0.05)',
                   }}
                 >
@@ -2648,53 +2713,18 @@ function BuildDetailContent({
                   <span className="truncate">{a.error_msg.split('\n')[0]}</span>
                 </div>
               )}
-              {a.status === 'done' && signedUrls[a.chapter_idx] && (
-                <WaveformPlayer
-                  src={signedUrls[a.chapter_idx]}
-                  compact
-                  onNeedNewSrc={async () => {
-                    // 签名 URL 过期（TTL 5 分钟）后为该章重新签发
-                    const u = await api.buildChapterAudioUrl(
-                      projectId, detail.build_id, a.chapter_idx
-                    );
-                    setSignedUrls(prev => ({ ...prev, [a.chapter_idx]: u }));
-                  }}
-                  onDownload={() => {
-                    // P1 #6：签发一次性下载 URL 后再触发浏览器下载
-                    api.buildChapterDownload(projectId, detail.build_id, a.chapter_idx)
-                      .then(url => {
-                        const a_ = document.createElement('a');
-                        a_.href = url;
-                        a_.download = '';
-                        a_.click();
-                      })
-                      .catch(e => console.error('sign download url:', e));
-                  }}
-                  extraActions={
-                    <button
-                      type="button"
-                      className="shrink-0 h-8 px-2.5 rounded-md border border-ink-300/70 bg-ink-200
-                        text-ink-600 hover:text-brand-300 hover:bg-brand-500/10 hover:border-brand-500/30
-                        transition-all font-medium text-[11.5px]"
-                      onClick={() => {
-                        api.buildChapterLrc(projectId, detail.build_id, a.chapter_idx)
-                          .then(({ filename, content }) => {
-                            const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-                            const url = URL.createObjectURL(blob);
-                            const x = document.createElement('a');
-                            x.href = url;
-                            x.download = filename;
-                            x.click();
-                            URL.revokeObjectURL(url);
-                          })
-                          .catch(e => alert(`歌词生成失败: ${e?.message || e}`));
-                      }}
-                      title="下载本章 LRC 歌词（时间轴与本章 MP3 对齐）"
-                    >
-                      LRC
-                    </button>
-                  }
-                />
+              {a.status === 'done' && (
+                <div className="flex justify-end mt-1">
+                  <ChapterActions
+                    playable={playable}
+                    active={isActive}
+                    playing={playerPlaying}
+                    loading={playerLoadingId === key}
+                    onToggle={() => onPlayChapter(detail.build_id, item)}
+                    onDownloadMp3={() => onDownloadMp3(detail.build_id, a.chapter_idx)}
+                    onDownloadLrc={() => onDownloadLrc(detail.build_id, a.chapter_idx)}
+                  />
+                </div>
               )}
             </div>
           );
