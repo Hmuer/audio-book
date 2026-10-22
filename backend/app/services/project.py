@@ -84,6 +84,7 @@ class ProjectResp(BaseModel):
     tags: str | None = None
     book_category: str | None = None
     selling_points: str | None = None
+    ximalaya_tags: dict | None = None
     has_cover: bool = False
     created_at: str | None = None
     updated_at: str | None = None
@@ -159,6 +160,7 @@ class ProjectDetailResp(BaseModel):
     tags: str | None
     book_category: str | None = None
     selling_points: str | None = None
+    ximalaya_tags: dict | None = None
     has_cover: bool = False
     cover_status: str | None = None
     cover_progress: int = 0
@@ -283,8 +285,10 @@ async def generate_project_metadata(
             raise ValueError("请先完成书籍识别，再生成书籍资料")
         title = p.book_title or p.name
         existing_category = (p.book_category or "").strip()
-        needs = overwrite or not all((p.book_category, p.tags, p.selling_points, p.description,
-                                       p.default_narrator_voice_id))
+        needs = overwrite or not all((
+            p.book_category, p.tags, p.selling_points, p.description,
+            p.default_narrator_voice_id, p.ximalaya_tags_json,
+        ))
         current_voice_id = p.default_narrator_voice_id or ""
     provider = get_active("tts")[0] or "doubao"
     try:
@@ -311,6 +315,10 @@ async def generate_project_metadata(
                 p.tags = ",".join(metadata.tags)
             if overwrite or not p.selling_points:
                 p.selling_points = metadata.selling_points
+            if overwrite or not p.ximalaya_tags_json:
+                p.ximalaya_tags_json = json.dumps(
+                    metadata.ximalaya_tags.model_dump(), ensure_ascii=False,
+                )
             if overwrite or not p.description:
                 p.description = metadata.description
             if voices and (overwrite or not p.default_narrator_voice_id
@@ -436,6 +444,7 @@ async def _store_imported_source(
                 p.tags = None
                 p.book_category = None
                 p.selling_points = None
+                p.ximalaya_tags_json = None
                 p.default_narrator_voice_id = None
             p.status = "imported"
             await session.commit()
@@ -458,6 +467,16 @@ async def _store_imported_source(
     return result
 
 
+def _parse_ximalaya_tags(raw: str | None) -> dict | None:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _to_project_resp(p: Project) -> ProjectResp:
     return ProjectResp(
         project_id=p.project_id,
@@ -472,6 +491,7 @@ def _to_project_resp(p: Project) -> ProjectResp:
         tags=p.tags,
         book_category=p.book_category,
         selling_points=p.selling_points,
+        ximalaya_tags=_parse_ximalaya_tags(getattr(p, "ximalaya_tags_json", None)),
         has_cover=bool(p.cover_key),
         created_at=p.created_at.isoformat() if p.created_at else None,
         updated_at=p.updated_at.isoformat() if p.updated_at else None,
@@ -3480,6 +3500,7 @@ async def get_project(project_id: str) -> ProjectDetailResp:
             tags=p.tags,
             book_category=p.book_category,
             selling_points=p.selling_points,
+            ximalaya_tags=_parse_ximalaya_tags(getattr(p, "ximalaya_tags_json", None)),
             has_cover=bool(p.cover_key),
             cover_status=p.cover_status,
             cover_progress=p.cover_progress or 0,

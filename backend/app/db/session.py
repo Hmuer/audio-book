@@ -89,6 +89,7 @@ _JOB_NEW_COLUMNS = {
 _PROJECT_NEW_COLUMNS = {
     "book_category": "VARCHAR(64)",
     "selling_points": "TEXT",
+    "ximalaya_tags_json": "TEXT",
     "cover_key": "VARCHAR(512)",
     "cover_status": "VARCHAR(24)",
     "cover_progress": "INTEGER DEFAULT 0",

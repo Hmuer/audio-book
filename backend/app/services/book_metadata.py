@@ -4,10 +4,15 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..ai.factory import get_llm
 from .chapter import Chapter
+from .ximalaya_tags import (
+    XimalayaTagSelection,
+    catalog_for_prompt,
+    normalize_selection,
+)
 
 
 BOOK_CATEGORIES = {"男频", "女频", "文学", "非虚构", "其他"}
@@ -19,6 +24,8 @@ class BookMetadata(BaseModel):
     selling_points: str
     description: str
     narrator_voice_id: str
+    # 喜马拉雅专辑标签：与通用 tags 分开保存，便于概览按体系展示。
+    ximalaya_tags: XimalayaTagSelection = Field(default_factory=XimalayaTagSelection)
 
 
 def _book_samples(chapters: list[Chapter]) -> str:
@@ -66,6 +73,7 @@ def clean_metadata(raw: BookMetadata, voices: list[dict], *, category_override: 
         selling_points=raw.selling_points.strip()[:20],
         description=raw.description.strip()[:5000],
         narrator_voice_id=voice_id,
+        ximalaya_tags=normalize_selection(raw.ximalaya_tags),
     )
 
 
@@ -87,13 +95,20 @@ async def generate_book_metadata(
         "description 用 150 到 300 字介绍内容，把核心信息放在前 150 字，适合详情页外显。"
         "narrator_voice_id 必须从给定的当前 TTS 官方音色里选一个适合本书气质的 ID；"
         "男频选男声、女频选女声，其余类型按作品气质决定。没有候选音色时输出空串。"
-        "只返回 JSON，字段为 category、tags 数组、selling_points、description、narrator_voice_id。\n"
+        "ximalaya_tags 是喜马拉雅专辑标签，必须从给定的分类树里选，不得自造："
+        "content_category 固定为 小说分类；audience 只能是 男频/女频；genre 必须是 audience 下的题材；"
+        "sub_genre 必须是 genre 下的子类；plot/love/role/style/background 各最多选 3 个，"
+        "只能从对应列表取；extra 是自定义专辑标签，最多 10 个、每个不超过 15 字，没有就空数组。"
+        "文学/非虚构/其他等非网络小说，audience/genre/sub_genre 留空，但其它组可按内容选。"
+        "只返回 JSON，字段为 category、tags 数组、selling_points、description、narrator_voice_id、"
+        "ximalaya_tags 对象。\n"
         f"书名：{title[:150]}\n"
         f"已有人工分类（必须沿用）：{category_override if category_override in BOOK_CATEGORIES else '无'}\n"
+        f"喜马拉雅标签候选：{json.dumps(catalog_for_prompt(), ensure_ascii=False)}\n"
         f"正文样本：\n{_book_samples(chapters)}\n"
         f"官方音色：{json.dumps(voice_options, ensure_ascii=False)}"
     )
     raw = await get_llm().chat_structured(
-        prompt, BookMetadata, max_tokens=1500, use_fast_model=True, max_retries=2,
+        prompt, BookMetadata, max_tokens=2400, use_fast_model=True, max_retries=2,
     )
     return clean_metadata(raw, voices, category_override=category_override)

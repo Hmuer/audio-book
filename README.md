@@ -104,6 +104,8 @@ cp .env.example "${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.env"
 
 已有识别结果可在「项目设置」点击「AI 重新生成并覆盖」，直接重新生成这五项，无需重新识别角色和对白；该操作会覆盖手动编辑过的对应内容。替换项目源文件时旧书资料与旁白会清空，下次识别按新书重新生成。人工仍可在项目设置中调整生成结果。
 
+识别时还会从喜马拉雅标签体系（`backend/app/resources/ximalaya_tags.json`）自动选择内容分类、受众、题材/子类、情节、恋爱、角色、风格、背景和最多 10 个自定义标签；模型返回的候选值会按该体系校验，自造标签会被丢弃。概览页会按分组展示全部选中的喜马拉雅标签。
+
 书籍详情概览显示自动生成的分类、标签、卖点和介绍。介绍的前 150 字外显，其余内容可展开；这些字段可在「项目设置」中编辑；卖点输入框限制 20 字。详情概览还提供封面框，初始为空，可上传 PNG、JPEG 或 WebP（最大 8 MB）、点击「一键 AI 生成」或删除已有封面。生成时封面框显示阶段进度；成功写入对象存储后才替换原封面，失败时保留原图并显示错误。封面随项目删除，单次 Build 删除不会影响封面。
 
 AI 封面需先在「设置 → 模型厂商」激活图片模型。推荐使用 AIHubMix 的 Gemini 图片模型（例如 `gemini-nano-banana-2.1`）：在 aihubmix 厂商卡片填写 HTTPS Base URL（`https://aihubmix.com/v1`）、API Key，并添加 `kind=image` 的模型；服务会调用 Gemini 原生接口 `https://aihubmix.com/gemini/v1beta/models/{model}:generateContent`，请求 `responseModalities=["TEXT","IMAGE"]`、`imageConfig.aspectRatio=1:1`，从 `candidates[].content.parts[].inlineData.data` 读取图片。该模型对中文书名渲染明显更可靠，prompt 参考 `/opt/novels` 的写法：明确要求书名按正确汉字显示、按分类/标签选择场景、从书名提取意象，并附带 negative prompt。旧版 MiniMax 图片模型仍可选（官方 `image-01` / `image-01-live`，`https://api.minimax.cn/v1/image_generation`），但它对中文文字渲染不稳定，可能画出伪汉字。其他图片厂商沿用 OpenAI 兼容 `POST /images/generations`，填写 HTTPS Base URL、API Key、图片模型 ID，请求 `1024x1024`、`response_format=b64_json`，需要返回 `data[0].b64_json`。封面 prompt 会使用书名、分类、标签、卖点和介绍；生成请求超时为 240 秒，期间进度条按请求、解码、上传阶段推进；服务重启中断生成任务后，重新打开页面会显示失败，可点击再次生成。封面只保存到已配置的对象存储，未启用对象存储时上传和生成会提示先配置；浏览器通过登录态读取私有封面。
@@ -148,11 +150,13 @@ audio-book/
 │   │   │   ├── voice_recommender.py # LLM 给角色匹配内置音色
 │   │   │   ├── cover.py            # AI 封面生成 + 对象存储读写
 │   │   │   ├── cover_prompt.py     # 封面 prompt（精确书名 + 类型场景）
+│   │   │   ├── ximalaya_tags.py    # 喜马拉雅标签体系解析 + 候选校验
 │   │   │   ├── epub_reader.py      # EPUB 解析
 │   │   │   └── book_split.py       # 正则分章（兜底；LLM 分章是默认路径）
 │   │   ├── db/
 │   │   │   ├── models.py           # users / projects / builds / build_artifacts / project_characters / project_dialogues / project_pronunciation_rules
 │   │   │   └── session.py          # aiosqlite + SQLAlchemy 2.0 async
+│   │   ├── resources/ximalaya_tags.json # 喜马拉雅标签原始配置
 │   │   └── core/config.py          # pydantic-settings
 │   ├── tests/                      # pytest（鉴权 + 归属 + 上传 + 任务恢复）
 │   │   ├── conftest.py             # 隔离 data 目录 + Mock LLM/TTS

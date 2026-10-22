@@ -772,6 +772,19 @@ function OverviewTab({
 
   // 后端 tags 是逗号分隔字符串，展示前拆成数组（不能直接 .map）
   const tagList = splitTags(project.tags);
+  const xt = project.ximalaya_tags;
+  const ximalayaGroups: { label: string; values: string[] }[] = xt ? [
+    { label: '内容分类', values: [xt.content_category || ''] },
+    { label: '受众', values: [xt.audience || ''] },
+    { label: '题材', values: [xt.genre || ''] },
+    { label: '子类', values: [xt.sub_genre || ''] },
+    { label: '情节', values: xt.plot || [] },
+    { label: '恋爱', values: xt.love || [] },
+    { label: '角色', values: xt.role || [] },
+    { label: '风格', values: xt.style || [] },
+    { label: '背景', values: xt.background || [] },
+    { label: '自定义标签', values: xt.extra || [] },
+  ].filter(group => group.values.some(Boolean)) : [];
 
   const handlePrepare = async () => {
     setPrepareTip(null);
@@ -1185,6 +1198,30 @@ function OverviewTab({
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {ximalayaGroups.length > 0 && (
+        <div className="glass-panel space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="font-semibold text-ink-800 flex items-center gap-2">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20.59 13.41 13.42 20.6a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7" cy="7" r="1.5"/></svg>
+              喜马拉雅专辑标签
+            </h3>
+            <span className="text-[11px] text-ink-500">识别时自动匹配，可在设置页重新生成</span>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {ximalayaGroups.map(group => (
+              <div key={group.label} className="flex items-start gap-2 min-w-0">
+                <span className="text-xs text-ink-500 w-20 shrink-0 pt-0.5">{group.label}</span>
+                <div className="flex flex-wrap gap-1.5 min-w-0">
+                  {group.values.filter(Boolean).map((value, i) => (
+                    <span key={`${group.label}-${i}-${value}`} className="chip-soft">{value}</span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

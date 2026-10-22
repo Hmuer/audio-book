@@ -122,6 +122,8 @@ class Project(Base):
     tags: Mapped[str | None] = mapped_column(String(256), nullable=True)
     book_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     selling_points: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 喜马拉雅专辑标签的结构化选择（分类路径 + 情节/角色/风格/背景/自定义）
+    ximalaya_tags_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     cover_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     cover_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
     cover_progress: Mapped[int] = mapped_column(Integer, default=0)

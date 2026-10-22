@@ -163,12 +163,12 @@ def test_ai_cover_uses_book_metadata_and_archives_result(monkeypatch, provider_i
         assert "海边故事" in requests[0]["prompt"]
         assert "温暖治愈" in requests[0]["prompt"]
         if provider_id == "minimax":
-            assert requests[0]["aspect_ratio"] == "2:3"
+            assert requests[0]["aspect_ratio"] == "1:1"
             assert requests[0]["response_format"] == "base64"
             assert "size" not in requests[0]
             assert len(requests[0]["prompt"]) <= 1500
         else:
-            assert requests[0]["size"] == "1024x1536"
+            assert requests[0]["size"] == "1024x1024"
 
 
 @pytest.mark.asyncio

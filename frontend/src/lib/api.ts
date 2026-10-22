@@ -513,6 +513,19 @@ export interface ProjectListItem {
   build_total?: number | null;
 }
 
+export interface XimalayaTags {
+  content_category?: string;
+  audience?: string;
+  genre?: string;
+  sub_genre?: string;
+  plot?: string[];
+  love?: string[];
+  role?: string[];
+  style?: string[];
+  background?: string[];
+  extra?: string[];
+}
+
 // 项目详情
 export interface ProjectDetailResp {
   project_id: string;
@@ -528,6 +541,8 @@ export interface ProjectDetailResp {
   tags: string | null;
   book_category: string | null;
   selling_points: string | null;
+  /** 喜马拉雅专辑标签（内容分类/受众/题材/情节/角色/风格/背景/自定义） */
+  ximalaya_tags?: XimalayaTags | null;
   has_cover: boolean;
   cover_status: string | null;
   cover_progress: number;
