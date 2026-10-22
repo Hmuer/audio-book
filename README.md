@@ -106,7 +106,7 @@ cp .env.example "${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.env"
 
 书籍详情概览显示自动生成的分类、标签、卖点和介绍。介绍的前 150 字外显，其余内容可展开；这些字段可在「项目设置」中编辑。详情概览还提供封面框，初始为空，可上传 PNG、JPEG 或 WebP（最大 8 MB）、点击「一键 AI 生成」或删除已有封面。生成时封面框显示阶段进度；成功写入对象存储后才替换原封面，失败时保留原图并显示错误。封面随项目删除，单次 Build 删除不会影响封面。
 
-AI 封面需先在「设置 → 模型厂商」激活图片模型。MiniMax 可直接选择官方 `image-01` 或 `image-01-live`，服务使用 `https://api.minimax.cn/v1/image_generation`、竖版 `2:3` 与 `response_format=base64`，从 `data.image_base64[0]` 读取图片；厂商卡片中的 MiniMax LLM Base URL 不用于图片接口。其他图片厂商沿用 OpenAI 兼容 `POST /images/generations`，填写 HTTPS Base URL、API Key、图片模型 ID，请求 `1024x1536`、`response_format=b64_json`，需要返回 `data[0].b64_json`。服务以书名、分类、标签、卖点和介绍生成中文提示词；只返回远端 URL 的接口暂不兼容。生成请求超时为 180 秒，期间进度条按请求、解码、上传阶段推进；模型仍在处理时停留在当前阶段，并非厂商实时绘图百分比。服务重启中断生成任务后，重新打开页面会显示失败，可点击再次生成。封面只保存到已配置的对象存储，未启用对象存储时上传和生成会提示先配置；浏览器通过登录态读取私有封面。
+AI 封面需先在「设置 → 模型厂商」激活图片模型。推荐使用 AIHubMix 的 Gemini 图片模型（例如 `gemini-nano-banana-2.1`）：在 aihubmix 厂商卡片填写 HTTPS Base URL（`https://aihubmix.com/v1`）、API Key，并添加 `kind=image` 的模型；服务会调用 Gemini 原生接口 `https://aihubmix.com/gemini/v1beta/models/{model}:generateContent`，请求 `responseModalities=["TEXT","IMAGE"]`、`imageConfig.aspectRatio=2:3`，从 `candidates[].content.parts[].inlineData.data` 读取图片。该模型对中文书名渲染明显更可靠，prompt 参考 `/opt/novels` 的写法：明确要求书名按正确汉字显示、按分类/标签选择场景、从书名提取意象，并附带 negative prompt。旧版 MiniMax 图片模型仍可选（官方 `image-01` / `image-01-live`，`https://api.minimax.cn/v1/image_generation`），但它对中文文字渲染不稳定，可能画出伪汉字。其他图片厂商沿用 OpenAI 兼容 `POST /images/generations`，填写 HTTPS Base URL、API Key、图片模型 ID，请求 `1024x1536`、`response_format=b64_json`，需要返回 `data[0].b64_json`。封面 prompt 会使用书名、分类、标签、卖点和介绍；生成请求超时为 240 秒，期间进度条按请求、解码、上传阶段推进；服务重启中断生成任务后，重新打开页面会显示失败，可点击再次生成。封面只保存到已配置的对象存储，未启用对象存储时上传和生成会提示先配置；浏览器通过登录态读取私有封面。
 
 豆包保留逐段语音指令生成；激活 MiniMax 时，识别流程跳过该 LLM 阶段，合成使用 MiniMax 的音色与情绪参数。
 
@@ -146,6 +146,8 @@ audio-book/
 │   │   │   ├── character.py        # 角色提取 + LLM 消歧（去重）
 │   │   │   ├── dialogue.py         # 对白归属（每段 speaker + confidence）
 │   │   │   ├── voice_recommender.py # LLM 给角色匹配内置音色
+│   │   │   ├── cover.py            # AI 封面生成 + 对象存储读写
+│   │   │   ├── cover_prompt.py     # 封面 prompt（精确书名 + 类型场景）
 │   │   │   ├── epub_reader.py      # EPUB 解析
 │   │   │   └── book_split.py       # 正则分章（兜底；LLM 分章是默认路径）
 │   │   ├── db/

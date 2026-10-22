@@ -4,17 +4,20 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import json
 import logging
 import uuid
 import zlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from urllib.parse import urlparse
 
 import httpx
 
 from ..core.config import get_active
 from ..db.models import Project
 from ..db.session import get_session_factory
+from .cover_prompt import build_cover_prompt
 from .storage import get_storage, media_key
 
 logger = logging.getLogger(__name__)
@@ -217,54 +220,140 @@ async def _generate(project_id: str, provider_id: str, model: str, provider: dic
         base_url = "https://api.minimax.cn/v1" if is_minimax else str(provider["base_url"]).rstrip("/")
         if not base_url.startswith("https://"):
             raise ValueError("图片模型 Base URL 必须使用 HTTPS")
-        prompt = (
-            "为中文有声书设计一张专业竖版封面。画面需要契合书名、类型和简介，视觉重点清晰，"
-            "避免水印、二维码、作者姓名和多余文字；文字排版可能不准，标题将在页面另行展示。\n"
-            f"书名：{title[:120]}\n分类：{category[:64]}\n标签：{tags[:256]}\n"
-            f"卖点：{selling_points[:500]}\n介绍：{description[:1200]}"
+        parsed = urlparse(base_url)
+        is_aihubmix = provider_id == "aihubmix" or "aihubmix.com" in (parsed.hostname or "")
+        is_gemini = is_aihubmix and (
+            "gemini" in model.lower() or "nano-banana" in model.lower()
+        )
+
+        # 参考 /opt/novels：英文 prompt + 精确书名 + 类型场景 + 书名意象。
+        # MiniMax 写不准中文，仍会尽力截断到 1500 字符；AIHubMix 的 Gemini
+        # 图片模型走 Gemini 原生 generateContent 接口，文字渲染明显更可靠。
+        prompt, negative_prompt = build_cover_prompt(
+            title, category, tags, selling_points, description,
         )
         if is_minimax:
             prompt = prompt[:1500]  # 官方文生图 prompt 上限。
         headers = {"Authorization": f"Bearer {provider['api_key']}"}
         headers.update({str(k): str(v) for k, v in (provider.get("extra_headers") or {}).items()})
-        endpoint = f"{base_url}/image_generation" if is_minimax else f"{base_url}/images/generations"
-        request_body = (
-            {"model": model, "prompt": prompt, "aspect_ratio": "2:3", "response_format": "base64", "n": 1}
-            if is_minimax else
-            {"model": model, "prompt": prompt, "size": "1024x1536", "response_format": "b64_json", "n": 1}
-        )
-        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=15.0)) as client:
+
+        if is_gemini:
+            # AIHubMix 的 Gemini 原生接口（/opt/novels 用的同一套）：
+            # https://aihubmix.com/gemini/v1beta/models/{model}:generateContent
+            # 不能用 /ai/v1/images/generations：该端点未开异步任务时会返回
+            # async_not_enabled；/v1/images/generations 又会被转发成 Gemini
+            # 原生 JSON，报 “Unknown name prompt”。
+            headers["x-goog-api-key"] = provider["api_key"]
+            endpoint = (
+                f"{parsed.scheme or 'https'}://{parsed.netloc}/gemini"
+                f"/v1beta/models/{model}:generateContent"
+            )
+            gemini_prompt = prompt
+            if negative_prompt:
+                gemini_prompt += f"\n\nAvoid: {negative_prompt}"
+            request_body = {
+                "contents": [{"role": "user", "parts": [{"text": gemini_prompt}]}],
+                "generationConfig": {
+                    "responseModalities": ["TEXT", "IMAGE"],
+                    "imageConfig": {"aspectRatio": "2:3"},
+                },
+            }
+        elif is_minimax:
+            endpoint = f"{base_url}/image_generation"
+            request_body = {
+                "model": model, "prompt": prompt, "aspect_ratio": "2:3",
+                "response_format": "base64", "n": 1,
+            }
+        else:
+            endpoint = f"{base_url}/images/generations"
+            request_body = {
+                "model": model, "prompt": prompt, "size": "1024x1536",
+                "response_format": "b64_json", "n": 1,
+            }
+
+        data: bytes | None = None
+        async with httpx.AsyncClient(timeout=httpx.Timeout(240.0, connect=15.0)) as client:
             async with client.stream(
                 "POST", endpoint, headers=headers, json=request_body,
             ) as response:
-                response.raise_for_status()
+                if response.status_code >= 400:
+                    raw_error = await response.aread()
+                    detail = raw_error[:500].decode("utf-8", errors="replace")
+                    try:
+                        err_payload = json.loads(raw_error)
+                        err = err_payload.get("error")
+                        if isinstance(err, dict) and err.get("message"):
+                            detail = str(err["message"])
+                        elif isinstance(err, str):
+                            detail = err
+                    except (ValueError, TypeError):
+                        pass
+                    raise RuntimeError(
+                        f"图片模型请求失败（HTTP {response.status_code}）：{detail}"
+                    )
                 parts, total = [], 0
                 async for part in response.aiter_bytes():
                     total += len(part)
                     if total > MAX_IMAGE_BYTES * 2:
                         raise ValueError("图片模型返回内容超过大小限制")
                     parts.append(part)
-        import json
-        payload = json.loads(b"".join(parts))
-        await _set_progress(project_id, "generating", 75)
-        if is_minimax:
-            base_resp = payload.get("base_resp") or {}
-            if base_resp.get("status_code") != 0:
-                raise RuntimeError(
-                    f"MiniMax 图片生成失败（{base_resp.get('status_code', '未知状态')}）："
-                    f"{base_resp.get('status_msg') or '请检查模型、额度及提示词'}"
-                )
-            images = (payload.get("data") or {}).get("image_base64") or []
-            encoded = images[0] if images else None
-        else:
-            images = payload.get("data") or []
-            encoded = images[0].get("b64_json") if images else None
-        if not isinstance(encoded, str) or len(encoded) > MAX_IMAGE_BYTES * 2:
-            raise ValueError("图片模型未返回有效的 Base64 图片")
-        try:
-            data = base64.b64decode(encoded, validate=True)
-        except (ValueError, binascii.Error) as exc:
-            raise ValueError("图片模型返回的图片编码无效") from exc
+            payload = json.loads(b"".join(parts))
+            await _set_progress(project_id, "generating", 75)
+
+            if is_gemini:
+                err = payload.get("error")
+                if err:
+                    msg = err.get("message") if isinstance(err, dict) else str(err)
+                    raise RuntimeError(f"AIHubMix Gemini 图片生成失败：{msg or '未知错误'}")
+                candidates = payload.get("candidates") or []
+                inline_images: list[dict] = []
+                thought_images: list[dict] = []
+                for cand in candidates:
+                    content = (cand or {}).get("content") or {}
+                    for part in content.get("parts") or []:
+                        inline = part.get("inlineData") or part.get("inline_data")
+                        if not isinstance(inline, dict) or not inline.get("data"):
+                            continue
+                        # Gemini 图片模型会同时返回“思考用”中间图和最终图；
+                        # 优先取不带 thought=true 的最后一张。
+                        if part.get("thought") is True:
+                            thought_images.append(inline)
+                        else:
+                            inline_images.append(inline)
+                chosen = (inline_images or thought_images)
+                if not chosen:
+                    texts = [
+                        str(part.get("text") or "")
+                        for cand in candidates
+                        for part in ((cand or {}).get("content") or {}).get("parts") or []
+                        if part.get("text")
+                    ]
+                    detail = " ".join(texts).strip()[:300]
+                    raise RuntimeError(
+                        "Gemini 图片生成未返回图片"
+                        + (f"：{detail}" if detail else "")
+                    )
+                encoded = chosen[-1].get("data")
+            elif is_minimax:
+                base_resp = payload.get("base_resp") or {}
+                if base_resp.get("status_code") != 0:
+                    raise RuntimeError(
+                        f"MiniMax 图片生成失败（{base_resp.get('status_code', '未知状态')}）："
+                        f"{base_resp.get('status_msg') or '请检查模型、额度及提示词'}"
+                    )
+                images = (payload.get("data") or {}).get("image_base64") or []
+                encoded = images[0] if images else None
+            else:
+                images = payload.get("data") or []
+                encoded = images[0].get("b64_json") if images else None
+
+        if data is None:
+            if not isinstance(encoded, str) or len(encoded) > MAX_IMAGE_BYTES * 2:
+                raise ValueError("图片模型未返回有效的 Base64 图片")
+            try:
+                data = base64.b64decode(encoded, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise ValueError("图片模型返回的图片编码无效") from exc
         image_type(data)
         await _set_progress(project_id, "generating", 90)
         await _save_cover(project_id, data)
