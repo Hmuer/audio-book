@@ -195,7 +195,7 @@ const AudioPlayerBar = forwardRef<AudioPlayerHandle, {
               </div>
             </div>
 
-            <div className="hidden sm:flex items-center gap-1.5 shrink-0">
+            <div className="flex items-center gap-1.5 shrink-0">
               <button
                 type="button"
                 className="text-ink-500 hover:text-ink-800 p-1"
@@ -220,7 +220,7 @@ const AudioPlayerBar = forwardRef<AudioPlayerHandle, {
                   setVolume(v);
                   setMuted(v === 0);
                 }}
-                className="w-20 accent-brand-500 cursor-pointer"
+                className="w-14 sm:w-20 accent-brand-500 cursor-pointer"
                 aria-label="音量"
               />
             </div>
