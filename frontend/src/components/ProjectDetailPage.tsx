@@ -437,11 +437,8 @@ export default function ProjectDetailPage({
           </div>
         </nav>
 
-        {/* 内容区：概览时右侧显示章节目录（阅读入口） */}
-        <div className={tab === 'overview'
-          ? 'grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px] items-start'
-          : 'space-y-5'}>
-          <div className="min-w-0 space-y-5">
+        {/* 内容区 */}
+        <div className="space-y-5">
           {tab === 'overview' && (
             <OverviewTab project={project!} buildRunning={builds.some(b => isBuildRunning(b.status))}
               onTab={setTab} onReload={reload} />
@@ -484,41 +481,6 @@ export default function ProjectDetailPage({
           )}
           {tab === 'settings' && (
             <SettingsTab project={project!} voices={voices} onReload={reload} />
-          )}
-          </div>
-          {tab === 'overview' && project && (
-            <aside className="min-w-0">
-              <div className="glass-panel p-3 space-y-2 xl:sticky xl:top-4">
-                <div className="flex items-center justify-between gap-2 px-1">
-                  <h3 className="text-sm font-semibold text-ink-800">章节目录</h3>
-                  <span className="text-[11px] text-ink-500">{project.chapters.length} 章</span>
-                </div>
-                <div className="max-h-[calc(100vh-230px)] overflow-y-auto pr-1 space-y-1">
-                  {project.chapters.slice(0, 200).map(c => (
-                    <button
-                      key={c.idx}
-                      type="button"
-                      onClick={() => setTab('chapters')}
-                      className="w-full flex items-center gap-2 rounded-md border border-ink-300/50 bg-ink-200/50 px-2 py-1.5 text-left hover:border-brand-500/30 hover:bg-brand-500/5 transition-colors"
-                      title="到「章节」页阅读"
-                    >
-                      <span className="text-[10px] font-mono tabular-nums text-ink-500 shrink-0">
-                        #{String(c.idx + 1).padStart(3, '0')}
-                      </span>
-                      <span className="text-xs text-ink-700 truncate flex-1 min-w-0">
-                        {c.title || '(无标题)'}
-                      </span>
-                      <span className="text-[10px] text-ink-500 tabular-nums shrink-0">{c.text_len} 字</span>
-                    </button>
-                  ))}
-                  {project.chapters.length > 200 && (
-                    <button type="button" className="btn-ghost w-full !py-1.5 text-xs" onClick={() => setTab('chapters')}>
-                      查看全部章节
-                    </button>
-                  )}
-                </div>
-              </div>
-            </aside>
           )}
         </div>
       </div>
