@@ -285,6 +285,23 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ text, filename_hint: filenameHint }),
     }),
+  // 公共书库：概览（分类/总量）与书目检索
+  libraryInfo: (refresh = false) =>
+    _fetch<LibraryInfo>(`/api/library${refresh ? '?refresh=1' : ''}`),
+  libraryBooks: (params: { category?: string; q?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params.category) qs.set('category', params.category);
+    if (params.q) qs.set('q', params.q);
+    qs.set('limit', String(params.limit ?? 40));
+    qs.set('offset', String(params.offset ?? 0));
+    return _fetch<LibraryBooks>(`/api/library/books?${qs.toString()}`);
+  },
+  // 从公共书库导入（后端回源 TXT，等价于上传文件）
+  projectImportLibrary: (id: string, uid: string) =>
+    _fetch<ProjectResp>(`/api/projects/${id}/import-library`, {
+      method: 'POST',
+      body: JSON.stringify({ uid }),
+    }),
   // 触发后端识别（章节/角色/对白归属）：202 Accepted，后台异步执行
   projectPrepare: (id: string) =>
     _fetch<ProjectPrepareTriggerResp>(`/api/projects/${id}/prepare`, { method: 'POST' }),
@@ -477,6 +494,42 @@ export const api = {
       body: JSON.stringify(cfg),
     }),
 };
+
+// ---------- 公共书库（从书库导入） ----------
+
+export interface LibraryCategory {
+  name: string;
+  slug: string;
+  count: number;
+  chapters?: number;
+  txt_bytes?: number;
+}
+
+export interface LibraryInfo {
+  name: string;
+  prefix: string;
+  generated_at: string;
+  totals: Record<string, number>;
+  categories: LibraryCategory[];
+  cached_at: number;
+}
+
+export interface LibraryBook {
+  uid: string;
+  title: string;
+  author: string;
+  category: string;
+  category_slug: string;
+  chapter_count: number;
+  word_count: number;
+  size_bytes: number;
+  status: string;
+}
+
+export interface LibraryBooks {
+  total: number;
+  items: LibraryBook[];
+}
 
 // ---------- Project 制类型定义 ----------
 

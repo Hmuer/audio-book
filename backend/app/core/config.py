@@ -313,6 +313,13 @@ class Settings(BaseSettings):
     # 归档成功后删除本地副本（决策 6）。关掉可保留本地双份以便回滚排查。
     STORAGE_CLEANUP_LOCAL: bool = True
 
+    # ============ 公共书库（导入书目）============
+    # 书库与交付物同桶，根前缀默认为 `library`；get-book 归档器负责写入。
+    LIBRARY_PREFIX: str = "library"
+    # `index.json` 本地缓存的存活时间（秒）。书库由归档任务批量更新，
+    # 不需要实时刷新；过期后下一次请求会重新拉取。
+    LIBRARY_INDEX_TTL_SECONDS: int = 1800
+
 
     # Build running 超时（小时）：如果 start_build 命中的 running build
     # started_at 距离现在超过该值，认为是被 kill 的孤儿，直接改 status 回 queued

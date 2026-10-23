@@ -84,6 +84,14 @@ class StorageBackend(ABC):
     async def delete_prefix(self, prefix: str) -> int:
         """删除前缀下全部对象；失败时抛错，供删除项目/构建阻止丢失清理线索。"""
 
+    async def read_bytes(self, key: str, *, max_bytes: int = 8 * 1024 * 1024) -> bytes | None:
+        """读取对象全量字节（仅用于小文件，如书库 index.json）。
+
+        local 后端不参与对象存储语义，返回 None；S3 后端在超过 max_bytes 时
+        直接抛错，避免误把大文件读进内存。
+        """
+        return None
+
     @abstractmethod
     def url(self, key: str) -> str | None:
         """远端下载直链；local 后端返回 None（调用方回落到媒体 token）。"""
@@ -316,6 +324,23 @@ class S3Storage(StorageBackend):
         except Exception as e:
             logger.warning(f"[storage] 回源失败 key={key}: {type(e).__name__}: {e}")
             return False
+
+    async def read_bytes(self, key: str, *, max_bytes: int = 8 * 1024 * 1024) -> bytes | None:
+        """读取小对象全量字节；超过 max_bytes 直接报错（防止 OOM）。"""
+        from contextlib import closing
+
+        client = self._ensure_client()
+
+        def _read() -> bytes:
+            head = client.head_object(Bucket=self._bucket, Key=key)
+            size = int(head.get("ContentLength") or 0)
+            if size > max_bytes:
+                raise ValueError(f"对象过大: {size} 字节 > 上限 {max_bytes} 字节")
+            response = client.get_object(Bucket=self._bucket, Key=key)
+            with closing(response["Body"]) as body:
+                return body.read()
+
+        return await asyncio.to_thread(_read)
 
     async def peek_bytes(self, key: str, count: int = 1024) -> bytes:
         """仅读取对象开头，判断旧 MP3 是否带失效的段级 seek 索引。"""

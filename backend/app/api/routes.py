@@ -25,6 +25,12 @@ from ..services.auth import (
     change_password,
     login as auth_service_login,
 )
+from ..services.library import (
+    LibraryError,
+    get_catalog,
+    import_library_book,
+    load_catalog,
+)
 from ..services.project import (
     create_project,
     import_file as project_import_file,
@@ -513,6 +519,44 @@ class ImportTextRequest(BaseModel):
     filename_hint: str = Field(default="pasted_text.txt", max_length=256)
 
 
+class LibraryBookResp(BaseModel):
+    uid: str
+    title: str
+    author: str = ""
+    category: str = ""
+    category_slug: str = ""
+    chapter_count: int = 0
+    word_count: int = 0
+    size_bytes: int = 0
+    status: str = ""
+
+
+class LibraryCategoryResp(BaseModel):
+    name: str
+    slug: str = ""
+    count: int = 0
+    chapters: int = 0
+    txt_bytes: int = 0
+
+
+class LibraryInfoResp(BaseModel):
+    name: str
+    prefix: str
+    generated_at: str
+    totals: dict
+    categories: list[LibraryCategoryResp]
+    cached_at: float
+
+
+class LibraryBooksResp(BaseModel):
+    total: int
+    items: list[LibraryBookResp]
+
+
+class LibraryImportRequest(BaseModel):
+    uid: str = Field(..., min_length=1, max_length=128)
+
+
 class UpdateProjectRequest(BaseModel):
     name: str | None = Field(default=None, max_length=256)
     description: str | None = Field(default=None, max_length=5000)
@@ -780,6 +824,95 @@ async def api_delete_project(
             exc_info=True,
         )
         raise HTTPException(500, f"删除失败: {type(e).__name__}: {e}")
+
+
+# ---------- 公共书库（从书库导入） ----------
+
+@router.get("/library", response_model=LibraryInfoResp)
+async def api_library_info(
+    refresh: bool = False,
+    current: User = Depends(get_current_user),
+):
+    """书库概览：分类、总量、索引生成时间。refresh=1 时强制重拉 index.json。"""
+    try:
+        cat = await load_catalog(force=refresh)
+    except LibraryError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        logger.error(f"[HTTP] 500 GET /api/library -> {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(500, f"读取书库失败: {type(e).__name__}: {e}")
+    return LibraryInfoResp(
+        name=cat.name,
+        prefix=cat.prefix,
+        generated_at=cat.generated_at,
+        totals=cat.totals,
+        categories=[LibraryCategoryResp(**c) for c in cat.categories if c.get("name")],
+        cached_at=cat.loaded_at,
+    )
+
+
+@router.get("/library/books", response_model=LibraryBooksResp)
+async def api_library_books(
+    category: str | None = None,
+    q: str | None = None,
+    limit: int = 40,
+    offset: int = 0,
+    current: User = Depends(get_current_user),
+):
+    """书库书目：按分类过滤 + 标题/作者关键字搜索，分页返回（内存过滤，毫秒级）。"""
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+    try:
+        cat = await get_catalog()
+    except LibraryError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        logger.error(
+            f"[HTTP] 500 GET /api/library/books -> {type(e).__name__}: {e}", exc_info=True,
+        )
+        raise HTTPException(500, f"读取书库失败: {type(e).__name__}: {e}")
+    total, books = cat.query(category=category, q=q, limit=limit, offset=offset)
+    return LibraryBooksResp(
+        total=total,
+        items=[LibraryBookResp(**b.to_public()) for b in books],
+    )
+
+
+@router.post("/projects/{project_id}/import-library", response_model=ProjectResp)
+async def api_project_import_library(
+    project_id: str,
+    req: LibraryImportRequest,
+    request: Request,
+    current: User = Depends(get_current_user),
+):
+    """从公共书库导入：按 uid 回源 TXT 到项目（等价于上传文件）。"""
+    factory = get_session_factory()
+    async with factory() as s:
+        await assert_project_writable(s, project_id, current)
+    remote = request.client.host if request.client else "?"
+    t0 = _time.perf_counter()
+    logger.info(
+        f"[HTTP] POST /api/projects/{project_id[:8]}.../import-library "
+        f"client={remote} user={current.username!r} uid={req.uid}"
+    )
+    try:
+        resp = await import_library_book(project_id, req.uid)
+    except LibraryError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(404 if str(e).startswith("项目不存在") else 400, str(e))
+    except Exception as e:
+        logger.error(
+            f"[HTTP] 500 /api/projects/{project_id[:8]}.../import-library -> "
+            f"{type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(500, f"导入失败: {type(e).__name__}: {e}")
+    elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+    logger.info(
+        f"[HTTP] 200 /api/projects/{project_id[:8]}.../import-library total_ms={elapsed_ms}"
+    )
+    return resp
 
 
 # ---------- 文件导入 + 识别 ----------
