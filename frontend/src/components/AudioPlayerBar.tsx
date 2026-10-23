@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import type { Ref } from 'react';
 
 export interface PlayerTrack {
   id: string;
@@ -23,6 +24,16 @@ export interface AudioPlayerHandle {
   toggle: () => void;
   play: () => void;
   pause: () => void;
+}
+
+/** 从页面透传到「构建详情」的播放器状态与回调 */
+export interface PlayerSlotProps {
+  track: PlayerTrack | null;
+  playerRef: Ref<AudioPlayerHandle>;
+  onClose: () => void;
+  onPlayingChange: (playing: boolean) => void;
+  onNeedNewSrc?: (track: PlayerTrack) => Promise<string | null>;
+  onDownload?: (track: PlayerTrack) => void;
 }
 
 function fmtTime(seconds: number): string {
@@ -119,14 +130,14 @@ function Rail({
 }
 
 /**
- * 页面底部唯一的章节播放器。
+ * 构建详情里唯一的章节播放器（内联，位于构建信息与章节列表之间）。
  *
  * 只有选中某一章时才把该章的签名 URL 交给 <audio>，不再为列表里的每章
  * 创建播放器或批量签发 URL，避免展开章节列表时触发 COS 回源/缓存费用。
  *
- * 视觉：单层扁平 dock —— 与左侧边栏同色、同一水平线，顶边一条 hairline；
+ * 视觉：单层扁平卡片，顶部一条 hairline + 1px 边框，不叠渐变/光晕；
  * 左「标题 + 来源」、中「后退/播放/前进 + 细轨进度 + 两端时间」、
- * 右「音量 / 下载 / 关闭」。不用渐变、光晕、大圆角，只靠留白与 1px 线分层。
+ * 右「音量 / 下载 / 关闭」。窄屏折叠为单行。
  */
 const AudioPlayerBar = forwardRef<AudioPlayerHandle, {
   track: PlayerTrack | null;
@@ -283,17 +294,17 @@ const AudioPlayerBar = forwardRef<AudioPlayerHandle, {
       />
 
       <div
-        className="fixed bottom-0 left-0 right-0 z-[80] md:left-[244px]"
+        className="overflow-hidden rounded-lg border border-ink-300/70 bg-ink-50"
         role="region"
         aria-label="章节播放器"
       >
-        <div className="relative border-t border-ink-300/70 bg-ink-50 pb-[env(safe-area-inset-bottom)]">
-          {/* 窄屏：进度贴在 dock 顶边，不额外占一行 */}
+        <div className="relative">
+          {/* 窄屏：进度贴在卡片顶边，不额外占一行 */}
           <div className="absolute inset-x-0 top-0 h-[2px] bg-ink-300/70 lg:hidden">
             <div className="h-full bg-ink-600" style={{ width: `${progress}%` }} />
           </div>
 
-          <div className="flex h-[68px] items-center gap-2 px-3 lg:h-20 lg:gap-6 lg:px-4">
+          <div className="flex h-[62px] items-center gap-2 px-3 lg:h-[76px] lg:gap-4 lg:px-4">
             {/* ── 左：书名/章节 + 来源（与左侧栏底部齐平） ── */}
             <div className="flex min-w-0 flex-1 items-center">
               <div className="min-w-0 flex-1">
@@ -433,7 +444,7 @@ const AudioPlayerBar = forwardRef<AudioPlayerHandle, {
               {onDownload && track.buildId ? (
                 <button
                   type="button"
-                  className={`${iconBtn} hidden h-9 w-9 lg:grid`}
+                  className={`${iconBtn} hidden h-9 w-9 xl:grid`}
                   onClick={() => onDownload(track)}
                   title="下载本章 MP3"
                   aria-label="下载本章 MP3"

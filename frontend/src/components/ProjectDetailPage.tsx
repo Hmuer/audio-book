@@ -20,7 +20,7 @@ import {
 import { parseTime, relativeTime, fmtElapsed } from '@/lib/time';
 import { normalizeGender } from '@/lib/voiceUtils';
 import VoicePicker from './VoicePicker';
-import AudioPlayerBar, { AudioPlayerHandle, PlayerTrack } from './AudioPlayerBar';
+import AudioPlayerBar, { AudioPlayerHandle, PlayerSlotProps, PlayerTrack } from './AudioPlayerBar';
 import ChapterPlaylist, { PlaylistItem } from './ChapterPlaylist';
 import { StatusBadge } from './ProjectListPage';
 
@@ -349,8 +349,23 @@ export default function ProjectDetailPage({
     );
   }
 
+  // 播放器只挂在「构建详情」里（构建信息与章节列表之间），因此离开构建 tab
+  // 时音频会随组件卸载停止，这里把暂停态同步回按钮。
+  useEffect(() => {
+    if (tab !== 'builds') setPlayerPlaying(false);
+  }, [tab]);
+
+  const playerSlot: PlayerSlotProps = {
+    track: playerTrack,
+    playerRef,
+    onClose: () => { setPlayerTrack(null); setPlayerPlaying(false); },
+    onPlayingChange: setPlayerPlaying,
+    onNeedNewSrc: refreshPlayerSrc,
+    onDownload: t => downloadChapterMp3(t.buildId ?? null, t.chapterIdx ?? 0),
+  };
+
   return (
-    <section className={`animate-fade-in ${playerTrack ? 'pb-28' : ''}`}>
+    <section className="animate-fade-in">
       <audio ref={audioRef} className="hidden" />
 
       {err && (
@@ -462,6 +477,7 @@ export default function ProjectDetailPage({
           )}
           {tab === 'builds' && (
             <BuildsTab
+              player={playerSlot}
               projectId={projectId}
               project={project!}
               builds={builds}
@@ -487,14 +503,6 @@ export default function ProjectDetailPage({
         </div>
       </div>
 
-      <AudioPlayerBar
-        ref={playerRef}
-        track={playerTrack}
-        onClose={() => { setPlayerTrack(null); setPlayerPlaying(false); }}
-        onPlayingChange={setPlayerPlaying}
-        onNeedNewSrc={refreshPlayerSrc}
-        onDownload={t => downloadChapterMp3(t.buildId ?? null, t.chapterIdx ?? 0)}
-      />
     </section>
   );
 }
@@ -2090,7 +2098,7 @@ function VoicesTab({
 // =================== Builds Tab ===================
 function BuildsTab({
   projectId, project, builds, voices, narratorDefault, playingKey, loadingVoice, previewError, onPreviewVoice, onDismissPreview,
-  onPlayChapter, onDownloadMp3, onDownloadLrc, activeTrackId, playerPlaying, playerLoadingId, onReload,
+  onPlayChapter, onDownloadMp3, onDownloadLrc, activeTrackId, playerPlaying, playerLoadingId, onReload, player,
 }: {
   projectId: string;
   project: ProjectDetailResp;
@@ -2109,6 +2117,7 @@ function BuildsTab({
   playerPlaying: boolean;
   playerLoadingId: string | null;
   onReload: () => void;
+  player: PlayerSlotProps;
 }) {
   const [showCreate, setShowCreate] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -2197,6 +2206,7 @@ function BuildsTab({
               playerPlaying={playerPlaying}
               playerLoadingId={playerLoadingId}
               onReload={onReload}
+              player={player}
             />
           ))}
         </div>
@@ -2224,7 +2234,7 @@ function BuildsTab({
 
 function BuildRow({
   projectId, item, expanded, onToggleExpand,
-  onPlayChapter, onDownloadMp3, onDownloadLrc, activeTrackId, playerPlaying, playerLoadingId, onReload,
+  onPlayChapter, onDownloadMp3, onDownloadLrc, activeTrackId, playerPlaying, playerLoadingId, onReload, player,
 }: {
   projectId: string;
   item: BuildListItem;
@@ -2237,6 +2247,7 @@ function BuildRow({
   playerPlaying: boolean;
   playerLoadingId: string | null;
   onReload: () => void;
+  player: PlayerSlotProps;
 }) {
   const [detail, setDetail] = useState<BuildDetailResp | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -2443,6 +2454,7 @@ function BuildRow({
               playerPlaying={playerPlaying}
               playerLoadingId={playerLoadingId}
               onReload={onReload}
+              player={player}
             />
           ) : (
             <div className="text-sm text-ink-500">加载失败</div>
@@ -2456,7 +2468,7 @@ function BuildRow({
 
 function BuildDetailContent({
   detail, projectId, onPlayChapter, onDownloadMp3, onDownloadLrc,
-  activeTrackId, playerPlaying, playerLoadingId, onReload,
+  activeTrackId, playerPlaying, playerLoadingId, onReload, player,
 }: {
   detail: BuildDetailResp;
   projectId: string;
@@ -2467,6 +2479,7 @@ function BuildDetailContent({
   playerPlaying: boolean;
   playerLoadingId: string | null;
   onReload: () => void;
+  player: PlayerSlotProps;
 }) {
   // F-7：ZIP 可能是多分片，按分片下标存放签名 URL
   const [zipUrls, setZipUrls] = useState<Record<number, string>>({});
@@ -2634,6 +2647,27 @@ function BuildDetailContent({
               仅显示前 50 条，共 {quality.suspicious.length} 条可疑章（可「重跑全部可疑章」）。
             </div>
           )}
+        </div>
+      )}
+
+      {/* 播放器固定在「构建信息」与「章节列表」之间：只有点过本章节才出现 */}
+      {player.track?.buildId === detail.build_id ? (
+        <AudioPlayerBar
+          ref={player.playerRef}
+          track={player.track}
+          onClose={player.onClose}
+          onPlayingChange={player.onPlayingChange}
+          onNeedNewSrc={player.onNeedNewSrc}
+          onDownload={player.onDownload}
+        />
+      ) : (
+        <div className="flex h-9 items-center gap-1.5 px-0.5 text-[11px] text-ink-500">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden>
+            <path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.29-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z" />
+          </svg>
+          {player.track
+            ? '正在播放其他构建的章节，点下面的播放键可切到当前构建'
+            : '点章节右侧的播放键试听，播放器会出现在这里'}
         </div>
       )}
 
