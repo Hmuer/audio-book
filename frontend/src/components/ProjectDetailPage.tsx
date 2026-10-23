@@ -22,7 +22,6 @@ import { normalizeGender } from '@/lib/voiceUtils';
 import VoicePicker from './VoicePicker';
 import AudioPlayerBar, { AudioPlayerHandle, PlayerTrack } from './AudioPlayerBar';
 import ChapterPlaylist, { PlaylistItem } from './ChapterPlaylist';
-import ChapterActions from './ChapterActions';
 import { StatusBadge } from './ProjectListPage';
 
 type Tab = 'overview' | 'chapters' | 'voices' | 'builds' | 'settings';
@@ -36,7 +35,6 @@ type Tab = 'overview' | 'chapters' | 'voices' | 'builds' | 'settings';
 // F-5：分批渲染的每批条数（章节列表 / 构建产物列表）。
 // 数千章规模下一性渲染全部节点会明显卡顿，且会让音频签发的请求数爆炸。
 const CHAPTERS_PAGE_SIZE = 60;
-const ARTIFACTS_PAGE_SIZE = 60;
 
 function splitTags(tags: string | null | undefined): string[] {
   if (!tags) return [];
@@ -157,6 +155,14 @@ export default function ProjectDetailPage({
     }, 2000);
     return () => clearInterval(timer);
   }, [preparing, projectId]);
+
+  // 音频只属于「构建」页；离开构建页时关闭底部播放器，避免在阅读页误播。
+  useEffect(() => {
+    if (tab === 'builds') return;
+    playerRef.current?.pause();
+    setPlayerTrack(null);
+    setPlayerPlaying(false);
+  }, [tab]);
 
   const playingKeyRef = useRef<string | null>(null);
   // 音色试听走 Blob URL（/media 需鉴权头，而 <audio src> 带不上）—— 需手动释放
@@ -341,18 +347,6 @@ export default function ProjectDetailPage({
     );
   }
 
-  const overviewBuildId = project?.last_build
-    && BUILD_DONE_STATES.includes(project.last_build.status)
-    ? project.last_build.build_id
-    : null;
-  const overviewItems: PlaylistItem[] = (project?.chapters || []).map(c => ({
-    id: `ch_${c.idx}`,
-    chapterIdx: c.idx,
-    title: c.title || '(无标题)',
-    meta: `${c.text_len} 字`,
-    playable: Boolean(overviewBuildId),
-  }));
-
   return (
     <section className={`animate-fade-in ${playerTrack ? 'pb-28' : ''}`}>
       <audio ref={audioRef} className="hidden" />
@@ -443,7 +437,7 @@ export default function ProjectDetailPage({
           </div>
         </nav>
 
-        {/* 内容区：概览时右侧固定章节播放列表 */}
+        {/* 内容区：概览时右侧显示章节目录（阅读入口） */}
         <div className={tab === 'overview'
           ? 'grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px] items-start'
           : 'space-y-5'}>
@@ -453,15 +447,7 @@ export default function ProjectDetailPage({
               onTab={setTab} onReload={reload} />
           )}
           {tab === 'chapters' && (
-            <ChaptersTab
-              project={project!}
-              onPlayChapter={playChapter}
-              onDownloadMp3={downloadChapterMp3}
-              onDownloadLrc={downloadChapterLrc}
-              activeTrackId={playerTrack?.id ?? null}
-              playerPlaying={playerPlaying}
-              playerLoadingId={playerLoadingId}
-            />
+            <ChaptersTab project={project!} />
           )}
           {tab === 'voices' && (
             <VoicesTab
@@ -504,20 +490,33 @@ export default function ProjectDetailPage({
             <aside className="min-w-0">
               <div className="glass-panel p-3 space-y-2 xl:sticky xl:top-4">
                 <div className="flex items-center justify-between gap-2 px-1">
-                  <h3 className="text-sm font-semibold text-ink-800">章节播放列表</h3>
+                  <h3 className="text-sm font-semibold text-ink-800">章节目录</h3>
                   <span className="text-[11px] text-ink-500">{project.chapters.length} 章</span>
                 </div>
-                <ChapterPlaylist
-                  items={overviewItems}
-                  activeId={playerTrack?.id}
-                  playing={playerPlaying}
-                  loadingId={playerLoadingId}
-                  onPlay={item => playChapter(overviewBuildId, item)}
-                  onDownloadMp3={item => downloadChapterMp3(overviewBuildId, item.chapterIdx)}
-                  onDownloadLrc={item => downloadChapterLrc(overviewBuildId, item.chapterIdx)}
-                  className="max-h-[calc(100vh-230px)] overflow-y-auto pr-1"
-                  emptyText="识别出章节后显示播放列表"
-                />
+                <div className="max-h-[calc(100vh-230px)] overflow-y-auto pr-1 space-y-1">
+                  {project.chapters.slice(0, 200).map(c => (
+                    <button
+                      key={c.idx}
+                      type="button"
+                      onClick={() => setTab('chapters')}
+                      className="w-full flex items-center gap-2 rounded-md border border-ink-300/50 bg-ink-200/50 px-2 py-1.5 text-left hover:border-brand-500/30 hover:bg-brand-500/5 transition-colors"
+                      title="到「章节」页阅读"
+                    >
+                      <span className="text-[10px] font-mono tabular-nums text-ink-500 shrink-0">
+                        #{String(c.idx + 1).padStart(3, '0')}
+                      </span>
+                      <span className="text-xs text-ink-700 truncate flex-1 min-w-0">
+                        {c.title || '(无标题)'}
+                      </span>
+                      <span className="text-[10px] text-ink-500 tabular-nums shrink-0">{c.text_len} 字</span>
+                    </button>
+                  ))}
+                  {project.chapters.length > 200 && (
+                    <button type="button" className="btn-ghost w-full !py-1.5 text-xs" onClick={() => setTab('chapters')}>
+                      查看全部章节
+                    </button>
+                  )}
+                </div>
               </div>
             </aside>
           )}
@@ -1528,27 +1527,8 @@ function Avatar({ name, size = 28 }: { name: string; size?: number }) {
 }
 
 // =================== Chapters Tab ===================
-function ChaptersTab({
-  project,
-  onPlayChapter,
-  onDownloadMp3,
-  onDownloadLrc,
-  activeTrackId,
-  playerPlaying,
-  playerLoadingId,
-}: {
-  project: ProjectDetailResp;
-  onPlayChapter: (buildId: string | null, item: PlaylistItem) => void;
-  onDownloadMp3: (buildId: string | null, idx: number) => void;
-  onDownloadLrc: (buildId: string | null, idx: number) => void;
-  activeTrackId: string | null;
-  playerPlaying: boolean;
-  playerLoadingId: string | null;
-}) {
+function ChaptersTab({ project }: { project: ProjectDetailResp }) {
   const chapters: ChapterSummary[] = project.chapters;
-  const lastBuild = project.last_build;
-  const hasAudio = !!(lastBuild && (lastBuild.status === 'success' || lastBuild.status === 'done' || lastBuild.status === 'partial_success'));
-  const buildId = lastBuild?.build_id ?? null;
   const characters = project.characters || [];
 
   // 展开的章节 idx
@@ -1556,20 +1536,6 @@ function ChaptersTab({
   const [chapterDetail, setChapterDetail] = useState<ChapterDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [visibleCount, setVisibleCount] = useState(CHAPTERS_PAGE_SIZE);
-
-  // speaker 归属 map（dialogue 里 anchor_text/text → 原始归属行，含 id/confidence 供逐行修正）
-  const speakerMap = useMemo(() => {
-    const m = new Map<string, DialogueLine>();
-    if (chapterDetail?.dialogues) {
-      for (const d of chapterDetail.dialogues) {
-        if (d.speaker && d.speaker !== '旁白' && d.speaker !== 'narrator') {
-          if (d.anchor_text && !m.has(d.anchor_text)) m.set(d.anchor_text, d);
-          if (d.text && !m.has(d.text)) m.set(d.text, d);
-        }
-      }
-    }
-    return m;
-  }, [chapterDetail]);
 
   // 低置信度对白数（待人工确认）
   const lowConfidenceN = useMemo(
@@ -1611,30 +1577,76 @@ function ChaptersTab({
     setEditingLineKey(null);
   };
 
-  // 把 chapter.text 按行分，每行关联 speaker（+ 原始归属行，供低置信度提示与修正）
-  const lines = useMemo(() => {
+  // 把 chapter.text 按行拆成「普通文本 + 对白片段」。
+  // 关键：高亮只包住真正属于对白的 anchor 部分，而不是整行；
+  // 同一行有多句对白时也会按 anchor 切成多个高亮片段。
+  type LineSegment = { text: string; dlg: DialogueLine | null };
+  type ChapterLine = {
+    key: number;
+    text: string;
+    speaker: string | null;
+    dlg: DialogueLine | null;
+    segments: LineSegment[];
+  };
+  const lines = useMemo<ChapterLine[]>(() => {
     if (!chapterDetail) return [];
     const raw = chapterDetail.text.split('\n').map(s => s.trimEnd());
     return raw.map((line, i) => {
-      if (!line.trim()) return { key: i, text: line, speaker: null as string | null, dlg: null as DialogueLine | null };
-      // 优先精确匹配 anchor_text
-      let speaker: string | null = null;
-      let dlg: DialogueLine | null = null;
-      for (const [anchor, d] of speakerMap) {
-        if (line.includes(anchor) || anchor.includes(line.trim())) {
-          speaker = d.speaker;
-          dlg = d;
-          break;
-        }
+      if (!line.trim()) {
+        return { key: i, text: line, speaker: null, dlg: null, segments: [{ text: line, dlg: null }] };
       }
-      return { key: i, text: line, speaker, dlg };
+      type Match = { start: number; end: number; dlg: DialogueLine };
+      const matches: Match[] = [];
+      for (const d of chapterDetail.dialogues || []) {
+        if (!d.speaker || d.speaker === '旁白' || d.speaker === 'narrator') continue;
+        const anchors = [d.anchor_text, d.text].filter((a): a is string => Boolean(a && a.trim()));
+        let best: { start: number; end: number } | null = null;
+        for (const anchor of anchors) {
+          const exact = anchor.trim();
+          let start = line.indexOf(exact);
+          let length = exact.length;
+          // 某些模型拆行后 anchor 可能比当前行更长；只匹配行内真实内容。
+          if (start < 0 && anchor.includes(line.trim())) {
+            start = line.indexOf(line.trim());
+            length = line.trim().length;
+          }
+          if (start >= 0 && length > 0) {
+            if (!best || length > best.end - best.start) best = { start, end: start + length };
+          }
+        }
+        if (best) matches.push({ ...best, dlg: d });
+      }
+      // 先按起点排序，重叠时保留更长的片段（避免同一段被多个对白重复标记）。
+      matches.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+      const selected: Match[] = [];
+      for (const m of matches) {
+        if (m.end <= m.start) continue;
+        if (selected.some(s => m.start < s.end && m.end > s.start)) continue;
+        selected.push(m);
+      }
+      selected.sort((a, b) => a.start - b.start);
+      const segments: LineSegment[] = [];
+      let cursor = 0;
+      for (const m of selected) {
+        if (m.start > cursor) segments.push({ text: line.slice(cursor, m.start), dlg: null });
+        segments.push({ text: line.slice(m.start, m.end), dlg: m.dlg });
+        cursor = m.end;
+      }
+      if (cursor < line.length) segments.push({ text: line.slice(cursor), dlg: null });
+      if (segments.length === 0) segments.push({ text: line, dlg: null });
+      const primary = selected[0]?.dlg || null;
+      return { key: i, text: line, speaker: primary?.speaker || null, dlg: primary, segments };
     });
-  }, [chapterDetail, speakerMap]);
+  }, [chapterDetail]);
 
-  // 角色（有对话的）
+  // 角色（有对话的）：同一行可能包含多个角色，全部收集
   const usedSpeakers = useMemo(() => {
     const set = new Set<string>();
-    for (const l of lines) if (l.speaker) set.add(l.speaker);
+    for (const l of lines) {
+      for (const seg of l.segments) {
+        if (seg.dlg?.speaker) set.add(seg.dlg.speaker);
+      }
+    }
     return Array.from(set);
   }, [lines]);
 
@@ -1660,16 +1672,12 @@ function ChaptersTab({
             章节
             <span className="text-sm text-ink-500 font-normal">{chapters.length} 章</span>
           </h3>
-          {hasAudio && (
-            <span className="chip-soft">试听来自最近一次完成的构建</span>
-          )}
+          <span className="chip-soft">阅读模式 · 音频播放与下载请到「构建」页</span>
         </div>
 
         <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
           {chapters.slice(0, visibleCount).map(c => {
             const isOpen = expandedIdx === c.idx;
-            const key = `ch_${c.idx}`;
-            const isActive = activeTrackId === key;
             return (
               <div key={c.idx} className="rounded-lg border bg-ink-200 border-ink-300/70 overflow-hidden transition-all duration-200">
                 {/* 章首行（始终可见） */}
@@ -1680,9 +1688,9 @@ function ChaptersTab({
                   <span
                     className="text-[11px] font-mono tabular-nums shrink-0 rounded-lg px-2 py-1 border"
                     style={{
-                      background: isActive ? 'rgba(var(--brand-500), 0.15)' : 'rgba(var(--color-white), 0.04)',
-                      color: isActive ? 'rgb(var(--brand-500))' : 'rgba(var(--color-white), 0.5)',
-                      borderColor: isActive ? 'rgba(var(--brand-500), 0.3)' : 'rgba(var(--color-white), 0.05)',
+                      background: 'rgba(var(--color-white), 0.04)',
+                      color: 'rgba(var(--color-white), 0.5)',
+                      borderColor: 'rgba(var(--color-white), 0.05)',
                     }}
                   >
                     #{String(c.idx + 1).padStart(3, '0')}
@@ -1695,27 +1703,6 @@ function ChaptersTab({
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-ink-500"><path d="m6 9 6 6 6-6"/></svg>
                   </span>
                 </button>
-
-                {/* 播放列表操作：只在点击时才签发本章媒体 URL，不预取/不缓存 */}
-                {hasAudio && (
-                  <div className="px-3 pb-2 flex justify-end">
-                    <ChapterActions
-                      playable={hasAudio}
-                      active={isActive}
-                      playing={playerPlaying}
-                      loading={playerLoadingId === key}
-                      onToggle={() => onPlayChapter(buildId, {
-                        id: key,
-                        chapterIdx: c.idx,
-                        title: c.title || '(无标题)',
-                        meta: `${c.text_len} 字`,
-                        playable: hasAudio,
-                      })}
-                      onDownloadMp3={() => onDownloadMp3(buildId, c.idx)}
-                      onDownloadLrc={() => onDownloadLrc(buildId, c.idx)}
-                    />
-                  </div>
-                )}
 
                 {/* 展开：逐行文本标注 */}
                 {isOpen && (
@@ -1763,19 +1750,14 @@ function ChaptersTab({
                             }
                             const isSpeech = !!l.speaker;
                             const c = isSpeech ? charColor(l.speaker!) : null;
-                            const lowConf = !!(l.dlg && l.dlg.confidence < 0.7);
+                            const speechSegs = l.segments.filter(seg => seg.dlg);
+                            const lowConf = speechSegs.some(seg => (seg.dlg?.confidence ?? 1) < 0.7);
                             const isEditing = editingLineKey === l.key;
+                            const multiSpeaker = new Set(speechSegs.map(seg => seg.dlg?.speaker)).size > 1;
                             return (
                               <div
                                 key={l.key}
                                 className="flex gap-2 items-start py-1.5 px-2 rounded-lg transition-colors hover:bg-ink-200"
-                                style={
-                                  lowConf
-                                    ? { background: 'rgba(245, 158, 11, 0.08)', borderLeft: '2px solid rgba(245, 158, 11, 0.6)' }
-                                    : isSpeech && c
-                                    ? { background: c.bg, borderLeft: `2px solid ${c.border}` }
-                                    : {}
-                                }
                               >
                                 {isSpeech ? (
                                   <div className="w-6 shrink-0 text-right pt-0.5">
@@ -1793,31 +1775,57 @@ function ChaptersTab({
                                     <span className="text-[11px] font-bold text-ink-500">N</span>
                                   </div>
                                 )}
-                                <div className="flex-1 min-w-0">
-                                  {isSpeech ? (
+                                <div className="flex-1 min-w-0 text-ink-700">
+                                  {isSpeech && (
                                     <>
                                       <span className="text-[11px] font-semibold mr-1" style={{ color: c!.fg }}>{l.speaker}</span>
                                       {lowConf && (
                                         <span className="text-[10px] mr-1 px-1.5 py-0.5 rounded-full border"
                                           style={{ color: 'rgb(252, 211, 77)', borderColor: 'rgba(245, 158, 11, 0.5)' }}
-                                          title={`置信度 ${(l.dlg!.confidence * 100).toFixed(0)}%，建议人工确认`}
+                                          title="该行至少一句对白置信度低于 70%，建议人工确认"
                                         >
                                           待确认
                                         </span>
                                       )}
-                                      <span className="text-ink-800">{l.text}</span>
-                                      {l.dlg?.instruction && (
-                                        <div
-                                          className="mt-0.5 text-[11px] text-ink-500 leading-snug"
-                                          title="LLM 逐段生成的语音指令（豆包 2.0 context_texts），合成该段时下发给 TTS"
-                                        >
-                                          <span className="mr-1 px-1 py-0.5 rounded border border-ink-400 text-[10px]">指令</span>
-                                          {l.dlg.instruction}
-                                        </div>
-                                      )}
                                     </>
-                                  ) : (
-                                    <span className="text-ink-700">{l.text}</span>
+                                  )}
+                                  {l.segments.map((seg, segIdx) => {
+                                    if (!seg.dlg) {
+                                      return <span key={segIdx}>{seg.text}</span>;
+                                    }
+                                    const sc = charColor(seg.dlg.speaker);
+                                    const confLow = seg.dlg.confidence < 0.7;
+                                    return (
+                                      <span key={segIdx}>
+                                        {multiSpeaker && (
+                                          <span className="text-[11px] font-semibold mr-1" style={{ color: sc.fg }}>
+                                            {seg.dlg.speaker}
+                                          </span>
+                                        )}
+                                        <mark
+                                          title={`${seg.dlg.speaker} · 置信度 ${(seg.dlg.confidence * 100).toFixed(0)}%`}
+                                          style={{
+                                            background: sc.bg,
+                                            color: sc.fg,
+                                            borderBottom: `2px solid ${sc.border}`,
+                                            borderLeft: confLow ? '1px solid rgba(245, 158, 11, 0.8)' : undefined,
+                                            borderRadius: 3,
+                                            padding: '0 2px',
+                                          }}
+                                        >
+                                          {seg.text}
+                                        </mark>
+                                      </span>
+                                    );
+                                  })}
+                                  {l.dlg?.instruction && (
+                                    <div
+                                      className="mt-0.5 text-[11px] text-ink-500 leading-snug"
+                                      title="LLM 逐段生成的语音指令（豆包 2.0 context_texts），合成该段时下发给 TTS"
+                                    >
+                                      <span className="mr-1 px-1 py-0.5 rounded border border-ink-400 text-[10px]">指令</span>
+                                      {l.dlg.instruction}
+                                    </div>
                                   )}
                                   {isEditing && l.dlg && (
                                     <div className="mt-1.5 flex items-center gap-2 flex-wrap">
@@ -1870,11 +1878,9 @@ function ChaptersTab({
           )}
         </div>
 
-        {!hasAudio && (
-          <div className="text-xs text-ink-500 pt-2 border-t border-ink-300/70">
-            完成一次构建后，此页面将显示每章的波形播放器与下载按钮。点击章节可展开查看逐行角色归属。
-          </div>
-        )}
+        <div className="text-xs text-ink-500 pt-2 border-t border-ink-300/70">
+          本章节页用于阅读与校对：展开章节查看逐行对白归属，音频播放和下载请到「构建」页。
+        </div>
       </div>
     </div>
   );
@@ -2497,7 +2503,6 @@ function BuildDetailContent({
   const [zipUrls, setZipUrls] = useState<Record<number, string>>({});
   const zipShards = detail.zip_shards ?? [];
   // F-5：分批渲染 + 只签发可见区间
-  const [visibleCount, setVisibleCount] = useState(ARTIFACTS_PAGE_SIZE);
   // H-5：质检可疑章重跑（单章 / 全部）
   const [rerunning, setRerunning] = useState(false);
   const quality = detail.quality_report ?? null;
@@ -2663,109 +2668,29 @@ function BuildDetailContent({
         </div>
       )}
 
-      <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
-        {detail.artifacts.slice(0, visibleCount).map(a => {
-          const key = `art_${a.chapter_idx}`;
-          const isActive = activeTrackId === key;
-          const playable = a.status === 'done';
-          const item: PlaylistItem = {
-            id: key,
-            chapterIdx: a.chapter_idx,
-            title: a.title || '(无标题)',
-            meta: a.duration_ms != null ? formatMs(a.duration_ms) : undefined,
-            playable,
-            status: a.status,
-            error: a.error_msg,
-          };
-          return (
-            <div
-              key={a.chapter_idx}
-              className={`rounded-lg p-3 transition-all duration-150 border
-                ${isActive
-                  ? 'bg-brand-500/10 border-brand-500/40'
-                  : 'bg-ink-200 border-ink-300/70 hover:bg-ink-200 hover:border-ink-400'
-                }`}
-            >
-              <div className="flex items-center gap-2 mb-2">
-                <span
-                  className="text-[11px] font-mono tabular-nums shrink-0 rounded-lg px-2 py-1"
-                  style={{
-                    background: 'rgba(var(--color-white), 0.04)',
-                    color: isActive ? 'rgb(var(--brand-500))' : 'rgba(var(--color-white), 0.45)',
-                    border: '1px solid rgba(var(--color-white), 0.05)',
-                  }}
-                >
-                  #{String(a.chapter_idx + 1).padStart(3, '0')}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-ink-800 truncate">{a.title || '(无标题)'}</div>
-                </div>
-                <BuildArtifactStatusIcon status={a.status} />
-                {a.duration_ms != null && (
-                  <span className="text-[11px] text-ink-500 shrink-0 tabular-nums w-12 text-right">
-                    {formatMs(a.duration_ms)}
-                  </span>
-                )}
-              </div>
-              {a.status === 'failed' && a.error_msg && (
-                <div className="text-[11px] text-red-300/90 truncate mb-2 flex items-center gap-1" title={a.error_msg}>
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                  <span className="truncate">{a.error_msg.split('\n')[0]}</span>
-                </div>
-              )}
-              {a.status === 'done' && (
-                <div className="flex justify-end mt-1">
-                  <ChapterActions
-                    playable={playable}
-                    active={isActive}
-                    playing={playerPlaying}
-                    loading={playerLoadingId === key}
-                    onToggle={() => onPlayChapter(detail.build_id, item)}
-                    onDownloadMp3={() => onDownloadMp3(detail.build_id, a.chapter_idx)}
-                    onDownloadLrc={() => onDownloadLrc(detail.build_id, a.chapter_idx)}
-                  />
-                </div>
-              )}
-            </div>
-          );
-        })}
-        {/* F-5：分批渲染的「加载更多」 */}
-        {visibleCount < detail.artifacts.length && (
-          <button
-            className="btn-ghost w-full !py-2 text-xs"
-            onClick={() => setVisibleCount(n => n + ARTIFACTS_PAGE_SIZE)}
-          >
-            加载更多章节（还有 {detail.artifacts.length - visibleCount} 章）
-          </button>
-        )}
-      </div>
+      <ChapterPlaylist
+        items={(detail.artifacts ?? []).map(a => ({
+          id: `art_${a.chapter_idx}`,
+          chapterIdx: a.chapter_idx,
+          title: a.title || '(无标题)',
+          meta: [
+            a.duration_ms != null ? formatMs(a.duration_ms) : '',
+            a.status === 'failed' ? '合成失败' : a.status === 'synthesizing' ? '合成中' : '',
+          ].filter(Boolean).join(' · '),
+          playable: a.status === 'done',
+          status: a.status,
+          error: a.error_msg,
+        }))}
+        activeId={activeTrackId}
+        playing={playerPlaying}
+        loadingId={playerLoadingId}
+        onPlay={item => onPlayChapter(detail.build_id, item)}
+        onDownloadMp3={item => onDownloadMp3(detail.build_id, item.chapterIdx)}
+        onDownloadLrc={item => onDownloadLrc(detail.build_id, item.chapterIdx)}
+        className="max-h-[500px] overflow-y-auto pr-1"
+        emptyText="暂无章节产物"
+      />
     </div>
-  );
-}
-
-function BuildArtifactStatusIcon({ status }: { status: string }) {
-  if (status === 'done')
-    return (
-      <span className="inline-flex w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-300 items-center justify-center shrink-0">
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-      </span>
-    );
-  if (status === 'synthesizing')
-    return (
-      <span className="inline-flex w-5 h-5 items-center justify-center shrink-0">
-        <span className="inline-block w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
-      </span>
-    );
-  if (status === 'failed')
-    return (
-      <span className="inline-flex w-5 h-5 rounded-full bg-red-500/20 text-red-300 items-center justify-center shrink-0">
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </span>
-    );
-  return (
-    <span className="inline-flex w-5 h-5 rounded-full bg-ink-200 border border-ink-300 items-center justify-center shrink-0">
-      <span className="w-1.5 h-1.5 rounded-full bg-ink-500" />
-    </span>
   );
 }
 
