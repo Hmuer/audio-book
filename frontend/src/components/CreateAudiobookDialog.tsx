@@ -201,12 +201,12 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
       style={{ background: 'rgba(0,0,0,0.72)' }}
       onClick={() => { if (!busy) onClose(); }}>
       <div
-        className="bg-ink-100 border border-ink-300 w-full max-w-lg max-h-[88vh] overflow-hidden flex flex-col animate-scale-in shadow-[0_30px_80px_-20px_rgba(0,0,0,0.9)]"
+        className="bg-ink-100 border border-ink-300 w-full max-w-[760px] max-h-[92vh] overflow-hidden flex flex-col animate-scale-in shadow-[0_30px_80px_-20px_rgba(0,0,0,0.9)]"
         style={{ borderRadius: 'var(--radius-md)' }}
         onClick={e => e.stopPropagation()}
       >
         {/* 头部：GreenSpring简洁步骤条 · 无胶囊装饰 */}
-        <div className="relative px-6 pt-5 pb-4"
+        <div className="relative shrink-0 px-6 pt-5 pb-4"
           style={{
             borderBottom: '1px solid rgb(var(--ink-300))',
             background: 'rgb(var(--ink-50))',
@@ -257,8 +257,8 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
           </div>
         </div>
 
-        <form onSubmit={onSubmit} className="flex-1 overflow-y-auto">
-          <div className="px-6 py-5 space-y-5">
+        <form onSubmit={onSubmit} className="flex-1 min-h-0 flex flex-col">
+          <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-5">
             {/* 项目名 */}
             <div>
               <label className="block text-[13px] font-medium mb-1.5"
@@ -300,7 +300,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                     type="button"
                     onClick={() => setMode(it.k)}
                     disabled={busy}
-                    className="relative flex flex-col items-start gap-1.5 px-2.5 py-2 text-left transition-all"
+                    className="relative flex items-center gap-2.5 px-3 py-2.5 text-left transition-all"
                     style={{
                       borderRadius: 'calc(calc(var(--radius-sm) - 2px))',
                       background: active ? 'rgb(var(--brand-600))' : 'transparent',
@@ -382,7 +382,9 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                         if (!pickerOpen) {
                           setTimeout(() => {
                             searchRef.current?.focus({ preventScroll: true });
-                            pickerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                            if (window.matchMedia('(max-width: 640px)').matches) {
+                              pickerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                            }
                           }, 40);
                         }
                       }}
@@ -409,7 +411,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
 
                 {categoryOpen && (
                   <div
-                    className="p-1.5 grid grid-cols-2 gap-1 max-h-[220px] overflow-y-auto"
+                    className="p-1.5 grid grid-cols-2 sm:grid-cols-3 gap-1 max-h-[240px] overflow-y-auto"
                     style={{
                       borderRadius: 'var(--radius-sm)',
                       border: '1px solid rgb(var(--ink-300))',
@@ -427,7 +429,9 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                             setCategoryOpen(false);
                             setPickerOpen(true);
                             setTimeout(() => {
-                              pickerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                              if (window.matchMedia('(max-width: 640px)').matches) {
+                                pickerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                              }
                             }, 60);
                           }}
                           className={`flex items-center justify-between gap-2 px-2.5 py-1.5 text-left transition-colors ${
@@ -476,7 +480,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                       )}
                     </div>
                     <div
-                      className="max-h-[300px] overflow-y-auto"
+                      className="max-h-[280px] overflow-y-auto"
                       onScroll={e => {
                         const el = e.currentTarget;
                         if (el.scrollHeight - el.scrollTop - el.clientHeight < 48) void loadMoreBooks();
@@ -562,11 +566,11 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                       <span>{formatSize(selected.size_bytes)}</span>
                     </div>
                   </div>
-                ) : (
+                ) : !pickerOpen ? (
                   <div className="text-[11px] text-ink-500">
                     选择书目后会自动填入有声书名称，导入后仍可修改。
                   </div>
-                )}
+                ) : null}
               </div>
             ) : mode === 'file' ? (
               <div
@@ -658,7 +662,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
           </div>
 
           {/* 底部按钮 */}
-          <div className="px-6 py-4 border-t border-ink-300/60 flex items-center gap-2 justify-end">
+          <div className="shrink-0 px-6 py-4 border-t border-ink-300/60 flex items-center gap-2 justify-end">
             {busy && mode === 'library' && elapsed >= 3 && (
               <span className="mr-auto text-[11px] text-ink-500">
                 正在从对象存储下载
