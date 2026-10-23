@@ -248,6 +248,8 @@ export default function ProjectDetailPage({
         src,
         buildId,
         chapterIdx: item.chapterIdx,
+        // 播放器标题旁的小圆点用这本书的封面主色，作为「当前是哪本书」的身份色。
+        accent: project?.cover_color ?? null,
       });
     } catch (e: any) {
       alert(`播放失败: ${e?.message || e}`);
@@ -491,6 +493,7 @@ export default function ProjectDetailPage({
         onClose={() => { setPlayerTrack(null); setPlayerPlaying(false); }}
         onPlayingChange={setPlayerPlaying}
         onNeedNewSrc={refreshPlayerSrc}
+        onDownload={t => downloadChapterMp3(t.buildId ?? null, t.chapterIdx ?? 0)}
       />
     </section>
   );

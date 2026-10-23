@@ -579,41 +579,57 @@ body {
 }
 
 /* ================================================================
-   底部播放器：透明滑块（进度 / 音量）
+   底部播放器滑块（进度 / 音量）
+   轨道由组件里的 4px div 画，input 只负责 14px 的点击热区和滑块圆点，
+   所以这里必须保持 input / track 完全透明。
 ================================================================ */
 .player-range {
   -webkit-appearance: none;
   appearance: none;
-  height: 6px;
-  border-radius: 9999px;
+  height: 14px;
+  background: transparent;
   outline: none;
   cursor: pointer;
+}
+.player-range::-webkit-slider-runnable-track {
+  height: 14px;
+  background: transparent;
+  border: none;
 }
 .player-range::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 14px;
-  height: 14px;
+  width: 8px;
+  height: 8px;
+  /* 8px 内容 + 2px×2 描边 = 12px；(14 - 12) / 2 = 1px 垂直居中 */
+  margin-top: 1px;
   border-radius: 9999px;
-  background: #fff;
-  border: 2px solid rgba(var(--brand-400), 0.95);
-  box-shadow: 0 0 0 4px rgba(var(--brand-500), 0.16);
-  transition: box-shadow 0.15s ease, transform 0.15s ease;
+  background: rgb(var(--ink-900));
+  /* 描边取 dock 底色 => 滑块像从轨道上「挖」出来，不带发光 */
+  border: 2px solid rgb(var(--ink-50));
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  transition: transform 0.12s ease;
 }
-.player-range::-webkit-slider-thumb:hover {
-  transform: scale(1.08);
-  box-shadow: 0 0 0 6px rgba(var(--brand-500), 0.22);
+.player-range:active::-webkit-slider-thumb {
+  transform: scale(1.15);
 }
-.player-range::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  border-radius: 9999px;
-  background: #fff;
-  border: 2px solid rgba(var(--brand-400), 0.95);
-  box-shadow: 0 0 0 4px rgba(var(--brand-500), 0.16);
+.player-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgba(var(--brand-500), 0.35);
 }
 .player-range::-moz-range-track {
-  height: 6px;
-  border-radius: 9999px;
+  height: 14px;
   background: transparent;
+  border: none;
+}
+.player-range::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: rgb(var(--ink-900));
+  border: 2px solid rgb(var(--ink-50));
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  transition: transform 0.12s ease;
+}
+.player-range:active::-moz-range-thumb {
+  transform: scale(1.15);
 }

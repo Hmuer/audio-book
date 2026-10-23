@@ -15,6 +15,8 @@ export interface PlayerTrack {
   src: string;
   buildId?: string;
   chapterIdx?: number;
+  /** 封面主色（#rrggbb）；只作为标题旁的小圆点，给每本书一个身份色 */
+  accent?: string | null;
 }
 
 export interface AudioPlayerHandle {
@@ -33,19 +35,107 @@ function fmtTime(seconds: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+/** 后退 / 前进 10 秒的环形箭头（语义放在 aria-label / title 上） */
+function SkipIcon({ dir }: { dir: 'back' | 'forward' }) {
+  return (
+    <svg
+      width="19"
+      height="19"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden
+      style={dir === 'forward' ? { transform: 'scaleX(-1)' } : undefined}
+    >
+      <path
+        d="M3.4 2.9v6.2h6.2"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M3.4 9.1a9 9 0 1 0 2.6-5.5"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function PlayIcon({ playing }: { playing: boolean }) {
+  return playing ? (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <rect x="6.5" y="5" width="4" height="14" rx="1.2" />
+      <rect x="13.5" y="5" width="4" height="14" rx="1.2" />
+    </svg>
+  ) : (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.29-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z" />
+    </svg>
+  );
+}
+
+/**
+ * 细轨滑块：轨道视觉 4px，点击热区 14px；滑块是「挖」在轨道上的小圆点，
+ * 常态就可见（深色底上必须能看见），不做发光环。
+ */
+function Rail({
+  value,
+  max,
+  onChange,
+  ariaLabel,
+  step = 0.1,
+  className = '',
+}: {
+  value: number;
+  max: number;
+  onChange: (v: number) => void;
+  ariaLabel: string;
+  step?: number;
+  className?: string;
+}) {
+  const pct = max > 0 ? Math.min(100, Math.max(0, (value / max) * 100)) : 0;
+  return (
+    <div className={`relative flex h-3.5 w-full items-center ${className}`}>
+      <div className="pointer-events-none absolute inset-x-0 h-1 overflow-hidden rounded-full bg-ink-300/80">
+        <div
+          className="h-full rounded-full bg-ink-700"
+          style={{ width: `${pct}%`, transition: 'width 120ms linear' }}
+        />
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={max || 1}
+        step={step}
+        value={Math.min(value, max || 1)}
+        onChange={e => onChange(Number(e.target.value))}
+        className="player-range absolute inset-0 w-full"
+        aria-label={ariaLabel}
+      />
+    </div>
+  );
+}
+
 /**
  * 页面底部唯一的章节播放器。
  *
  * 只有选中某一章时才把该章的签名 URL 交给 <audio>，不再为列表里的每章
  * 创建播放器或批量签发 URL，避免展开章节列表时触发 COS 回源/缓存费用。
+ *
+ * 视觉：单层扁平 dock —— 与左侧边栏同色、同一水平线，顶边一条 hairline；
+ * 左「标题 + 来源」、中「后退/播放/前进 + 细轨进度 + 两端时间」、
+ * 右「音量 / 下载 / 关闭」。不用渐变、光晕、大圆角，只靠留白与 1px 线分层。
  */
 const AudioPlayerBar = forwardRef<AudioPlayerHandle, {
   track: PlayerTrack | null;
   onClose: () => void;
   onPlayingChange?: (playing: boolean) => void;
   onNeedNewSrc?: (track: PlayerTrack) => Promise<string | null>;
+  onDownload?: (track: PlayerTrack) => void;
 }>(function AudioPlayerBar(
-  { track, onClose, onPlayingChange, onNeedNewSrc },
+  { track, onClose, onPlayingChange, onNeedNewSrc, onDownload },
   ref,
 ) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -112,6 +202,25 @@ const AudioPlayerBar = forwardRef<AudioPlayerHandle, {
     }
   };
 
+  const seekBy = (delta: number) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const end = Number.isFinite(audio.duration) ? audio.duration : 0;
+    const next = Math.max(0, Math.min(end || Number.MAX_SAFE_INTEGER, audio.currentTime + delta));
+    audio.currentTime = next;
+    setCurrentTime(next);
+  };
+
+  const seekTo = (next: number) => {
+    setCurrentTime(next);
+    if (audioRef.current) audioRef.current.currentTime = next;
+  };
+
+  const changeVolume = (next: number) => {
+    setVolume(next);
+    setMuted(next === 0);
+  };
+
   useImperativeHandle(ref, () => ({
     toggle,
     play: () => {
@@ -124,6 +233,14 @@ const AudioPlayerBar = forwardRef<AudioPlayerHandle, {
 
   const durationSafe = duration > 0 ? duration : 0;
   const progress = durationSafe > 0 ? Math.min(100, (currentTime / durationSafe) * 100) : 0;
+  const chapterLabel = track.chapterIdx != null ? `第 ${track.chapterIdx + 1} 章` : '章节音频';
+  const meta = [chapterLabel, track.subtitle].filter(Boolean).join(' · ');
+  const accent = track.accent || 'rgb(var(--brand-500))';
+
+  const iconBtn =
+    'grid place-items-center rounded-[10px] text-ink-600 transition-colors ' +
+    'hover:bg-ink-200 hover:text-ink-900 active:bg-ink-300/70 disabled:opacity-40 ' +
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60';
 
   return (
     <>
@@ -164,155 +281,186 @@ const AudioPlayerBar = forwardRef<AudioPlayerHandle, {
             .catch(() => setError('音频加载失败，请重新点击播放'));
         }}
       />
+
       <div
         className="fixed bottom-0 left-0 right-0 z-[80] md:left-[244px]"
         role="region"
         aria-label="章节播放器"
       >
-        <div
-          className="relative overflow-hidden border-t border-white/10 px-3 sm:px-5 pt-2.5 pb-2"
-          style={{
-            background: 'linear-gradient(180deg, rgba(17,24,39,0.78) 0%, rgba(7,11,18,0.96) 100%)',
-            backdropFilter: 'blur(24px) saturate(140%)',
-            WebkitBackdropFilter: 'blur(24px) saturate(140%)',
-            boxShadow: '0 -24px 60px -24px rgba(0,0,0,0.9), inset 0 1px 0 rgba(255,255,255,0.06)',
-          }}
-        >
-          {/* 顶部细光带 + 左侧品牌色光晕：透明质感 */}
-          <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-brand-400/70 to-transparent" />
-          <div className="pointer-events-none absolute -left-20 top-1/2 h-28 w-80 -translate-y-1/2 rounded-full bg-brand-500/10 blur-3xl" />
+        <div className="relative border-t border-ink-300/70 bg-ink-50 pb-[env(safe-area-inset-bottom)]">
+          {/* 窄屏：进度贴在 dock 顶边，不额外占一行 */}
+          <div className="absolute inset-x-0 top-0 h-[2px] bg-ink-300/70 lg:hidden">
+            <div className="h-full bg-ink-600" style={{ width: `${progress}%` }} />
+          </div>
 
-          <div className="relative flex items-center gap-2.5 sm:gap-3">
-            <button
-              type="button"
-              className="w-10 h-10 sm:w-11 sm:h-11 shrink-0 rounded-full grid place-items-center text-white
-                bg-gradient-to-br from-brand-400 to-brand-600
-                shadow-[0_0_24px_rgba(99,102,241,0.35)] hover:brightness-110 transition-all disabled:opacity-50"
-              onClick={toggle}
-              disabled={loading || !resolvedSrc}
-              aria-label={playing ? '暂停' : '播放'}
-            >
-              {loading ? (
-                <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-              ) : playing ? (
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
-              ) : (
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.29-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z"/></svg>
-              )}
-            </button>
-
-            <div
-              className="hidden sm:grid w-10 h-10 shrink-0 place-items-center rounded-xl border border-white/10"
-              style={{ background: 'linear-gradient(135deg, rgba(99,102,241,0.32), rgba(14,165,233,0.12))' }}
-              aria-hidden
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
-              </svg>
-            </div>
-
-            <div className="min-w-0 flex-1 sm:flex-none sm:w-[min(28vw,280px)]">
-              <div className="text-[13px] font-medium text-white/90 truncate">{track.title}</div>
-              <div className="text-[11px] text-white/45 truncate">
-                {track.subtitle || (track.chapterIdx != null ? `第 ${track.chapterIdx + 1} 章` : '章节音频')}
-                {error ? <span className="text-rose-300"> · {error}</span> : null}
+          <div className="flex h-[68px] items-center gap-2 px-3 lg:h-20 lg:gap-6 lg:px-4">
+            {/* ── 左：书名/章节 + 来源（与左侧栏底部齐平） ── */}
+            <div className="flex min-w-0 flex-1 items-center">
+              <div className="min-w-0 flex-1">
+                <p
+                  className="truncate text-[13px] font-medium leading-5 text-ink-900 lg:text-sm"
+                  title={track.title}
+                >
+                  {track.title}
+                </p>
+                <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+                  <span
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${playing ? 'animate-pulse' : ''}`}
+                    style={{ background: accent }}
+                    aria-hidden
+                  />
+                  <p className="truncate text-[11px] leading-4 text-ink-500 lg:text-xs">
+                    <span className="lg:hidden">
+                      {chapterLabel} · {fmtTime(currentTime)} / {fmtTime(durationSafe)}
+                    </span>
+                    <span className="hidden lg:inline">{meta}</span>
+                    {error ? <span className="text-rose-300"> · {error}</span> : null}
+                  </p>
+                </div>
               </div>
             </div>
 
-            <div className="hidden md:flex flex-1 items-center gap-2 min-w-0">
-              <span className="text-[10px] text-white/40 tabular-nums w-9 text-right">{fmtTime(currentTime)}</span>
-              <input
-                type="range"
-                min={0}
-                max={durationSafe || 1}
-                step={0.1}
-                value={Math.min(currentTime, durationSafe || 1)}
-                onChange={e => {
-                  const next = Number(e.target.value);
-                  setCurrentTime(next);
-                  if (audioRef.current) audioRef.current.currentTime = next;
-                }}
-                className="player-range flex-1"
-                aria-label="播放进度"
-                style={{
-                  background: `linear-gradient(to right, rgb(var(--brand-400)) ${progress}%, rgba(255,255,255,0.14) ${progress}%)`,
-                }}
-              />
-              <span className="text-[10px] text-white/40 tabular-nums w-9">{fmtTime(durationSafe)}</span>
+            {/* ── 中：控制 + 细轨进度 ── */}
+            <div className="hidden flex-col justify-center gap-1 lg:flex lg:shrink-0 lg:grow-0 lg:basis-1/2">
+              <div className="flex items-center justify-between gap-0.5 px-2">
+                <div className="w-12" />
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className={`${iconBtn} h-9 w-9`}
+                    onClick={() => seekBy(-10)}
+                    title="后退 10 秒"
+                    aria-label="后退 10 秒"
+                  >
+                    <SkipIcon dir="back" />
+                  </button>
+                  <button
+                    type="button"
+                    className="grid h-10 w-10 place-items-center rounded-full bg-ink-900 text-ink-0
+                      transition hover:brightness-105 active:scale-[0.97] disabled:opacity-45
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60
+                      focus-visible:ring-offset-2 focus-visible:ring-offset-ink-50"
+                    onClick={toggle}
+                    disabled={loading || !resolvedSrc}
+                    aria-label={playing ? '暂停' : '播放'}
+                  >
+                    {loading ? (
+                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                    ) : (
+                      <PlayIcon playing={playing} />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className={`${iconBtn} h-9 w-9`}
+                    onClick={() => seekBy(10)}
+                    title="快进 10 秒"
+                    aria-label="快进 10 秒"
+                  >
+                    <SkipIcon dir="forward" />
+                  </button>
+                </div>
+                <div className="flex w-12 justify-end" />
+              </div>
+
+              <div className="flex w-full items-center gap-2">
+                <span className="w-12 shrink-0 text-center text-[11px] tabular-nums text-ink-500">
+                  {fmtTime(currentTime)}
+                </span>
+                <Rail
+                  value={currentTime}
+                  max={durationSafe}
+                  onChange={seekTo}
+                  ariaLabel="播放进度"
+                />
+                <span className="w-12 shrink-0 text-center text-[11px] tabular-nums text-ink-500">
+                  {fmtTime(durationSafe)}
+                </span>
+              </div>
             </div>
 
-            <div className="flex items-center gap-1 shrink-0">
+            {/* ── 右：窄屏播放键 / 音量 / 下载 / 关闭 ── */}
+            <div className="flex items-center justify-end gap-1 lg:flex-1 lg:gap-1.5">
               <button
                 type="button"
-                className="text-white/45 hover:text-white/90 p-1 transition-colors"
-                onClick={() => setMuted(v => !v)}
-                title={muted ? '取消静音' : '静音'}
-                aria-label={muted ? '取消静音' : '静音'}
+                className="grid h-10 w-10 place-items-center rounded-full bg-ink-900 text-ink-0
+                  transition hover:brightness-105 active:scale-[0.97] disabled:opacity-45 lg:hidden
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60
+                  focus-visible:ring-offset-2 focus-visible:ring-offset-ink-50"
+                onClick={toggle}
+                disabled={loading || !resolvedSrc}
+                aria-label={playing ? '暂停' : '播放'}
               >
-                {muted || volume === 0 ? (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+                {loading ? (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
                 ) : (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+                  <PlayIcon playing={playing} />
                 )}
               </button>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.01}
-                value={muted ? 0 : volume}
-                onChange={e => {
-                  const v = Number(e.target.value);
-                  setVolume(v);
-                  setMuted(v === 0);
+
+              <div className="hidden items-center gap-1 lg:flex">
+                <button
+                  type="button"
+                  className={`${iconBtn} h-9 w-9`}
+                  onClick={() => setMuted(v => !v)}
+                  title={muted ? '取消静音' : '静音'}
+                  aria-label={muted ? '取消静音' : '静音'}
+                >
+                  {muted || volume === 0 ? (
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      <path d="M11 5 6 9H3v6h3l5 4V5Z" />
+                      <path d="m16 9 5 6M21 9l-5 6" />
+                    </svg>
+                  ) : (
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      <path d="M11 5 6 9H3v6h3l5 4V5Z" />
+                      <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+                      <path d="M18.5 6a9 9 0 0 1 0 12" />
+                    </svg>
+                  )}
+                </button>
+                <div className="w-10 xl:w-16">
+                  <Rail
+                    value={muted ? 0 : volume}
+                    max={1}
+                    step={0.01}
+                    onChange={changeVolume}
+                    ariaLabel="音量"
+                  />
+                </div>
+              </div>
+
+              {onDownload && track.buildId ? (
+                <button
+                  type="button"
+                  className={`${iconBtn} hidden h-9 w-9 lg:grid`}
+                  onClick={() => onDownload(track)}
+                  title="下载本章 MP3"
+                  aria-label="下载本章 MP3"
+                >
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M12 3v11" />
+                    <path d="m7.5 10 4.5 4.5L16.5 10" />
+                    <path d="M4 18.5v1A1.5 1.5 0 0 0 5.5 21h13a1.5 1.5 0 0 0 1.5-1.5v-1" />
+                  </svg>
+                </button>
+              ) : null}
+
+              <button
+                type="button"
+                className={`${iconBtn} h-9 w-9`}
+                onClick={() => {
+                  audioRef.current?.pause();
+                  onClose();
                 }}
-                className="player-range w-12 sm:w-16 lg:w-20"
-                aria-label="音量"
-                style={{
-                  background: `linear-gradient(to right, rgba(255,255,255,0.65) ${(muted ? 0 : volume) * 100}%, rgba(255,255,255,0.14) ${(muted ? 0 : volume) * 100}%)`,
-                }}
-              />
+                title="关闭播放器"
+                aria-label="关闭播放器"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden>
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              </button>
             </div>
-
-            <span className="hidden sm:block text-[10px] text-white/40 tabular-nums shrink-0">
-              {fmtTime(currentTime)} / {fmtTime(durationSafe)}
-            </span>
-
-            <button
-              type="button"
-              className="text-white/40 hover:text-white/90 p-1 shrink-0 transition-colors"
-              onClick={() => {
-                audioRef.current?.pause();
-                onClose();
-              }}
-              title="关闭播放器"
-              aria-label="关闭播放器"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-            </button>
-          </div>
-
-          {/* 移动端/窄屏把进度条放到第二行，避免挤压标题 */}
-          <div className="relative mt-1.5 flex md:hidden items-center gap-2">
-            <span className="text-[10px] text-white/40 tabular-nums w-9 text-right">{fmtTime(currentTime)}</span>
-            <input
-              type="range"
-              min={0}
-              max={durationSafe || 1}
-              step={0.1}
-              value={Math.min(currentTime, durationSafe || 1)}
-              onChange={e => {
-                const next = Number(e.target.value);
-                setCurrentTime(next);
-                if (audioRef.current) audioRef.current.currentTime = next;
-              }}
-              className="player-range flex-1"
-              aria-label="播放进度"
-              style={{
-                background: `linear-gradient(to right, rgb(var(--brand-400)) ${progress}%, rgba(255,255,255,0.14) ${progress}%)`,
-              }}
-            />
-            <span className="text-[10px] text-white/40 tabular-nums w-9">{fmtTime(durationSafe)}</span>
           </div>
         </div>
       </div>
