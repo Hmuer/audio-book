@@ -205,56 +205,24 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
         style={{ borderRadius: 'var(--radius-md)' }}
         onClick={e => e.stopPropagation()}
       >
-        {/* 头部：GreenSpring简洁步骤条 · 无胶囊装饰 */}
-        <div className="relative shrink-0 px-6 pt-5 pb-4"
+        {/* 头部：只留标题和关闭，不放步骤条 */}
+        <div className="relative shrink-0 px-6 py-4 flex items-center justify-between"
           style={{
             borderBottom: '1px solid rgb(var(--ink-300))',
             background: 'rgb(var(--ink-50))',
           }}
         >
-          {/* 顶部：标题行 */}
-          <div className="flex items-center justify-between mb-3">
-            <div className="text-[11px] font-medium" style={{ color: 'rgb(var(--ink-600))' }}>
-              步骤 1 / 3
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={busy}
-              aria-label="关闭"
-              className="w-7 h-7 grid place-items-center transition-all text-ink-600 hover:text-ink-900 hover:bg-ink-200"
-              style={{ borderRadius: 'var(--radius-xs)' }}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
-          </div>
-
-          <h3 className="text-[17px] font-semibold text-white leading-tight">新建有声书</h3>
-          <p className="text-[12.5px] mt-0.5" style={{ color: 'rgb(var(--ink-500))' }}>
-            命名项目 · 导入文本 · AI 自动合成
-          </p>
-
-          {/* Stepper（水平 3 步条 · 冷灰） */}
-          <div className="mt-4 grid grid-cols-3 gap-2">
-            {['命名项目', '导入内容', 'AI 合成'].map((t, i) => (
-              <div key={t} className="flex items-center gap-2">
-                <div className="w-6 h-6 shrink-0 grid place-items-center text-[11px] font-semibold"
-                  style={{
-                    borderRadius: 'var(--radius-xs)',
-                    background: i === 0
-                      ? 'rgb(var(--brand-600))'
-                      : 'rgb(var(--ink-300))',
-                    color: '#fff',
-                  }}
-                >{i + 1}</div>
-                <div className="min-w-0">
-                  <div className="text-[11.5px] font-medium leading-tight truncate"
-                    style={{ color: i === 0 ? 'rgb(var(--ink-900))' : 'rgba(var(--ink-700), 0.55)' }}
-                  >{t}</div>
-                </div>
-              </div>
-            ))}
-          </div>
+          <h3 className="text-[16px] font-semibold text-white leading-tight">新建有声书</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            aria-label="关闭"
+            className="w-7 h-7 grid place-items-center transition-all text-ink-600 hover:text-ink-900 hover:bg-ink-200"
+            style={{ borderRadius: 'var(--radius-xs)' }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
         </div>
 
         <form onSubmit={onSubmit} className="flex-1 min-h-0 flex flex-col">
@@ -262,7 +230,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
             {/* 项目名 */}
             <div>
               <label className="block text-[13px] font-medium mb-1.5"
-                style={{ color: 'rgba(var(--ink-900), 0.8)' }}>有声书名称
+                style={{ color: 'rgba(var(--ink-900), 0.8)' }}>书籍名称
               </label>
               <input
                 type="text"
@@ -568,7 +536,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                   </div>
                 ) : !pickerOpen ? (
                   <div className="text-[11px] text-ink-500">
-                    选择书目后会自动填入有声书名称，导入后仍可修改。
+                    选择书目后会自动填入书籍名称，导入后仍可修改。
                   </div>
                 ) : null}
               </div>
