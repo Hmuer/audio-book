@@ -47,6 +47,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
   const [libErr, setLibErr] = useState<string | null>(null);
   const [libLoading, setLibLoading] = useState(false);
   const [category, setCategory] = useState('');
+  const [categoryOpen, setCategoryOpen] = useState(false);
   const [keyword, setKeyword] = useState('');
   const [books, setBooks] = useState<LibraryBook[]>([]);
   const [booksTotal, setBooksTotal] = useState(0);
@@ -54,6 +55,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selected, setSelected] = useState<LibraryBook | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const pickerRef = useRef<HTMLDivElement>(null);
 
   const loadInfo = useCallback(async (force = false) => {
     setLibLoading(true);
@@ -73,7 +75,9 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
     if (mode === 'library' && !libInfo && !libLoading && !libErr) void loadInfo();
   }, [mode, libInfo, libLoading, libErr, loadInfo]);
 
-  // 分类 / 关键字变化时拉书目；关键字做 250ms 防抖
+  // 分类 / 关键字变化时重拉首页；「加载更多」按 offset 追加
+  const [booksLoadingMore, setBooksLoadingMore] = useState(false);
+
   useEffect(() => {
     if (mode !== 'library' || !libInfo) return;
     let alive = true;
@@ -84,6 +88,7 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
           category: category || undefined,
           q: keyword.trim() || undefined,
           limit: PAGE_SIZE,
+          offset: 0,
         });
         if (!alive) return;
         setBooks(res.items);
@@ -96,6 +101,28 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
     }, keyword ? 250 : 0);
     return () => { alive = false; clearTimeout(t); };
   }, [mode, libInfo, category, keyword]);
+
+  const loadMoreBooks = useCallback(async () => {
+    if (booksLoading || booksLoadingMore || books.length >= booksTotal) return;
+    setBooksLoadingMore(true);
+    try {
+      const res = await api.libraryBooks({
+        category: category || undefined,
+        q: keyword.trim() || undefined,
+        limit: PAGE_SIZE,
+        offset: books.length,
+      });
+      setBooks(prev => {
+        const seen = new Set(prev.map(b => b.uid));
+        return prev.concat(res.items.filter(b => !seen.has(b.uid)));
+      });
+      setBooksTotal(res.total);
+    } catch (e: any) {
+      setLibErr(String(e?.message || e));
+    } finally {
+      setBooksLoadingMore(false);
+    }
+  }, [books.length, booksLoading, booksLoadingMore, booksTotal, category, keyword]);
 
   const pickBook = (b: LibraryBook) => {
     setSelected(b);
@@ -326,27 +353,21 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                     <label className="block text-[11.5px] mb-1" style={{ color: 'rgb(var(--ink-500))' }}>
                       分类
                     </label>
-                    <div className="relative">
-                      <select
-                        value={category}
-                        onChange={e => { setCategory(e.target.value); setPickerOpen(false); }}
-                        disabled={busy || !libInfo}
-                        className="input-base w-full appearance-none pr-6 text-[12.5px] cursor-pointer"
-                        title={totalBooks ? `书库共 ${totalBooks.toLocaleString()} 本` : undefined}
-                      >
-                        <option value="">全部分类</option>
-                        {(libInfo?.categories ?? []).map(c => (
-                          <option key={c.name} value={c.name} title={`${c.count.toLocaleString()} 本`}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
+                    <button
+                      type="button"
+                      disabled={busy || !libInfo}
+                      onClick={() => { setCategoryOpen(o => !o); setPickerOpen(false); }}
+                      className="input-base w-full flex items-center gap-1.5 text-left"
+                      aria-expanded={categoryOpen}
+                      title={totalBooks ? `书库共 ${totalBooks.toLocaleString()} 本 / ${(libInfo?.categories.length ?? 0)} 个分类` : undefined}
+                    >
+                      <span className="flex-1 truncate text-[12.5px]">{activeCategoryLabel}</span>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                         strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-                        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-500">
+                        className={`shrink-0 text-ink-500 transition-transform ${categoryOpen ? 'rotate-180' : ''}`}>
                         <polyline points="6 9 12 15 18 9" />
                       </svg>
-                    </div>
+                    </button>
                   </div>
 
                   <div className="min-w-0">
@@ -358,7 +379,12 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                       disabled={busy || !libInfo}
                       onClick={() => {
                         setPickerOpen(o => !o);
-                        if (!pickerOpen) setTimeout(() => searchRef.current?.focus(), 30);
+                        if (!pickerOpen) {
+                          setTimeout(() => {
+                            searchRef.current?.focus({ preventScroll: true });
+                            pickerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                          }, 40);
+                        }
                       }}
                       className="input-base w-full flex items-center gap-2 text-left"
                       aria-expanded={pickerOpen}
@@ -381,9 +407,48 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                   </div>
                 </div>
 
+                {categoryOpen && (
+                  <div
+                    className="p-1.5 grid grid-cols-2 gap-1 max-h-[220px] overflow-y-auto"
+                    style={{
+                      borderRadius: 'var(--radius-sm)',
+                      border: '1px solid rgb(var(--ink-300))',
+                      background: 'rgb(var(--ink-0))',
+                    }}
+                  >
+                    {[{ name: '', count: totalBooks }, ...(libInfo?.categories ?? [])].map(c => {
+                      const active = category === c.name;
+                      return (
+                        <button
+                          key={c.name || '__all__'}
+                          type="button"
+                          onClick={() => {
+                            setCategory(c.name);
+                            setCategoryOpen(false);
+                            setPickerOpen(true);
+                            setTimeout(() => {
+                              pickerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                            }, 60);
+                          }}
+                          className={`flex items-center justify-between gap-2 px-2.5 py-1.5 text-left transition-colors ${
+                            active ? 'bg-brand-500/15 text-brand-400' : 'text-ink-900 hover:bg-ink-200'
+                          }`}
+                          style={{ borderRadius: 'var(--radius-xs)' }}
+                        >
+                          <span className="truncate text-[12px]">{c.name || '全部分类'}</span>
+                          <span className="shrink-0 text-[10.5px] text-ink-500">
+                            {c.count.toLocaleString()}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
                 {/* 展开的书目列表（在流内展开，避免弹层被滚动容器裁切） */}
                 {pickerOpen && (
                   <div
+                    ref={pickerRef}
                     className="overflow-hidden"
                     style={{
                       borderRadius: 'var(--radius-sm)',
@@ -410,7 +475,13 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                         </button>
                       )}
                     </div>
-                    <div className="max-h-[188px] overflow-y-auto">
+                    <div
+                      className="max-h-[300px] overflow-y-auto"
+                      onScroll={e => {
+                        const el = e.currentTarget;
+                        if (el.scrollHeight - el.scrollTop - el.clientHeight < 48) void loadMoreBooks();
+                      }}
+                    >
                       {booksLoading && books.length === 0 ? (
                         <div className="px-3 py-6 text-center text-[12px] text-ink-500">加载中…</div>
                       ) : books.length === 0 ? (
@@ -447,11 +518,22 @@ export default function CreateAudiobookDialog({ onClose, onCreated }: Props) {
                         })
                       )}
                     </div>
-                    <div className="px-3 py-1.5 text-[10.5px] text-ink-500 border-t border-ink-300/60 flex items-center justify-between">
-                      <span>{activeCategoryLabel} · 共 {booksTotal.toLocaleString()} 本</span>
-                      {booksTotal > books.length ? (
-                        <span>输入关键字缩小范围</span>
-                      ) : null}
+                    <div className="px-3 py-1.5 text-[10.5px] text-ink-500 border-t border-ink-300/60 flex items-center justify-between gap-2">
+                      <span className="truncate">
+                        {activeCategoryLabel} · 已显示 {books.length.toLocaleString()} / 共 {booksTotal.toLocaleString()} 本
+                      </span>
+                      {books.length < booksTotal ? (
+                        <button
+                          type="button"
+                          onClick={() => void loadMoreBooks()}
+                          disabled={booksLoadingMore}
+                          className="shrink-0 text-brand-400 hover:text-brand-300 disabled:opacity-60"
+                        >
+                          {booksLoadingMore ? '加载中…' : '加载更多 ▾'}
+                        </button>
+                      ) : (
+                        <span className="shrink-0">关键字可继续缩小</span>
+                      )}
                     </div>
                   </div>
                 )}
