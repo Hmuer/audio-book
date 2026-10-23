@@ -165,15 +165,29 @@ const AudioPlayerBar = forwardRef<AudioPlayerHandle, {
         }}
       />
       <div
-        className="fixed bottom-0 left-0 right-0 z-50 border-t border-ink-300/70 bg-[#0b1018]/95 shadow-[0_-12px_40px_rgba(0,0,0,0.35)] backdrop-blur-md md:left-[244px]"
+        className="fixed bottom-0 left-0 right-0 z-[80] md:left-[244px]"
         role="region"
         aria-label="章节播放器"
       >
-        <div className="mx-auto max-w-[1500px] px-3 sm:px-5 py-2.5 space-y-2">
-          <div className="flex items-center gap-3 min-w-0">
+        <div
+          className="relative overflow-hidden border-t border-white/10 px-3 sm:px-5 pt-2.5 pb-2"
+          style={{
+            background: 'linear-gradient(180deg, rgba(17,24,39,0.78) 0%, rgba(7,11,18,0.96) 100%)',
+            backdropFilter: 'blur(24px) saturate(140%)',
+            WebkitBackdropFilter: 'blur(24px) saturate(140%)',
+            boxShadow: '0 -24px 60px -24px rgba(0,0,0,0.9), inset 0 1px 0 rgba(255,255,255,0.06)',
+          }}
+        >
+          {/* 顶部细光带 + 左侧品牌色光晕：透明质感 */}
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-brand-400/70 to-transparent" />
+          <div className="pointer-events-none absolute -left-20 top-1/2 h-28 w-80 -translate-y-1/2 rounded-full bg-brand-500/10 blur-3xl" />
+
+          <div className="relative flex items-center gap-2.5 sm:gap-3">
             <button
               type="button"
-              className="w-10 h-10 shrink-0 rounded-full grid place-items-center bg-brand-600 text-white hover:bg-brand-500 transition-colors disabled:opacity-50"
+              className="w-10 h-10 sm:w-11 sm:h-11 shrink-0 rounded-full grid place-items-center text-white
+                bg-gradient-to-br from-brand-400 to-brand-600
+                shadow-[0_0_24px_rgba(99,102,241,0.35)] hover:brightness-110 transition-all disabled:opacity-50"
               onClick={toggle}
               disabled={loading || !resolvedSrc}
               aria-label={playing ? '暂停' : '播放'}
@@ -187,18 +201,50 @@ const AudioPlayerBar = forwardRef<AudioPlayerHandle, {
               )}
             </button>
 
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium text-ink-900 truncate">{track.title}</div>
-              <div className="text-[11px] text-ink-500 truncate">
+            <div
+              className="hidden sm:grid w-10 h-10 shrink-0 place-items-center rounded-xl border border-white/10"
+              style={{ background: 'linear-gradient(135deg, rgba(99,102,241,0.32), rgba(14,165,233,0.12))' }}
+              aria-hidden
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+              </svg>
+            </div>
+
+            <div className="min-w-0 flex-1 sm:flex-none sm:w-[min(28vw,280px)]">
+              <div className="text-[13px] font-medium text-white/90 truncate">{track.title}</div>
+              <div className="text-[11px] text-white/45 truncate">
                 {track.subtitle || (track.chapterIdx != null ? `第 ${track.chapterIdx + 1} 章` : '章节音频')}
                 {error ? <span className="text-rose-300"> · {error}</span> : null}
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5 shrink-0">
+            <div className="hidden md:flex flex-1 items-center gap-2 min-w-0">
+              <span className="text-[10px] text-white/40 tabular-nums w-9 text-right">{fmtTime(currentTime)}</span>
+              <input
+                type="range"
+                min={0}
+                max={durationSafe || 1}
+                step={0.1}
+                value={Math.min(currentTime, durationSafe || 1)}
+                onChange={e => {
+                  const next = Number(e.target.value);
+                  setCurrentTime(next);
+                  if (audioRef.current) audioRef.current.currentTime = next;
+                }}
+                className="player-range flex-1"
+                aria-label="播放进度"
+                style={{
+                  background: `linear-gradient(to right, rgb(var(--brand-400)) ${progress}%, rgba(255,255,255,0.14) ${progress}%)`,
+                }}
+              />
+              <span className="text-[10px] text-white/40 tabular-nums w-9">{fmtTime(durationSafe)}</span>
+            </div>
+
+            <div className="flex items-center gap-1 shrink-0">
               <button
                 type="button"
-                className="text-ink-500 hover:text-ink-800 p-1"
+                className="text-white/45 hover:text-white/90 p-1 transition-colors"
                 onClick={() => setMuted(v => !v)}
                 title={muted ? '取消静音' : '静音'}
                 aria-label={muted ? '取消静音' : '静音'}
@@ -220,18 +266,21 @@ const AudioPlayerBar = forwardRef<AudioPlayerHandle, {
                   setVolume(v);
                   setMuted(v === 0);
                 }}
-                className="w-14 sm:w-20 accent-brand-500 cursor-pointer"
+                className="player-range w-12 sm:w-16 lg:w-20"
                 aria-label="音量"
+                style={{
+                  background: `linear-gradient(to right, rgba(255,255,255,0.65) ${(muted ? 0 : volume) * 100}%, rgba(255,255,255,0.14) ${(muted ? 0 : volume) * 100}%)`,
+                }}
               />
             </div>
 
-            <span className="text-[11px] text-ink-500 tabular-nums shrink-0">
+            <span className="hidden sm:block text-[10px] text-white/40 tabular-nums shrink-0">
               {fmtTime(currentTime)} / {fmtTime(durationSafe)}
             </span>
 
             <button
               type="button"
-              className="text-ink-500 hover:text-ink-800 p-1 shrink-0"
+              className="text-white/40 hover:text-white/90 p-1 shrink-0 transition-colors"
               onClick={() => {
                 audioRef.current?.pause();
                 onClose();
@@ -243,8 +292,9 @@ const AudioPlayerBar = forwardRef<AudioPlayerHandle, {
             </button>
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] text-ink-500 tabular-nums w-9 text-right">{fmtTime(currentTime)}</span>
+          {/* 移动端/窄屏把进度条放到第二行，避免挤压标题 */}
+          <div className="relative mt-1.5 flex md:hidden items-center gap-2">
+            <span className="text-[10px] text-white/40 tabular-nums w-9 text-right">{fmtTime(currentTime)}</span>
             <input
               type="range"
               min={0}
@@ -256,13 +306,13 @@ const AudioPlayerBar = forwardRef<AudioPlayerHandle, {
                 setCurrentTime(next);
                 if (audioRef.current) audioRef.current.currentTime = next;
               }}
-              className="flex-1 accent-brand-500 cursor-pointer"
+              className="player-range flex-1"
               aria-label="播放进度"
               style={{
-                background: `linear-gradient(to right, rgb(var(--brand-500)) ${progress}%, rgba(255,255,255,0.12) ${progress}%)`,
+                background: `linear-gradient(to right, rgb(var(--brand-400)) ${progress}%, rgba(255,255,255,0.14) ${progress}%)`,
               }}
             />
-            <span className="text-[10px] text-ink-500 tabular-nums w-9">{fmtTime(durationSafe)}</span>
+            <span className="text-[10px] text-white/40 tabular-nums w-9">{fmtTime(durationSafe)}</span>
           </div>
         </div>
       </div>

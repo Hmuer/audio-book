@@ -577,3 +577,43 @@ body {
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }
+
+/* ================================================================
+   底部播放器：透明滑块（进度 / 音量）
+================================================================ */
+.player-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 9999px;
+  outline: none;
+  cursor: pointer;
+}
+.player-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: #fff;
+  border: 2px solid rgba(var(--brand-400), 0.95);
+  box-shadow: 0 0 0 4px rgba(var(--brand-500), 0.16);
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.player-range::-webkit-slider-thumb:hover {
+  transform: scale(1.08);
+  box-shadow: 0 0 0 6px rgba(var(--brand-500), 0.22);
+}
+.player-range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  background: #fff;
+  border: 2px solid rgba(var(--brand-400), 0.95);
+  box-shadow: 0 0 0 4px rgba(var(--brand-500), 0.16);
+}
+.player-range::-moz-range-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: transparent;
+}
