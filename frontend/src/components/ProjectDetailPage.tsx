@@ -118,6 +118,13 @@ export default function ProjectDetailPage({
   const [previewError, setPreviewError] = useState<string | null>(null);
   const previewRequestRef = useRef(0);
 
+  // 播放器只挂在「构建详情」里（构建信息与章节列表之间），离开「构建」页签时
+  // 音频随组件卸载停止；这里把暂停态同步回章节行的按钮。
+  // 注意：必须在 `if (loading) return ...` 之前调用，否则 Hook 顺序不一致。
+  useEffect(() => {
+    if (tab !== 'builds') setPlayerPlaying(false);
+  }, [tab]);
+
   const narratorDefault = useMemo(
     () => voices.find(v => normalizeGender(v) === (project?.book_category === '女频' ? '女声' : '男声')) || voices[0],
     [voices, project?.book_category]
@@ -348,12 +355,6 @@ export default function ProjectDetailPage({
       </div>
     );
   }
-
-  // 播放器只挂在「构建详情」里（构建信息与章节列表之间），因此离开构建 tab
-  // 时音频会随组件卸载停止，这里把暂停态同步回按钮。
-  useEffect(() => {
-    if (tab !== 'builds') setPlayerPlaying(false);
-  }, [tab]);
 
   const playerSlot: PlayerSlotProps = {
     track: playerTrack,
