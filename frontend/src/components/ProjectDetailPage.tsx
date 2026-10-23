@@ -1723,10 +1723,10 @@ function ChaptersTab({ project }: { project: ProjectDetailResp }) {
                               const c = charColor(sp);
                               return (
                                 <span key={sp}
-                                  className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border"
+                                  className="inline-flex items-center text-[11px] px-2 py-0.5 rounded-full border"
                                   style={{ background: c.bg, color: c.fg, borderColor: c.border }}
                                 >
-                                  <span className="font-bold">{sp.trim()[0] || '?'}</span> {sp}
+                                  {sp}
                                 </span>
                               );
                             })}
@@ -1765,9 +1765,13 @@ function ChaptersTab({ project }: { project: ProjectDetailResp }) {
                                       className="text-[11px] font-bold rounded px-1 py-0.5 border cursor-pointer"
                                       style={{ background: c!.bg, color: c!.fg, borderColor: c!.border }}
                                       title={lowConf ? `${l.speaker}（置信度低，点击修正）` : `${l.speaker}（点击修正归属）`}
+                                      aria-label={`修改 ${l.speaker} 的对白归属`}
                                       onClick={() => setEditingLineKey(prev => (prev === l.key ? null : l.key))}
                                     >
-                                      {l.speaker!.trim()[0]}
+                                      <span
+                                        className="block w-2.5 h-2.5 rounded-full mx-auto"
+                                        style={{ background: c!.fg }}
+                                      />
                                     </button>
                                   </div>
                                 ) : (
