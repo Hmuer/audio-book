@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { createPortal } from 'react-dom';
 import {
   api,
+  fetchMediaObjectUrl,
   DailyConfig,
   DailyIssue,
   DailyIssueDetail,
@@ -156,6 +157,180 @@ function voiceOptionLabel(v: DailyVoiceOption): string {
   const scene = voiceSceneText(v);
   if (scene) parts.push(scene);
   return parts.join(' · ');
+}
+
+/** 日报音色试听文案：短句即可（TTS 按字符计费，控制在 40 字内）。 */
+const VOICE_PREVIEW_TEXT = '欢迎收听 AI 前沿日报，今天我们来聊聊人工智能领域最值得关注的进展。';
+
+/**
+ * 可试听的音色列表：每一行都带试听按钮，支持搜索/直接选中。
+ *
+ * 试听走平台既有的 /api/tts/preview（真实 TTS）→ /media 需要鉴权头 →
+ * fetchMediaObjectUrl 转 Blob 再播放；同一时间只播一个，切换/卸载时释放。
+ */
+function VoiceAuditionList({
+  voices,
+  value,
+  onChange,
+  disabled = false,
+}: {
+  voices: DailyVoiceOption[];
+  value: string;
+  onChange: (voiceId: string) => void;
+  disabled?: boolean;
+}) {
+  const [query, setQuery] = useState('');
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const [loadingId, setLoadingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const objUrlRef = useRef<string | null>(null);
+
+  const releaseUrl = () => {
+    if (objUrlRef.current) {
+      URL.revokeObjectURL(objUrlRef.current);
+      objUrlRef.current = null;
+    }
+  };
+  const stop = () => {
+    const a = audioRef.current;
+    if (a) {
+      a.onended = null;
+      a.onerror = null;
+      try { a.pause(); } catch {}
+    }
+    releaseUrl();
+    setPlayingId(null);
+  };
+  useEffect(() => () => {
+    const a = audioRef.current;
+    if (a) { try { a.pause(); } catch {} }
+    releaseUrl();
+  }, []);
+
+  const filtered = useMemo(() => {
+    const k = query.trim().toLowerCase();
+    if (!k) return voices;
+    return voices.filter((v) =>
+      [v.name, v.id, v.provider, v.gender, voiceSceneText(v)].join(' ').toLowerCase().includes(k),
+    );
+  }, [voices, query]);
+
+  const audition = async (voice: DailyVoiceOption) => {
+    if (playingId === voice.id) {
+      stop();
+      return;
+    }
+    stop();
+    setError(null);
+    setLoadingId(voice.id);
+    let url: string | null = null;
+    try {
+      const r = await api.preview(VOICE_PREVIEW_TEXT, voice.id, 1.0);
+      url = await fetchMediaObjectUrl(r.audio_url);
+      if (!audioRef.current) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      objUrlRef.current = url;
+      audioRef.current.src = url;
+      audioRef.current.onended = () => setPlayingId(null);
+      audioRef.current.onerror = () => {
+        setError(`「${voice.name}」试听播放失败`);
+        setPlayingId(null);
+      };
+      await audioRef.current.play();
+      setPlayingId(voice.id);
+    } catch (e) {
+      if (url) URL.revokeObjectURL(url);
+      setError(`「${voice.name}」试听失败：${errorText(e)}`);
+    } finally {
+      setLoadingId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <input
+        className="input !text-xs w-full"
+        placeholder={`搜索音色（共 ${voices.length} 个，全部可试听）`}
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        disabled={disabled}
+        aria-label="搜索音色"
+      />
+      {error && (
+        <div className="text-[11px]" style={{ color: 'rgb(var(--status-error-fg))' }}>
+          {error}
+        </div>
+      )}
+      <div
+        className="border border-ink-300/70 overflow-y-auto"
+        style={{ borderRadius: 'var(--radius-sm)', maxHeight: 264 }}
+      >
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          disabled={disabled}
+          className={`w-full text-left px-2.5 py-2 text-[12px] transition-colors ${
+            value === '' ? 'text-brand-500 bg-brand-600/10' : 'text-ink-700 hover:bg-ink-200'
+          }`}
+        >
+          使用默认音色（自动挑选「新闻/播报」类）
+        </button>
+        {filtered.map((v) => {
+          const selected = value === v.id;
+          const playing = playingId === v.id;
+          const loading = loadingId === v.id;
+          return (
+            <div
+              key={v.id}
+              className={`flex items-center gap-2 px-2.5 py-1.5 border-t border-ink-300/40 ${
+                selected ? 'bg-brand-600/10' : ''
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => onChange(v.id)}
+                disabled={disabled}
+                className="flex-1 min-w-0 text-left text-[12px]"
+              >
+                <span className={selected ? 'text-brand-500' : 'text-ink-800'}>{v.name}</span>
+                <span className="ml-1.5 text-[10px] text-ink-500">
+                  {VOICE_GROUP_LABELS[voiceGroup(v.gender)]}
+                  {v.provider ? ` · ${v.provider}` : ''}
+                </span>
+                {voiceSceneText(v) && (
+                  <span className="ml-1.5 text-[10px] text-ink-500">· {voiceSceneText(v)}</span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => void audition(v)}
+                disabled={disabled || loading}
+                title={playing ? '停止试听' : '试听'}
+                aria-label={playing ? `停止试听 ${v.name}` : `试听 ${v.name}`}
+                className="shrink-0 grid place-items-center w-6 h-6 border border-ink-300/70 text-ink-600 hover:text-brand-500 hover:border-brand-500 transition-colors disabled:opacity-40"
+                style={{ borderRadius: 'var(--radius-xs)' }}
+              >
+                {loading ? (
+                  <span className="inline-block w-3 h-3 border-2 border-ink-400/70 border-t-brand-500 rounded-full animate-spin" />
+                ) : playing ? (
+                  <StopGlyph size={10} />
+                ) : (
+                  <PlayGlyph size={10} />
+                )}
+              </button>
+            </div>
+          );
+        })}
+        {filtered.length === 0 && (
+          <div className="px-3 py-4 text-center text-[11px] text-ink-500">没有匹配的音色</div>
+        )}
+      </div>
+      <audio ref={audioRef} className="hidden" preload="auto" />
+    </div>
+  );
 }
 
 /** 添加自定义信源：url 必须是 http(s)，name 缺省用域名兜底 */
@@ -761,12 +936,6 @@ function DailySettingsModal({
   }, []);
 
   const voices = config?.voices ?? [];
-  const grouped = useMemo(() => {
-    const out: Record<VoiceGroup, DailyVoiceOption[]> = { male: [], female: [], other: [] };
-    for (const v of voices) out[voiceGroup(v.gender)].push(v);
-    return out;
-  }, [voices]);
-  const currentVoiceMissing = !!voiceId && !voices.some((v) => v.id === voiceId);
 
   const enabledCount = sources.filter((s) => s.enabled).length;
   const canSave = !!config && !loading && !saving && enabledCount >= 1;
@@ -908,32 +1077,15 @@ function DailySettingsModal({
                     当前 TTS 厂商没有可用音色，保存将只更新信源。
                   </div>
                 ) : (
-                  <select
-                    className="input"
+                  <VoiceAuditionList
+                    voices={voices}
                     value={voiceId}
-                    disabled={saving}
-                    onChange={(e) => {
-                      setVoiceId(e.target.value);
+                    onChange={(id) => {
+                      setVoiceId(id);
                       setVoiceTouched(true);
                     }}
-                    aria-label="播报音色"
-                  >
-                    <option value="">使用默认音色（服务端配置）</option>
-                    {(['male', 'female', 'other'] as VoiceGroup[]).map((g) =>
-                      grouped[g].length ? (
-                        <optgroup key={g} label={VOICE_GROUP_LABELS[g]}>
-                          {grouped[g].map((v) => (
-                            <option key={v.id} value={v.id}>
-                              {voiceOptionLabel(v)}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ) : null,
-                    )}
-                    {currentVoiceMissing && (
-                      <option value={voiceId}>{voiceId}（当前音色，不在可用列表）</option>
-                    )}
-                  </select>
+                    disabled={saving}
+                  />
                 )}
               </section>
 
@@ -1360,25 +1512,17 @@ function DailyDetail({ date }: { date: string }) {
           </span>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <select
-            className="input !text-xs min-w-[260px] flex-1 sm:flex-none"
-            value={voiceDraft}
-            onChange={(e) => {
-              setVoiceDraft(e.target.value);
-              setVoiceMsg(null);
-            }}
-            disabled={voiceSaving || regenBusy || !config}
-            aria-label="选择播报音色"
-          >
-            <option value="">使用默认音色（自动挑选「新闻/播报」类）</option>
-            {(config?.voices ?? []).map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.name}
-                {v.gender === 'male' ? ' · 男声' : v.gender === 'female' ? ' · 女声' : ''}
-                {v.provider ? ` · ${v.provider}` : ''}
-              </option>
-            ))}
-          </select>
+          <div className="flex-1 min-w-[280px]">
+            <VoiceAuditionList
+              voices={config?.voices ?? []}
+              value={voiceDraft}
+              onChange={(id) => {
+                setVoiceDraft(id);
+                setVoiceMsg(null);
+              }}
+              disabled={voiceSaving || regenBusy || !config}
+            />
+          </div>
           <button
             type="button"
             className="btn-primary !py-1.5 !px-3 text-xs"
@@ -1817,6 +1961,22 @@ function VolumeGlyph({ size = 15 }: { size?: number }) {
       <path d="M11 5L6 9H3v6h3l5 4V5z" />
       <path d="M15.54 8.46a5 5 0 010 7.07" />
       <path d="M19.07 4.93a10 10 0 010 14.14" />
+    </svg>
+  );
+}
+
+function PlayGlyph({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M8 5v14l11-7z" />
+    </svg>
+  );
+}
+
+function StopGlyph({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <rect x="6" y="6" width="12" height="12" rx="1.5" />
     </svg>
   );
 }
