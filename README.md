@@ -87,6 +87,8 @@ cp .env.example "${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.env"
 | `DATA_DIR` | | `$NOVEL_TTS_HOME/data` | `start.sh` 启动时设置的数据库和上传文件根目录 |
 | `AUDIO_DIR` | | `$NOVEL_TTS_HOME/data/audio` | `start.sh` 启动时设置的 MP3 / ZIP 目录 |
 | `DATABASE_URL` | | 指向 `$NOVEL_TTS_HOME/data/app.db` | `start.sh` 启动时设置的 SQLite URL |
+| `DSH_SERVICE_TOKEN` | | 空 | DSH 插件调 `/api/agent/*` 的服务 token（请求头 `X-DSH-Token`）。留空时整个命名空间返回 503；**不要**写进前端或提交进仓库 |
+| `AGENT_TASK_BUDGET_CNY` | | `2.0` | 单个创作任务的 LLM 成本熔断阈值（元），上报成本累计超限后任务置 `blocked` |
 
 ### 多厂商配置
 
@@ -132,6 +134,7 @@ audio-book/
 │   ├── app/
 │   │   ├── main.py                 # FastAPI 入口 + StaticFiles 挂载前端 + /media 鉴权
 │   │   ├── api/routes.py           # /api/* 路由（薄壳 → services；所有路由强制鉴权）
+│   │   ├── api/agent_routes.py     # /api/agent/*（DSH 插件桥接，独立 X-DSH-Token 鉴权）
 │   │   ├── ai/
 │   │   │   ├── base.py             # BaseLLMProvider / BaseTTSProvider 抽象
 │   │   │   ├── factory.py          # get_llm() / get_tts()（多厂商 + ACTIVE_* 指针）
@@ -154,7 +157,7 @@ audio-book/
 │   │   │   ├── epub_reader.py      # EPUB 解析
 │   │   │   └── book_split.py       # 正则分章（兜底；LLM 分章是默认路径）
 │   │   ├── db/
-│   │   │   ├── models.py           # users / projects / builds / build_artifacts / project_characters / project_dialogues / project_pronunciation_rules
+│   │   │   ├── models.py           # users / projects / builds / build_artifacts / project_characters / project_dialogues / project_pronunciation_rules / creation_jobs / agent_runs
 │   │   │   └── session.py          # aiosqlite + SQLAlchemy 2.0 async
 │   │   ├── resources/ximalaya_tags.json # 喜马拉雅标签原始配置
 │   │   └── core/config.py          # pydantic-settings
@@ -172,6 +175,13 @@ audio-book/
 │   │   └── test_project_e2e.py     # 项目制流程
 │   ├── pytest.ini
 │   └── requirements.txt
+├── agent/                          # DSH 插件：dsh-audio-book-agent
+│   ├── package.json                # dsh.bundle.patch 指向 cordis.patch.yml
+│   ├── cordis.patch.yml            # 把插件挂进 DSH profile
+│   ├── index.js                    # 8 个 audiobook_* 工具（只调 /api/agent/*）
+│   ├── skills/audiobook-pitch/     # 选题、20 字卖点、标签、封面 prompt 规范
+│   └── README.md                   # 安装 / 环境变量 / 安全边界
+├── .dsh/skills/                    # DSH 默认技能根（符号链接到 agent/skills/）
 ├── frontend/
 │   ├── next.config.js              # output: 'export'
 │   ├── tailwind.config.js          # 主题样式配置（当前界面固定深色）
@@ -271,6 +281,75 @@ MiniMax 官方 [速率限制](https://platform.minimax.cn/docs/guides/rate-limit
 
 ---
 
+## DSH 创作编排（Agent 插件，P0）
+
+仓库自带一个 DSH（DeepSeek Harness）插件 `agent/`：让 DSH 的 Agent 做「选题 → 文案/封面 →
+人工确认 → 构建 → 质检 → 发布」的**编排与决策**，执行和数据仍由本后端负责。
+
+```
+DSH 会话 ── audiobook_* 工具 ──▶ agent/（薄插件）──HTTP X-DSH-Token──▶ /api/agent/*
+                                                                        │
+                                      DB / COS / 构建 / 发布（后端是唯一写者）
+```
+
+设计约束（这也是为什么**不**把流水线搬进 DSH）：
+
+- **密钥不出后端**：COS AK/SK、LLM Key 只存在设置页 / `app_settings`，插件上下文里没有；
+- **长任务不占 Agent 回合**：TTS 构建可能几十分钟，插件只拿 `job_id`，轮询
+  `audiobook_project_status`；
+- **幂等**：`audiobook_job_create` 带 `idempotency_key`，重试返回同一个 job，不会双写；
+- **可复现 + 成本熔断**：每次模型调用用 `audiobook_job_report` 落账（模型 / prompt 版本 /
+  tokens / 成本），累计超过 `AGENT_TASK_BUDGET_CNY` 后任务自动置 `blocked`。
+
+### 后端接口（`/api/agent/*`，独立鉴权）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/agent/health` | 桥接自检（token / 存储 / 书库状态） |
+| GET | `/api/agent/library/search` | 书库检索（分类 + 标题/作者关键字） |
+| GET | `/api/agent/library/books/{uid}` | 单本元信息 + 开头试读（Range 只读几 KB） |
+| GET | `/api/agent/projects/{id}/status` | 项目状态 + 最近 3 次构建 |
+| GET | `/api/agent/builds/{build_id}` | 按 build_id 查构建状态 |
+| GET | `/api/agent/projects/{id}/logs` | app.log 尾部中与该项目相关的行 |
+| GET | `/api/agent/pricing/quote` | 字符数 → TTS 成本预估 |
+| POST | `/api/agent/jobs` | 创建创作任务（幂等） |
+| GET | `/api/agent/jobs`、`/api/agent/jobs/{job_id}` | 任务列表 / 详情（含调用流水） |
+| POST | `/api/agent/runs` | 上报一次模型调用的成本（超预算熔断） |
+
+鉴权：请求头 `X-DSH-Token` 必须等于 `DSH_SERVICE_TOKEN`；未配置时整个命名空间返回 503
+（fail closed）。这些接口**不挂**全局 JWT 依赖，也不接受用户 token。
+
+### 插件安装（本机）
+
+```bash
+# 1) 后端写服务 token（写入 $NOVEL_TTS_HOME/.env 后重启后端）
+echo "DSH_SERVICE_TOKEN=$(openssl rand -hex 32)" >> "${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.env"
+
+# 2) 同一个值交给 DSH 进程（启动 DSH 前 export）
+export AUDIO_BOOK_DSH_TOKEN=<同一个值>
+
+# 3) 安装插件并重启 DSH web
+dsh plugin --profile web add /opt/audio-book/audio-book/agent
+```
+
+插件暴露 8 个 `audiobook_*` 工具，并自带技能 `audiobook-pitch`（20 字卖点、喜马拉雅式标签、
+方图封面 prompt、成本口径）；技能通过仓库根 `.dsh/skills/` 的符号链接被发现（DSH 默认技能根）。
+
+### 数据模型
+
+- `creation_jobs`：创作任务状态机（`draft → in_review → approved → building → ready →
+  published`，另有 `failed / cancelled / blocked`），字段含 `payload_json`（阶段产物）、
+  `budget_cny` / `spent_cny`；
+- `agent_runs`：模型调用审计（角色、模型、prompt 版本、输入哈希、tokens、成本、输出）。
+
+### 当前范围与后续
+
+P0 已完成：桥接 API、两张表、插件与 8 个工具、技能、后端测试与插件端到端冒烟。
+P1 待做：建项目 / 导入书库 / 启动构建 / 保存文案 / 质检 / 发布等写工具；代码化 workflow
+（选题 → 文案 + 封面并行 → 人工闸门 → 构建 → 质检 → 发布）；DSH Agent 预设。
+
+---
+
 ## 安全策略摘要（生产环境必须满足）
 
 | 策略 | 检查时机 | 行为 |
@@ -285,6 +364,8 @@ MiniMax 官方 [速率限制](https://platform.minimax.cn/docs/guides/rate-limit
 | 任意登录用户列项目 | 请求 | 按 owner 过滤（admin 例外） |
 | `await file.read()` 后再判大小 | 请求 | 改为分块累加，超限立即 413 |
 | ZIP-bomb / 异常解压比 | 请求 | declared/actual > 100x 时 400 |
+| 未配置 / 错误 `X-DSH-Token` 访问 `/api/agent/*` | 请求 | 503（未配置）/ 401 |
+| 插件密钥泄漏 | 响应 | `/api/agent/*` 只返回业务字段，绝不回显 S3/LLM Key |
 
 ---
 

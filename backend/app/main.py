@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from .core.config import settings
 from .db.session import init_db
 from .api.routes import router as api_router, auth_router, public_router
+from .api.agent_routes import router as agent_router
 from .services.auth import seed_admin_user
 
 # ---------------------------------------------------------------------------
@@ -287,9 +288,12 @@ async def _disable_proxy_buffering_for_downloads(
     return resp
 
 
-# 路由挂载顺序：先 auth（无鉴权）→ public（无鉴权）→ 业务（强制 JWT）
+# 路由挂载顺序：先 auth（无鉴权）→ public（无鉴权）→ agent（独立服务 token）
+# → 业务（强制 JWT）
 app.include_router(auth_router)
 app.include_router(public_router)
+# DSH Agent 桥接：不走用户 JWT，由 X-DSH-Token 单独鉴权（见 agent_routes.py）
+app.include_router(agent_router)
 app.include_router(api_router)
 
 # /media -> audio files（鉴权 + Range 支持）

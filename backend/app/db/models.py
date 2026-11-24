@@ -465,3 +465,96 @@ class AppSetting(Base):
     value: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
+
+
+# =====================================================================
+# DSH Agent 创作任务（/api/agent/*）
+# =====================================================================
+# 设计要点：
+# - **后端是唯一写者**：DSH 插件只通过 HTTP 接口读写，不直连数据库；
+# - `creation_jobs` 是一条"内容创作流水线"的持久化状态机（选题 → 文案 →
+#   封面 → 人工确认 → 构建 → 质检 → 人工试听 → 发布），进程重启后仍可续跑；
+# - `agent_runs` 是每次模型调用的审计流水（模型 / prompt 版本 / token / 成本），
+#   用于成本熔断和"同一输入可复现"的追溯。
+#
+# status 取值：
+#   draft      已创建，等待选题
+#   in_review  等人工确认（文案+封面 / 成品试听）
+#   approved   人工确认通过
+#   building   构建中（后端异步任务，job 只跟踪，不阻塞）
+#   ready      成品可用（build success / partial_success）
+#   published  已发布（人工执行）
+#   failed     失败
+#   cancelled  人工取消
+#   blocked    预算/质量熔断
+class CreationJob(Base):
+    __tablename__ = "creation_jobs"
+    __table_args__ = (
+        Index("ix_creation_jobs_status_stage", "status", "stage"),
+        Index("ix_creation_jobs_content_created", "content_type", "created_at"),
+    )
+
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # 内容类型：audiobook | short_drama | ...（v1 只有 audiobook）
+    content_type: Mapped[str] = mapped_column(String(32), default="audiobook", index=True)
+    # 编排脚本版本：prompt / 阶段模板变更时递增，便于解释历史结果
+    workflow_version: Mapped[str] = mapped_column(String(32), default="v1")
+    # 当前阶段：topic | copy | cover | copy_review | build | qa | final_review | publish | done
+    stage: Mapped[str] = mapped_column(String(32), default="topic")
+    status: Mapped[str] = mapped_column(String(16), default="draft", index=True)
+
+    # 关联的业务项目（选题确认后创建）；选题阶段为空
+    project_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+    title: Mapped[str] = mapped_column(String(256), default="")
+
+    # 幂等键：插件重试 / 重放时复用同一 job；NULL 表示不参与幂等
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), unique=True, nullable=True
+    )
+
+    # 阶段产物（brief/copy/cover prompt/qa 结果）JSON；schema 由 workflow 版本决定
+    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # 成本控制（元）：上报 run 累加；超过 budget 后置 blocked
+    budget_cny: Mapped[float] = mapped_column(Float, default=0.0)
+    spent_cny: Mapped[float] = mapped_column(Float, default=0.0)
+
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
+
+
+class AgentRun(Base):
+    """一次 DSH 模型调用的审计记录（成本 / 可复现追溯）。
+
+    与 UsageEvent 的区别：UsageEvent 记录的是**本服务自己发起**的
+    prepare/build 供应商调用；AgentRun 记录的是**DSH 编排器发起**的
+    创作调用，两者账本分开，便于分别核对。
+    """
+
+    __tablename__ = "agent_runs"
+    __table_args__ = (
+        Index("ix_agent_runs_job_created", "job_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # 选题阶段还没有 job 时允许为空；一旦建 job 就应回填
+    job_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # 角色：topic | copy | cover | audio | qa | publish
+    role: Mapped[str] = mapped_column(String(64), default="")
+    model: Mapped[str] = mapped_column(String(128), default="")
+    prompt_version: Mapped[str] = mapped_column(String(64), default="")
+    # 输入指纹（工作流可对同一输入去重/重放）
+    input_hash: Mapped[str] = mapped_column(String(64), default="")
+    tokens_in: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, default=0)
+    cost_cny: Mapped[float] = mapped_column(Float, default=0.0)
+    status: Mapped[str] = mapped_column(String(16), default="ok")  # ok | failed
+    output_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)

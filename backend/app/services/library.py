@@ -253,3 +253,45 @@ async def import_library_book(project_id: str, uid: str) -> ProjectResp:
         project_id[:8], uid, book.title, len(data),
     )
     return await import_file(project_id, data, filename)
+
+
+# ---------- 试读（Agent 选题用，只取对象开头几 KB） ----------
+
+#: 书库 TXT 的常见编码（归档器写出的多为 UTF-8；老书可能是 GBK/GB18030）
+_TEXT_ENCODINGS = ("utf-8", "gb18030", "utf-16")
+
+
+def decode_text_head(raw: bytes) -> str:
+    """把对象开头的字节解码成文本（纯函数，便于测试）。
+
+    Range 截断可能把多字节字符切成半个，解码失败时按 UTF-8 容错替换，
+    代价是尾部可能有一个乱码字符 —— 对"试读样本"来说可以接受。
+    """
+    for enc in _TEXT_ENCODINGS:
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+async def read_book_head(book: LibraryBook, *, chars: int = 800) -> dict:
+    """读取一本书开头若干字符，供 Agent 做选题/简介判断。
+
+    书库原文在对象存储里（最大 54MB），这里走 Range 只取前几 KB，
+    不下载整本书。local 后端没有远端对象，返回 ok=False。
+    """
+    chars = max(1, min(int(chars), 4000))
+    st = get_storage()
+    if not st.archives_remotely:
+        return {"ok": False, "reason": "对象存储未启用，无法试读书库原文"}
+    # gb18030 每字最多 2 字节、utf-8 最多 3 字节，按 3 倍 + 余量取，保证够 chars 个字符
+    raw = await st.peek_bytes(book.txt_key, count=chars * 3 + 512)
+    if not raw:
+        return {"ok": False, "reason": "读取书库原文失败（对象为空或读取被拒）"}
+    text = decode_text_head(raw).replace("\r\n", "\n").replace("\r", "\n")
+    return {
+        "ok": True,
+        "text": text[:chars],
+        "truncated": len(text) > chars,
+    }

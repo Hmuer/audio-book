@@ -320,6 +320,25 @@ class Settings(BaseSettings):
     # 不需要实时刷新；过期后下一次请求会重新拉取。
     LIBRARY_INDEX_TTL_SECONDS: int = 1800
 
+    # ============ DSH Agent 桥接（插件 → 后端）============
+    # DSH 插件通过 /api/agent/* 调用后端；这些接口**不使用**用户 JWT，
+    # 而是校验请求头 X-DSH-Token。
+    #
+    # 为什么单列一个 token：插件运行在本机、以"服务身份"调用，不应持有
+    # 用户密码/长时 JWT；同时用户 JWT 会随浏览器登出失效，Agent 任务
+    # 可能跨天跑。
+    #
+    # 安全边界：
+    # - 留空 = 整个 /api/agent/* 拒服务（fail closed），不会默认放开；
+    # - 只在 .env / systemd Environment 里配置，不进入 app_settings、
+    #   不回显给前端（/api/settings 不暴露该字段）；
+    # - 插件只拿到 token，拿不到 S3/LLM 密钥 —— 密钥永远只存在后端。
+    DSH_SERVICE_TOKEN: str = ""
+    # 单个创作任务的 LLM 成本上限（元）。上报的 agent_runs.cost_cny 累加超过
+    # 该值后，任务状态置 blocked，插件侧应停止继续调用模型。
+    # 仅作熔断阈值，不参与计费口径计算。
+    AGENT_TASK_BUDGET_CNY: float = 2.0
+
 
     # Build running 超时（小时）：如果 start_build 命中的 running build
     # started_at 距离现在超过该值，认为是被 kill 的孤儿，直接改 status 回 queued

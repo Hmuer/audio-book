@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Audio Book Agent",
+    "description": "Library search, creation jobs, build status and cost ledger for the local audio-book backend"
+  }
+}

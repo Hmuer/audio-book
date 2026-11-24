@@ -1,0 +1,18 @@
+// DSH bundle patch：把本插件挂进 profile 的宿主平面。
+//
+// 用法（本机）：
+//   dsh plugin --profile web add /opt/audio-book/audio-book/agent
+// 安装会把包 symlink 到 ~/.dsh/profiles/<profile>/node_modules/，
+// 并把包名追加到该 profile 的 dsh.profile.bundles 列表。
+//
+// 只挂插件本身（工具在宿主平面注册，所有会话可用）。
+// 技能不在这里注册：仓库根目录的 `.dsh/skills/` 是 DSH 的默认技能根之一
+// （<project>/.dsh/skills），本插件的 SKILL.md 通过符号链接放在那里，
+// 这样 patch 出问题时也不会拖垮 DSH 启动。
+- insert:
+    - id: audio-book-agent
+      name: dsh-audio-book-agent
+      config:
+        # 后端地址；默认即本机 28000。token 不写在这里，走环境变量
+        # AUDIO_BOOK_DSH_TOKEN（= 后端 .env 的 DSH_SERVICE_TOKEN）。
+        baseUrl: http://127.0.0.1:28000

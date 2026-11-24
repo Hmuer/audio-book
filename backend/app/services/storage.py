@@ -92,6 +92,14 @@ class StorageBackend(ABC):
         """
         return None
 
+    async def peek_bytes(self, key: str, count: int = 1024) -> bytes:
+        """只读对象开头 count 字节（书库试读 / 编码探测用）。
+
+        书库里的 TXT 最大 54MB，Agent 做选题时只需要开头几 KB 的样本；
+        Range 读取不会把整本书拉进内存。local 后端没有远端对象，返回空。
+        """
+        return b""
+
     @abstractmethod
     def url(self, key: str) -> str | None:
         """远端下载直链；local 后端返回 None（调用方回落到媒体 token）。"""
