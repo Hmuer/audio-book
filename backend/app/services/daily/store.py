@@ -22,7 +22,7 @@ import logging
 import os
 import re
 import tempfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +38,11 @@ SCRIPT_NAME = "script.md"
 SHOWNOTES_NAME = "shownotes.md"
 RUN_STATUS_NAME = "run_status.json"
 MAX_LOG_LINES = 200
+
+
+def utcnow_iso() -> str:
+    """机器时间统一存 UTC（带 +00:00），前端按本地时区展示。"""
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 class DailyError(RuntimeError):
@@ -159,7 +164,7 @@ def update_review(date: str, *, decision: str, note: str, reviewed_by: str) -> d
     review.update({
         "decision": decision,
         "note": (note or "").strip()[:500],
-        "reviewed_at": datetime.now().isoformat(timespec="seconds"),
+        "reviewed_at": utcnow_iso(),
         "reviewed_by": reviewed_by,
     })
     meta["review"] = review

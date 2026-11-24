@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from email.utils import format_datetime
 from pathlib import Path
 from typing import Any
@@ -51,10 +51,12 @@ def _shownotes_excerpt(root: Path | None, date: str, limit: int = 320) -> str:
 
 def _pub_date(iso: str | None) -> str:
     try:
-        dt = datetime.fromisoformat(str(iso)) if iso else datetime.now()
+        dt = datetime.fromisoformat(str(iso)) if iso else datetime.now(UTC)
     except ValueError:
-        dt = datetime.now()
-    return format_datetime(dt if dt.tzinfo else dt.astimezone())
+        dt = datetime.now(UTC)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return format_datetime(dt)
 
 
 def build_feed(

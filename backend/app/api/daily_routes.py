@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import secrets
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -93,7 +93,11 @@ class DailyConfigUpdate(BaseModel):
 async def _config_payload() -> dict[str, Any]:
     prefs_doc = prefs.load()
     voices = await prefs.available_voices()
-    voice_id = prefs.resolve_voice_id(voices)
+    try:
+        voice_id = prefs.resolve_voice_id(voices)
+    except DailyError:
+        # TTS 厂商暂不可用（无音色）时，设置页仍应能打开/管理信源
+        voice_id = ""
     status = store.read_run_status()
     feed_key_set = bool((settings.DAILY_FEED_KEY or "").strip())
     return {
@@ -201,16 +205,36 @@ def _iter_file(path: Path, start: int, length: int) -> Iterator[bytes]:
             yield chunk
 
 
+async def daily_audio_access(
+    key: str | None = Query(default=None),
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    token: str | None = Query(default=None),
+    x_dsh_token: str | None = Header(default=None, alias="X-DSH-Token"),
+) -> str:
+    """音频访问：播客客户端用 ?key=（仅已审核期数），前端用 JWT。
+
+    播客客户端无法带 Authorization 头，所以 RSS enclosure 必须能用 key 直接拉。
+    """
+    expected = (settings.DAILY_FEED_KEY or "").strip()
+    if expected and key and secrets.compare_digest(key, expected):
+        return "feed"
+    user = await get_current_user(creds=creds, token=token)
+    return user.username
+
+
 @router.get("/issues/{date}/audio")
 async def daily_issue_audio(
     date: str,
     request: Request,
-    operator: str = Depends(daily_operator),
+    access: str = Depends(daily_audio_access),
 ):
     try:
         base = store.issue_dir(date)
+        meta = store.load_meta(date)
     except DailyError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(404, str(e))
+    if access == "feed" and store.issue_summary(meta)["status"] != "approved":
+        raise HTTPException(403, "本期还未通过人工审核，不能通过订阅源访问")
     path = base / store.AUDIO_NAME
     if not path.is_file():
         raise HTTPException(404, "本期还没有音频（可能仍在生成或生成失败）")
@@ -299,7 +323,7 @@ async def daily_run_status(operator: str = Depends(daily_operator)) -> dict[str,
             status="failed",
             stage="failed",
             error="生成进程已结束但状态未更新，请重新触发",
-            finished_at=datetime.now().isoformat(timespec="seconds"),
+            finished_at=datetime.now(UTC).isoformat(timespec="seconds"),
         )
         store.append_run_log("[recover] 接口侧纠正残留 running 状态")
         status = store.read_run_status()
@@ -336,7 +360,8 @@ async def daily_feed(
         raise HTTPException(403, "未配置 DAILY_FEED_KEY，RSS 未开放")
     if not key or not secrets.compare_digest(key, expected):
         raise HTTPException(401, "feed key 无效")
-    issues = store.list_issues(limit=60)
+    # 只有人工终审通过的期数才进入 RSS（方案：发布前必须人工审核）
+    issues = [i for i in store.list_issues(limit=60) if i.get("status") == "approved"]
     xml = build_feed(
         issues,
         base_url=public_base_url(request),

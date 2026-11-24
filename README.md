@@ -416,7 +416,9 @@ P1 待做：建项目 / 导入书库 / 启动构建 / 保存文案 / 质检 / �
 3. 生成完成后在详情页试听、检查简介里的信源链接；
 4. 人工终审：「通过」后状态变 `approved`；「退回」并写备注（可重跑覆写当日）；
 5. 需要对外提供播客：配置 `DAILY_FEED_KEY` + `DAILY_PUBLIC_BASE_URL`，把
-   `https://<你的域名>/api/daily/feed.xml?key=<key>` 提交到喜马拉雅「我有音频 RSS」等通道。
+   `<你的域名>/api/daily/feed.xml?key=<key>` 提交到喜马拉雅「我有音频 RSS」等通道。
+   **RSS 只包含人工终审通过（approved）的期数**；enclosure 音频同样用 `?key=` 鉴权，
+   未审核期数通过订阅源访问会返回 403。
 
 ### 生成设置（页面内切换）
 

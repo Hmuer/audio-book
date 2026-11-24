@@ -54,7 +54,7 @@ def start_run(*, date: str | None = None, max_items: int | None = None) -> dict[
         )
     date = date or datetime.now().strftime("%Y-%m-%d")
     store.issue_dir(date)  # 校验日期格式
-    now = datetime.now().isoformat(timespec="seconds")
+    now = store.utcnow_iso()
     run_id = f"run_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     store.write_run_status(
         status="running", stage="queued", progress=0,
@@ -106,7 +106,7 @@ def _record_failure(message: str) -> None:
         error=message,
         stage="failed",
         progress=0,
-        finished_at=datetime.now().isoformat(timespec="seconds"),
+        finished_at=store.utcnow_iso(),
         consecutive_failures=failures,
         circuit_open=circuit,
     )
@@ -205,9 +205,9 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
     meta: dict[str, Any] = {
         "date": date,
         "title": script.title,
-        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "created_at": store.utcnow_iso(),
         "duration_ms": int(duration_ms),
-        "item_count": len(items),
+        "item_count": len(selected_topics),
         "topics": [_topic_public(t) for t in selected_topics],
         "sections": script.sections,
         "stats": {
@@ -244,7 +244,7 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
         status="success",
         stage="done",
         progress=100,
-        finished_at=datetime.now().isoformat(timespec="seconds"),
+        finished_at=store.utcnow_iso(),
         error=None,
         date=date,
         stats=meta["stats"],
@@ -272,7 +272,7 @@ def recover_stale_run() -> bool:
         status="failed",
         stage="failed",
         error="上次生成未完成（服务重启/进程退出），请重新触发生成",
-        finished_at=datetime.now().isoformat(timespec="seconds"),
+        finished_at=store.utcnow_iso(),
         consecutive_failures=failures,
         circuit_open=failures >= CIRCUIT_FAILURES,
     )

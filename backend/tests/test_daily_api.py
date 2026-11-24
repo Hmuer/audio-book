@@ -144,11 +144,18 @@ async def test_daily_feed_requires_key(_isolate_data_dir, daily_env, admin_token
         r = await c.get("/api/daily/feed.xml", params={"key": "wrong"})
         assert r.status_code == 401
 
+        # 未审核（draft）的期数不得进入 RSS
         r = await c.get("/api/daily/feed.xml", params={"key": "test-feed-key"})
         assert r.status_code == 200
         assert "application/rss+xml" in r.headers["content-type"]
+        assert "<rss" in r.text and "<enclosure" not in r.text
+
+        # 人工审核通过后才进入 RSS
+        r = await c.post(f"/api/daily/issues/{DATE}/review", json={"decision": "approve"})
+        assert r.status_code == 200
+        r = await c.get("/api/daily/feed.xml", params={"key": "test-feed-key"})
         body = r.text
-        assert "<rss" in body and "<enclosure" in body
+        assert "<enclosure" in body
         assert f"/api/daily/issues/{DATE}/audio?key=test-feed-key" in body
         assert "<itunes:explicit>false</itunes:explicit>" in body
 
@@ -282,3 +289,47 @@ async def test_daily_service_token_auth(_isolate_data_dir, daily_env, monkeypatc
     ) as c:
         r = await c.get("/api/daily/issues")
         assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_daily_audio_via_feed_key_requires_approval(_isolate_data_dir, daily_env, admin_token):
+    """播客客户端只能用 ?key= 拉音频：未审核 403，审核通过后可 Range 拉取。"""
+    from httpx import ASGITransport, AsyncClient
+    from backend.app.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.get(f"/api/daily/issues/{DATE}/audio", params={"key": "test-feed-key"})
+        assert r.status_code == 403
+
+        r = await c.get(f"/api/daily/issues/{DATE}/audio", params={"key": "wrong"})
+        assert r.status_code == 401
+
+    async with _client(admin_token) as c:
+        await c.post(f"/api/daily/issues/{DATE}/review", json={"decision": "approve"})
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.get(
+            f"/api/daily/issues/{DATE}/audio",
+            params={"key": "test-feed-key"},
+            headers={"Range": "bytes=0-99"},
+        )
+        assert r.status_code == 206
+        assert len(r.content) == 100
+
+
+@pytest.mark.asyncio
+async def test_daily_config_survives_no_voices(_isolate_data_dir, daily_env, admin_token, monkeypatch):
+    """TTS 厂商暂不可用时，设置页仍可打开（voices=[]，voice_id=""）。"""
+    from backend.app.api import daily_routes
+
+    async def _no_voices(*, force: bool = False):
+        return []
+
+    monkeypatch.setattr(daily_routes.prefs, "available_voices", _no_voices)
+    async with _client(admin_token) as c:
+        r = await c.get("/api/daily/config")
+        assert r.status_code == 200
+        cfg = r.json()
+        assert cfg["voices"] == []
+        assert cfg["voice_id"] == ""
+        assert cfg["sources"], "信源仍应可见"

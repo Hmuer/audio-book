@@ -11,6 +11,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import {
   api,
   fetchMediaObjectUrl,
@@ -827,7 +828,11 @@ function DailySettingsModal({
     }
   };
 
-  return (
+  if (typeof document === 'undefined') return null;
+
+  // 用 portal 挂到 body：外层 <main> 的 animate-fade-in 带 transform，
+  // 会让 position: fixed 相对 main 定位，弹窗顶部会被顶出可视区。
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
       onClick={() => {
@@ -1048,7 +1053,8 @@ function DailySettingsModal({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -1358,7 +1364,7 @@ function DailyDetail({ date }: { date: string }) {
 
         <div className="glass-panel !p-4 sm:!p-5">
           {tab === 'shownotes' && (
-            <PlainTextBlock text={detail.shownotes_md} empty="本期暂无节目简介" />
+            <MarkdownLite text={detail.shownotes_md} empty="本期暂无节目简介" />
           )}
           {tab === 'script' && (
             <PlainTextBlock text={detail.script_md} empty="本期暂无口播脚本" />
@@ -1509,6 +1515,84 @@ function BackLink() {
       </svg>
       返回日报列表
     </a>
+  );
+}
+
+/** 极简 markdown 渲染（标题/列表/引用/链接），不引入 markdown 依赖。 */
+function renderInline(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const re = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+  let last = 0;
+  let match: RegExpExecArray | null;
+  let idx = 0;
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > last) nodes.push(text.slice(last, match.index));
+    nodes.push(
+      <a
+        key={`${keyPrefix}-l${idx++}`}
+        href={match[2]}
+        target="_blank"
+        rel="noreferrer"
+        className="text-brand-500 hover:underline break-all"
+      >
+        {match[1]}
+      </a>,
+    );
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+
+function MarkdownLite({ text, empty }: { text: string; empty: string }) {
+  if (!text || !text.trim()) {
+    return <div className="text-sm text-ink-500">{empty}</div>;
+  }
+  const lines = text.split(/\r?\n/);
+  return (
+    <div className="text-[13px] leading-7 text-ink-700 max-h-[60vh] overflow-y-auto pr-1 space-y-1">
+      {lines.map((raw, i) => {
+        const line = raw.trimEnd();
+        if (!line.trim()) return <div key={i} className="h-2" />;
+        if (line.startsWith('### ')) {
+          return (
+            <div key={i} className="text-[13px] font-semibold text-ink-800 pt-1">
+              {renderInline(line.slice(4), `h3-${i}`)}
+            </div>
+          );
+        }
+        if (line.startsWith('## ')) {
+          return (
+            <div key={i} className="text-sm font-semibold text-ink-900 pt-2">
+              {renderInline(line.slice(3), `h2-${i}`)}
+            </div>
+          );
+        }
+        if (line.startsWith('# ')) {
+          return (
+            <div key={i} className="text-base font-semibold text-ink-900">
+              {renderInline(line.slice(2), `h1-${i}`)}
+            </div>
+          );
+        }
+        if (line.startsWith('> ')) {
+          return (
+            <div key={i} className="border-l-2 border-ink-300 pl-2 text-[12px] text-ink-500">
+              {renderInline(line.slice(2), `q-${i}`)}
+            </div>
+          );
+        }
+        if (/^[-*]\s+/.test(line)) {
+          return (
+            <div key={i} className="flex gap-2">
+              <span className="text-ink-400 shrink-0">·</span>
+              <span>{renderInline(line.replace(/^[-*]\s+/, ''), `b-${i}`)}</span>
+            </div>
+          );
+        }
+        return <div key={i}>{renderInline(line, `p-${i}`)}</div>;
+      })}
+    </div>
   );
 }
 
