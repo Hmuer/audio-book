@@ -339,6 +339,33 @@ class Settings(BaseSettings):
     # 仅作熔断阈值，不参与计费口径计算。
     AGENT_TASK_BUDGET_CNY: float = 2.0
 
+    # ============ AI 前沿日报（每日播客流水线）============
+    # 产物目录；留空 = DATA_DIR/daily（跟随运行时数据目录）。
+    # 每期一个子目录：meta.json / script.md / shownotes.md / audio.mp3。
+    DAILY_OUTPUT_DIR: Path | None = None
+    # 节目信息（页面与 RSS 共用）
+    DAILY_SHOW_TITLE: str = "AI 前沿日报"
+    DAILY_SHOW_DESCRIPTION: str = "每天 12 分钟，听懂 AI 与科技前沿。节目由 AI 生成，人工审核后发布。"
+    DAILY_SHOW_AUTHOR: str = "小布"
+    # 信源（JSON 数组：[{"name","url","enabled"}]）；留空用内置默认源
+    DAILY_SOURCES_JSON: str = ""
+    # 采集窗口（小时）与单期候选上限
+    DAILY_WINDOW_HOURS: int = 26
+    DAILY_MAX_ITEMS: int = 60
+    # 目标时长（分钟）与脚本字数上限（12 分钟中文口播约 3000–3600 字）
+    DAILY_TARGET_MINUTES: int = 12
+    DAILY_MAX_SCRIPT_CHARS: int = 4200
+    # TTS 音色；为空 → 取当前 TTS 厂商的第一个可用音色
+    DAILY_TTS_VOICE_ID: str = ""
+    # 单段 TTS 字符上限（过长会被合成厂商拒）
+    DAILY_TTS_SEGMENT_CHARS: int = 240
+    # 是否用 LLM 写口播稿；关闭后用离线模板（无 Key 环境也能出稿）
+    DAILY_LLM_ENABLED: bool = True
+    # RSS 对外地址；留空 = 按请求的 scheme://host 推导
+    DAILY_PUBLIC_BASE_URL: str = ""
+    # RSS 订阅密钥：播客客户端无法带 JWT，用 ?key= 鉴权；留空 = 不开放 feed
+    DAILY_FEED_KEY: str = ""
+
 
     # Build running 超时（小时）：如果 start_build 命中的 running build
     # started_at 距离现在超过该值，认为是被 kill 的孤儿，直接改 status 回 queued

@@ -89,6 +89,12 @@ cp .env.example "${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.env"
 | `DATABASE_URL` | | 指向 `$NOVEL_TTS_HOME/data/app.db` | `start.sh` 启动时设置的 SQLite URL |
 | `DSH_SERVICE_TOKEN` | | 空 | DSH 插件调 `/api/agent/*` 的服务 token（请求头 `X-DSH-Token`）。留空时整个命名空间返回 503；**不要**写进前端或提交进仓库 |
 | `AGENT_TASK_BUDGET_CNY` | | `2.0` | 单个创作任务的 LLM 成本熔断阈值（元），上报成本累计超限后任务置 `blocked` |
+| `DAILY_OUTPUT_DIR` | | `$DATA_DIR/daily` | 日报产物根目录（每期一个子目录） |
+| `DAILY_SOURCES_JSON` | | 空=内置 7 个源 | 信源数组 `[{"name","url","enabled"}]`，整体覆盖内置列表 |
+| `DAILY_TTS_VOICE_ID` | | 空=自动挑 | 日报播报音色；留空取当前 TTS 厂商第一个可用音色 |
+| `DAILY_FEED_KEY` | | 空 | 播客 RSS 的 `?key=` 订阅密钥；**留空则 RSS 不开放** |
+| `DAILY_LLM_ENABLED` | | `true` | 关闭后用离线模板出稿（无 LLM Key 也能跑） |
+| `DAILY_TARGET_MINUTES` | | `12` | 目标时长（写进脚本 prompt） |
 
 ### 多厂商配置
 
@@ -135,6 +141,7 @@ audio-book/
 │   │   ├── main.py                 # FastAPI 入口 + StaticFiles 挂载前端 + /media 鉴权
 │   │   ├── api/routes.py           # /api/* 路由（薄壳 → services；所有路由强制鉴权）
 │   │   ├── api/agent_routes.py     # /api/agent/*（DSH 插件桥接，独立 X-DSH-Token 鉴权）
+│   │   ├── api/daily_routes.py     # /api/daily/*（AI 前沿日报：列表/详情/审核/音频/RSS）
 │   │   ├── ai/
 │   │   │   ├── base.py             # BaseLLMProvider / BaseTTSProvider 抽象
 │   │   │   ├── factory.py          # get_llm() / get_tts()（多厂商 + ACTIVE_* 指针）
@@ -156,6 +163,15 @@ audio-book/
 │   │   │   ├── ximalaya_tags.py    # 喜马拉雅标签体系解析 + 候选校验
 │   │   │   ├── epub_reader.py      # EPUB 解析
 │   │   │   └── book_split.py       # 正则分章（兜底；LLM 分章是默认路径）
+│   │   │   ├── daily/              # AI 前沿日报流水线
+│   │   │   │   ├── collect.py      # RSS/Atom 采集 + 24h 窗口 + 去重
+│   │   │   │   ├── cluster.py      # 事件聚类（跨源合并）
+│   │   │   │   ├── score.py        # 乘法打分 + 安全一票否决 + 主题闸门
+│   │   │   │   ├── script.py       # LLM 脚本（模板兜底）+ 节目简介
+│   │   │   │   ├── tts.py          # 分段合成 + 拼接 + 响度标准化
+│   │   │   │   ├── feed.py         # RSS 2.0 + iTunes
+│   │   │   │   ├── store.py        # 每期产物目录 / 审核状态 / 运行状态
+│   │   │   │   └── pipeline.py     # 编排 + 单实例运行锁
 │   │   ├── db/
 │   │   │   ├── models.py           # users / projects / builds / build_artifacts / project_characters / project_dialogues / project_pronunciation_rules / creation_jobs / agent_runs
 │   │   │   └── session.py          # aiosqlite + SQLAlchemy 2.0 async
@@ -188,7 +204,7 @@ audio-book/
 │   ├── src/
 │   │   ├── app/{layout,page,globals.css}
 │   │   ├── lib/api.ts              # fetch 封装（含 token 注入）
-│   │   └── components/             # ProviderModelsEditor（多厂商卡片）/ ToggleSwitch / ...
+│   │   └── components/             # ProviderModelsEditor / ToggleSwitch / DailyPage（日报）/ ...
 │   └── out/                        # 构建产物，被 FastAPI StaticFiles 挂载
 ├── deploy.sh                       # 快进拉取 main、重建前端、重启并检查健康状态
 ├── start.sh                        # 一键启动（带 --stop / --restart / --paths 子命令）
@@ -274,6 +290,7 @@ MiniMax 官方 [速率限制](https://platform.minimax.cn/docs/guides/rate-limit
 | **Step 2 角色+音色** | diff 对比面板 + polish_warning 黄色警告条 + 角色卡片（性格/标签 + LLM 推荐理由 + 试听） + 内置音色搜索 |
 | **Step 3 生成+试听** | 「章节」页只做文本阅读与逐行对白归属校对（只高亮对白片段、正文不整行着色，不提供音频播放）；「构建」页为播放列表（每章播放、MP3、LRC）；点击播放才签发当前章 URL；「构建信息」与「章节列表」之间是内联播放器（左：章节标题 + 来源圆点；中：后退 10 秒 / 播放 / 快进 10 秒 + 细轨进度与两端时间；右：音量、下载、关闭；窄屏折叠为单行「标题 + 时间 / 播放 / 关闭」，进度贴在卡片顶边）；离开「构建」页签时音频随组件卸载停止；概览只展示项目资料，不显示章节列表 |
 | **设置** | ProviderModelsEditor（多厂商卡片化：厂商开关 ToggleSwitch / API Key 输入（脱敏显示 + 「重写」）/ 模型列表） + LLM / TTS 激活厂商 + 模型指针 |
+| **AI 前沿日报** | 一级菜单 `#/daily`：期数列表（日期 / 标题 / 状态 / 时长 / 条目数）+ 运行状态条；详情页三个 Tab（节目简介 / 口播脚本 / 选题明细）+ 音频试听 + 人工终审（通过 / 退回 + 备注）+ feed 地址复制 |
 
 章节页不再为每条渲染独立 `<audio>`，也不在展开时批量签发媒体 URL；音频只在「构建」页点击播放/下载某一章时才请求该章资源，避免对象存储产生额外的预取/缓存流量。
 
@@ -347,6 +364,70 @@ dsh plugin --profile web add /opt/audio-book/audio-book/agent
 P0 已完成：桥接 API、两张表、插件与 8 个工具、技能、后端测试与插件端到端冒烟。
 P1 待做：建项目 / 导入书库 / 启动构建 / 保存文案 / 质检 / 发布等写工具；代码化 workflow
 （选题 → 文案 + 封面并行 → 人工闸门 → 构建 → 质检 → 发布）；DSH Agent 预设。
+
+---
+
+## AI 前沿日报（每日播客）
+
+一级菜单「AI 前沿日报」（`#/daily`）：每天把 AI / 科技资讯采集成一期约 12 分钟的单人
+口播节目，产出**口播稿 + 音频 + 节目简介**，人工终审通过后可对公网提供播客 RSS。
+
+内容红线（与方案一致）：只做 AI / 科技前沿；只用自己的 RSS 与官方来源；不翻译、不
+大段复述外媒；不做时政 / 军事 / 外交；开头带「本节目由 AI 生成」声明。
+
+### 流水线（`backend/app/services/daily/`）
+
+| 阶段 | 模块 | 做什么 | 失败策略 |
+|---|---|---|---|
+| 采集 | `collect.py` | 多源 RSS / Atom、24h 窗口、URL 去重 | 单源失败只记录，不阻塞整期 |
+| 聚类 | `cluster.py` | 标题 token Jaccard（0.34）合并同一事件 | 宁拆勿并 |
+| 打分 | `score.py` | 乘法打分 + 安全一票否决 + 主题闸门 | 0 分直接淘汰 |
+| 脚本 | `script.py` | LLM 可插拔；关闭/失败时模板兜底 | 模板仍可出稿 |
+| 合成 | `tts.py` | 分段合成 + MP3 拼接 + 可选 `ffmpeg -16 LUFS` | 无 ffmpeg 跳过标准化 |
+| 落盘 | `store.py` | 每期一个目录：`meta.json` / `script.md` / `shownotes.md` / `audio.mp3` | 失败不落半成品 |
+| RSS | `feed.py` | RSS 2.0 + iTunes，enclosure 为绝对地址 | `?key=` 鉴权 |
+
+三个关键设计：
+
+1. **乘法打分**：`Score = Π(dim^w) × safety × demote`，任一项趋零整体归零；
+2. **闸门分层**：标题命中主题词 → 通过；标题未命中时要求摘要命中 ≥2 个；
+3. **ASCII 词边界**：`ai` / `llm` / `gpu` 按独立词匹配，不会命中 `said` / `email`。
+
+### 接口（`/api/daily/*`）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/daily/config` | 节目信息、信源列表、LLM/TTS 配置状态、feed 是否开放 |
+| GET | `/api/daily/issues?limit=` | 期数列表（状态：draft / approved / rejected） |
+| GET | `/api/daily/issues/{date}` | 单期详情（简介 / 脚本 / 选题明细） |
+| GET | `/api/daily/issues/{date}/audio` | 音频（支持 Range；JWT 鉴权） |
+| POST | `/api/daily/issues/{date}/review` | 人工终审：`approve` / `reject` + 备注 |
+| POST | `/api/daily/run` | 触发生成（后台任务；运行中返回 409） |
+| GET | `/api/daily/run/status` | 阶段 / 进度 / 错误 / 日志尾 |
+| GET | `/api/daily/feed.xml?key=` | 播客 RSS（公开，`?key=` 鉴权） |
+
+### 使用
+
+1. 设置页确认 TTS 厂商可用（日报复用平台 TTS；建议显式配置 `DAILY_TTS_VOICE_ID`）；
+2. 进入「AI 前沿日报」→ 右上角「立即生成」→ 轮询进度（采集合成一般 1–3 分钟，
+   取决于 TTS 速度）；
+3. 生成完成后在详情页试听、检查简介里的信源链接；
+4. 人工终审：「通过」后状态变 `approved`；「退回」并写备注（可重跑覆写当日）；
+5. 需要对外提供播客：配置 `DAILY_FEED_KEY`，把
+   `/api/daily/feed.xml?key=<key>` 提交到喜马拉雅「我有音频 RSS」等通道。
+
+### 定时运行
+
+P0 只做手动触发。接入定时任务（P5）时，用带 JWT 的每日请求调
+`POST /api/daily/run` 即可；无人值守前必须保留人工终审（方案 §四、§五 的熔断要求）。
+
+### 已知边界
+
+- 服务器在国内，个别信源可能超时 / 403 / 429：`meta.stats.source_errors` 会列出来，
+  可在 `DAILY_SOURCES_JSON` 里换源；
+- 单期 TTS 成本约 2–5 元（按当前厂商价），音频 5–15 MB；
+- 审核状态与产物在同一个目录里（`meta.json`），**不要手动删目录里的 meta**；
+- 日报音频走对象存储/COS 属于 P3 范围，当前落本地盘，RSS enclosure 指向本服务。
 
 ---
 

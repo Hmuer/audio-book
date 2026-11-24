@@ -493,6 +493,30 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(cfg),
     }),
+
+  // ---------- AI 前沿日报 ----------
+  // 日期在 URL 里直接用字符串（后端约定 YYYY-MM-DD），前端不做 Date 时区换算，
+  // 避免 UTC/Asia-Shanghai 跨时区把「今天」算成相邻一天。
+  dailyConfig: () => _fetch<DailyConfig>('/api/daily/config'),
+  dailyIssues: (limit = 30) =>
+    _fetch<DailyIssueListResp>(`/api/daily/issues?limit=${encodeURIComponent(String(limit))}`),
+  dailyIssue: (date: string) =>
+    _fetch<DailyIssueDetail>(`/api/daily/issues/${encodeURIComponent(date)}`),
+  dailyReview: (date: string, decision: 'approve' | 'reject', note?: string) =>
+    _fetch<{ issue: DailyIssue }>(`/api/daily/issues/${encodeURIComponent(date)}/review`, {
+      method: 'POST',
+      body: JSON.stringify(note ? { decision, note } : { decision }),
+    }),
+  // 触发生成：后端 202 立即返回；已有任务在跑时抛 HTTP 409（调用方据此提示"正在生成中"）
+  dailyRun: (date?: string, maxItems?: number) =>
+    _fetch<DailyRunResp>('/api/daily/run', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(date ? { date } : {}),
+        ...(typeof maxItems === 'number' ? { max_items: maxItems } : {}),
+      }),
+    }),
+  dailyRunStatus: () => _fetch<DailyRunStatusResp>('/api/daily/run/status'),
 };
 
 // ---------- 公共书库（从书库导入） ----------
@@ -1022,4 +1046,106 @@ export interface ModelOption {
 }
 export interface DoubaoModelOptions {
   tts_resource_ids: ModelOption[];
+}
+
+// =====================================================================
+// AI 前沿日报（GET/POST /api/daily/*）
+// =====================================================================
+
+/** 日报状态：draft=待审 / approved=已通过 / rejected=已退回 / failed=生成失败 */
+export type DailyIssueStatus = 'draft' | 'approved' | 'rejected' | 'failed';
+
+export interface DailyIssue {
+  /** YYYY-MM-DD（直接用字符串，避免时区换算） */
+  date: string;
+  title: string;
+  status: DailyIssueStatus;
+  /** 音频总时长（毫秒） */
+  duration_ms: number;
+  /** 当期收录的选题条目数 */
+  item_count: number;
+  created_at: string;
+  reviewed_at: string | null;
+  review_note: string | null;
+  error: string | null;
+  has_audio: boolean;
+}
+
+/** 选题明细（详情页「选题明细」Tab） */
+export interface DailyTopic {
+  title: string;
+  url: string;
+  source: string;
+  score: number;
+  /** 各维度打分（如 novelty / impact / relevance），原样透传 */
+  dims: Record<string, number>;
+  reasons: string[];
+  summary: string;
+}
+
+export interface DailyIssueDetail {
+  issue: DailyIssue;
+  shownotes_md: string;
+  script_md: string;
+  meta: {
+    topics: DailyTopic[];
+    stats: Record<string, any>;
+  };
+  feed_url: string;
+}
+
+export interface DailyIssueListResp {
+  items: DailyIssue[];
+  total: number;
+}
+
+export interface DailySource {
+  name: string;
+  url: string;
+  enabled: boolean;
+}
+
+export interface DailyConfig {
+  show: {
+    title: string;
+    description: string;
+    author: string;
+    cover_url: string | null;
+  };
+  target_minutes: number;
+  sources: DailySource[];
+  llm_enabled: boolean;
+  tts_voice_id: string;
+  output_dir: string;
+  feed_ready: boolean;
+  /** 是否设置了 feed 访问 key（前端不展示 key 本身，只提示需要加 ?key=） */
+  feed_key_set: boolean;
+  /** 订阅地址（详情接口也会返回，这里作为兜底） */
+  feed_url?: string;
+}
+
+export type DailyRunState = 'idle' | 'running' | 'success' | 'failed';
+
+/** GET /api/daily/run/status 的 run 对象 */
+export interface DailyRunStatus {
+  status: DailyRunState;
+  stage: string | null;
+  /** 进度：后端可能给 0–1 或 0–100，前端展示时统一归一化为百分比 */
+  progress: number;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+  date: string | null;
+  log_tail: string[];
+  stats: Record<string, any>;
+}
+
+export interface DailyRunStatusResp {
+  run: DailyRunStatus;
+}
+
+/** POST /api/daily/run → 202 { run_id, started_at } */
+export interface DailyRunResp {
+  run_id: string;
+  started_at: string;
 }

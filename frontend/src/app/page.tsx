@@ -7,6 +7,7 @@ import ProjectListPage from '@/components/ProjectListPage';
 import ProjectDetailPage from '@/components/ProjectDetailPage';
 import VoiceLibraryPage from '@/components/VoiceLibraryPage';
 import SettingsPage from '@/components/SettingsPage';
+import DailyPage from '@/components/DailyPage';
 import LoginPage from '@/components/LoginPage';
 import { api, errToLog, Voice, ProjectListItem } from '@/lib/api';
 import { voiceProvider } from '@/lib/voiceUtils';
@@ -17,6 +18,8 @@ type Route =
   | { name: 'ab-list' }                  // #/audiobooks         列表
   | { name: 'ab-detail'; id: string }    // #/audiobooks/:id     工作台
   | { name: 'ab-voices' }                // #/audiobooks/voices  音色库
+  | { name: 'daily-list' }               // #/daily              AI前沿日报列表
+  | { name: 'daily-detail'; date: string } // #/daily/:date       日报详情
   | { name: 'settings' }                 // #/settings           设置
   | { name: 'unknown' };                 // fallback
 
@@ -50,6 +53,13 @@ function parseHash(): { route: Route; path: string } {
     return { route: { name: 'ab-list' }, path: '/audiobooks' };
   if (h === '/audiobooks/voices') return { route: { name: 'ab-voices' }, path: '/audiobooks/voices' };
   if (h === '/settings')          return { route: { name: 'settings' }, path: '/settings' };
+  // AI前沿日报：#/daily 列表 / #/daily/YYYY-MM-DD 详情
+  if (h === '/daily' || h === '/daily/') return { route: { name: 'daily-list' }, path: '/daily' };
+  const mDaily = h.match(/^\/daily\/([^/]+)$/);
+  if (mDaily) {
+    const date = decodeURIComponent(mDaily[1]);
+    return { route: { name: 'daily-detail', date }, path: `/daily/${mDaily[1]}` };
+  }
   // 详情
   const m = h.match(/^\/audiobooks\/([^/]+)$/);
   if (m) return { route: { name: 'ab-detail', id: decodeURIComponent(m[1]) }, path: h };
@@ -169,6 +179,8 @@ export default function HomePage() {
               {R.name === 'ab-list' && '有声书 · 我的作品库'}
               {R.name === 'ab-detail' && '有声书 · 工作台'}
               {R.name === 'ab-voices' && '有声书 · 音色库'}
+              {R.name === 'daily-list' && '日报 · AI前沿日报'}
+              {R.name === 'daily-detail' && '日报 · 当日详情'}
               {R.name === 'settings' && '系统 · 设置'}
             </div>
             {/* 状态胶囊组 */}
@@ -188,6 +200,8 @@ export default function HomePage() {
           {R.name === 'ab-list' && <ProjectListPage />}
           {R.name === 'ab-detail' && <ProjectDetailPage projectId={R.id} voices={voices} />}
           {R.name === 'ab-voices' && <VoiceLibraryPage voices={voices} />}
+          {R.name === 'daily-list' && <DailyPage />}
+          {R.name === 'daily-detail' && <DailyPage date={R.date} />}
           {R.name === 'settings' && <SettingsPage />}
           {R.name === 'unknown' && (
             <PlaceholderPage title="页面不存在" desc="该路由暂未实现" iconName="unknown" actionHref="#/audiobooks" actionLabel="返回有声书列表" />

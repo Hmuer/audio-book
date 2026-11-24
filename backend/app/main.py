@@ -16,6 +16,7 @@ from .core.config import settings
 from .db.session import init_db
 from .api.routes import router as api_router, auth_router, public_router
 from .api.agent_routes import router as agent_router
+from .api.daily_routes import router as daily_router, public_router as daily_public_router
 from .services.auth import seed_admin_user
 
 # ---------------------------------------------------------------------------
@@ -213,6 +214,13 @@ async def lifespan(app: FastAPI):
         ensure_cleanup_started()
     except Exception as e:
         logger.error(f"[media_sign] 启动清理后台任务失败: {type(e).__name__}: {e}")
+    # AI 前沿日报：清理上次进程退出时残留的"生成中"状态
+    try:
+        from .services.daily.pipeline import recover_stale_run
+        if recover_stale_run():
+            logger.info("[daily] 已清理残留的生成中状态")
+    except Exception as e:
+        logger.warning(f"[daily] 启动状态恢复失败: {type(e).__name__}: {e}")
     # P1 #7：启动后台任务持久化（JobTask 表）的启动恢复 + 看门狗；
     # 把上次没跑完的孤儿任务自动 enqueue 一次，避免 UI 永远卡"合成中"。
     try:
@@ -294,6 +302,9 @@ app.include_router(auth_router)
 app.include_router(public_router)
 # DSH Agent 桥接：不走用户 JWT，由 X-DSH-Token 单独鉴权（见 agent_routes.py）
 app.include_router(agent_router)
+# AI 前沿日报：feed.xml 公开（?key=），其余走用户 JWT（见 daily_routes.py）
+app.include_router(daily_public_router)
+app.include_router(daily_router)
 app.include_router(api_router)
 
 # /media -> audio files（鉴权 + Range 支持）

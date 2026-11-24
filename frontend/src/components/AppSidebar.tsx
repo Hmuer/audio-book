@@ -32,9 +32,10 @@ const AUDIOBOOKS_CHILDREN: MenuItem[] = [
 
 const MODULES: Module[] = [
   { key: 'audiobooks', label: 'AI有声书',   icon: 'speaker', children: AUDIOBOOKS_CHILDREN },
-  { key: 'novel',     label: 'AI小说创作', icon: 'pen',     disabled: true },
-  { key: 'drama',     label: 'AI短剧',     icon: 'clapper', disabled: true },
-  { key: 'comic',     label: 'AI漫画',     icon: 'palette', disabled: true },
+  { key: 'daily',      label: 'AI前沿日报', icon: 'news',    href: '#/daily' },
+  { key: 'novel',      label: 'AI小说创作', icon: 'pen',     disabled: true },
+  { key: 'drama',      label: 'AI短剧',     icon: 'clapper', disabled: true },
+  { key: 'comic',      label: 'AI漫画',     icon: 'palette', disabled: true },
 ];
 
 const SETTINGS_ITEM: MenuItem = {
@@ -44,7 +45,7 @@ const SETTINGS_ITEM: MenuItem = {
 // 所有拥有独立菜单项的路径（去掉 # 前缀）。
 // 用于消歧：currentPath 精确命中其中某项时，仅有那一项激活。
 const EXACT_NAV_PATHS: Set<string> = new Set<string>(
-  [SETTINGS_ITEM.href, ...AUDIOBOOKS_CHILDREN.map(c => c.href)]
+  [SETTINGS_ITEM.href, '#/daily', ...AUDIOBOOKS_CHILDREN.map(c => c.href)]
     .map(h => h.replace(/^#/, ''))
 );
 
@@ -438,6 +439,8 @@ function MenuIcon({ name, size = 16, className = '' }: { name: string; size?: nu
       return (<svg {...common}><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M19.07 4.93a10 10 0 010 14.14"/></svg>);
     case 'book':
       return (<svg {...common}><path d="M4 4h10a4 4 0 014 4v12H8a4 4 0 01-4-4V4z"/><path d="M4 16a4 4 0 014-4h10"/></svg>);
+    case 'news':
+      return (<svg {...common}><path d="M4 22h16a2 2 0 002-2V4a2 2 0 00-2-2H8a2 2 0 00-2 2v16a2 2 0 01-2 2zm0 0a2 2 0 01-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6z"/></svg>);
     case 'mic':
       return (<svg {...common}><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0014 0"/><path d="M12 18v3"/></svg>);
     case 'pen':
