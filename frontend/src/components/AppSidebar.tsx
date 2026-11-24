@@ -25,18 +25,19 @@ type Module = {
 };
 
 // ================= 菜单数据 =================
-const AUDIOBOOKS_CHILDREN: MenuItem[] = [
-  { key: 'list',   label: '我的有声书', href: '#/audiobooks',        icon: 'book' },
-  { key: 'voices', label: '音色库',     href: '#/audiobooks/voices', icon: 'mic' },
-];
-
+// 音色库是跨内容类型共享的资源（AI 有声书 / AI 前沿日报都用它），
+// 因此从「AI有声书」的二级菜单上移为系统级一级菜单。
 const MODULES: Module[] = [
-  { key: 'audiobooks', label: 'AI有声书',   icon: 'speaker', children: AUDIOBOOKS_CHILDREN },
+  { key: 'audiobooks', label: 'AI有声书',   icon: 'speaker', href: '#/audiobooks' },
   { key: 'daily',      label: 'AI前沿日报', icon: 'news',    href: '#/daily' },
   { key: 'novel',      label: 'AI小说创作', icon: 'pen',     disabled: true },
   { key: 'drama',      label: 'AI短剧',     icon: 'clapper', disabled: true },
   { key: 'comic',      label: 'AI漫画',     icon: 'palette', disabled: true },
 ];
+
+const VOICES_ITEM: MenuItem = {
+  key: 'voices', label: '音色库', icon: 'mic', href: '#/voices',
+};
 
 const SETTINGS_ITEM: MenuItem = {
   key: 'settings', label: '设置', icon: 'cog', href: '#/settings',
@@ -45,7 +46,7 @@ const SETTINGS_ITEM: MenuItem = {
 // 所有拥有独立菜单项的路径（去掉 # 前缀）。
 // 用于消歧：currentPath 精确命中其中某项时，仅有那一项激活。
 const EXACT_NAV_PATHS: Set<string> = new Set<string>(
-  [SETTINGS_ITEM.href, '#/daily', ...AUDIOBOOKS_CHILDREN.map(c => c.href)]
+  [SETTINGS_ITEM.href, VOICES_ITEM.href, '#/daily', '#/audiobooks']
     .map(h => h.replace(/^#/, ''))
 );
 
@@ -145,6 +146,10 @@ export default function AppSidebar({ currentPath }: Props) {
 
           <div className="space-y-1">
             <SectionLabel label={SECTION_LABEL_SYSTEM} />
+            <TopLevelLink
+              item={VOICES_ITEM}
+              active={isPathActive(VOICES_ITEM.href)}
+            />
             <TopLevelLink
               item={SETTINGS_ITEM}
               active={isPathActive(SETTINGS_ITEM.href)}

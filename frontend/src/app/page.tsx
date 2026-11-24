@@ -17,7 +17,7 @@ type Route =
   | { name: 'login' }
   | { name: 'ab-list' }                  // #/audiobooks         列表
   | { name: 'ab-detail'; id: string }    // #/audiobooks/:id     工作台
-  | { name: 'ab-voices' }                // #/audiobooks/voices  音色库
+  | { name: 'voices' }                   // #/voices             音色库（系统级）
   | { name: 'daily-list' }               // #/daily              AI前沿日报列表
   | { name: 'daily-detail'; date: string } // #/daily/:date       日报详情
   | { name: 'settings' }                 // #/settings           设置
@@ -25,9 +25,10 @@ type Route =
 
 // 旧路由 → 新路由重定向表
 const LEGACY_REDIRECTS: Record<string, string> = {
-  '/projects':     '/audiobooks',
-  '/projects/':    '/audiobooks',
-  '/projects/new': '/audiobooks',
+  '/projects':         '/audiobooks',
+  '/projects/':        '/audiobooks',
+  '/projects/new':     '/audiobooks',
+  '/audiobooks/voices': '/voices',
 };
 
 function parseHash(): { route: Route; path: string } {
@@ -51,7 +52,7 @@ function parseHash(): { route: Route; path: string } {
   // 一级路由
   if (h === '' || h === '/' || h === '/audiobooks' || h === '/audiobooks/')
     return { route: { name: 'ab-list' }, path: '/audiobooks' };
-  if (h === '/audiobooks/voices') return { route: { name: 'ab-voices' }, path: '/audiobooks/voices' };
+  if (h === '/voices')            return { route: { name: 'voices' }, path: '/voices' };
   if (h === '/settings')          return { route: { name: 'settings' }, path: '/settings' };
   // AI前沿日报：#/daily 列表 / #/daily/YYYY-MM-DD 详情
   if (h === '/daily' || h === '/daily/') return { route: { name: 'daily-list' }, path: '/daily' };
@@ -151,7 +152,7 @@ export default function HomePage() {
         ] : []),
       ];
     }
-    if (R.name === 'ab-voices') {
+    if (R.name === 'voices') {
       const activeProvider = voices[0] ? voiceProvider(voices[0]) : null;
       return [
         { label: '音色',   value: String(voices.length).padStart(2, '0'), tone: 'brand' as const },
@@ -178,7 +179,7 @@ export default function HomePage() {
             <div className="text-[11px] font-semibold text-ink-500">
               {R.name === 'ab-list' && '有声书 · 我的作品库'}
               {R.name === 'ab-detail' && '有声书 · 工作台'}
-              {R.name === 'ab-voices' && '有声书 · 音色库'}
+              {R.name === 'voices' && '系统 · 音色库'}
               {R.name === 'daily-list' && '日报 · AI前沿日报'}
               {R.name === 'daily-detail' && '日报 · 当日详情'}
               {R.name === 'settings' && '系统 · 设置'}
@@ -199,7 +200,7 @@ export default function HomePage() {
         >
           {R.name === 'ab-list' && <ProjectListPage />}
           {R.name === 'ab-detail' && <ProjectDetailPage projectId={R.id} voices={voices} />}
-          {R.name === 'ab-voices' && <VoiceLibraryPage voices={voices} />}
+          {R.name === 'voices' && <VoiceLibraryPage voices={voices} />}
           {R.name === 'daily-list' && <DailyPage />}
           {R.name === 'daily-detail' && <DailyPage date={R.date} />}
           {R.name === 'settings' && <SettingsPage />}

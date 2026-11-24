@@ -496,7 +496,7 @@ export default function ProjectListPage() {
                 >
                   新建有声书
                 </button>
-                <a href="#/audiobooks/voices"
+                <a href="#/voices"
                   className="btn-ghost !h-10 !px-4 text-[13px]"
                 >
                   浏览音色库
