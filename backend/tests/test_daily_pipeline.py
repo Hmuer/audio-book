@@ -356,3 +356,51 @@ def test_split_topics_limits_single_source():
     assert all(n <= 2 for n in per_source.values()), per_source
     # 3 个来源、每家最多 2 条 → 最多 5 条；信源不足时不硬凑
     assert len(picked) == 5
+
+
+def test_feed_description_uses_shownotes_excerpt(tmp_path):
+    from backend.app.core.mp3_util import make_silent_mp3
+    from backend.app.services.daily import store
+
+    date = "2025-11-24"
+    base = tmp_path / "daily" / date
+    base.mkdir(parents=True)
+    (base / "audio.mp3").write_bytes(make_silent_mp3(100))
+    (base / "shownotes.md").write_text(
+        "# 本期标题\n\n## 主话题\n- [OpenAI 发布新模型](https://example.com/a)\n\n信源说明",
+        encoding="utf-8",
+    )
+    meta = {
+        "date": date, "title": "标题", "created_at": "2025-11-24T08:00:00",
+        "duration_ms": 100, "item_count": 1, "topics": [], "sections": {},
+        "stats": {}, "show": {},
+        "review": {"decision": None, "note": "", "reviewed_at": None, "reviewed_by": None},
+    }
+    (base / "meta.json").write_text(__import__("json").dumps(meta), encoding="utf-8")
+
+    xml = build_feed(
+        [store.issue_summary(meta)], base_url="https://pod.example.com",
+        feed_key="k", issue_dir=tmp_path / "daily",
+    )
+    # 第一个 <description> 是频道描述，item 描述在后面
+    desc = [ln for ln in xml.splitlines() if "<description>" in ln][-1]
+    assert "OpenAI 发布新模型" in desc
+    assert "https://example.com/a" not in desc
+
+
+def test_failure_triggers_alert(monkeypatch, tmp_path):
+    from backend.app.core import config as cfgmod
+    from backend.app.services.daily import pipeline, store
+
+    monkeypatch.setattr(cfgmod.settings, "DAILY_OUTPUT_DIR", tmp_path / "daily")
+    monkeypatch.setattr(cfgmod.settings, "DAILY_ALERT_WEBHOOK", "https://hook.example/x")
+    captured: list[str] = []
+    monkeypatch.setattr(pipeline, "_notify_alert", lambda msg: captured.append(msg))
+
+    store.write_run_status(status="running", consecutive_failures=1, circuit_open=False)
+    pipeline._record_failure("boom")
+
+    assert captured and "生成失败" in captured[0] and "boom" in captured[0]
+    status = store.read_run_status()
+    assert status["consecutive_failures"] == 2
+    assert status["circuit_open"] is True

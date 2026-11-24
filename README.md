@@ -96,6 +96,7 @@ cp .env.example "${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.env"
 | `DAILY_LLM_ENABLED` | | `true` | 关闭后用离线模板出稿（无 LLM Key 也能跑） |
 | `DAILY_TARGET_MINUTES` | | `12` | 目标时长（写进脚本 prompt） |
 | `DAILY_PUBLIC_BASE_URL` | | 空=按请求推导 | RSS enclosure 用的对外地址，生产建议显式设为 `https://audio-book.ls-lh.cn` |
+| `DAILY_ALERT_WEBHOOK` | | 空 | 失败/熔断告警 webhook（POST JSON，兼容企业微信/飞书/Slack text 格式）；留空只写日志 |
 
 ### 多厂商配置
 
@@ -434,7 +435,9 @@ P1 待做：建项目 / 导入书库 / 启动构建 / 保存文案 / 质检 / �
 - 连续 **2 期**生成失败（含进程重启导致的未完成），自动置 `circuit_open=true`，
   此时「立即生成」返回 409，页面出现红色熔断条；
 - 排查后点页面「重置熔断」（或 `POST /api/daily/reset-circuit`）恢复；
-- 成功一期即自动清零计数。
+- 成功一期即自动清零计数；
+- 配置 `DAILY_ALERT_WEBHOOK` 后，每次失败/熔断会推送一条告警（失败推送尽力而为，
+  不影响流水线状态；无人值守时建议配置）。
 
 ### 定时运行
 

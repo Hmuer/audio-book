@@ -365,6 +365,9 @@ class Settings(BaseSettings):
     DAILY_PUBLIC_BASE_URL: str = ""
     # RSS 订阅密钥：播客客户端无法带 JWT，用 ?key= 鉴权；留空 = 不开放 feed
     DAILY_FEED_KEY: str = ""
+    # 失败/熔断告警 webhook（可选）：POST JSON，兼容企业微信/飞书/Slack 的 text 格式。
+    # 留空 = 只写日志。定时任务无人值守时建议配置。
+    DAILY_ALERT_WEBHOOK: str = ""
 
 
     # Build running 超时（小时）：如果 start_build 命中的 running build

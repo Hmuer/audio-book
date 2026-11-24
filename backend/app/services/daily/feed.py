@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from email.utils import format_datetime
 from pathlib import Path
@@ -29,6 +30,23 @@ def public_base_url(request: Any | None = None) -> str:
         if host:
             return f"{proto}://{host}".rstrip("/")
     return "http://127.0.0.1:28000"
+
+
+_MD_NOISE_RE = re.compile(r"^[#>*\-\s]+", re.MULTILINE)
+
+
+def _shownotes_excerpt(root: Path | None, date: str, limit: int = 320) -> str:
+    """RSS item 的 description：取节目简介的前若干字符（去 markdown 标记）。"""
+    if root is None:
+        return ""
+    try:
+        raw = (root / date / "shownotes.md").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    text = _MD_NOISE_RE.sub("", raw)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)  # 链接只留文字
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
 
 
 def _pub_date(iso: str | None) -> str:
@@ -74,7 +92,7 @@ def build_feed(
             f"    <link>{escape(f'{base_url}/#/daily/{date}')}</link>",
             f"    <guid isPermaLink=\"false\">{escape(f'daily-{date}')}</guid>",
             f"    <pubDate>{_pub_date(issue.get('created_at'))}</pubDate>",
-            f"    <description>{escape(str(issue.get('description') or title))}</description>",
+            f"    <description>{escape(_shownotes_excerpt(issue_dir, date) or str(issue.get('description') or title))}</description>",
             f"    <enclosure url={quoteattr(enclosure)} length=\"{size}\" type=\"audio/mpeg\"/>",
             "    <itunes:explicit>false</itunes:explicit>",
             "  </item>",

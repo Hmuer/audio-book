@@ -67,6 +67,35 @@ def start_run(*, date: str | None = None, max_items: int | None = None) -> dict[
     return {"run_id": run_id, "started_at": now, "date": date}
 
 
+async def _post_alert(url: str, message: str) -> None:
+    """尽力而为的告警推送：失败只记日志，绝不影响流水线状态。"""
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(url, json={
+                "msgtype": "text",
+                "text": {"content": message},
+                "message": message,
+            })
+        logger.info("[daily] 告警已推送")
+    except Exception as e:
+        logger.warning("[daily] 告警推送失败: %s: %s", type(e).__name__, e)
+
+
+def _notify_alert(message: str) -> None:
+    """在事件循环内异步推送（调用方是 async/启动恢复；不在循环里就跳过）。"""
+    url = (settings.DAILY_ALERT_WEBHOOK or "").strip()
+    if not url:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.warning("[daily] 无事件循环，跳过告警：%s", message)
+        return
+    loop.create_task(_post_alert(url, message))
+
+
 def _record_failure(message: str) -> None:
     """记录失败并维护熔断计数（连续 N 期失败 → circuit_open）。"""
     status = store.read_run_status()
@@ -82,6 +111,12 @@ def _record_failure(message: str) -> None:
         circuit_open=circuit,
     )
     store.append_run_log(f"[failed] {message}")
+    _notify_alert(
+        f"[AI 前沿日报] 生成失败（连续第 {failures} 次）\n"
+        f"时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        f"错误：{message}\n"
+        f"状态：{'已熔断，需人工重置' if circuit else '可重试'}"
+    )
     if circuit:
         store.append_run_log(
             f"[circuit] 连续 {failures} 期失败，已熔断；需人工重置后才会恢复"
