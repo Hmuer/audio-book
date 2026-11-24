@@ -187,15 +187,21 @@ def list_issues(limit: int = 30) -> list[dict[str, Any]]:
     return issues
 
 
-def previous_titles(days: int = 3) -> set[str]:
-    """近 N 期已讲过的归一化标题（用于去重降权）。"""
+def previous_titles(days: int = 3, *, exclude_date: str | None = None) -> set[str]:
+    """近 N 期已讲过的归一化标题（用于去重降权）。
+
+    `exclude_date`：同日重跑时排除当天自己的 meta，避免把自己上一版降权。
+    """
     from .cluster import normalize_title
 
     root = daily_root()
     if not root.is_dir():
         return set()
     dates = sorted(
-        (c.name for c in root.iterdir() if c.is_dir() and DATE_RE.match(c.name)),
+        (
+            c.name for c in root.iterdir()
+            if c.is_dir() and DATE_RE.match(c.name) and c.name != exclude_date
+        ),
         reverse=True,
     )[: max(1, int(days))]
     titles: set[str] = set()
@@ -232,6 +238,9 @@ def _default_run_status() -> dict[str, Any]:
         "run_id": None,
         "stats": {},
         "log_tail": [],
+        # 连续失败熔断（方案 §五）：连续 2 期失败自动停更，需人工重置
+        "consecutive_failures": 0,
+        "circuit_open": False,
     }
 
 

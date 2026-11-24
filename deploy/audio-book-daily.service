@@ -1,0 +1,14 @@
+# 一次性生成服务：由 audio-book-daily.timer 触发
+[Unit]
+Description=AI frontier daily podcast: generate today's episode
+Documentation=file:///opt/audio-book/audio-book/README.md
+After=network-online.target audio-book.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=NOVEL_TTS_HOME=/root/.novel-tts
+ExecStart=/opt/audio-book/audio-book/deploy/daily-generate.sh
+TimeoutStartSec=2100
+Nice=10

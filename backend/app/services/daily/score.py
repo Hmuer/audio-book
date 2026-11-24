@@ -78,11 +78,9 @@ def _recency(published: datetime | None, now: datetime) -> tuple[float, str | No
     if published is None:
         return 0.6, "无发布时间，按半数新鲜度计"
     hours = max(0.0, (now - published).total_seconds() / 3600.0)
-    if hours <= 6:
-        score = 1.0
-    else:
-        # 6 小时之后按 18 小时半衰期衰减，下限 0.2
-        score = max(0.2, math.exp(-(hours - 6) / 18.0))
+    # 连续衰减（12 小时半衰期，下限 0.2）。不要用"6 小时内一律 1.0"的分段——
+    # 那样同批新闻会大量同分，排序退化成按标题字典序。
+    score = max(0.2, math.exp(-hours / 12.0))
     return score, f"发布 {hours:.1f} 小时前"
 
 
@@ -104,6 +102,10 @@ def _narratability(cluster: Cluster) -> tuple[float, list[str]]:
     if len(primary.summary) >= 120:
         score += 0.2
         reasons.append("摘要信息量足够")
+    elif len(primary.summary) < 80:
+        # 一句话标题（典型英文源）撑不起 12 分钟口播，明确降权
+        score -= 0.2
+        reasons.append("摘要过短，信息量不足")
     hints = count_hits(primary.title + " " + primary.summary, STORY_HINTS)
     if hints:
         score += 0.2
@@ -186,10 +188,38 @@ def rank_topics(
     return topics
 
 
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
 def split_topics(topics: list[ScoredTopic]) -> dict[str, object]:
-    """按 1 主 + 2 次 + 5 速览 切分（不足则自动收缩）。"""
+    """按 1 主 + 2 次 + 5 速览 切分（不足则自动收缩）。
+
+    主话题优先中文：英文源即使分高，也不让整期节目以一条英文一句话新闻开场
+    （降低"翻译外媒"观感，也避免 LLM 拿不出事实只能复述标题）。
+    """
+    ordered = list(topics)
+    if ordered and not _CJK_RE.search(ordered[0].title):
+        best = ordered[0].score * 0.7
+        for idx in range(1, min(4, len(ordered))):
+            if _CJK_RE.search(ordered[idx].title) and ordered[idx].score >= best:
+                ordered[0], ordered[idx] = ordered[idx], ordered[0]
+                break
+
+    # 来源多样性：同一来源最多 2 条（避免整期变成某一家媒体的通稿联播）。
+    max_per_source = 2
+    picked: list[ScoredTopic] = []
+    counts: dict[str, int] = {}
+    for topic in ordered:
+        if counts.get(topic.source, 0) >= max_per_source:
+            continue
+        picked.append(topic)
+        counts[topic.source] = counts.get(topic.source, 0) + 1
+        if len(picked) >= 8:
+            break
+    # 信源不足时宁可少几条，也不用同一家媒体的稿子硬凑 8 条
+
     return {
-        "main": topics[0] if topics else None,
-        "subs": topics[1:3],
-        "quicks": topics[3:8],
+        "main": picked[0] if picked else None,
+        "subs": picked[1:3],
+        "quicks": picked[3:8],
     }

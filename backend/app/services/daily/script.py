@@ -45,7 +45,6 @@ def _fmt_facts(topic: ScoredTopic, index: int) -> str:
         f"{index}. 标题：{topic.title}",
         f"   来源：{topic.source}",
         f"   摘要：{topic.summary[:300] or '（无摘要）'}",
-        f"   链接：{topic.url}",
     ]
     return "\n".join(lines)
 
@@ -66,20 +65,23 @@ def build_prompt(topics: dict[str, Any], *, date: str) -> str:
     for i, t in enumerate(subs, start=1):
         parts.append(_fmt_facts(t, i))
     parts.append("")
-    parts.append("【速览（每条 1–2 句）】")
+    parts.append("【速览（条目数以实际列出为准，每条 1–2 句）】")
     for i, t in enumerate(quicks, start=1):
         parts.append(_fmt_facts(t, i))
     parts.extend([
         "",
         "写作要求：",
         "1. 只用上面给出的事实；不要补充、不要推测、不要编造数字。",
-        "2. 口语化、短句、有节奏；不要念 URL、不要出现 markdown 标题符号。",
+        "2. 口语化、短句、有节奏；不要念 URL、域名，不要提「积分/评论/点赞/排名」，"
+        "不要出现 markdown 标题符号。",
         "3. 全篇 3000–3600 字，对应约 12 分钟；main 约 1200 字，sub1/sub2 各约 500 字，"
-        "quick 约 500 字，intro/outro 各 100 字以内。",
+        "quick 约 500 字，intro/outro 各 100 字以内。素材条数少于结构时，按实际素材写，"
+        "不要编造补足。",
         "4. intro 必须包含：节目名「AI 前沿日报」、日期、以及一句"
-        "「本节目由 AI 生成，已人工审核」。",
+        "「本节目由 AI 生成，发布前经过人工审核」。",
         "5. 不做时政、军事、外交评论；观点与事实分离，不写「据传」「据说」。",
-        "6. title 不超过 30 字，不含日期，不夸张、不制造悬念。",
+        "6. title 不超过 24 字，以中文表达为主（专有名词可保留英文），"
+        "不要直译腔（例如不要写「与…新负载」），不含日期，不夸张、不制造悬念。",
         "7. 输出 JSON：字段 title / intro / main / sub1 / sub2 / quick / outro。",
     ])
     return "\n".join(parts)
@@ -93,7 +95,7 @@ def _fallback_sections(topics: dict[str, Any], *, date: str) -> dict[str, str]:
 
     intro = (
         f"这里是《{show}》，{date}。我是你的 AI 主播。"
-        f"本节目由 AI 生成，已人工审核。今天我们会用十几分钟，把 AI 与科技领域"
+        f"本节目由 AI 生成，发布前经过人工审核。今天我们会用十几分钟，把 AI 与科技领域"
         f"最值得关注的进展讲清楚。"
     )
     if main:
@@ -113,8 +115,8 @@ def _fallback_sections(topics: dict[str, Any], *, date: str) -> dict[str, str]:
     quick = "接下来是几条速览。" + "".join(quick_lines) if quick_lines else "今天没有更多速览。"
 
     outro = (
-        f"以上就是今天的《{show}》。本节目由 AI 生成，观点仅供参考，"
-        f"所有事实与信源都列在节目简介里。我们明天见。"
+        f"以上就是今天的《{show}》。本节目由 AI 生成、发布前经过人工审核，"
+        f"观点仅供参考，所有事实与信源都列在节目简介里。我们明天见。"
     )
     return {
         "intro": intro,
@@ -140,6 +142,25 @@ def _truncate(text: str, limit: int) -> str:
     if matches:
         return cut[: matches[-1].end()]
     return cut
+
+
+def _safe_title(raw: str, topics: dict[str, Any]) -> str:
+    """LLM 标题的硬约束兜底：不涉安全/降权词、不超长、不带日期。"""
+    from .constants import DEMOTE_TERMS, SAFETY_TERMS
+    from .score import count_hits
+
+    title = (raw or "").strip().strip("《》")
+    bad = count_hits(title, SAFETY_TERMS) or count_hits(title, DEMOTE_TERMS)
+    has_date = bool(re.search(r"\d{4}\s*[-年/]", title))
+    if not bad and not has_date and 0 < len(title) <= 34:
+        return title
+    main = topics.get("main")
+    short = (main.title if main else "").strip()
+    if short and not count_hits(short, SAFETY_TERMS):
+        short = re.sub(r"\s+", " ", short)[:24]
+    else:
+        short = "AI 与科技前沿"
+    return f"{settings.DAILY_SHOW_TITLE or 'AI 前沿日报'}：{short}"
 
 
 def _build_shownotes(
@@ -169,7 +190,7 @@ def _build_shownotes(
             for t in [main, *subs, *quicks] if t is not None
         ],
         "",
-        "> 本节目由 AI 生成（脚本与语音），已人工审核后发布。",
+        "> 本节目由 AI 生成（脚本与语音），发布前经过人工审核。",
         f"> 脚本生成方式：{'LLM + 规则后处理' if used_llm else '离线模板（未启用 LLM）'}。",
     ]
     return "\n".join(lines)
@@ -223,6 +244,7 @@ async def generate_script(
         main = topics["main"]
         short = (main.title if main else "AI 与科技前沿").strip()
         title = f"{settings.DAILY_SHOW_TITLE or 'AI 前沿日报'}：{short[:28]}"
+    title = _safe_title(title, topics)
 
     shownotes = _build_shownotes(title, topics, date=date, used_llm=used_llm)
     return ScriptResult(

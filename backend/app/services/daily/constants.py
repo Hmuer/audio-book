@@ -23,12 +23,15 @@ logger = logging.getLogger(__name__)
 #: 默认信源：自有 RSS / 官方博客即可，不做外媒翻译与复述。
 #: 服务器在国内，部分源可能超时/403 —— collect 阶段逐源容错，不阻塞整期。
 DEFAULT_SOURCES: list[dict[str, Any]] = [
-    {"name": "机器之心", "url": "https://www.jiqizhixin.com/rss", "enabled": True},
+    # 中文源为主：方案要求"不翻译外媒、不复述原文"，中文口播应以中文内容为主体。
     {"name": "量子位", "url": "https://www.qbitai.com/feed", "enabled": True},
-    {"name": "Hacker News", "url": "https://hnrss.org/frontpage?points=100", "enabled": True},
+    {"name": "雷峰网", "url": "https://www.leiphone.com/feed", "enabled": True},
+    {"name": "爱范儿", "url": "https://www.ifanr.com/feed", "enabled": True},
+    {"name": "钛媒体", "url": "https://www.tmtpost.com/rss", "enabled": True},
+    {"name": "开源中国", "url": "https://www.oschina.net/news/rss", "enabled": True},
+    # 英文源只做补充（权重更低）；HN 已移除：RSS 不稳定且摘要过短，不适合 12 分钟口播。
     {"name": "TechCrunch AI", "url": "https://techcrunch.com/category/artificial-intelligence/feed/", "enabled": True},
     {"name": "The Verge AI", "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml", "enabled": True},
-    {"name": "VentureBeat AI", "url": "https://venturebeat.com/category/ai/feed/", "enabled": True},
     {"name": "MIT Tech Review AI", "url": "https://www.technologyreview.com/topic/artificial-intelligence/feed", "enabled": True},
 ]
 
@@ -43,10 +46,16 @@ TOPIC_TERMS: list[str] = [
 ]
 
 #: 安全一票否决：命中即当期不选（宁可少一期，不要一次事故）。
+#: 覆盖三类：时政/军事/社会突发（平台红线），以及**泛财经**（方案 §一 明确不做）。
 SAFETY_TERMS: list[str] = [
     "时政", "政治局", "外交", "军事", "国防", "战争", "台海", "南海", "领导人",
     "选举", "抗议", "骚乱", "恐怖袭击", "事故", "死亡", "遇难", "疫情", "灾难",
     "地震", "洪灾", "火灾", "枪击", "制裁", "关税",
+    "白宫", "华盛顿", "国会", "议员", "总统", "法案", "证监会", "央行", "汇率",
+    "股价", "股票", "市值", "财报", "招股", "上市首日",
+    # 英文（词边界匹配）：政治与财经
+    "washington", "congress", "senate", "white house", "election", "tariff",
+    "sanction", "stock", "stocks", "share price", "earnings", "ipo", "sec filing",
 ]
 
 #: 降权词：低信息量的运营类内容。
@@ -57,13 +66,15 @@ DEMOTE_TERMS: list[str] = [
 
 #: 信源权重（未列出的按 1.0）。
 SOURCE_WEIGHTS: dict[str, float] = {
-    "机器之心": 1.1,
-    "量子位": 1.05,
-    "Hacker News": 1.0,
-    "TechCrunch AI": 1.0,
-    "The Verge AI": 0.95,
-    "VentureBeat AI": 0.9,
-    "MIT Tech Review AI": 1.0,
+    # 中文源权重更高：中文节目以中文内容为主，英文源只作补充。
+    "量子位": 1.1,
+    "雷峰网": 1.05,
+    "爱范儿": 0.95,
+    "钛媒体": 0.9,
+    "开源中国": 0.9,
+    "TechCrunch AI": 0.7,
+    "The Verge AI": 0.65,
+    "MIT Tech Review AI": 0.75,
 }
 
 #: 可增强"可讲述性"的信号词（融资/产品/研究里程碑）。

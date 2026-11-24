@@ -253,3 +253,106 @@ async def test_run_pipeline_end_to_end(monkeypatch, tmp_path):
     status = store.read_run_status()
     assert status["status"] == "success"
     assert status["progress"] == 100
+
+
+def test_circuit_breaker_after_two_failures(monkeypatch, tmp_path):
+    from backend.app.core import config as cfgmod
+    from backend.app.services.daily import pipeline, store
+
+    monkeypatch.setattr(cfgmod.settings, "DAILY_OUTPUT_DIR", tmp_path / "daily")
+    store.write_run_status(status="running", consecutive_failures=0, circuit_open=False)
+
+    pipeline._record_failure("第一次失败")
+    assert store.read_run_status()["consecutive_failures"] == 1
+    assert store.read_run_status()["circuit_open"] is False
+
+    pipeline._record_failure("第二次失败")
+    status = store.read_run_status()
+    assert status["consecutive_failures"] == 2
+    assert status["circuit_open"] is True
+
+    # 熔断后 start_run 必须拒绝（且不能置 _running）
+    import pytest as _pytest
+    with _pytest.raises(Exception) as exc:
+        pipeline.start_run(date="2025-11-24")
+    assert "熔断" in str(exc.value)
+    assert pipeline.is_running() is False
+
+
+def test_safety_terms_veto_politics_and_finance():
+    now = datetime.now(UTC)
+    for title in (
+        "Who in Washington owns and trades Nvidia stock",
+        "国会听证会讨论 AI 监管",
+        "英伟达股价创下新高",
+    ):
+        topic = score_cluster(_cluster(title, "AI 相关新闻，nvidia 与算力。"), now=now)
+        assert topic.score == 0, title
+
+
+def test_safe_title_falls_back_on_date_or_veto():
+    from backend.app.services.daily.script import _safe_title
+
+    topic = ScoredTopic(
+        cluster=_cluster("OpenAI 发布新模型", "模型发布。"),
+        score=1.0, dims={}, reasons=[],
+    )
+    topics = {"main": topic}
+    # 带日期 → 兜底
+    assert "2025" not in _safe_title("2025-11-25 AI 日报", topics)
+    # 命中安全词 → 兜底
+    assert "华盛顿" not in _safe_title("华盛顿AI监管新进展", topics)
+    # 正常标题原样保留
+    assert _safe_title("OpenAI 发布新模型", topics) == "OpenAI 发布新模型"
+
+
+def test_previous_titles_excludes_target_date(monkeypatch, tmp_path):
+    import json as _json
+
+    from backend.app.core import config as cfgmod
+    from backend.app.services.daily import store
+
+    monkeypatch.setattr(cfgmod.settings, "DAILY_OUTPUT_DIR", tmp_path / "daily")
+    for date, title in (("2025-11-24", "旧闻甲"), ("2025-11-25", "今日乙")):
+        base = tmp_path / "daily" / date
+        base.mkdir(parents=True)
+        (base / "meta.json").write_text(
+            _json.dumps({"date": date, "title": title, "topics": [{"title": title}]}),
+            encoding="utf-8",
+        )
+    titles = store.previous_titles(days=3, exclude_date="2025-11-25")
+    assert normalize_title("旧闻甲") in titles
+    assert normalize_title("今日乙") not in titles
+
+
+def test_clean_title_strips_emoji_codes_and_punctuation():
+    from backend.app.services.daily.collect import clean_title
+
+    assert clean_title(":fire::fire: Claude Code 最佳实践") == "Claude Code 最佳实践"
+    assert clean_title("【重磅】OpenAI 发布新模型") == "OpenAI 发布新模型"
+    assert clean_title("  --- AI 日报") == "AI 日报"
+
+
+def test_split_topics_limits_single_source():
+    from backend.app.services.daily.types import Cluster, ScoredTopic
+
+    def mk(title: str, source: str, score: float) -> ScoredTopic:
+        return ScoredTopic(cluster=_cluster(title, "摘要" * 60, source=source), score=score, dims={}, reasons=[])
+
+    topics = [
+        mk("雷峰网新闻一", "雷峰网", 1.0),
+        mk("雷峰网新闻二", "雷峰网", 0.99),
+        mk("雷峰网新闻三", "雷峰网", 0.98),
+        mk("量子位新闻一", "量子位", 0.9),
+        mk("量子位新闻二", "量子位", 0.89),
+        mk("量子位新闻三", "量子位", 0.88),
+        mk("钛媒体新闻一", "钛媒体", 0.7),
+    ]
+    selected = split_topics(topics)
+    picked = [t for t in (selected["main"], *selected["subs"], *selected["quicks"]) if t]
+    per_source: dict[str, int] = {}
+    for t in picked:
+        per_source[t.source] = per_source.get(t.source, 0) + 1
+    assert all(n <= 2 for n in per_source.values()), per_source
+    # 3 个来源、每家最多 2 条 → 最多 5 条；信源不足时不硬凑
+    assert len(picked) == 5

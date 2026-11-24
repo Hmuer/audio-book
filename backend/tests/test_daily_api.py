@@ -179,3 +179,106 @@ async def test_daily_run_trigger_and_status(
         monkeypatch.setattr(daily_routes.pipeline, "start_run", _busy)
         r = await c.post("/api/daily/run", json={})
         assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_daily_config_switch_voice_and_sources(_isolate_data_dir, daily_env, admin_token):
+    async with _client(admin_token) as c:
+        r = await c.get("/api/daily/config")
+        cfg = r.json()
+        assert cfg["voices"], "mock TTS 应返回音色列表"
+        assert cfg["voice_id"]
+        first_voice = cfg["voices"][0]["id"]
+        custom_url = "https://custom.example.com/feed.xml"
+
+        r = await c.put("/api/daily/config", json={
+            "voice_id": first_voice,
+            "sources": [
+                {"name": "示例源", "url": "https://example.com/rss", "enabled": True},
+                {"name": "自定义", "url": custom_url, "enabled": False},
+            ],
+        })
+        assert r.status_code == 200
+        updated = r.json()
+        assert updated["voice_id"] == first_voice
+        assert len(updated["sources"]) == 2
+        assert updated["sources"][1]["custom"] is True
+        assert updated["sources"][1]["enabled"] is False
+
+        # 持久化（重新 GET）
+        r = await c.get("/api/daily/config")
+        assert r.json()["voice_id"] == first_voice
+
+        # 恢复自动音色
+        r = await c.put("/api/daily/config", json={"voice_id": ""})
+        assert r.status_code == 200
+        assert r.json()["voice_id"]  # 自动挑一个非空
+
+
+@pytest.mark.asyncio
+async def test_daily_config_validation_errors(_isolate_data_dir, daily_env, admin_token):
+    async with _client(admin_token) as c:
+        r = await c.put("/api/daily/config", json={"voice_id": "not-a-voice"})
+        assert r.status_code == 400
+
+        r = await c.put("/api/daily/config", json={
+            "sources": [{"name": "bad", "url": "ftp://example.com/x", "enabled": True}],
+        })
+        assert r.status_code == 400
+
+        r = await c.put("/api/daily/config", json={
+            "sources": [{"name": "off", "url": "https://example.com/rss", "enabled": False}],
+        })
+        assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_daily_circuit_breaker_reset(_isolate_data_dir, daily_env, admin_token, monkeypatch):
+    from backend.app.services.daily import store
+
+    store.write_run_status(status="failed", consecutive_failures=2, circuit_open=True)
+
+    async with _client(admin_token) as c:
+        r = await c.get("/api/daily/run/status")
+        assert r.json()["run"]["circuit_open"] is True
+        assert r.json()["run"]["consecutive_failures"] == 2
+
+        r = await c.get("/api/daily/config")
+        assert r.json()["circuit"]["open"] is True
+
+        r = await c.post("/api/daily/reset-circuit")
+        assert r.status_code == 200
+        assert r.json()["run"]["circuit_open"] is False
+        assert r.json()["run"]["consecutive_failures"] == 0
+
+        # 重置后允许触发生成（避免真的跑流水线，桩掉 start_run）
+        from backend.app.api import daily_routes
+        monkeypatch.setattr(
+            daily_routes.pipeline, "start_run",
+            lambda **kw: {"run_id": "run_after_reset", "started_at": "t", "date": DATE},
+        )
+        r = await c.post("/api/daily/run", json={})
+        assert r.status_code == 202
+
+
+@pytest.mark.asyncio
+async def test_daily_service_token_auth(_isolate_data_dir, daily_env, monkeypatch):
+    """定时任务/DSH 插件用 X-DSH-Token 也能触发（不需要 JWT）。"""
+    from backend.app.core import config as cfgmod
+    from httpx import ASGITransport, AsyncClient
+    from backend.app.main import app
+
+    monkeypatch.setattr(cfgmod.settings, "DSH_SERVICE_TOKEN", "cron-token")
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test",
+        headers={"X-DSH-Token": "cron-token"},
+    ) as c:
+        r = await c.get("/api/daily/issues")
+        assert r.status_code == 200
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test",
+        headers={"X-DSH-Token": "wrong"},
+    ) as c:
+        r = await c.get("/api/daily/issues")
+        assert r.status_code == 401

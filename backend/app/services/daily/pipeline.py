@@ -15,10 +15,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ...core.config import settings
-from . import store
+from . import prefs, store
 from .cluster import cluster_items
 from .collect import collect
-from .constants import show_config, source_list
+from .constants import show_config
 from .score import rank_topics, split_topics
 from .script import generate_script
 from .store import DailyError
@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 _running = False
 _task: asyncio.Task | None = None
+
+#: 连续失败多少期触发熔断（方案 §五：连续 2 期异常 → 自动停更并告警）
+CIRCUIT_FAILURES = 2
 
 
 def is_running() -> bool:
@@ -44,6 +47,11 @@ def start_run(*, date: str | None = None, max_items: int | None = None) -> dict[
     global _running, _task
     if _running:
         raise DailyError("已有生成任务在运行，请等待本期完成")
+    if store.read_run_status().get("circuit_open"):
+        raise DailyError(
+            f"连续 {CIRCUIT_FAILURES} 期生成失败，已自动熔断；"
+            "请检查日志并点「重置熔断」后再试"
+        )
     date = date or datetime.now().strftime("%Y-%m-%d")
     store.issue_dir(date)  # 校验日期格式
     now = datetime.now().isoformat(timespec="seconds")
@@ -59,24 +67,37 @@ def start_run(*, date: str | None = None, max_items: int | None = None) -> dict[
     return {"run_id": run_id, "started_at": now, "date": date}
 
 
+def _record_failure(message: str) -> None:
+    """记录失败并维护熔断计数（连续 N 期失败 → circuit_open）。"""
+    status = store.read_run_status()
+    failures = int(status.get("consecutive_failures") or 0) + 1
+    circuit = failures >= CIRCUIT_FAILURES
+    store.write_run_status(
+        status="failed",
+        error=message,
+        stage="failed",
+        progress=0,
+        finished_at=datetime.now().isoformat(timespec="seconds"),
+        consecutive_failures=failures,
+        circuit_open=circuit,
+    )
+    store.append_run_log(f"[failed] {message}")
+    if circuit:
+        store.append_run_log(
+            f"[circuit] 连续 {failures} 期失败，已熔断；需人工重置后才会恢复"
+        )
+
+
 async def _run_guarded(*, date: str, max_items: int | None) -> None:
     global _running, _task
     try:
         await run_pipeline(date=date, max_items=max_items)
     except DailyError as e:
         logger.warning("[daily] 生成失败：%s", e)
-        store.write_run_status(
-            status="failed", error=str(e), stage="failed", progress=0,
-            finished_at=datetime.now().isoformat(timespec="seconds"),
-        )
-        store.append_run_log(f"[failed] {e}")
+        _record_failure(str(e))
     except Exception as e:
         logger.exception("[daily] 生成异常")
-        store.write_run_status(
-            status="failed", error=f"{type(e).__name__}: {e}", stage="failed", progress=0,
-            finished_at=datetime.now().isoformat(timespec="seconds"),
-        )
-        store.append_run_log(f"[failed] {type(e).__name__}: {e}")
+        _record_failure(f"{type(e).__name__}: {e}")
     finally:
         _running = False
         _task = None
@@ -101,7 +122,7 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
     started = datetime.now()
 
     _stage("collect", 10, "[collect] 开始采集")
-    sources = source_list()
+    sources = prefs.effective_sources()
     items, errors = await collect(
         sources,
         window_hours=settings.DAILY_WINDOW_HOURS,
@@ -116,7 +137,9 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
     store.append_run_log(f"[cluster] {len(clusters)} 个事件簇")
 
     _stage("score", 45, "[score] 打分与闸门")
-    topics = rank_topics(clusters, exclude_titles=store.previous_titles(days=3))
+    topics = rank_topics(
+        clusters, exclude_titles=store.previous_titles(days=3, exclude_date=date),
+    )
     if len(topics) < 3:
         raise DailyError(f"有效选题不足（闸门后 {len(topics)} 条），本期跳过")
     selected = split_topics(topics)
@@ -131,9 +154,10 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
     )
 
     _stage("tts", 75, "[tts] 合成音频")
-    audio, duration_ms, tts_stats = await synthesize(
-        script.text, voice_id=settings.DAILY_TTS_VOICE_ID,
-    )
+    voices = await prefs.available_voices()
+    voice_id = prefs.resolve_voice_id(voices)
+    voice_name = prefs.voice_name_of(voices, voice_id)
+    audio, duration_ms, tts_stats = await synthesize(script.text, voice_id=voice_id)
     store.append_run_log(
         f"[tts] {tts_stats['segments']} 段 / {duration_ms / 1000:.0f}s / "
         f"{len(audio) / 1024 / 1024:.1f} MB"
@@ -168,6 +192,7 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
             "reviewed_by": None,
         },
         "show": show_config(),
+        "voice": {"id": voice_id, "name": voice_name},
     }
     meta["stats"]["elapsed_seconds"] = round((datetime.now() - started).total_seconds(), 1)
     store.save_issue(
@@ -188,6 +213,8 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
         error=None,
         date=date,
         stats=meta["stats"],
+        consecutive_failures=0,
+        circuit_open=False,
     )
     store.append_run_log(
         f"[done] {date} 完成，用时 {meta['stats']['elapsed_seconds']}s"
@@ -205,11 +232,14 @@ def recover_stale_run() -> bool:
     status = store.read_run_status()
     if status.get("status") != "running" or _running:
         return False
+    failures = int(status.get("consecutive_failures") or 0) + 1
     store.write_run_status(
         status="failed",
         stage="failed",
         error="上次生成未完成（服务重启/进程退出），请重新触发生成",
         finished_at=datetime.now().isoformat(timespec="seconds"),
+        consecutive_failures=failures,
+        circuit_open=failures >= CIRCUIT_FAILURES,
     )
     store.append_run_log("[recover] 检测到未完成的运行，已置为 failed")
     return True

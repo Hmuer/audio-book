@@ -498,6 +498,12 @@ export const api = {
   // 日期在 URL 里直接用字符串（后端约定 YYYY-MM-DD），前端不做 Date 时区换算，
   // 避免 UTC/Asia-Shanghai 跨时区把「今天」算成相邻一天。
   dailyConfig: () => _fetch<DailyConfig>('/api/daily/config'),
+  // 保存生成偏好（音色 / 信源）；后端校验失败返回 400，detail 直接展示
+  dailyConfigUpdate: (patch: { voice_id?: string | null; sources?: DailySourceInput[] }) =>
+    _fetch<DailyConfig>('/api/daily/config', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
   dailyIssues: (limit = 30) =>
     _fetch<DailyIssueListResp>(`/api/daily/issues?limit=${encodeURIComponent(String(limit))}`),
   dailyIssue: (date: string) =>
@@ -517,6 +523,11 @@ export const api = {
       }),
     }),
   dailyRunStatus: () => _fetch<DailyRunStatusResp>('/api/daily/run/status'),
+  // 连续失败自动熔断后的人工恢复：重置计数并清空 circuit_open
+  dailyResetCircuit: () =>
+    _fetch<{ ok: boolean; run: DailyRunStatus }>('/api/daily/reset-circuit', {
+      method: 'POST',
+    }),
 };
 
 // ---------- 公共书库（从书库导入） ----------
@@ -1103,6 +1114,26 @@ export interface DailySource {
   name: string;
   url: string;
   enabled: boolean;
+  /** 是否为页面添加的自定义信源（内置源只能停用，不能删除） */
+  custom: boolean;
+}
+
+/** 日报可选音色（当前激活 TTS 厂商的音色表） */
+export interface DailyVoiceOption {
+  id: string;
+  name: string;
+  gender: string;
+  provider: string;
+  /** 适用场景（如 新闻 / 有声书） */
+  scene?: string[] | string;
+  description?: string;
+}
+
+/** PUT /api/daily/config 的信源入参（custom 由后端按内置源表计算） */
+export interface DailySourceInput {
+  name: string;
+  url: string;
+  enabled: boolean;
 }
 
 export interface DailyConfig {
@@ -1122,6 +1153,14 @@ export interface DailyConfig {
   feed_key_set: boolean;
   /** 订阅地址（详情接口也会返回，这里作为兜底） */
   feed_url?: string;
+  /** 当前生效的播报音色（页面保存的偏好 / 服务端默认） */
+  voice_id: string;
+  /** 音色名（可能为空：音色不在当前厂商列表里） */
+  voice_name: string | null;
+  /** 当前 TTS 厂商可选音色 */
+  voices: DailyVoiceOption[];
+  /** 熔断状态：连续失败 N 期后自动停更 */
+  circuit: { open: boolean; failures: number };
 }
 
 export type DailyRunState = 'idle' | 'running' | 'success' | 'failed';
@@ -1138,6 +1177,10 @@ export interface DailyRunStatus {
   date: string | null;
   log_tail: string[];
   stats: Record<string, any>;
+  /** 连续失败期数（成功一次清零） */
+  consecutive_failures: number;
+  /** 熔断中：true 时后端拒绝新的生成任务，需人工重置 */
+  circuit_open: boolean;
 }
 
 export interface DailyRunStatusResp {

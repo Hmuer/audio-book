@@ -60,17 +60,10 @@ def split_segments(text: str, max_chars: int = 240) -> list[str]:
 
 
 def _pick_voice(voices: list[dict[str, Any]]) -> str:
-    """默认音色：优先"新闻/有声书"场景，其次第一个非童声。"""
-    if not voices:
-        raise RuntimeError("当前 TTS 厂商没有可用音色")
-    for voice in voices:
-        scenes = voice.get("scene") or []
-        if isinstance(scenes, list) and any("新闻" in str(s) or "有声" in str(s) for s in scenes):
-            return str(voice.get("id"))
-    for voice in voices:
-        if str(voice.get("age") or "") not in ("child", "teen"):
-            return str(voice.get("id"))
-    return str(voices[0].get("id"))
+    """默认音色：复用偏好层的"新闻/播报优先"策略，避免两处规则漂移。"""
+    from .prefs import pick_default_voice
+
+    return pick_default_voice(voices)
 
 
 async def _normalize_loudness(mp3: bytes) -> bytes:
@@ -113,9 +106,13 @@ async def synthesize(text: str, *, voice_id: str = "") -> tuple[bytes, int, dict
         raise RuntimeError("口播稿为空，无法合成")
 
     tts = get_tts()
+    voices = await tts.list_voices()
     voice = voice_id.strip()
     if not voice:
-        voice = _pick_voice(await tts.list_voices())
+        voice = _pick_voice(voices)
+    from .prefs import voice_name_of
+
+    voice_name = voice_name_of(voices, voice)
 
     sem = get_tts_sem()
     parts: list[bytes] = []
@@ -141,6 +138,7 @@ async def synthesize(text: str, *, voice_id: str = "") -> tuple[bytes, int, dict
         "segments": len(segments),
         "chars": chars,
         "voice_id": voice,
+        "voice_name": voice_name,
         "duration_ms": duration_ms,
     }
     logger.info("[daily] TTS 完成 segments=%d chars=%d dur=%.1fs", len(segments), chars, duration_ms / 1000)

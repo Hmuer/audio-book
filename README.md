@@ -95,6 +95,7 @@ cp .env.example "${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.env"
 | `DAILY_FEED_KEY` | | 空 | 播客 RSS 的 `?key=` 订阅密钥；**留空则 RSS 不开放** |
 | `DAILY_LLM_ENABLED` | | `true` | 关闭后用离线模板出稿（无 LLM Key 也能跑） |
 | `DAILY_TARGET_MINUTES` | | `12` | 目标时长（写进脚本 prompt） |
+| `DAILY_PUBLIC_BASE_URL` | | 空=按请求推导 | RSS enclosure 用的对外地址，生产建议显式设为 `https://audio-book.ls-lh.cn` |
 
 ### 多厂商配置
 
@@ -413,13 +414,44 @@ P1 待做：建项目 / 导入书库 / 启动构建 / 保存文案 / 质检 / �
    取决于 TTS 速度）；
 3. 生成完成后在详情页试听、检查简介里的信源链接；
 4. 人工终审：「通过」后状态变 `approved`；「退回」并写备注（可重跑覆写当日）；
-5. 需要对外提供播客：配置 `DAILY_FEED_KEY`，把
-   `/api/daily/feed.xml?key=<key>` 提交到喜马拉雅「我有音频 RSS」等通道。
+5. 需要对外提供播客：配置 `DAILY_FEED_KEY` + `DAILY_PUBLIC_BASE_URL`，把
+   `https://<你的域名>/api/daily/feed.xml?key=<key>` 提交到喜马拉雅「我有音频 RSS」等通道。
+
+### 生成设置（页面内切换）
+
+列表页右上角「生成设置」：
+
+- **音色**：从当前 TTS 厂商的音色列表里选（按男/女/其他分组）。默认自动挑
+  「新闻/播报/主播」类音色（当前 MiniMax 下即「新闻女声」）；选为空 = 恢复自动挑选。
+  偏好保存在 `$DAILY_OUTPUT_DIR/prefs.json`，改设置不需要重启。
+- **信源**：内置源可勾选启停，也可以添加自定义 RSS（http(s)）；至少保留 1 个启用源。
+  默认信源以**中文科技媒体**为主（量子位 / 雷峰网 / 爱范儿 / 钛媒体 / 开源中国），
+  英文源（TechCrunch / The Verge / MIT Tech Review）权重更低，只做补充；
+  专题内同一来源最多 2 条，避免变成单家媒体通稿联播。
+
+### 熔断与恢复
+
+- 连续 **2 期**生成失败（含进程重启导致的未完成），自动置 `circuit_open=true`，
+  此时「立即生成」返回 409，页面出现红色熔断条；
+- 排查后点页面「重置熔断」（或 `POST /api/daily/reset-circuit`）恢复；
+- 成功一期即自动清零计数。
 
 ### 定时运行
 
-P0 只做手动触发。接入定时任务（P5）时，用带 JWT 的每日请求调
-`POST /api/daily/run` 即可；无人值守前必须保留人工终审（方案 §四、§五 的熔断要求）。
+1. 安装 systemd 单元（仓库自带模板）：
+
+   ```bash
+   cp deploy/audio-book-daily.service deploy/audio-book-daily.timer /etc/systemd/system/
+   systemctl daemon-reload
+   systemctl enable --now audio-book-daily.timer   # 每天 03:00 Asia/Shanghai
+   ```
+
+2. 定时脚本 `deploy/daily-generate.sh` 用 `.env` 里的 `DSH_SERVICE_TOKEN`
+   调 `POST /api/daily/run`（`X-DSH-Token` 鉴权），无需管理员密码；生成失败
+   脚本退出码非 0，交给 systemd 记录。
+
+> 自动任务**只生成、不发布**：发布前必须人工终审（方案 §四/§五）。若不希望无人值守
+> 产生费用，跳过上面第 1 步即可，只用页面手动触发。
 
 ### 已知边界
 
@@ -427,7 +459,11 @@ P0 只做手动触发。接入定时任务（P5）时，用带 JWT 的每日请�
   可在 `DAILY_SOURCES_JSON` 里换源；
 - 单期 TTS 成本约 2–5 元（按当前厂商价），音频 5–15 MB；
 - 审核状态与产物在同一个目录里（`meta.json`），**不要手动删目录里的 meta**；
-- 日报音频走对象存储/COS 属于 P3 范围，当前落本地盘，RSS enclosure 指向本服务。
+- 日报音频走对象存储/COS 属于 P3 范围，当前落本地盘，RSS enclosure 指向本服务；
+  桶未配置公开域名时不能直接用 COS 直链（私有桶签名 1 小时会过期）。
+- 英文源偶尔会出现在速览里；主话题强制中文优先（分数 ≥ 主话题 70% 才允许换），
+  但英文源的回退仍可能导致个别句子是转述标题——人工终审时重点看这一段。
+- `:fire:` 之类的标题短代码、`【重磅】` 前缀会在采集阶段清洗掉。
 
 ---
 

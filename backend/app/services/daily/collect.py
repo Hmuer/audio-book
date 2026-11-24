@@ -47,6 +47,21 @@ def strip_html(raw: str, limit: int = SUMMARY_LIMIT) -> str:
     return text[:limit]
 
 
+_EMOJI_CODE_RE = re.compile(r":[a-z0-9_+\-]{2,20}:")
+# 中文源常见前缀：【重磅】【独家】… 整段去掉，而不是只去掉开头的括号
+_BRACKET_PREFIX_RE = re.compile(r"^【[^】]{0,12}】\s*")
+_LEADING_PUNCT_RE = re.compile(r"^[\s\-–—|·:：,，。.!！?？\[\]()（）]+")
+
+
+def clean_title(raw: str) -> str:
+    """清洗标题：去标签、去 `:fire:` 之类短代码、去前导标点。"""
+    text = strip_html(raw, 200)
+    text = _EMOJI_CODE_RE.sub(" ", text)
+    text = _BRACKET_PREFIX_RE.sub("", text)
+    text = _LEADING_PUNCT_RE.sub("", text)
+    return _WS_RE.sub(" ", text).strip()[:200]
+
+
 def _local(tag: str) -> str:
     """去掉 XML 命名空间并小写：`{http://…}item` → `item`。"""
     return tag.rsplit("}", 1)[-1].lower()
@@ -115,7 +130,7 @@ def parse_feed_xml(content: bytes | str, source_name: str) -> list[NewsItem]:
     ]
     items: list[NewsItem] = []
     for node in nodes:
-        title = strip_html(_child_text(node, ("title",)), 200)
+        title = clean_title(_child_text(node, ("title",)))
         link = _child_link(node)
         if not title or not link:
             continue

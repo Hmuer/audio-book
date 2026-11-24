@@ -1,0 +1,11 @@
+# 每天 03:00（Asia/Shanghai）触发生成，留 4 小时重试窗口；人工终审后才会发布。
+[Unit]
+Description=Daily 03:00 trigger for AI frontier daily podcast
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

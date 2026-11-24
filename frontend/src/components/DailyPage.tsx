@@ -19,7 +19,10 @@ import {
   DailyIssueDetail,
   DailyIssueStatus,
   DailyRunStatus,
+  DailySource,
+  DailySourceInput,
   DailyTopic,
+  DailyVoiceOption,
 } from '@/lib/api';
 import { formatDateTime, parseTime } from '@/lib/time';
 
@@ -121,6 +124,55 @@ function reasonsText(t: DailyTopic): string {
   return list.length ? list.join('；') : '—';
 }
 
+// ---------- 生成设置：音色分组 / 信源校验 ----------
+
+type VoiceGroup = 'male' | 'female' | 'other';
+
+const VOICE_GROUP_LABELS: Record<VoiceGroup, string> = {
+  male: '男声',
+  female: '女声',
+  other: '其他',
+};
+
+function voiceGroup(gender?: string | null): VoiceGroup {
+  // 后端音色表 gender 多为 male/female/neutral；兼容中文取值
+  const g = String(gender ?? '').trim().toLowerCase();
+  if (g === 'male' || g === 'm' || g === '男' || g === '男声') return 'male';
+  if (g === 'female' || g === 'f' || g === '女' || g === '女声') return 'female';
+  return 'other';
+}
+
+function voiceSceneText(v: DailyVoiceOption): string {
+  const scenes = v.scene;
+  if (Array.isArray(scenes)) return scenes.filter(Boolean).join('/');
+  if (typeof scenes === 'string') return scenes;
+  return '';
+}
+
+/** 下拉选项文案：name · provider · 场景 */
+function voiceOptionLabel(v: DailyVoiceOption): string {
+  const parts = [v.name || v.id];
+  if (v.provider) parts.push(v.provider);
+  const scene = voiceSceneText(v);
+  if (scene) parts.push(scene);
+  return parts.join(' · ');
+}
+
+/** 添加自定义信源：url 必须是 http(s)，name 缺省用域名兜底 */
+function parseSourceUrl(raw: string): { url: string; name: string } | { error: string } {
+  const url = raw.trim();
+  if (!url) return { error: '请填写信源地址' };
+  if (!/^https?:\/\//i.test(url)) return { error: '信源地址必须以 http:// 或 https:// 开头' };
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { error: '信源地址格式不正确' };
+  }
+  if (!parsed.hostname) return { error: '信源地址缺少域名' };
+  return { url, name: parsed.hostname.replace(/^www\./i, '') };
+}
+
 // =====================================================================
 // 入口：按有无 date 分流（两个子组件各自持有 hooks，避免条件 hooks）
 // =====================================================================
@@ -148,6 +200,14 @@ function DailyList() {
   const [runBusy, setRunBusy] = useState(false);
   const [runNotice, setRunNotice] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+
+  // 生成设置（音色 / 信源）
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // 熔断恢复
+  const [circuitBusy, setCircuitBusy] = useState(false);
+  const [circuitError, setCircuitError] = useState<string | null>(null);
+  const [circuitNotice, setCircuitNotice] = useState<string | null>(null);
 
   // silent=true：后台刷新（轮询/生成后），不闪骨架
   const refreshList = useCallback(async (silent = false) => {
@@ -240,8 +300,10 @@ function DailyList() {
       void refreshList(true);
     } catch (e) {
       const msg = errorText(e);
-      // 后端「已有运行中任务」→ 409；_fetch 抛出的 message 形如 "HTTP 409: ..."
-      if (/HTTP\s*409|409/.test(msg) || /运行中|生成中|running/i.test(msg)) {
+      // 409 有两种：已有任务在跑 / 连续失败已熔断 —— 按 detail 文案区分提示
+      if (/熔断|circuit/i.test(msg)) {
+        setRunError('生成已熔断，请先点「重置熔断」再试');
+      } else if (/HTTP\s*409|运行中|生成中|running/i.test(msg)) {
         setRunError('正在生成中，请稍候再试');
       } else {
         setRunError(msg);
@@ -251,8 +313,32 @@ function DailyList() {
     }
   };
 
+  // 重置熔断：确认信源/模型/音色后再恢复生成
+  const resetCircuit = async () => {
+    setCircuitBusy(true);
+    setCircuitError(null);
+    setCircuitNotice(null);
+    try {
+      const r = await api.dailyResetCircuit();
+      setRun(r.run);
+      prevRunStatusRef.current = r.run.status;
+      runningRef.current = r.run.status === 'running';
+      setStatusError(null);
+      setCircuitNotice('熔断已重置，可重新触发生成');
+      void refreshList(true);
+      void loadConfig(); // config.circuit 同步刷新，避免兜底值让熔断条残留
+    } catch (e) {
+      setCircuitError(errorText(e));
+    } finally {
+      setCircuitBusy(false);
+    }
+  };
+
   const isRunning = run?.status === 'running';
   const enabledSources = config ? config.sources.filter((s) => s.enabled).length : 0;
+  // 熔断：run/status 为主，config.circuit 兜底（状态接口失败时仍能提示）
+  const circuitOpen = !!run?.circuit_open || !!config?.circuit?.open;
+  const circuitFailures = run?.consecutive_failures ?? config?.circuit?.failures ?? 0;
 
   return (
     <section className="animate-fade-in space-y-5">
@@ -280,9 +366,21 @@ function DailyList() {
                   {config.llm_enabled ? 'LLM 已启用' : 'LLM 未启用'}
                 </span>
               )}
+              {config && (
+                <span className="chip-soft">音色 {config.voice_name || '默认'}</span>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => setSettingsOpen(true)}
+              title="选择播报音色、管理信源"
+            >
+              <SettingsGlyph size={14} />
+              生成设置
+            </button>
             <button
               type="button"
               className="btn-ghost"
@@ -314,6 +412,40 @@ function DailyList() {
       {/* ============ 生成提示 ============ */}
       {runNotice && <Notice tone="ok">{runNotice}</Notice>}
       {runError && <Notice tone="error">{runError}</Notice>}
+
+      {/* ============ 熔断条（连续失败自动停更） ============ */}
+      {circuitOpen && (
+        <div
+          className="flex flex-wrap items-start gap-3 px-4 py-3"
+          style={{
+            borderRadius: 'var(--radius-sm)',
+            background: 'rgba(var(--status-error-bg), 0.12)',
+            border: '1px solid rgba(var(--status-error-bg), 0.42)',
+          }}
+        >
+          <span className="mt-[7px] badge-dot shrink-0" style={{ backgroundColor: 'rgb(var(--status-error-fg))' }} />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium" style={{ color: 'rgb(var(--status-error-fg))' }}>
+              生成熔断已触发
+            </div>
+            <div className="text-[11px] text-ink-500 mt-0.5 leading-5">
+              连续 {circuitFailures} 期生成失败，已自动停更以避免持续消耗。
+              请检查信源 / 模型 / 音色后重置熔断再试。
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn-ghost shrink-0"
+            disabled={circuitBusy}
+            onClick={() => void resetCircuit()}
+            style={{ color: 'rgb(var(--status-error-fg))' }}
+          >
+            {circuitBusy ? '重置中…' : '重置熔断'}
+          </button>
+        </div>
+      )}
+      {circuitError && <Notice tone="error">重置熔断失败：{circuitError}</Notice>}
+      {circuitNotice && <Notice tone="ok">{circuitNotice}</Notice>}
 
       {/* ============ 运行状态条 ============ */}
       <RunStatusBar run={run} error={statusError} />
@@ -362,6 +494,19 @@ function DailyList() {
             <IssueRow key={it.date} issue={it} />
           ))}
         </div>
+      )}
+
+      {/* ============ 生成设置 Modal ============ */}
+      {settingsOpen && (
+        <DailySettingsModal
+          initialConfig={config}
+          onClose={() => setSettingsOpen(false)}
+          onSaved={(c) => {
+            setConfig(c);
+            setConfigError(null);
+            setSettingsOpen(false);
+          }}
+        />
       )}
     </section>
   );
@@ -491,6 +636,11 @@ function RunStatusBar({ run, error }: { run: DailyRunStatus | null; error: strin
             收录 <span className="text-ink-700 tabular-nums">{statKept}</span>
           </span>
         )}
+        {typeof run.consecutive_failures === 'number' && run.consecutive_failures > 0 && (
+          <span style={run.consecutive_failures >= 2 ? { color: 'rgb(var(--status-error-fg))' } : undefined}>
+            连续失败 <span className="tabular-nums">{run.consecutive_failures}</span> 次
+          </span>
+        )}
         {running && <span className="text-ink-500">每 {POLL_RUNNING_MS / 1000}s 自动刷新状态</span>}
       </div>
 
@@ -521,6 +671,383 @@ function ListSkeleton() {
           <div className="skeleton h-3.5 w-16 shrink-0 ml-auto" />
         </div>
       ))}
+    </div>
+  );
+}
+
+// =====================================================================
+// 生成设置 Modal（播报音色 / 信源）
+// =====================================================================
+
+type EditableSource = { name: string; url: string; enabled: boolean; custom: boolean };
+
+function toEditableSources(list: DailySource[] | undefined): EditableSource[] {
+  return (list ?? []).map((s) => ({
+    name: s.name || s.url,
+    url: s.url,
+    enabled: !!s.enabled,
+    custom: !!s.custom,
+  }));
+}
+
+function DailySettingsModal({
+  initialConfig,
+  onClose,
+  onSaved,
+}: {
+  initialConfig: DailyConfig | null;
+  onClose: () => void;
+  onSaved: (config: DailyConfig) => void;
+}) {
+  const [config, setConfig] = useState<DailyConfig | null>(initialConfig);
+  const [loading, setLoading] = useState(!initialConfig);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const [voiceId, setVoiceId] = useState(initialConfig?.voice_id ?? '');
+  // 只有用户动过音色下拉才提交 voice_id：否则「只改信源」会把自动挑选的音色钉成偏好
+  const [voiceTouched, setVoiceTouched] = useState(false);
+  const [sources, setSources] = useState<EditableSource[]>(
+    toEditableSources(initialConfig?.sources),
+  );
+
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const [newUrl, setNewUrl] = useState('');
+  const [newName, setNewName] = useState('');
+  const [addError, setAddError] = useState<string | null>(null);
+
+  const applyConfig = useCallback((c: DailyConfig) => {
+    setConfig(c);
+    setVoiceId(c.voice_id ?? '');
+    setVoiceTouched(false);
+    setSources(toEditableSources(c.sources));
+  }, []);
+
+  // 打开时重新拉一次 config：拿最新音色表与信源（父级 config 可能已过期）
+  const reload = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const c = await api.dailyConfig();
+      applyConfig(c);
+    } catch (e) {
+      setLoadError(errorText(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [applyConfig]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  // Esc 关闭
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !saving) onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, saving]);
+
+  // 打开期间锁住背景滚动
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
+
+  const voices = config?.voices ?? [];
+  const grouped = useMemo(() => {
+    const out: Record<VoiceGroup, DailyVoiceOption[]> = { male: [], female: [], other: [] };
+    for (const v of voices) out[voiceGroup(v.gender)].push(v);
+    return out;
+  }, [voices]);
+  const currentVoiceMissing = !!voiceId && !voices.some((v) => v.id === voiceId);
+
+  const enabledCount = sources.filter((s) => s.enabled).length;
+  const canSave = !!config && !loading && !saving && enabledCount >= 1;
+
+  const toggleSource = (url: string) => {
+    setSources((prev) => prev.map((s) => (s.url === url ? { ...s, enabled: !s.enabled } : s)));
+  };
+
+  const removeSource = (url: string) => {
+    setSources((prev) => prev.filter((s) => s.url !== url));
+    setAddError(null);
+  };
+
+  const addSource = () => {
+    setAddError(null);
+    const parsed = parseSourceUrl(newUrl);
+    if ('error' in parsed) {
+      setAddError(parsed.error);
+      return;
+    }
+    if (sources.some((s) => s.url === parsed.url)) {
+      setAddError('该信源已在列表中');
+      return;
+    }
+    if (sources.length >= 20) {
+      setAddError('信源最多 20 个');
+      return;
+    }
+    const name = (newName.trim() || parsed.name).slice(0, 40);
+    setSources((prev) => [...prev, { name, url: parsed.url, enabled: true, custom: true }]);
+    setNewUrl('');
+    setNewName('');
+  };
+
+  const save = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const patch: { voice_id?: string | null; sources?: DailySourceInput[] } = {
+        sources: sources.map((s) => ({
+          name: s.name || s.url,
+          url: s.url,
+          enabled: s.enabled,
+        })),
+      };
+      if (voiceTouched) {
+        // 空值 = 交回服务端自动挑选
+        patch.voice_id = voiceId || null;
+      }
+      const updated = await api.dailyConfigUpdate(patch);
+      onSaved(updated);
+    } catch (e) {
+      // 400 时 _fetch 已把后端 detail 拼进 message
+      setSaveError(errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={() => {
+        if (!saving) onClose();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="生成设置"
+        className="bg-ink-50 border border-ink-300/70 w-full max-w-[600px] max-h-[88vh] flex flex-col"
+        style={{
+          borderRadius: 'var(--radius-lg)',
+          boxShadow: '0 24px 64px -20px rgba(0, 0, 0, 0.8)',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* 头部 */}
+        <div className="flex items-center gap-2 px-5 pt-4 pb-3 border-b border-ink-300/60 shrink-0">
+          <span className="text-ink-500">
+            <SettingsGlyph size={16} />
+          </span>
+          <h3 className="text-base font-semibold text-ink-900">生成设置</h3>
+          <button
+            type="button"
+            className="ml-auto text-ink-500 hover:text-ink-800 transition-colors disabled:opacity-40"
+            onClick={onClose}
+            disabled={saving}
+            aria-label="关闭"
+          >
+            <CloseGlyph size={16} />
+          </button>
+        </div>
+
+        {/* 内容 */}
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+          {loading && !config && (
+            <div className="flex items-center justify-center gap-2 py-10 text-xs text-ink-500">
+              <span className="inline-block w-3.5 h-3.5 border-2 border-ink-400/70 border-t-brand-500 rounded-full animate-spin" />
+              配置加载中…
+            </div>
+          )}
+
+          {!loading && !config && (
+            <Notice tone="error">
+              <span className="flex-1">配置加载失败：{loadError || '未知错误'}</span>
+              <button
+                type="button"
+                className="btn-ghost !py-1 !px-3 text-xs self-center"
+                onClick={() => void reload()}
+              >
+                重试
+              </button>
+            </Notice>
+          )}
+
+          {config && (
+            <>
+              {/* 播报音色 */}
+              <section>
+                <div className="flex flex-wrap items-center gap-2 mb-2">
+                  <h4 className="text-sm font-medium text-ink-800">播报音色</h4>
+                  <span className="text-[11px] text-ink-500">
+                    当前：{config.voice_name || '默认音色'}
+                  </span>
+                  {loading && <span className="text-[11px] text-ink-500">（刷新中…）</span>}
+                </div>
+
+                {voices.length === 0 ? (
+                  <div
+                    className="px-3 py-2.5 text-[11px] text-ink-500 border border-dashed border-ink-300"
+                    style={{ borderRadius: 'var(--radius-sm)' }}
+                  >
+                    当前 TTS 厂商没有可用音色，保存将只更新信源。
+                  </div>
+                ) : (
+                  <select
+                    className="input"
+                    value={voiceId}
+                    disabled={saving}
+                    onChange={(e) => {
+                      setVoiceId(e.target.value);
+                      setVoiceTouched(true);
+                    }}
+                    aria-label="播报音色"
+                  >
+                    <option value="">使用默认音色（服务端配置）</option>
+                    {(['male', 'female', 'other'] as VoiceGroup[]).map((g) =>
+                      grouped[g].length ? (
+                        <optgroup key={g} label={VOICE_GROUP_LABELS[g]}>
+                          {grouped[g].map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {voiceOptionLabel(v)}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : null,
+                    )}
+                    {currentVoiceMissing && (
+                      <option value={voiceId}>{voiceId}（当前音色，不在可用列表）</option>
+                    )}
+                  </select>
+                )}
+              </section>
+
+              {/* 信源管理 */}
+              <section>
+                <div className="flex flex-wrap items-center gap-2 mb-2">
+                  <h4 className="text-sm font-medium text-ink-800">信源</h4>
+                  <span className="text-[11px] text-ink-500">
+                    已启用 {enabledCount}/{sources.length}
+                  </span>
+                </div>
+
+                <div
+                  className="border border-ink-300/70 overflow-hidden"
+                  style={{ borderRadius: 'var(--radius-sm)' }}
+                >
+                  {sources.length === 0 && (
+                    <div className="px-3 py-4 text-center text-[11px] text-ink-500">
+                      暂无信源，请在下方添加
+                    </div>
+                  )}
+                  {sources.map((src) => (
+                    <div
+                      key={src.url}
+                      className="flex items-center gap-2.5 px-3 py-2 border-t border-ink-300/60 first:border-t-0"
+                    >
+                      <label className="flex items-center gap-2.5 min-w-0 flex-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={src.enabled}
+                          disabled={saving}
+                          onChange={() => toggleSource(src.url)}
+                          className="shrink-0 accent-brand-500"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center gap-1.5">
+                            <span
+                              className={`text-[13px] truncate ${
+                                src.enabled ? 'text-ink-800' : 'text-ink-500 line-through'
+                              }`}
+                            >
+                              {src.name}
+                            </span>
+                            {src.custom && <span className="chip-soft !text-[10px] shrink-0">自定义</span>}
+                          </span>
+                          <span className="block text-[11px] text-ink-500 truncate font-mono" title={src.url}>
+                            {src.url}
+                          </span>
+                        </span>
+                      </label>
+                      {src.custom && (
+                        <button
+                          type="button"
+                          className="shrink-0 text-ink-500 hover:text-red-300 transition-colors disabled:opacity-40"
+                          disabled={saving}
+                          onClick={() => removeSource(src.url)}
+                          aria-label={`删除信源 ${src.name}`}
+                        >
+                          <TrashGlyph size={14} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {/* 添加自定义信源 */}
+                <div className="mt-2.5 flex flex-wrap items-start gap-2">
+                  <input
+                    className="input flex-1 min-w-[180px] !text-xs"
+                    placeholder="信源 RSS 地址（http(s)://）"
+                    value={newUrl}
+                    disabled={saving}
+                    onChange={(e) => {
+                      setNewUrl(e.target.value);
+                      setAddError(null);
+                    }}
+                  />
+                  <input
+                    className="input w-[150px] !text-xs"
+                    placeholder="名称（可选）"
+                    value={newName}
+                    maxLength={40}
+                    disabled={saving}
+                    onChange={(e) => setNewName(e.target.value)}
+                  />
+                  <button type="button" className="btn-ghost shrink-0" disabled={saving} onClick={addSource}>
+                    <PlusGlyph size={14} />
+                    添加
+                  </button>
+                </div>
+                {addError && (
+                  <div className="mt-1.5 text-[11px]" style={{ color: 'rgb(var(--status-error-fg))' }}>
+                    {addError}
+                  </div>
+                )}
+              </section>
+            </>
+          )}
+
+          {saveError && <Notice tone="error">保存失败：{saveError}</Notice>}
+          {loadError && config && (
+            <Notice tone="warn">配置刷新失败：{loadError}（可继续使用当前值保存）</Notice>
+          )}
+        </div>
+
+        {/* 底部 */}
+        <div className="flex items-center gap-2 px-5 py-3.5 border-t border-ink-300/60 shrink-0">
+          {enabledCount < 1 && <span className="text-[11px] text-ink-500">至少启用 1 个信源</span>}
+          <div className="ml-auto flex items-center gap-2">
+            <button type="button" className="btn-ghost" onClick={onClose} disabled={saving}>
+              取消
+            </button>
+            <button type="button" className="btn-primary" onClick={() => void save()} disabled={!canSave}>
+              {saving ? '保存中…' : '保存'}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -724,6 +1251,11 @@ function DailyDetail({ date }: { date: string }) {
               <span>
                 条目 <span className="text-ink-700 tabular-nums">{issue.item_count}</span>
               </span>
+              {config?.voice_name && (
+                <span>
+                  音色 <span className="text-ink-700">{config.voice_name}</span>
+                </span>
+              )}
               <span title={issue.created_at ? formatDateTime(issue.created_at) : undefined}>
                 生成 <span className="text-ink-700 tabular-nums">{fmtShortDateTime(issue.created_at)}</span>
               </span>
@@ -1129,6 +1661,45 @@ function VolumeGlyph({ size = 15 }: { size?: number }) {
       <path d="M11 5L6 9H3v6h3l5 4V5z" />
       <path d="M15.54 8.46a5 5 0 010 7.07" />
       <path d="M19.07 4.93a10 10 0 010 14.14" />
+    </svg>
+  );
+}
+
+function SettingsGlyph({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 01-4 0v-.1A1.7 1.7 0 009 19.4a1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 010-4h.1A1.7 1.7 0 004.6 9a1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 014 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 010 4h-.1a1.7 1.7 0 00-1.5 1z" />
+    </svg>
+  );
+}
+
+function CloseGlyph({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 6L6 18" />
+      <path d="M6 6l12 12" />
+    </svg>
+  );
+}
+
+function TrashGlyph({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6h18" />
+      <path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2" />
+      <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+    </svg>
+  );
+}
+
+function PlusGlyph({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
     </svg>
   );
 }
