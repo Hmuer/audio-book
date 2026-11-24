@@ -14,7 +14,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { createPortal } from 'react-dom';
 import {
   api,
-  fetchMediaObjectUrl,
   DailyConfig,
   DailyIssue,
   DailyIssueDetail,
@@ -1081,10 +1080,13 @@ function DailyDetail({ date }: { date: string }) {
   const [reviewErr, setReviewErr] = useState<string | null>(null);
 
   // 音频
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [audioLoading, setAudioLoading] = useState(false);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [audioReloadKey, setAudioReloadKey] = useState(0);
+  // 音色选择（详情页直接可改，对下一期生效）
+  const [voiceDraft, setVoiceDraft] = useState('');
+  const [voiceSaving, setVoiceSaving] = useState(false);
+  const [voiceMsg, setVoiceMsg] = useState<string | null>(null);
+  const [regenBusy, setRegenBusy] = useState(false);
 
   // RSS 复制
   const [copied, setCopied] = useState(false);
@@ -1109,6 +1111,7 @@ function DailyDetail({ date }: { date: string }) {
     try {
       const c = await api.dailyConfig();
       setConfig(c);
+      setVoiceDraft((prev) => (prev === '' ? (c.voice_id ?? '') : prev));
       setConfigError(null);
     } catch (e) {
       setConfigError(errorText(e));
@@ -1120,38 +1123,13 @@ function DailyDetail({ date }: { date: string }) {
     void loadConfig();
   }, [loadDetail, loadConfig]);
 
-  // 音频：/api/daily/issues/<date>/audio 需要 JWT 头，<audio src> 带不上 →
-  // 先取字节转 Blob URL；卸载/换期时 revoke，避免内存泄漏。
+  // 音频是「生成」阶段一次性合成好的成品（audio.mp3），这里只是播放：
+  // 直链 + Range 流式，点开即播；不需要先下载成 Blob（9MB 会显得像"正在生成"）。
   const hasAudio = !!detail?.issue.has_audio;
-  useEffect(() => {
-    setAudioUrl(null);
-    setAudioError(null);
-    if (!hasAudio) {
-      setAudioLoading(false);
-      return;
-    }
-    let alive = true;
-    let objUrl: string | null = null;
-    setAudioLoading(true);
-    fetchMediaObjectUrl(`/api/daily/issues/${encodeURIComponent(date)}/audio`)
-      .then((u) => {
-        if (alive) {
-          objUrl = u;
-          setAudioUrl(u);
-        } else {
-          URL.revokeObjectURL(u);
-        }
-      })
-      .catch((e) => {
-        if (alive) setAudioError(errorText(e));
-      })
-      .finally(() => {
-        if (alive) setAudioLoading(false);
-      });
-    return () => {
-      alive = false;
-      if (objUrl) URL.revokeObjectURL(objUrl);
-    };
+  const audioSrc = useMemo(() => {
+    if (!hasAudio) return '';
+    const base = api.dailyAudioUrl(date);
+    return `${base}${base.includes('?') ? '&' : '?'}v=${audioReloadKey}`;
   }, [date, hasAudio, audioReloadKey]);
 
   // 复制成功提示的定时器清理
@@ -1161,8 +1139,6 @@ function DailyDetail({ date }: { date: string }) {
 
   const issue = detail?.issue ?? null;
   const topics: DailyTopic[] = detail?.meta?.topics ?? [];
-  // 详情刚回来、音频 effect 尚未跑完的一帧里避免音频区空白
-  const audioWaiting = audioLoading || (!!issue?.has_audio && !audioUrl && !audioError);
 
   // feed_url 可能是相对路径（同源）→ 拼成完整地址方便直接贴到播客客户端
   const fullFeedUrl = useMemo(() => {
@@ -1172,6 +1148,36 @@ function DailyDetail({ date }: { date: string }) {
     if (typeof window !== 'undefined' && raw.startsWith('/')) return `${window.location.origin}${raw}`;
     return raw;
   }, [detail?.feed_url, config?.feed_url]);
+
+  const saveVoice = async () => {
+    setVoiceSaving(true);
+    setVoiceMsg(null);
+    try {
+      const c = await api.dailyConfigUpdate({ voice_id: voiceDraft || '' });
+      setConfig(c);
+      setVoiceMsg('音色已保存，对下一期生效；本期音频不会重新合成。');
+    } catch (e) {
+      setVoiceMsg(`保存失败：${errorText(e)}`);
+    } finally {
+      setVoiceSaving(false);
+    }
+  };
+
+  const regenerate = async () => {
+    if (!window.confirm('重新生成本期会覆盖当前音频与文稿，耗时约 2 分钟并消耗 TTS 额度，确定继续？')) {
+      return;
+    }
+    setRegenBusy(true);
+    setVoiceMsg(null);
+    try {
+      await api.dailyRun(date);
+      setVoiceMsg('已开始重新生成，可回到列表页查看进度；完成后刷新本页即可试听新版本。');
+    } catch (e) {
+      setVoiceMsg(`重新生成失败：${errorText(e)}`);
+    } finally {
+      setRegenBusy(false);
+    }
+  };
 
   const submitReview = async (decision: 'approve' | 'reject') => {
     if (!issue) return;
@@ -1257,9 +1263,12 @@ function DailyDetail({ date }: { date: string }) {
               <span>
                 条目 <span className="text-ink-700 tabular-nums">{issue.item_count}</span>
               </span>
-              {config?.voice_name && (
+              {(detail.meta?.voice?.name || config?.voice_name) && (
                 <span>
-                  音色 <span className="text-ink-700">{config.voice_name}</span>
+                  音色{' '}
+                  <span className="text-ink-700">
+                    {detail.meta?.voice?.name || config?.voice_name}
+                  </span>
                 </span>
               )}
               <span title={issue.created_at ? formatDateTime(issue.created_at) : undefined}>
@@ -1298,32 +1307,36 @@ function DailyDetail({ date }: { date: string }) {
           )}
         </div>
 
-        {audioWaiting && (
-          <div className="flex items-center gap-2 py-2 text-xs text-ink-500">
-            <span className="inline-block w-3.5 h-3.5 border-2 border-ink-400/70 border-t-brand-500 rounded-full animate-spin" />
-            音频加载中…
-          </div>
-        )}
-
-        {!audioWaiting && audioError && (
+        {audioError && (
           <Notice tone="error">
             <span className="flex-1">音频加载失败：{audioError}</span>
             <button
               type="button"
               className="btn-ghost !py-1 !px-3 text-xs self-center"
-              onClick={() => setAudioReloadKey((k) => k + 1)}
+              onClick={() => {
+                setAudioError(null);
+                setAudioReloadKey((k) => k + 1);
+              }}
             >
               重试
             </button>
           </Notice>
         )}
 
-        {!audioWaiting && !audioError && audioUrl && (
+        {hasAudio && (
           // eslint-disable-next-line jsx-a11y/media-has-caption
-          <audio controls preload="metadata" src={audioUrl} className="w-full" />
+          <audio
+            key={audioReloadKey}
+            controls
+            preload="metadata"
+            src={audioSrc}
+            className="w-full"
+            onError={() => setAudioError('播放失败（可点重试）')}
+            onLoadedMetadata={() => setAudioError(null)}
+          />
         )}
 
-        {!audioWaiting && !audioError && !audioUrl && !issue.has_audio && (
+        {!hasAudio && (
           <div
             className="py-7 grid place-items-center text-xs text-ink-500 border border-dashed border-ink-300"
             style={{ borderRadius: 'var(--radius-sm)' }}
@@ -1331,6 +1344,65 @@ function DailyDetail({ date }: { date: string }) {
             本期无音频
           </div>
         )}
+
+        <div className="mt-2 text-[11px] text-ink-500">
+          音频在「生成」时已一次性合成并保存，试听不会触发 TTS 合成。
+        </div>
+      </div>
+
+      {/* ============ 播报音色（对下一期生效） ============ */}
+      <div className="glass-panel !p-4 sm:!p-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-semibold text-ink-800">播报音色</span>
+          <span className="text-[11px] text-ink-500">
+            本期：{detail.meta?.voice?.name || '未知'}
+            {config?.voice_name ? ` · 默认：${config.voice_name}` : ''}
+          </span>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <select
+            className="input !text-xs min-w-[260px] flex-1 sm:flex-none"
+            value={voiceDraft}
+            onChange={(e) => {
+              setVoiceDraft(e.target.value);
+              setVoiceMsg(null);
+            }}
+            disabled={voiceSaving || regenBusy || !config}
+            aria-label="选择播报音色"
+          >
+            <option value="">使用默认音色（自动挑选「新闻/播报」类）</option>
+            {(config?.voices ?? []).map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}
+                {v.gender === 'male' ? ' · 男声' : v.gender === 'female' ? ' · 女声' : ''}
+                {v.provider ? ` · ${v.provider}` : ''}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="btn-primary !py-1.5 !px-3 text-xs"
+            onClick={() => void saveVoice()}
+            disabled={voiceSaving || !config}
+          >
+            {voiceSaving ? '保存中…' : '保存音色'}
+          </button>
+          <button
+            type="button"
+            className="btn-ghost !py-1.5 !px-3 text-xs"
+            onClick={() => void regenerate()}
+            disabled={regenBusy}
+          >
+            {regenBusy ? '提交中…' : '用当前设置重生成本期'}
+          </button>
+        </div>
+        {configError && (
+          <div className="mt-2 text-[11px] text-ink-500">音色列表加载失败：{configError}（仍可用默认音色）</div>
+        )}
+        {voiceMsg && <div className="mt-2 text-[12px] text-ink-600">{voiceMsg}</div>}
+        <div className="mt-2 text-[11px] text-ink-500">
+          音色改动对<span className="text-ink-700">下一期</span>生效；想立刻听到新音色，点「用当前设置重生成本期」。
+        </div>
       </div>
 
       {/* ============ Tabs：简介 / 脚本 / 选题 ============ */}

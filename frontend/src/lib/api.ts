@@ -523,6 +523,16 @@ export const api = {
       }),
     }),
   dailyRunStatus: () => _fetch<DailyRunStatusResp>('/api/daily/run/status'),
+  /**
+   * 音频直链（带 JWT query）。<audio> 无法带 Authorization 头，后端
+   * /api/daily/issues/{date}/audio 支持 ?token=，并支持 Range 流式播放 ——
+   * 不落 Blob，点开即可秒播（音频是生成时已经合成好的，不是边听边生成）。
+   */
+  dailyAudioUrl: (date: string): string => {
+    const token = getToken();
+    const base = `/api/daily/issues/${encodeURIComponent(date)}/audio`;
+    return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+  },
   // 连续失败自动熔断后的人工恢复：重置计数并清空 circuit_open
   dailyResetCircuit: () =>
     _fetch<{ ok: boolean; run: DailyRunStatus }>('/api/daily/reset-circuit', {
@@ -1101,6 +1111,8 @@ export interface DailyIssueDetail {
   meta: {
     topics: DailyTopic[];
     stats: Record<string, any>;
+    /** 本期实际使用的音色（生成时快照） */
+    voice?: { id: string; name: string | null };
   };
   feed_url: string;
 }
