@@ -61,6 +61,28 @@ def _safe_name(title: str, fallback: str) -> str:
     return name[:60].strip() or fallback
 
 
+def _upload_title(show_title: str, date: str, title: str) -> str:
+    """上架标题（= 音频文件名）：品牌 + 日期 + 主题，控制在平台 40 字内。
+
+    喜马拉雅导入音频后拿文件名当标题，所以这里就是最终标题的默认值。
+    若内部标题已带品牌前缀，先去重避免"科技前沿日报：科技前沿日报…"。
+    """
+    topic = (title or "").strip()
+    for prefix in (show_title, f"《{show_title}》"):
+        if prefix and topic.startswith(prefix):
+            topic = topic[len(prefix):].lstrip(" |｜:：-_—·")
+            break
+    topic = topic.strip() or "科技前沿"
+    for candidate in (
+        f"{show_title} {date}｜{topic}",
+        f"{date}｜{topic}",
+    ):
+        if len(candidate) <= 40:
+            return candidate
+    room = max(4, 40 - len(f"{date}｜"))
+    return f"{date}｜{topic[:room]}"
+
+
 def _upload_guide(date: str, mp3_name: str, srt_name: str) -> str:
     return f"""科技前沿日报 · 上架说明（{date}）
 
@@ -97,7 +119,8 @@ def build_package(date: str, meta: dict[str, Any], *, shownotes_md: str, script_
         raise FileNotFoundError("本期还没有音频")
     show = show_config()
     title = str(meta.get("title") or f"{show['title']}_{date}")
-    safe_title = _safe_name(title, f"{show['title']}_{date}")
+    upload_title = _upload_title(show["title"], date, title)
+    safe_title = _safe_name(upload_title, f"{show['title']} {date}")
     mp3_name = f"{safe_title}.mp3"
     srt_name = f"{safe_title}.srt"
 
@@ -106,6 +129,7 @@ def build_package(date: str, meta: dict[str, Any], *, shownotes_md: str, script_
         "show": show,
         "date": date,
         "title": title,
+        "upload_title": upload_title,
         "duration_ms": meta.get("duration_ms"),
         "voice": meta.get("voice"),
         "item_count": meta.get("item_count"),
@@ -128,7 +152,7 @@ def build_package(date: str, meta: dict[str, Any], *, shownotes_md: str, script_
             srt_text = subtitles.build_from_script(script_md, int(meta.get("duration_ms") or 0))
         if srt_text:
             zf.writestr(srt_name, srt_text)
-        zf.writestr("标题.txt", title + "\n")
+        zf.writestr("标题.txt", upload_title + "\n")
         zf.writestr("简介.txt", _plain_markdown(shownotes_md))
         zf.writestr("节目简介.md", shownotes_md or "")
         zf.writestr("标签.txt", "、".join(tags) + "\n")

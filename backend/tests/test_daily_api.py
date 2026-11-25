@@ -374,7 +374,7 @@ async def test_daily_export_package(_isolate_data_dir, daily_env, admin_token):
 
         zf = zipfile.ZipFile(io.BytesIO(r.content))
         names = zf.namelist()
-        assert "科技前沿日报：测试标题.mp3" in names
+        assert "科技前沿日报 2025-11-24｜测试标题.mp3" in names
         assert any(n.endswith(".srt") for n in names), "上架包应包含字幕"
         for required in ("标题.txt", "简介.txt", "标签.txt", "元数据.json", "上传说明.txt"):
             assert required in names
