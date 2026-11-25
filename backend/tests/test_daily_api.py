@@ -21,7 +21,7 @@ def _seed(daily_dir):
     base.mkdir(parents=True, exist_ok=True)
     meta = {
         "date": DATE,
-        "title": "AI 前沿日报：测试期",
+        "title": "科技前沿日报：测试标题",
         "created_at": "2025-11-24T08:00:00",
         "duration_ms": 800,
         "item_count": 3,
@@ -374,7 +374,32 @@ async def test_daily_export_package(_isolate_data_dir, daily_env, admin_token):
 
         zf = zipfile.ZipFile(io.BytesIO(r.content))
         names = zf.namelist()
-        assert "科技前沿日报_2025-11-24.mp3" in names
+        assert "科技前沿日报：测试标题.mp3" in names
+        assert any(n.endswith(".srt") for n in names), "上架包应包含字幕"
         for required in ("标题.txt", "简介.txt", "标签.txt", "元数据.json", "上传说明.txt"):
             assert required in names
         assert "AI 辅助" in zf.read("上传说明.txt").decode("utf-8")
+
+
+@pytest.mark.asyncio
+async def test_daily_subtitles_endpoint(_isolate_data_dir, daily_env, admin_token):
+    """字幕：JWT 可取（老期数按字数比例兜底）；feed key 仅 approved 可用。"""
+    from httpx import ASGITransport, AsyncClient
+    from backend.app.main import app
+
+    async with _client(admin_token) as c:
+        r = await c.get(f"/api/daily/issues/{DATE}/subtitles.srt")
+        assert r.status_code == 200
+        assert "-->" in r.text
+        assert "text/plain" in r.headers["content-type"] or "x-subrip" in r.headers["content-type"]
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.get(f"/api/daily/issues/{DATE}/subtitles.srt", params={"key": "test-feed-key"})
+        assert r.status_code == 403
+
+    async with _client(admin_token) as c:
+        await c.post(f"/api/daily/issues/{DATE}/review", json={"decision": "approve"})
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.get(f"/api/daily/issues/{DATE}/subtitles.srt", params={"key": "test-feed-key"})
+        assert r.status_code == 200 and "-->" in r.text

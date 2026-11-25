@@ -119,6 +119,8 @@ async def synthesize(text: str, *, voice_id: str = "") -> tuple[bytes, int, dict
     duration_ms = 0
     chars = 0
     silence = make_silent_mp3(SEGMENT_GAP_MS)
+    #: 分段计时（供字幕 SRT 使用）：每段开始时间 + 真实时长
+    timings: list[dict[str, Any]] = []
 
     for idx, segment in enumerate(segments):
         async with sem:
@@ -126,6 +128,11 @@ async def synthesize(text: str, *, voice_id: str = "") -> tuple[bytes, int, dict
         if not data:
             raise RuntimeError(f"第 {idx + 1} 段合成返回空音频")
         parts.append(data)
+        timings.append({
+            "text": segment,
+            "start_ms": duration_ms,
+            "duration_ms": int(dur or 0),
+        })
         duration_ms += int(dur or 0)
         chars += len(segment)
         if idx < len(segments) - 1:
@@ -140,6 +147,7 @@ async def synthesize(text: str, *, voice_id: str = "") -> tuple[bytes, int, dict
         "voice_id": voice,
         "voice_name": voice_name,
         "duration_ms": duration_ms,
+        "segment_timings": timings,
     }
     logger.info("[daily] TTS 完成 segments=%d chars=%d dur=%.1fs", len(segments), chars, duration_ms / 1000)
     return audio, duration_ms, stats

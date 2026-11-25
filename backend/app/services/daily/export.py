@@ -20,7 +20,8 @@ from datetime import datetime
 from typing import Any
 
 from .constants import TOPIC_TERMS, show_config
-from .store import AUDIO_NAME, issue_dir
+from .store import AUDIO_NAME, SUBTITLES_NAME, issue_dir
+from . import subtitles
 
 
 def _plain_markdown(text: str) -> str:
@@ -53,18 +54,27 @@ def suggest_tags(meta: dict[str, Any], limit: int = 10) -> list[str]:
     return tags
 
 
-def _upload_guide(date: str, mp3_name: str) -> str:
+def _safe_name(title: str, fallback: str) -> str:
+    name = (title or "").strip() or fallback
+    for ch in '\\/:*?"<>|\r\n\t':
+        name = name.replace(ch, "_")
+    return name[:60].strip() or fallback
+
+
+def _upload_guide(date: str, mp3_name: str, srt_name: str) -> str:
     return f"""科技前沿日报 · 上架说明（{date}）
 
 一、喜马拉雅创作中心（手动上传，约 1–2 分钟）
 1. 打开 https://www.ximalaya.com/ 登录后进入「创作中心」；
 2. 选择已有专辑（节目），点「上传声音」；
-3. 音频选择本包里的「{mp3_name}」；
-4. 标题直接粘贴「标题.txt」；
-5. 简介粘贴「简介.txt」（保留信源链接版见「节目简介.md」）；
-6. 标签参考「标签.txt」，按平台限制挑选；
-7. 上传页勾选「AI 生成」相关标识（平台要求）；
-8. 提交审核。
+3. 音频选择本包里的「{mp3_name}」——注意：喜马拉雅会用**文件名**作为节目标题，
+   本包已把文件名设成本期标题（可在上传页再微调）；
+4. 简介粘贴「简介.txt」（保留信源链接版见「节目简介.md」）；
+5. 标签参考「标签.txt」，按平台限制挑选；
+6. 分类选择「科技 / 资讯」附近的热门分类（按后台实际选项为准）；
+7. 「是否 AI 合成」按实际情况选择（本节目为 AI 辅助制作，应如实勾选）；
+8. 字幕文件选择本包里的「{srt_name}」；
+9. 提交审核。
 
 二、注意事项
 - 封面 3000×3000（JPG/PNG，无二维码、无联系方式），首次上架时设置，之后沿用；
@@ -87,8 +97,9 @@ def build_package(date: str, meta: dict[str, Any], *, shownotes_md: str, script_
         raise FileNotFoundError("本期还没有音频")
     show = show_config()
     title = str(meta.get("title") or f"{show['title']}_{date}")
-    safe_title = title.replace("/", "_").replace("\\", "_")
-    mp3_name = f"{show['title']}_{date}.mp3".replace("/", "_").replace("\\", "_")
+    safe_title = _safe_name(title, f"{show['title']}_{date}")
+    mp3_name = f"{safe_title}.mp3"
+    srt_name = f"{safe_title}.srt"
 
     tags = suggest_tags(meta)
     meta_json = {
@@ -110,12 +121,19 @@ def build_package(date: str, meta: dict[str, Any], *, shownotes_md: str, script_
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(mp3_name, audio_path.read_bytes())
+        srt_path = base / SUBTITLES_NAME
+        if srt_path.is_file():
+            srt_text = srt_path.read_text(encoding="utf-8")
+        else:
+            srt_text = subtitles.build_from_script(script_md, int(meta.get("duration_ms") or 0))
+        if srt_text:
+            zf.writestr(srt_name, srt_text)
         zf.writestr("标题.txt", title + "\n")
         zf.writestr("简介.txt", _plain_markdown(shownotes_md))
         zf.writestr("节目简介.md", shownotes_md or "")
         zf.writestr("标签.txt", "、".join(tags) + "\n")
         zf.writestr("元数据.json", json.dumps(meta_json, ensure_ascii=False, indent=2))
-        zf.writestr("上传说明.txt", _upload_guide(date, mp3_name))
+        zf.writestr("上传说明.txt", _upload_guide(date, mp3_name, srt_name))
         if script_md:
             zf.writestr("口播稿.txt", script_md + "\n")
     return buf.getvalue()

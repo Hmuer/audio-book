@@ -298,6 +298,47 @@ async def daily_issue_audio(
     )
 
 
+@router.get("/issues/{date}/subtitles.srt")
+async def daily_issue_subtitles(
+    date: str,
+    access: str = Depends(daily_audio_access),
+):
+    """字幕（SRT）。新期数用 TTS 分段真实计时；老期数按字数比例兜底。"""
+    from ..services.daily import subtitles
+
+    try:
+        base = store.issue_dir(date)
+        meta = store.load_meta(date)
+    except DailyError as e:
+        raise HTTPException(404, str(e))
+    if access == "feed" and store.issue_summary(meta)["status"] != "approved":
+        raise HTTPException(403, "本期还未通过人工审核，不能通过订阅源访问")
+
+    srt_path = base / store.SUBTITLES_NAME
+    if srt_path.is_file():
+        text = srt_path.read_text(encoding="utf-8")
+    else:
+        detail = store.read_issue(date)
+        text = subtitles.build_from_script(detail["script_md"], int(meta.get("duration_ms") or 0))
+    if not text:
+        raise HTTPException(404, "本期还没有字幕")
+
+    title = str(meta.get("title") or date).replace("/", "_").replace("\\", "_")
+    from urllib.parse import quote as _quote
+
+    return Response(
+        content=text,
+        media_type="application/x-subrip; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f'inline; filename="tech-daily-{date}.srt"; '
+                f"filename*=UTF-8''{_quote(f'{title}.srt')}"
+            ),
+            "Cache-Control": "private, max-age=600",
+        },
+    )
+
+
 # =====================================================================
 # 人工终审
 # =====================================================================

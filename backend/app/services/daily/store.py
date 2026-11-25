@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 AUDIO_NAME = "audio.mp3"
+SUBTITLES_NAME = "subtitles.srt"
 META_NAME = "meta.json"
 SCRIPT_NAME = "script.md"
 SHOWNOTES_NAME = "shownotes.md"
@@ -104,6 +105,7 @@ def issue_summary(meta: dict[str, Any]) -> dict[str, Any]:
     status = {"approve": "approved", "reject": "rejected"}.get(decision, "draft")
     date = str(meta.get("date") or "")
     audio_path = issue_dir(date) / AUDIO_NAME if date else None
+    srt_path = issue_dir(date) / SUBTITLES_NAME if date else None
     return {
         "date": date,
         "title": str(meta.get("title") or ""),
@@ -115,6 +117,7 @@ def issue_summary(meta: dict[str, Any]) -> dict[str, Any]:
         "review_note": review.get("note") or None,
         "error": meta.get("error"),
         "has_audio": bool(audio_path and audio_path.is_file()),
+        "has_subtitles": bool(srt_path and srt_path.is_file()),
     }
 
 
@@ -146,6 +149,7 @@ def save_issue(
     audio: bytes,
     duration_ms: int,
     meta: dict[str, Any],
+    subtitles_srt: str | None = None,
 ) -> dict[str, Any]:
     base = issue_dir(date)
     base.mkdir(parents=True, exist_ok=True)
@@ -153,6 +157,8 @@ def save_issue(
     write_text(base / SHOWNOTES_NAME, shownotes_md)
     if audio:
         _atomic_write(base / AUDIO_NAME, audio)
+    if subtitles_srt:
+        write_text(base / SUBTITLES_NAME, subtitles_srt)
     write_json(base / META_NAME, meta)
     logger.info("[daily] 已落盘 %s（%.1f MB）", date, len(audio) / 1024 / 1024)
     return meta

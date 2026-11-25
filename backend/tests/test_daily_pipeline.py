@@ -236,7 +236,10 @@ async def test_run_pipeline_end_to_end(monkeypatch, tmp_path):
         return items, [{"source": "坏源", "url": "https://bad.example", "error": "HTTP 403"}]
 
     async def fake_synthesize(text, **_kw):
-        return make_silent_mp3(300), 300, {"segments": 1, "chars": len(text), "voice_id": "mock"}
+        return make_silent_mp3(300), 300, {
+            "segments": 1, "chars": len(text), "voice_id": "mock",
+            "segment_timings": [{"text": text, "start_ms": 0, "duration_ms": 300}],
+        }
 
     monkeypatch.setattr(pipeline, "collect", fake_collect)
     monkeypatch.setattr(pipeline, "synthesize", fake_synthesize)
@@ -255,6 +258,8 @@ async def test_run_pipeline_end_to_end(monkeypatch, tmp_path):
     assert "AI 辅助" in detail["script_md"]
     assert "由 AI 生成" not in detail["script_md"]
     assert "https://example.com/" in detail["shownotes_md"]
+    srt = (store.issue_dir("2025-11-24") / "subtitles.srt").read_text(encoding="utf-8")
+    assert "00:00:00,000 --> " in srt and srt.strip()
 
     status = store.read_run_status()
     assert status["status"] == "success"
@@ -507,3 +512,20 @@ def test_effective_sources_merges_new_defaults(monkeypatch, tmp_path):
     assert qbit["enabled"] is False, "旧偏好里的启停状态要保留"
     custom = next(s for s in out if s["url"] == "https://custom.example/rss")
     assert custom["custom"] is True
+
+
+def test_subtitles_split_and_format():
+    from backend.app.services.daily.subtitles import (
+        build_from_script, build_from_timings, split_cues,
+    )
+
+    cues = split_cues("第一句话。第二句话！这是一句比较长的句子，需要按逗号切开，保证每条字幕不会太长。")
+    assert cues and all(len(c) <= 22 for c in cues)
+    srt = build_from_timings([
+        {"text": "第一段。第二段。", "start_ms": 0, "duration_ms": 2000},
+        {"text": "第三段。", "start_ms": 2350, "duration_ms": 1000},
+    ])
+    assert srt.startswith("1\n00:00:00,000 --> ")
+    assert "-->" in srt and "第三段" in srt
+    approx = build_from_script("这是口播稿。这是第二句。", 6000)
+    assert approx.startswith("1\n") and "-->" in approx

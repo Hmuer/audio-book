@@ -523,6 +523,12 @@ export const api = {
       }),
     }),
   dailyRunStatus: () => _fetch<DailyRunStatusResp>('/api/daily/run/status'),
+  /** 字幕 SRT 直链（带 JWT query；JWT 或 approved 的 feed key 均可） */
+  dailySubtitlesUrl: (date: string): string => {
+    const token = getToken();
+    const base = `/api/daily/issues/${encodeURIComponent(date)}/subtitles.srt`;
+    return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+  },
   /** 上架包 ZIP 直链（带 JWT query；仅审核通过的期数可导出） */
   dailyExportUrl: (date: string): string => {
     const token = getToken();
@@ -1096,6 +1102,8 @@ export interface DailyIssue {
   review_note: string | null;
   error: string | null;
   has_audio: boolean;
+  /** 是否已有生成好的 SRT（老期数会按字数比例兜底生成） */
+  has_subtitles?: boolean;
 }
 
 /** 选题明细（详情页「选题明细」Tab） */

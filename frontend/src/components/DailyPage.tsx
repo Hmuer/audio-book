@@ -1541,7 +1541,17 @@ function DailyDetail({ date }: { date: string }) {
               className="text-brand-500 hover:underline"
               title={`下载文件名：科技前沿日报_${date}.mp3`}
             >
-              下载音频（科技前沿日报_{date}.mp3）
+              下载音频
+            </a>
+          )}
+          {hasAudio && (
+            <a
+              href={api.dailySubtitlesUrl(date)}
+              download
+              className="text-brand-500 hover:underline"
+              title="下载字幕（SRT，可直接上传喜马拉雅）"
+            >
+              下载字幕（SRT）
             </a>
           )}
         </div>

@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ...core.config import settings
-from . import prefs, store
+from . import prefs, store, subtitles
 from .cluster import cluster_items
 from .collect import collect
 from .constants import show_config
@@ -197,9 +197,14 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
     voice_id = prefs.resolve_voice_id(voices)
     voice_name = prefs.voice_name_of(voices, voice_id)
     audio, duration_ms, tts_stats = await synthesize(script.text, voice_id=voice_id)
+    timings = tts_stats.pop("segment_timings", [])
+    srt = (
+        subtitles.build_from_timings(timings)
+        if timings else subtitles.build_from_script(script.text, duration_ms)
+    )
     store.append_run_log(
         f"[tts] {tts_stats['segments']} 段 / {duration_ms / 1000:.0f}s / "
-        f"{len(audio) / 1024 / 1024:.1f} MB"
+        f"{len(audio) / 1024 / 1024:.1f} MB / 字幕 {srt.count('-->')} 条"
     )
 
     _stage("store", 92, "[store] 写入产物")
@@ -223,6 +228,7 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
             "history_days": int(settings.DAILY_DEDUPE_DAYS or 7),
             "used_llm": script.used_llm,
             "tts": tts_stats,
+            "subtitles_cues": srt.count("-->"),
             "source_errors": errors,
             "elapsed_seconds": None,
         },
@@ -244,6 +250,7 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
         audio=audio,
         duration_ms=int(duration_ms),
         meta=meta,
+        subtitles_srt=srt,
     )
 
     store.write_run_status(
