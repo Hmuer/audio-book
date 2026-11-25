@@ -163,28 +163,35 @@ function voiceOptionLabel(v: DailyVoiceOption): string {
 const VOICE_PREVIEW_TEXT = '欢迎收听 AI 前沿日报，今天我们来聊聊人工智能领域最值得关注的进展。';
 
 /**
- * 可试听的音色列表：每一行都带试听按钮，支持搜索/直接选中。
+ * 播报音色选择列表：搜索 + 点选；**不做逐个试听**。
  *
- * 试听走平台既有的 /api/tts/preview（真实 TTS）→ /media 需要鉴权头 →
- * fetchMediaObjectUrl 转 Blob 再播放；同一时间只播一个，切换/卸载时释放。
+ * 逐条试听全部音色的入口在系统「音色库」（`#/voices`），避免同一能力两套 UI。
+ * 这里保留一个「试听所选」：日报用的是新闻口播样本，和音色库的通用样本听感不同，
+ * 选型时就地听一下仍有价值。
  */
 function VoiceAuditionList({
   voices,
   value,
   onChange,
   disabled = false,
+  fallbackVoiceId = '',
 }: {
   voices: DailyVoiceOption[];
   value: string;
   onChange: (voiceId: string) => void;
   disabled?: boolean;
+  /** 未显式选择时实际生效的音色（试听/文案展示用） */
+  fallbackVoiceId?: string;
 }) {
   const [query, setQuery] = useState('');
-  const [playingId, setPlayingId] = useState<string | null>(null);
-  const [loadingId, setLoadingId] = useState<string | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objUrlRef = useRef<string | null>(null);
+
+  const targetId = value || fallbackVoiceId || '';
+  const targetName = voices.find((v) => v.id === targetId)?.name || '';
 
   const releaseUrl = () => {
     if (objUrlRef.current) {
@@ -200,13 +207,27 @@ function VoiceAuditionList({
       try { a.pause(); } catch {}
     }
     releaseUrl();
-    setPlayingId(null);
+    setPlaying(false);
   };
+
+  // 卸载时停止并释放 Blob
   useEffect(() => () => {
     const a = audioRef.current;
     if (a) { try { a.pause(); } catch {} }
     releaseUrl();
   }, []);
+
+  // 切换选择时停止上一段试听
+  useEffect(() => {
+    const a = audioRef.current;
+    if (a) {
+      a.onended = null;
+      a.onerror = null;
+      try { a.pause(); } catch {}
+    }
+    releaseUrl();
+    setPlaying(false);
+  }, [value]);
 
   const filtered = useMemo(() => {
     const k = query.trim().toLowerCase();
@@ -216,17 +237,20 @@ function VoiceAuditionList({
     );
   }, [voices, query]);
 
-  const audition = async (voice: DailyVoiceOption) => {
-    if (playingId === voice.id) {
+  const audition = async () => {
+    if (playing) {
       stop();
       return;
     }
-    stop();
+    if (!targetId) {
+      setError('请先选择一个音色（或使用默认音色）');
+      return;
+    }
     setError(null);
-    setLoadingId(voice.id);
+    setLoading(true);
     let url: string | null = null;
     try {
-      const r = await api.preview(VOICE_PREVIEW_TEXT, voice.id, 1.0);
+      const r = await api.preview(VOICE_PREVIEW_TEXT, targetId, 1.0);
       url = await fetchMediaObjectUrl(r.audio_url);
       if (!audioRef.current) {
         URL.revokeObjectURL(url);
@@ -234,26 +258,28 @@ function VoiceAuditionList({
       }
       objUrlRef.current = url;
       audioRef.current.src = url;
-      audioRef.current.onended = () => setPlayingId(null);
+      audioRef.current.onended = () => setPlaying(false);
       audioRef.current.onerror = () => {
-        setError(`「${voice.name}」试听播放失败`);
-        setPlayingId(null);
+        setError('试听播放失败');
+        setPlaying(false);
       };
       await audioRef.current.play();
-      setPlayingId(voice.id);
+      setPlaying(true);
     } catch (e) {
       if (url) URL.revokeObjectURL(url);
-      setError(`「${voice.name}」试听失败：${errorText(e)}`);
+      setError(`试听失败：${errorText(e)}`);
     } finally {
-      setLoadingId(null);
+      setLoading(false);
     }
   };
+
+  const selectedLabel = targetName ? `试听所选：${targetName}` : '试听所选';
 
   return (
     <div className="space-y-2">
       <input
         className="input !text-xs w-full"
-        placeholder={`搜索音色（共 ${voices.length} 个，全部可试听）`}
+        placeholder={`搜索音色（共 ${voices.length} 个，可去音色库逐个试听）`}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         disabled={disabled}
@@ -266,7 +292,7 @@ function VoiceAuditionList({
       )}
       <div
         className="border border-ink-300/70 overflow-y-auto"
-        style={{ borderRadius: 'var(--radius-sm)', maxHeight: 264 }}
+        style={{ borderRadius: 'var(--radius-sm)', maxHeight: 240 }}
       >
         <button
           type="button"
@@ -280,53 +306,42 @@ function VoiceAuditionList({
         </button>
         {filtered.map((v) => {
           const selected = value === v.id;
-          const playing = playingId === v.id;
-          const loading = loadingId === v.id;
           return (
-            <div
+            <button
               key={v.id}
-              className={`flex items-center gap-2 px-2.5 py-1.5 border-t border-ink-300/40 ${
-                selected ? 'bg-brand-600/10' : ''
+              type="button"
+              onClick={() => onChange(v.id)}
+              disabled={disabled}
+              className={`w-full flex items-center gap-1.5 px-2.5 py-1.5 border-t border-ink-300/40 text-left text-[12px] transition-colors ${
+                selected ? 'bg-brand-600/10' : 'hover:bg-ink-200'
               }`}
             >
-              <button
-                type="button"
-                onClick={() => onChange(v.id)}
-                disabled={disabled}
-                className="flex-1 min-w-0 text-left text-[12px]"
-              >
-                <span className={selected ? 'text-brand-500' : 'text-ink-800'}>{v.name}</span>
-                <span className="ml-1.5 text-[10px] text-ink-500">
-                  {VOICE_GROUP_LABELS[voiceGroup(v.gender)]}
-                  {v.provider ? ` · ${v.provider}` : ''}
-                </span>
-                {voiceSceneText(v) && (
-                  <span className="ml-1.5 text-[10px] text-ink-500">· {voiceSceneText(v)}</span>
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={() => void audition(v)}
-                disabled={disabled || loading}
-                title={playing ? '停止试听' : '试听'}
-                aria-label={playing ? `停止试听 ${v.name}` : `试听 ${v.name}`}
-                className="shrink-0 grid place-items-center w-6 h-6 border border-ink-300/70 text-ink-600 hover:text-brand-500 hover:border-brand-500 transition-colors disabled:opacity-40"
-                style={{ borderRadius: 'var(--radius-xs)' }}
-              >
-                {loading ? (
-                  <span className="inline-block w-3 h-3 border-2 border-ink-400/70 border-t-brand-500 rounded-full animate-spin" />
-                ) : playing ? (
-                  <StopGlyph size={10} />
-                ) : (
-                  <PlayGlyph size={10} />
-                )}
-              </button>
-            </div>
+              <span className={`truncate ${selected ? 'text-brand-500' : 'text-ink-800'}`}>{v.name}</span>
+              <span className="shrink-0 text-[10px] text-ink-500">
+                {VOICE_GROUP_LABELS[voiceGroup(v.gender)]}
+                {v.provider ? ` · ${v.provider}` : ''}
+              </span>
+              {selected && <span className="ml-auto shrink-0 text-[10px] text-brand-500">已选</span>}
+            </button>
           );
         })}
         {filtered.length === 0 && (
           <div className="px-3 py-4 text-center text-[11px] text-ink-500">没有匹配的音色</div>
         )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className="btn-ghost !py-1 !px-3 text-xs"
+          onClick={() => void audition()}
+          disabled={disabled || loading}
+          title={playing ? '停止试听' : '用新闻口播样本试听所选音色'}
+        >
+          {loading ? '合成中…' : playing ? '停止试听' : selectedLabel}
+        </button>
+        <a href="#/voices" className="text-xs text-brand-500 hover:underline">
+          去音色库试听全部 →
+        </a>
       </div>
       <audio ref={audioRef} className="hidden" preload="auto" />
     </div>
@@ -1080,6 +1095,7 @@ function DailySettingsModal({
                   <VoiceAuditionList
                     voices={voices}
                     value={voiceId}
+                    fallbackVoiceId={config?.voice_id}
                     onChange={(id) => {
                       setVoiceId(id);
                       setVoiceTouched(true);
@@ -1516,6 +1532,7 @@ function DailyDetail({ date }: { date: string }) {
             <VoiceAuditionList
               voices={config?.voices ?? []}
               value={voiceDraft}
+              fallbackVoiceId={config?.voice_id}
               onChange={(id) => {
                 setVoiceDraft(id);
                 setVoiceMsg(null);
