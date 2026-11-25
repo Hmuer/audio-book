@@ -479,3 +479,31 @@ def test_general_tech_source_requires_title_hit():
     # AI 垂类源允许摘要兜底
     item2 = _item("某公司宣布新进展", "本次发布涉及大模型、算力与智能体调度。", source="TechCrunch AI")
     assert score_cluster(Cluster(items=[item2]), now=now).score > 0
+
+
+def test_effective_sources_merges_new_defaults(monkeypatch, tmp_path):
+    """旧偏好只保存了 8 个源时，升级后新增的内置源也要自动出现（不被锁死）。"""
+    import json as _json
+
+    from backend.app.core import config as cfgmod
+    from backend.app.services.daily import prefs
+
+    monkeypatch.setattr(cfgmod.settings, "DAILY_OUTPUT_DIR", tmp_path / "daily")
+    (tmp_path / "daily").mkdir(parents=True)
+    saved = [
+        {"name": "量子位", "url": "https://www.qbitai.com/feed", "enabled": False, "custom": False},
+        {"name": "我的源", "url": "https://custom.example/rss", "enabled": True, "custom": True},
+    ]
+    (tmp_path / "daily" / "prefs.json").write_text(
+        _json.dumps({"sources": saved}), encoding="utf-8",
+    )
+
+    out = prefs.effective_sources()
+    urls = {s["url"] for s in out}
+    assert len(out) >= 20, "新增内置源应自动合并进来"
+    assert "https://www.leiphone.com/feed" in urls
+    assert "https://custom.example/rss" in urls
+    qbit = next(s for s in out if s["url"] == "https://www.qbitai.com/feed")
+    assert qbit["enabled"] is False, "旧偏好里的启停状态要保留"
+    custom = next(s for s in out if s["url"] == "https://custom.example/rss")
+    assert custom["custom"] is True

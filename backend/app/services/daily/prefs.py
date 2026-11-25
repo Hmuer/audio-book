@@ -91,25 +91,56 @@ def normalize_sources(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def effective_sources(prefs: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """有效信源 = 内置源（跟随版本）+ 保存的启停状态 + 自定义源。
+
+    注意：**不能**用保存的列表整体覆盖内置列表 —— 否则程序升级新增的默认源
+    会被旧偏好"锁死"（用户体验就是"信源还是 8 个"）。保存的偏好只覆盖：
+    - 相同 URL 的 enabled 状态；
+    - custom=true 的自定义源（追加）；
+    - 已下线的旧内置源（custom=false 且不在当前内置列表）自动丢弃。
+    """
     prefs = prefs if prefs is not None else load()
+    builtin = [{**s, "custom": False} for s in source_list()]
     saved = prefs.get("sources")
-    if isinstance(saved, list) and saved:
-        out: list[dict[str, Any]] = []
-        for item in saved:
-            if not isinstance(item, dict):
-                continue
-            url = str(item.get("url") or "").strip()
-            if not url.startswith(("http://", "https://")):
-                continue
-            out.append({
-                "name": str(item.get("name") or url)[:40],
-                "url": url,
-                "enabled": bool(item.get("enabled", True)),
-                "custom": bool(item.get("custom", url not in builtin_urls())),
-            })
-        if out:
-            return out
-    return [{**s, "custom": False} for s in source_list()]
+    if not isinstance(saved, list) or not saved:
+        return builtin
+
+    saved_by_url: dict[str, dict[str, Any]] = {}
+    for item in saved:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if url.startswith(("http://", "https://")):
+            saved_by_url[url] = item
+
+    out: list[dict[str, Any]] = []
+    builtin_urls = {s["url"] for s in builtin}
+    for source in builtin:
+        saved_item = saved_by_url.get(source["url"])
+        enabled = (
+            bool(saved_item.get("enabled", True))
+            if saved_item else bool(source.get("enabled", True))
+        )
+        out.append({
+            "name": source["name"],
+            "url": source["url"],
+            "enabled": enabled,
+            "custom": False,
+        })
+
+    for url, item in saved_by_url.items():
+        if url in builtin_urls:
+            continue
+        if not item.get("custom"):
+            # 已从内置列表下线的旧源：不复活
+            continue
+        out.append({
+            "name": str(item.get("name") or url)[:40],
+            "url": url,
+            "enabled": bool(item.get("enabled", True)),
+            "custom": True,
+        })
+    return out or builtin
 
 
 def effective_voice_id(prefs: dict[str, Any] | None = None) -> str:

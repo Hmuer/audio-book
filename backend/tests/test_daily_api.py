@@ -208,9 +208,12 @@ async def test_daily_config_switch_voice_and_sources(_isolate_data_dir, daily_en
         assert r.status_code == 200
         updated = r.json()
         assert updated["voice_id"] == first_voice
-        assert len(updated["sources"]) == 2
-        assert updated["sources"][1]["custom"] is True
-        assert updated["sources"][1]["enabled"] is False
+        # 信源采用"合并"语义：内置源（跟随版本）+ 保存的启停 + 自定义源
+        by_url = {s["url"]: s for s in updated["sources"]}
+        assert by_url[custom_url]["custom"] is True
+        assert by_url[custom_url]["enabled"] is False
+        assert by_url["https://example.com/rss"]["enabled"] is True
+        assert len(updated["sources"]) >= 20, "内置 26 个源应完整出现"
 
         # 持久化（重新 GET）
         r = await c.get("/api/daily/config")
