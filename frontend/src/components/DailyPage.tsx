@@ -1077,7 +1077,7 @@ function DailySettingsModal({
               {/* 播报音色 */}
               <section>
                 <div className="flex flex-wrap items-center gap-2 mb-2">
-                  <h4 className="text-sm font-medium text-ink-800">播报音色</h4>
+                  <h4 className="text-sm font-medium text-ink-800">默认播报音色</h4>
                   <span className="text-[11px] text-ink-500">
                     当前：{config.voice_name || '默认音色'}
                   </span>
@@ -1104,6 +1104,10 @@ function DailySettingsModal({
                   />
                 )}
               </section>
+
+              <p className="text-[11px] text-ink-500 -mt-1">
+                多期节目应保持同一音色，选好后一般不需要再改；修改从下一期生效。
+              </p>
 
               {/* 信源管理 */}
               <section>
@@ -1251,9 +1255,7 @@ function DailyDetail({ date }: { date: string }) {
   const [audioError, setAudioError] = useState<string | null>(null);
   const [audioReloadKey, setAudioReloadKey] = useState(0);
   // 音色选择（详情页直接可改，对下一期生效）
-  const [voiceDraft, setVoiceDraft] = useState('');
-  const [voiceSaving, setVoiceSaving] = useState(false);
-  const [voiceMsg, setVoiceMsg] = useState<string | null>(null);
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
   const [regenBusy, setRegenBusy] = useState(false);
 
   // RSS 复制
@@ -1279,7 +1281,6 @@ function DailyDetail({ date }: { date: string }) {
     try {
       const c = await api.dailyConfig();
       setConfig(c);
-      setVoiceDraft((prev) => (prev === '' ? (c.voice_id ?? '') : prev));
       setConfigError(null);
     } catch (e) {
       setConfigError(errorText(e));
@@ -1317,31 +1318,17 @@ function DailyDetail({ date }: { date: string }) {
     return raw;
   }, [detail?.feed_url, config?.feed_url]);
 
-  const saveVoice = async () => {
-    setVoiceSaving(true);
-    setVoiceMsg(null);
-    try {
-      const c = await api.dailyConfigUpdate({ voice_id: voiceDraft || '' });
-      setConfig(c);
-      setVoiceMsg('音色已保存，对下一期生效；本期音频不会重新合成。');
-    } catch (e) {
-      setVoiceMsg(`保存失败：${errorText(e)}`);
-    } finally {
-      setVoiceSaving(false);
-    }
-  };
-
   const regenerate = async () => {
     if (!window.confirm('重新生成本期会覆盖当前音频与文稿，耗时约 2 分钟并消耗 TTS 额度，确定继续？')) {
       return;
     }
     setRegenBusy(true);
-    setVoiceMsg(null);
+    setActionMsg(null);
     try {
       await api.dailyRun(date);
-      setVoiceMsg('已开始重新生成，可回到列表页查看进度；完成后刷新本页即可试听新版本。');
+      setActionMsg('已开始重新生成，可回列表页看进度；完成后刷新本页试听新版本。');
     } catch (e) {
-      setVoiceMsg(`重新生成失败：${errorText(e)}`);
+      setActionMsg(`重新生成失败：${errorText(e)}`);
     } finally {
       setRegenBusy(false);
     }
@@ -1410,7 +1397,25 @@ function DailyDetail({ date }: { date: string }) {
 
   return (
     <section className="animate-fade-in space-y-5">
-      <BackLink />
+      <div className="flex flex-wrap items-center gap-3">
+        <BackLink />
+        <div className="ml-auto flex items-center gap-2 min-w-0">
+          {actionMsg && (
+            <span className="text-[11px] text-ink-500 max-w-[420px] truncate" title={actionMsg}>
+              {actionMsg}
+            </span>
+          )}
+          <button
+            type="button"
+            className="btn-ghost !py-1.5 !px-3 text-xs shrink-0"
+            onClick={() => void regenerate()}
+            disabled={regenBusy}
+            title="用当前默认音色/设置重新生成本期"
+          >
+            {regenBusy ? '提交中…' : '重生成本期'}
+          </button>
+        </div>
+      </div>
 
       {error && <Notice tone="warn">详情刷新失败：{error}</Notice>}
 
@@ -1431,12 +1436,9 @@ function DailyDetail({ date }: { date: string }) {
               <span>
                 条目 <span className="text-ink-700 tabular-nums">{issue.item_count}</span>
               </span>
-              {(detail.meta?.voice?.name || config?.voice_name) && (
+              {detail.meta?.voice?.name && (
                 <span>
-                  音色{' '}
-                  <span className="text-ink-700">
-                    {detail.meta?.voice?.name || config?.voice_name}
-                  </span>
+                  音色 <span className="text-ink-700">{detail.meta.voice.name}</span>
                 </span>
               )}
               <span title={issue.created_at ? formatDateTime(issue.created_at) : undefined}>
@@ -1513,56 +1515,18 @@ function DailyDetail({ date }: { date: string }) {
           </div>
         )}
 
-        <div className="mt-2 text-[11px] text-ink-500">
-          音频在「生成」时已一次性合成并保存，试听不会触发 TTS 合成。
-        </div>
-      </div>
-
-      {/* ============ 播报音色（对下一期生效） ============ */}
-      <div className="glass-panel !p-4 sm:!p-5">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-semibold text-ink-800">播报音色</span>
-          <span className="text-[11px] text-ink-500">
-            本期：{detail.meta?.voice?.name || '未知'}
-            {config?.voice_name ? ` · 默认：${config.voice_name}` : ''}
-          </span>
-        </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <div className="flex-1 min-w-[280px]">
-            <VoiceAuditionList
-              voices={config?.voices ?? []}
-              value={voiceDraft}
-              fallbackVoiceId={config?.voice_id}
-              onChange={(id) => {
-                setVoiceDraft(id);
-                setVoiceMsg(null);
-              }}
-              disabled={voiceSaving || regenBusy || !config}
-            />
-          </div>
-          <button
-            type="button"
-            className="btn-primary !py-1.5 !px-3 text-xs"
-            onClick={() => void saveVoice()}
-            disabled={voiceSaving || !config}
-          >
-            {voiceSaving ? '保存中…' : '保存音色'}
-          </button>
-          <button
-            type="button"
-            className="btn-ghost !py-1.5 !px-3 text-xs"
-            onClick={() => void regenerate()}
-            disabled={regenBusy}
-          >
-            {regenBusy ? '提交中…' : '用当前设置重生成本期'}
-          </button>
-        </div>
-        {configError && (
-          <div className="mt-2 text-[11px] text-ink-500">音色列表加载失败：{configError}（仍可用默认音色）</div>
-        )}
-        {voiceMsg && <div className="mt-2 text-[12px] text-ink-600">{voiceMsg}</div>}
-        <div className="mt-2 text-[11px] text-ink-500">
-          音色改动对<span className="text-ink-700">下一期</span>生效；想立刻听到新音色，点「用当前设置重生成本期」。
+        <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-ink-500">
+          <span>音频在「生成」时已一次性合成并保存，试听不会触发 TTS 合成。</span>
+          {hasAudio && (
+            <a
+              href={audioSrc}
+              download
+              className="text-brand-500 hover:underline"
+              title={`下载文件名：AI前沿日报_${date}.mp3`}
+            >
+              下载音频（AI前沿日报_{date}.mp3）
+            </a>
+          )}
         </div>
       </div>
 

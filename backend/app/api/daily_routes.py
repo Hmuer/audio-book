@@ -15,6 +15,7 @@ import re
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import quote
 from typing import Any, Iterator
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -184,7 +185,7 @@ async def daily_issue_detail(
         "shownotes_md": detail["shownotes_md"],
         "script_md": detail["script_md"],
         "meta": detail["meta"],
-        "audio_path": f"/api/daily/issues/{date}/audio",
+        "audio_path": f"/api/daily/issues/{date}/audio.mp3",
         "feed_url": "/api/daily/feed.xml",
     }
 
@@ -222,7 +223,27 @@ async def daily_audio_access(
     return user.username
 
 
+def _audio_headers(date: str) -> dict[str, str]:
+    """统一的音频下载文件名。
+
+    公开 URL 用 ASCII（`audio.mp3`，播客客户端按 URL 末段取名）；
+    真正下载时用 Content-Disposition 给出统一命名：
+        ASCII 回退：AI-daily-YYYY-MM-DD.mp3
+        中文名    ：AI前沿日报_YYYY-MM-DD.mp3
+    """
+    ascii_name = f"AI-daily-{date}.mp3"
+    zh_name = f"AI前沿日报_{date}.mp3"
+    return {
+        "Content-Disposition": (
+            f"inline; filename=\"{ascii_name}\"; "
+            f"filename*=UTF-8''{quote(zh_name)}"
+        ),
+        "Cache-Control": "private, max-age=3600",
+    }
+
+
 @router.get("/issues/{date}/audio")
+@router.get("/issues/{date}/audio.mp3")
 async def daily_issue_audio(
     date: str,
     request: Request,
@@ -262,12 +283,17 @@ async def daily_issue_audio(
                     "Content-Range": f"bytes {start}-{end}/{size}",
                     "Accept-Ranges": "bytes",
                     "Content-Length": str(length),
+                    **_audio_headers(date),
                 },
             )
     return StreamingResponse(
         _iter_file(path, 0, size),
         media_type="audio/mpeg",
-        headers={"Accept-Ranges": "bytes", "Content-Length": str(size)},
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(size),
+            **_audio_headers(date),
+        },
     )
 
 

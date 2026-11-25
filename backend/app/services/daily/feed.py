@@ -87,7 +87,7 @@ def build_feed(
         title = str(issue.get("title") or date)
         audio_path = (issue_dir / date / "audio.mp3") if issue_dir else None
         size = audio_path.stat().st_size if audio_path and audio_path.is_file() else 0
-        enclosure = f"{base_url}/api/daily/issues/{date}/audio{key_q}"
+        enclosure = f"{base_url}/api/daily/issues/{date}/audio.mp3{key_q}"
         lines += [
             "  <item>",
             f"    <title>{escape(title)}</title>",

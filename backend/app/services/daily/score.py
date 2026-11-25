@@ -59,17 +59,25 @@ def count_hits(text: str, terms: list[str]) -> list[str]:
     return [t for t in terms if has_term(text, t)]
 
 
-def _topic_relevance(title: str, summary: str) -> tuple[float, list[str]]:
-    """主题闸门：标题命中 → 1.0；仅摘要命中 ≥2 个 → 0.85；否则 0（淘汰）。
+#: 泛科技源：必须"标题命中"才算 AI 选题。它们的摘要里常混入大量 AI 关键词
+#: （侧栏推荐、标签、往期链接），只靠摘要共振会把"网课系统更新"之类放进来。
+TITLE_REQUIRED_SOURCES: set[str] = {
+    "开源中国", "爱范儿", "钛媒体", "TechXplore", "NVIDIA Blog", "Engadget", "TechRadar",
+}
 
-    只看标题会让"标题党/短标题"漏判；只看摘要会让泛资讯混进来 ——
-    方案里的分层闸门：标题严格优先 + 摘要多词共振兜底。
+
+def _topic_relevance(title: str, summary: str, source: str = "") -> tuple[float, list[str]]:
+    """主题闸门：标题命中 → 1.0；摘要命中 ≥3 个 → 0.85；否则 0（淘汰）。
+
+    泛科技源（`TITLE_REQUIRED_SOURCES`）只认标题命中；AI 垂类源允许摘要兜底。
     """
     title_hits = count_hits(title, TOPIC_TERMS)
     if title_hits:
         return 1.0, [f"标题命中主题词：{'、'.join(title_hits[:3])}"]
+    if source in TITLE_REQUIRED_SOURCES:
+        return 0.0, []
     summary_hits = count_hits(summary, TOPIC_TERMS)
-    if len(summary_hits) >= 2:
+    if len(summary_hits) >= 3:
         return 0.85, [f"摘要多词共振：{'、'.join(summary_hits[:3])}"]
     return 0.0, []
 
@@ -121,7 +129,7 @@ def score_cluster(cluster: Cluster, *, now: datetime | None = None) -> ScoredTop
     primary = cluster.primary
     reasons: list[str] = []
 
-    relevance, topic_reasons = _topic_relevance(primary.title, primary.summary)
+    relevance, topic_reasons = _topic_relevance(primary.title, primary.summary, primary.source)
     reasons.extend(topic_reasons)
 
     safety_hits = count_hits(primary.title + " " + primary.summary, SAFETY_TERMS)
@@ -165,24 +173,84 @@ def score_cluster(cluster: Cluster, *, now: datetime | None = None) -> ScoredTop
     return ScoredTopic(cluster=cluster, score=round(score, 6), dims=dims, reasons=reasons)
 
 
+def _url_key(url: str) -> str:
+    """URL 归一化：去 query/fragment、去尾斜杠、小写。"""
+    raw = (url or "").strip().lower()
+    raw = raw.split("#", 1)[0].split("?", 1)[0].rstrip("/")
+    return raw
+
+
 def rank_topics(
     clusters: list[Cluster], *,
     now: datetime | None = None,
+    history: list[dict[str, str]] | None = None,
     exclude_titles: set[str] | None = None,
+    dropped: list[ScoredTopic] | None = None,
 ) -> list[ScoredTopic]:
-    """打分 + 过滤 0 分 + 历史去重（3 天内出现过的选题降权）。"""
+    """打分 + 过滤 0 分 + 跨期去重。
+
+    跨期去重规则（多天内同一事件重复出现）：
+    - URL 相同，或标题 token 相似度 ≥ 0.45 → **直接排除**（写进 dropped）；
+    - 相似度 0.30–0.45 → 降权 ×0.15（仍可当速览，但不抢主/次话题）。
+    `exclude_titles` 兼容旧调用（只按标题精确匹配降权）。
+    """
     now = now or datetime.now(UTC)
-    excluded = exclude_titles or set()
-    topics = [score_cluster(c, now=now) for c in clusters]
-    topics = [t for t in topics if t.score > 0]
+    from .cluster import jaccard, normalize_title, tokenize
 
-    from .cluster import normalize_title
+    entries: list[dict[str, object]] = []
+    for item in history or []:
+        title = str(item.get("title") or "")
+        if not title:
+            continue
+        entries.append({
+            "date": str(item.get("date") or ""),
+            "title": title,
+            "tokens": tokenize(title),
+            "url": _url_key(str(item.get("url") or "")),
+        })
+    excluded = {normalize_title(t) for t in (exclude_titles or set()) if t}
 
-    for topic in topics:
+    topics: list[ScoredTopic] = []
+    for cluster in clusters:
+        topic = score_cluster(cluster, now=now)
+        if topic.score <= 0:
+            continue
+
         norm = normalize_title(topic.title)
         if norm and norm in excluded:
             topic.score = round(topic.score * 0.15, 6)
-            topic.reasons.append("近 3 天已讲过，降权避免重复")
+            topic.reasons.append("近 3 天已讲过（标题相同），降权")
+            topics.append(topic)
+            continue
+
+        title_tokens = tokenize(topic.title)
+        url_key = _url_key(topic.url)
+        repeat: dict[str, object] | None = None
+        similar: dict[str, object] | None = None
+        for entry in entries:
+            same_url = bool(url_key) and url_key == entry["url"]
+            score = jaccard(title_tokens, entry["tokens"])  # type: ignore[arg-type]
+            if same_url or score >= 0.45:
+                repeat = {**entry, "sim": score, "same_url": same_url}
+                break
+            if score >= 0.30 and similar is None:
+                similar = {**entry, "sim": score}
+
+        if repeat is not None:
+            topic.score = 0.0
+            topic.reasons.append(
+                f"近期已讲过（{repeat['date']}）：{repeat['title']}"
+                + ("（相同链接）" if repeat["same_url"] else f"（标题相似 {repeat['sim']:.2f}）")
+            )
+            if dropped is not None:
+                dropped.append(topic)
+            continue
+        if similar is not None:
+            topic.score = round(topic.score * 0.15, 6)
+            topic.reasons.append(
+                f"与近期选题相似（{similar['date']}）：{similar['title']}，降权"
+            )
+        topics.append(topic)
 
     topics.sort(key=lambda t: (t.score, t.title), reverse=True)
     return topics
@@ -198,6 +266,17 @@ def split_topics(topics: list[ScoredTopic]) -> dict[str, object]:
     （降低"翻译外媒"观感，也避免 LLM 拿不出事实只能复述标题）。
     """
     ordered = list(topics)
+    # 先排除"聚合/早报/降权"选题（dim.demote <1），除非可选数量不足
+    def _selectable(t: ScoredTopic) -> bool:
+        return t.dims.get("demote", 1.0) >= 1.0 and t.score >= 0.20
+
+    preferred = [t for t in ordered if _selectable(t)]
+    fallback = [t for t in ordered if not _selectable(t)]
+    if len(preferred) >= 4:
+        ordered = preferred
+    else:
+        ordered = preferred + fallback
+
     if ordered and not _CJK_RE.search(ordered[0].title):
         best = ordered[0].score * 0.7
         for idx in range(1, min(4, len(ordered))):
@@ -206,14 +285,31 @@ def split_topics(topics: list[ScoredTopic]) -> dict[str, object]:
                 break
 
     # 来源多样性：同一来源最多 2 条（避免整期变成某一家媒体的通稿联播）。
+    # 实体去重：多家外媒报道同一事件（标题差异大、聚不了类）时，
+    # 若与已选选题共享 ≥2 个"实体型"英文词（如 nvidia/jensen/huang），只留一条。
     max_per_source = 2
+    generic_ascii = {
+        "model", "models", "agent", "agents", "company", "companies", "report",
+        "update", "launch", "using", "build", "first", "could", "their", "about",
+        "after", "world", "daily", "video", "users", "tools", "tech", "chips",
+        "chip", "funding", "raises", "million", "billion", "new", "how", "why",
+    }
+    def _entities(text: str) -> set[str]:
+        from .cluster import tokenize
+        return {t for t in tokenize(text) if len(t) >= 5 and t.isascii() and t not in generic_ascii}
+
     picked: list[ScoredTopic] = []
     counts: dict[str, int] = {}
+    seen_entities: set[str] = set()
     for topic in ordered:
         if counts.get(topic.source, 0) >= max_per_source:
             continue
+        entities = _entities(topic.title)
+        if entities and len(entities & seen_entities) >= 2:
+            continue
         picked.append(topic)
         counts[topic.source] = counts.get(topic.source, 0) + 1
+        seen_entities |= entities
         if len(picked) >= 8:
             break
     # 信源不足时宁可少几条，也不用同一家媒体的稿子硬凑 8 条

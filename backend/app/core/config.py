@@ -351,10 +351,10 @@ class Settings(BaseSettings):
     DAILY_SOURCES_JSON: str = ""
     # 采集窗口（小时）与单期候选上限
     DAILY_WINDOW_HOURS: int = 26
-    DAILY_MAX_ITEMS: int = 60
+    DAILY_MAX_ITEMS: int = 120
     # 目标时长（分钟）与脚本字数上限（12 分钟中文口播约 3000–3600 字）
     DAILY_TARGET_MINUTES: int = 12
-    DAILY_MAX_SCRIPT_CHARS: int = 4200
+    DAILY_MAX_SCRIPT_CHARS: int = 4800
     # TTS 音色；为空 → 取当前 TTS 厂商的第一个可用音色
     DAILY_TTS_VOICE_ID: str = ""
     # 单段 TTS 字符上限（过长会被合成厂商拒）
@@ -365,6 +365,9 @@ class Settings(BaseSettings):
     DAILY_PUBLIC_BASE_URL: str = ""
     # RSS 订阅密钥：播客客户端无法带 JWT，用 ?key= 鉴权；留空 = 不开放 feed
     DAILY_FEED_KEY: str = ""
+    # 跨期去重窗口（天）：同一事件在多天内重复出现时，n 天内讲过的选题会被
+    # 排除（URL 相同或标题相似度 ≥0.45），相似度 0.3–0.45 的降权。
+    DAILY_DEDUPE_DAYS: int = 7
     # 失败/熔断告警 webhook（可选）：POST JSON，兼容企业微信/飞书/Slack 的 text 格式。
     # 留空 = 只写日志。定时任务无人值守时建议配置。
     DAILY_ALERT_WEBHOOK: str = ""

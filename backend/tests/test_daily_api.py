@@ -87,7 +87,7 @@ async def test_daily_list_detail_config(_isolate_data_dir, daily_env, admin_toke
         detail = r.json()
         assert detail["shownotes_md"].startswith("# 本期简介")
         assert detail["meta"]["topics"][0]["title"] == "OpenAI 发布新模型"
-        assert detail["audio_path"].endswith("/audio")
+        assert detail["audio_path"].endswith("/audio.mp3")
 
         r = await c.get("/api/daily/issues/2099-01-01")
         assert r.status_code == 404
@@ -156,7 +156,7 @@ async def test_daily_feed_requires_key(_isolate_data_dir, daily_env, admin_token
         r = await c.get("/api/daily/feed.xml", params={"key": "test-feed-key"})
         body = r.text
         assert "<enclosure" in body
-        assert f"/api/daily/issues/{DATE}/audio?key=test-feed-key" in body
+        assert f"/api/daily/issues/{DATE}/audio.mp3?key=test-feed-key" in body
         assert "<itunes:explicit>false</itunes:explicit>" in body
 
 
@@ -333,3 +333,21 @@ async def test_daily_config_survives_no_voices(_isolate_data_dir, daily_env, adm
         assert cfg["voices"] == []
         assert cfg["voice_id"] == ""
         assert cfg["sources"], "信源仍应可见"
+
+
+@pytest.mark.asyncio
+async def test_daily_audio_mp3_alias_and_download_name(_isolate_data_dir, daily_env, admin_token):
+    """公开 URL 用 .mp3（播客客户端按末段取名），下载名统一为 AI前沿日报_日期.mp3。"""
+    async with _client(admin_token) as c:
+        r = await c.get(
+            f"/api/daily/issues/{DATE}/audio.mp3",
+            headers={"Range": "bytes=0-99"},
+        )
+        assert r.status_code == 206
+        cd = r.headers.get("content-disposition", "")
+        assert "AI-daily-2025-11-24.mp3" in cd
+        assert "AI%E5%89%8D%E6%B2%BF%E6%97%A5%E6%8A%A5_2025-11-24.mp3" in cd
+
+        r = await c.get(f"/api/daily/issues/{DATE}/audio")
+        assert r.status_code == 200
+        assert "AI-daily-2025-11-24.mp3" in r.headers.get("content-disposition", "")

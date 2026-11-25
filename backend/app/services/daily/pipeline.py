@@ -172,13 +172,17 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
     store.append_run_log(f"[cluster] {len(clusters)} 个事件簇")
 
     _stage("score", 45, "[score] 打分与闸门")
-    topics = rank_topics(
-        clusters, exclude_titles=store.previous_titles(days=3, exclude_date=date),
+    history = store.previous_topics(
+        days=int(settings.DAILY_DEDUPE_DAYS or 7), exclude_date=date,
     )
+    dropped: list = []
+    topics = rank_topics(clusters, history=history, dropped=dropped)
     if len(topics) < 3:
         raise DailyError(f"有效选题不足（闸门后 {len(topics)} 条），本期跳过")
     selected = split_topics(topics)
-    store.append_run_log(f"[score] 保留 {len(topics)} 个选题，主 1 / 次 2 / 速览 5")
+    store.append_run_log(
+        f"[score] 保留 {len(topics)} 个选题，跨期重复排除 {len(dropped)} 个"
+    )
 
     _stage("script", 60, "[script] 生成口播稿")
     script = await generate_script(
@@ -215,6 +219,8 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
             "clusters": len(clusters),
             "scored": len(topics),
             "kept": len(selected_topics),
+            "duplicates_removed": len(dropped),
+            "history_days": int(settings.DAILY_DEDUPE_DAYS or 7),
             "used_llm": script.used_llm,
             "tts": tts_stats,
             "source_errors": errors,

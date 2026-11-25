@@ -95,6 +95,7 @@ cp .env.example "${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.env"
 | `DAILY_FEED_KEY` | | 空 | 播客 RSS 的 `?key=` 订阅密钥；**留空则 RSS 不开放** |
 | `DAILY_LLM_ENABLED` | | `true` | 关闭后用离线模板出稿（无 LLM Key 也能跑） |
 | `DAILY_TARGET_MINUTES` | | `12` | 目标时长（写进脚本 prompt） |
+| `DAILY_DEDUPE_DAYS` | | `7` | 跨期去重窗口（天）：窗口内讲过的选题按 URL / 标题相似度排除或降权 |
 | `DAILY_PUBLIC_BASE_URL` | | 空=按请求推导 | RSS enclosure 用的对外地址，生产建议显式设为 `https://audio-book.ls-lh.cn` |
 | `DAILY_ALERT_WEBHOOK` | | 空 | 失败/熔断告警 webhook（POST JSON，兼容企业微信/飞书/Slack text 格式）；留空只写日志 |
 
@@ -386,6 +387,7 @@ P1 待做：建项目 / 导入书库 / 启动构建 / 保存文案 / 质检 / �
 | 聚类 | `cluster.py` | 标题 token Jaccard（0.34）合并同一事件 | 宁拆勿并 |
 | 打分 | `score.py` | 乘法打分 + 安全一票否决 + 主题闸门 | 0 分直接淘汰 |
 | 脚本 | `script.py` | LLM 可插拔；关闭/失败时模板兜底 | 模板仍可出稿 |
+| 跨期去重 | `score.py` + `store.previous_topics` | 近 7 天讲过的选题：URL 相同或标题相似度 ≥0.45 排除，0.30–0.45 降权 | 宁可少一条，不重复播 |
 | 合成 | `tts.py` | 分段合成 + MP3 拼接 + 可选 `ffmpeg -16 LUFS` | 无 ffmpeg 跳过标准化 |
 | 落盘 | `store.py` | 每期一个目录：`meta.json` / `script.md` / `shownotes.md` / `audio.mp3` | 失败不落半成品 |
 | RSS | `feed.py` | RSS 2.0 + iTunes，enclosure 为绝对地址 | `?key=` 鉴权 |
@@ -395,6 +397,43 @@ P1 待做：建项目 / 导入书库 / 启动构建 / 保存文案 / 质检 / �
 1. **乘法打分**：`Score = Π(dim^w) × safety × demote`，任一项趋零整体归零；
 2. **闸门分层**：标题命中主题词 → 通过；标题未命中时要求摘要命中 ≥2 个；
 3. **ASCII 词边界**：`ai` / `llm` / `gpu` 按独立词匹配，不会命中 `said` / `email`。
+
+### 信源（默认 26 个，海外为主）
+
+科技新闻以海外信息源为主，默认信源里 **5 个中文 + 21 个海外**：
+
+- 中文：量子位、雷峰网、爱范儿、钛媒体、开源中国
+- 海外：TechCrunch AI、The Verge AI、MIT Tech Review AI、Wired AI、IEEE Spectrum AI、
+  ScienceDaily AI、Ars Technica AI、Google AI Blog、DeepMind Blog、NVIDIA Blog、
+  TechXplore、SyncedReview、The Decoder、MarkTechPost、Engadget、ZDNet AI、
+  SiliconANGLE、The Next Web、TechRadar、AI Business、Analytics India Magazine
+
+闸门规则：
+
+- AI 垂类源：标题命中主题词，或摘要命中 ≥3 个主题词；
+- 泛科技源（开源中国/爱范儿/钛媒体/TechXplore/NVIDIA/Engadget/TechRadar）：**只认标题命中**，
+  避免摘要里的侧栏/标签把「网课系统更新」之类混进来；
+- `开源` 这种过泛的词已从闸门词表移除（避免所有开源软件发版都命中）；
+- 同一来源每期最多 2 条；多家外媒报道同一事件（共享 ≥2 个实体词，如 nvidia/jensen/huang）
+  只保留一条。
+
+### 跨期重复怎么办
+
+同一件事常连续多天出现，处理分两层：
+
+1. **当期内**：事件聚类合并（标题 token Jaccard ≥0.34）+ 实体去重；
+2. **跨期**：生成前读取近 `DAILY_DEDUPE_DAYS`（默认 7）天的 `meta.json` 选题，
+   - 相同 URL 或标题相似度 ≥0.45 → **直接排除**（`run_summary.stats.duplicates_removed` 计数）；
+   - 相似度 0.30–0.45 → 降权 ×0.15（最多进速览，不抢主/次话题）；
+   - 每条被排除的选题都会在 `meta.topics[].reasons` 里写明「近期已讲过（日期）：标题」。
+
+### 音频命名规范
+
+- 公开 URL：`/api/daily/issues/YYYY-MM-DD/audio.mp3`（播客客户端按 URL 末段取名）；
+- 下载名（`Content-Disposition`）：`AI前沿日报_YYYY-MM-DD.mp3`，ASCII 回退
+  `AI-daily-YYYY-MM-DD.mp3`；
+- 详情页播放器下方有「下载音频（AI前沿日报_日期.mp3）」入口；
+- RSS enclosure 同样用 `.mp3` + `?key=` 鉴权。
 
 ### 接口（`/api/daily/*`）
 
@@ -415,9 +454,8 @@ P1 待做：建项目 / 导入书库 / 启动构建 / 保存文案 / 质检 / �
 2. 进入「AI 前沿日报」→ 右上角「立即生成」→ 轮询进度（采集合成一般 1–3 分钟，
    取决于 TTS 速度）；
 3. 生成完成后在详情页试听（音频在生成阶段一次性合成，播放走 Range 流式，
-   不会边听边合成）、检查简介里的信源链接；
-   详情页可直接切换「播报音色」并保存（对下一期生效），需要立刻听到新音色可点
-   「用当前设置重生成本期」；
+   不会边听边合成）、检查简介里的信源链接；播放器下方可直接下载
+   `AI前沿日报_日期.mp3`；需要整期重做时点右上角「重生成本期」；
 4. 人工终审：「通过」后状态变 `approved`；「退回」并写备注（可重跑覆写当日）；
 5. 需要对外提供播客：配置 `DAILY_FEED_KEY` + `DAILY_PUBLIC_BASE_URL`，把
    `<你的域名>/api/daily/feed.xml?key=<key>` 提交到喜马拉雅「我有音频 RSS」等通道。
@@ -428,12 +466,12 @@ P1 待做：建项目 / 导入书库 / 启动构建 / 保存文案 / 质检 / �
 
 列表页右上角「生成设置」：
 
-- **音色**：从当前 TTS 厂商的音色列表里选。默认自动挑「新闻/播报/主播」类音色
-  （当前 MiniMax 下即「新闻女声」）；选为空 = 恢复自动挑选。
-  列表支持按名称/厂商/场景搜索与点选，并保留一个「试听所选」（新闻口播样本，约 35 字，
-  真实 TTS）；**逐条试听全部音色请去系统「音色库」（`#/voices`）**，页面内有一键跳转。
-  详情页的「播报音色」区块同样可试听所选并保存。
-  偏好保存在 `$DAILY_OUTPUT_DIR/prefs.json`，改设置不需要重启。
+- **默认播报音色（多期稳定）**：只在这里设置一次。多期节目必须用同一音色，
+  所以详情页不再提供逐期音色模块；选好后一般不需要再改。
+  默认自动挑「新闻/播报/主播」类音色（当前 MiniMax 下即「新闻女声」）；选为空 = 恢复自动。
+  列表支持搜索/点选，并保留一个「试听所选」（新闻口播样本，约 35 字，真实 TTS）；
+  **逐条试听全部音色请去系统「音色库」（`#/voices`）**。偏好保存在
+  `$DAILY_OUTPUT_DIR/prefs.json`，不需要重启。
 - **信源**：内置源可勾选启停，也可以添加自定义 RSS（http(s)）；至少保留 1 个启用源。
   默认信源以**中文科技媒体**为主（量子位 / 雷峰网 / 爱范儿 / 钛媒体 / 开源中国），
   英文源（TechCrunch / The Verge / MIT Tech Review）权重更低，只做补充；
@@ -473,8 +511,9 @@ P1 待做：建项目 / 导入书库 / 启动构建 / 保存文案 / 质检 / �
 - 审核状态与产物在同一个目录里（`meta.json`），**不要手动删目录里的 meta**；
 - 日报音频走对象存储/COS 属于 P3 范围，当前落本地盘，RSS enclosure 指向本服务；
   桶未配置公开域名时不能直接用 COS 直链（私有桶签名 1 小时会过期）。
-- 英文源偶尔会出现在速览里；主话题强制中文优先（分数 ≥ 主话题 70% 才允许换），
-  但英文源的回退仍可能导致个别句子是转述标题——人工终审时重点看这一段。
+- 海外源占比高时，主话题可能是英文报道；脚本由 LLM 译写为中文，
+  人工终审时重点核对专有名词与数字（防止转述失真）。
+- 跨期去重依赖历史 `meta.json`；如果手动删掉某期目录，那期的选题不再参与去重。
 - `:fire:` 之类的标题短代码、`【重磅】` 前缀会在采集阶段清洗掉。
 
 ---

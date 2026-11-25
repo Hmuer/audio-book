@@ -106,9 +106,13 @@ def test_score_gate_and_multiplier():
     assert irrelevant.score == 0
 
     # 摘要命中 2 个主题词也算相关
-    summary_hit = score_cluster(_cluster("某公司宣布新进展", "本次发布涉及大模型与算力调度。"), now=now)
+    summary_hit = score_cluster(_cluster("某公司宣布新进展", "本次发布涉及大模型、算力与智能体调度。"), now=now)
     assert summary_hit.score > 0
     assert summary_hit.dims["relevance"] == 0.85
+
+    # 只有 2 个摘要词 → 不再通过（聚合/泛科技内容太多，闸门收紧）
+    weak = score_cluster(_cluster("某公司宣布新进展", "本次发布涉及大模型与调度。"), now=now)
+    assert weak.score == 0
 
 
 def test_score_safety_veto_and_demote():
@@ -196,7 +200,7 @@ def test_feed_enclosure_is_absolute_and_keyed(tmp_path):
         feed_key="secret-key",
         issue_dir=tmp_path / "daily",
     )
-    assert 'url="https://pod.example.com/api/daily/issues/2025-11-24/audio?key=secret-key"' in xml
+    assert 'url="https://pod.example.com/api/daily/issues/2025-11-24/audio.mp3?key=secret-key"' in xml
     assert f'length="{len(mp3)}"' in xml
     assert "<itunes:explicit>false</itunes:explicit>" in xml
 
@@ -313,14 +317,17 @@ def test_previous_titles_excludes_target_date(monkeypatch, tmp_path):
     from backend.app.services.daily import store
 
     monkeypatch.setattr(cfgmod.settings, "DAILY_OUTPUT_DIR", tmp_path / "daily")
-    for date, title in (("2025-11-24", "旧闻甲"), ("2025-11-25", "今日乙")):
+    today = datetime.now(UTC).date()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    today_s = today.isoformat()
+    for date, title in ((yesterday, "旧闻甲"), (today_s, "今日乙")):
         base = tmp_path / "daily" / date
         base.mkdir(parents=True)
         (base / "meta.json").write_text(
             _json.dumps({"date": date, "title": title, "topics": [{"title": title}]}),
             encoding="utf-8",
         )
-    titles = store.previous_titles(days=3, exclude_date="2025-11-25")
+    titles = store.previous_titles(days=3, exclude_date=today_s)
     assert normalize_title("旧闻甲") in titles
     assert normalize_title("今日乙") not in titles
 
@@ -404,3 +411,69 @@ def test_failure_triggers_alert(monkeypatch, tmp_path):
     status = store.read_run_status()
     assert status["consecutive_failures"] == 2
     assert status["circuit_open"] is True
+
+
+def test_cross_day_dedupe_excludes_repeat_and_demotes_similar():
+    from backend.app.services.daily.score import rank_topics
+
+    now = datetime.now(UTC)
+    a = _cluster("OpenAI 发布 GPT-6 模型", "新模型发布。")
+    b = _cluster("英伟达发布新一代 GPU", "数据中心芯片。")
+    c = _cluster("某 AI 公司开源智能体框架", "开源框架。")
+
+    # 1) 相同 URL（标题不同）→ 直接排除
+    dropped: list = []
+    history_url = [{"date": "2025-11-20", "title": "旧闻标题", "url": a.primary.link}]
+    kept = rank_topics([a, b, c], now=now, history=history_url, dropped=dropped)
+    assert len(dropped) == 1 and "近期已讲过" in dropped[0].reasons[-1]
+    assert len(kept) == 2
+
+    # 2) 标题高度相似 → 直接排除
+    dropped2: list = []
+    history_title = [{"date": "2025-11-20", "title": "OpenAI 发布 GPT-6 模型", "url": "https://other.example/x"}]
+    kept2 = rank_topics([a, b, c], now=now, history=history_title, dropped=dropped2)
+    assert len(dropped2) == 1 and "标题相似" in dropped2[0].reasons[-1]
+    assert len(kept2) == 2
+
+    # 3) 中等相似度（约 0.3–0.45）→ 降权但保留
+    topic = _cluster("苹果发布 AI 芯片", "芯片发布。")
+    history_similar = [{"date": "2025-11-20", "title": "苹果 AI 芯片 量产 计划", "url": "https://other.example/y"}]
+    baseline = rank_topics([topic], now=now)
+    demoted = rank_topics([topic], now=now, history=history_similar)
+    assert len(baseline) == 1 and len(demoted) == 1
+    assert demoted[0].score < baseline[0].score
+    assert "降权" in demoted[0].reasons[-1]
+
+
+def test_split_topics_dedupes_same_entity_stories():
+    from backend.app.services.daily.types import ScoredTopic
+
+    def mk(title: str, score: float, source: str) -> ScoredTopic:
+        return ScoredTopic(cluster=_cluster(title, "摘要" * 60, source=source), score=score, dims={}, reasons=[])
+
+    topics = [
+        mk("Jensen Huang’s Return Shows Nvidia Is Too Big to Police", 0.9, "Wired AI"),
+        mk("Nvidia CEO Jensen Huang is back. What happens next?", 0.88, "The Verge AI"),
+        mk("Anthropic tops 700 million MCP SDK downloads", 0.8, "The Decoder"),
+        mk("Google releases new Gemini model", 0.7, "Google AI Blog"),
+    ]
+    picked = split_topics(topics)
+    titles = [t.title for t in (picked["main"], *picked["subs"], *picked["quicks"]) if t]
+    # 前两条共享 nvidia/jensen/huang → 只保留一条
+    assert sum(1 for t in titles if "Nvidia" in t or "nvidia" in t) == 1
+    assert len(titles) >= 3
+
+
+def test_general_tech_source_requires_title_hit():
+    now = datetime.now(UTC)
+    # 开源中国属于泛科技源：标题不含 AI 词，摘要即使共振也不选
+    item = _item(
+        "酷瓜云课堂 v2.0.2 发布，修复 nginx 与 php 漏洞",
+        "本次更新涉及大模型、算力与智能体相关的演示模块。",
+        source="开源中国",
+    )
+    assert score_cluster(Cluster(items=[item]), now=now).score == 0
+
+    # AI 垂类源允许摘要兜底
+    item2 = _item("某公司宣布新进展", "本次发布涉及大模型、算力与智能体调度。", source="TechCrunch AI")
+    assert score_cluster(Cluster(items=[item2]), now=now).score > 0

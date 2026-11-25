@@ -22,7 +22,7 @@ import logging
 import os
 import re
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -192,33 +192,45 @@ def list_issues(limit: int = 30) -> list[dict[str, Any]]:
     return issues
 
 
-def previous_titles(days: int = 3, *, exclude_date: str | None = None) -> set[str]:
-    """近 N 期已讲过的归一化标题（用于去重降权）。
+def previous_topics(
+    days: int = 7, *, exclude_date: str | None = None,
+) -> list[dict[str, str]]:
+    """近 N 天已讲过的选题（用于跨期去重）。
 
-    `exclude_date`：同日重跑时排除当天自己的 meta，避免把自己上一版降权。
+    返回 `[{"date","title","url"}]`；`exclude_date` 用于同日重跑时排除自己。
+    按日历天窗口过滤（ISO 日期字符串可直接比较）。
     """
-    from .cluster import normalize_title
-
     root = daily_root()
     if not root.is_dir():
-        return set()
+        return []
+    cutoff = (datetime.now().date() - timedelta(days=max(1, int(days)))).isoformat()
     dates = sorted(
         (
             c.name for c in root.iterdir()
-            if c.is_dir() and DATE_RE.match(c.name) and c.name != exclude_date
+            if c.is_dir() and DATE_RE.match(c.name)
+            and c.name != exclude_date and c.name >= cutoff
         ),
         reverse=True,
-    )[: max(1, int(days))]
-    titles: set[str] = set()
+    )
+    out: list[dict[str, str]] = []
     for date in dates:
         meta = read_json(issue_dir(date) / META_NAME)
         if not isinstance(meta, dict):
             continue
         for topic in meta.get("topics") or []:
-            title = normalize_title(str((topic or {}).get("title") or ""))
+            if not isinstance(topic, dict):
+                continue
+            title = str(topic.get("title") or "").strip()
             if title:
-                titles.add(title)
-    return titles
+                out.append({"date": date, "title": title, "url": str(topic.get("url") or "")})
+    return out
+
+
+def previous_titles(days: int = 3, *, exclude_date: str | None = None) -> set[str]:
+    """兼容旧调用：返回近 N 天已讲过的归一化标题集合。"""
+    from .cluster import normalize_title
+
+    return {normalize_title(t["title"]) for t in previous_topics(days, exclude_date=exclude_date)}
 
 
 def next_issue_number() -> int:

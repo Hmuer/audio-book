@@ -530,7 +530,7 @@ export const api = {
    */
   dailyAudioUrl: (date: string): string => {
     const token = getToken();
-    const base = `/api/daily/issues/${encodeURIComponent(date)}/audio`;
+    const base = `/api/daily/issues/${encodeURIComponent(date)}/audio.mp3`;
     return token ? `${base}?token=${encodeURIComponent(token)}` : base;
   },
   // 连续失败自动熔断后的人工恢复：重置计数并清空 circuit_open

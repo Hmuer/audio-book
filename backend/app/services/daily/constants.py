@@ -23,23 +23,41 @@ logger = logging.getLogger(__name__)
 #: 默认信源：自有 RSS / 官方博客即可，不做外媒翻译与复述。
 #: 服务器在国内，部分源可能超时/403 —— collect 阶段逐源容错，不阻塞整期。
 DEFAULT_SOURCES: list[dict[str, Any]] = [
-    # 中文源为主：方案要求"不翻译外媒、不复述原文"，中文口播应以中文内容为主体。
+    # 中文源：保留 5 个稳定可用的科技/创投媒体
     {"name": "量子位", "url": "https://www.qbitai.com/feed", "enabled": True},
     {"name": "雷峰网", "url": "https://www.leiphone.com/feed", "enabled": True},
     {"name": "爱范儿", "url": "https://www.ifanr.com/feed", "enabled": True},
     {"name": "钛媒体", "url": "https://www.tmtpost.com/rss", "enabled": True},
     {"name": "开源中国", "url": "https://www.oschina.net/news/rss", "enabled": True},
-    # 英文源只做补充（权重更低）；HN 已移除：RSS 不稳定且摘要过短，不适合 12 分钟口播。
+    # 海外源（科技/AI 为主）：科技报道以国外信息源为主，这里放足数量。
     {"name": "TechCrunch AI", "url": "https://techcrunch.com/category/artificial-intelligence/feed/", "enabled": True},
     {"name": "The Verge AI", "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml", "enabled": True},
     {"name": "MIT Tech Review AI", "url": "https://www.technologyreview.com/topic/artificial-intelligence/feed", "enabled": True},
+    {"name": "Wired AI", "url": "https://www.wired.com/feed/tag/ai/latest/rss", "enabled": True},
+    {"name": "IEEE Spectrum AI", "url": "https://spectrum.ieee.org/feeds/topic/artificial-intelligence.rss", "enabled": True},
+    {"name": "ScienceDaily AI", "url": "https://www.sciencedaily.com/rss/computers_math/artificial_intelligence.xml", "enabled": True},
+    {"name": "Ars Technica AI", "url": "https://arstechnica.com/ai/feed/", "enabled": True},
+    {"name": "Google AI Blog", "url": "https://blog.google/technology/ai/rss/", "enabled": True},
+    {"name": "DeepMind Blog", "url": "https://deepmind.google/blog/rss.xml", "enabled": True},
+    {"name": "NVIDIA Blog", "url": "https://blogs.nvidia.com/feed/", "enabled": True},
+    {"name": "TechXplore", "url": "https://techxplore.com/rss-feed/", "enabled": True},
+    {"name": "SyncedReview", "url": "https://syncedreview.com/feed/", "enabled": True},
+    {"name": "The Decoder", "url": "https://the-decoder.com/feed/", "enabled": True},
+    {"name": "MarkTechPost", "url": "https://www.marktechpost.com/feed/", "enabled": True},
+    {"name": "Engadget", "url": "https://www.engadget.com/rss.xml", "enabled": True},
+    {"name": "ZDNet AI", "url": "https://www.zdnet.com/topic/artificial-intelligence/rss.xml", "enabled": True},
+    {"name": "SiliconANGLE", "url": "https://siliconangle.com/feed/", "enabled": True},
+    {"name": "The Next Web", "url": "https://thenextweb.com/feed/", "enabled": True},
+    {"name": "TechRadar", "url": "https://www.techradar.com/rss", "enabled": True},
+    {"name": "AI Business", "url": "https://www.aibusiness.com/rss.xml", "enabled": True},
+    {"name": "Analytics India Magazine", "url": "https://www.analyticsindiamag.com/feed/", "enabled": True},
 ]
 
 #: 主题闸门：标题命中任意一个即视为 AI/科技话题；标题未命中时要求摘要命中 ≥2 个。
 TOPIC_TERMS: list[str] = [
     "ai", "aigc", "llm", "agent", "agentic", "rag", "mcp", "copilot",
     "人工智能", "大模型", "模型", "算法", "算力", "智能体", "多模态", "推理",
-    "训练", "微调", "开源", "芯片", "gpu", "数据中心", "机器人", "自动驾驶",
+    "训练", "微调", "开源模型", "开源框架", "芯片", "gpu", "数据中心", "机器人", "自动驾驶",
     "生成式", "语音合成", "语音识别", "计算机视觉", "具身智能", "transformer",
     "openai", "deepseek", "anthropic", "claude", "gemini", "llama", "qwen",
     "英伟达", "nvidia", "智谱", "月之暗面", "字节", "阿里云", "腾讯云", "华为云",
@@ -62,19 +80,40 @@ SAFETY_TERMS: list[str] = [
 DEMOTE_TERMS: list[str] = [
     "招聘", "课程", "培训", "报名", "直播预告", "促销", "优惠", "抽奖",
     "广告", "赞助", "带货", "峰会报名", "白皮书下载", "问卷调查",
+    # 聚合型/盘点型内容：多主题混在一起，不适合当"单一事件"选题
+    "早报", "晚报", "周报", "盘点", "汇总", "一周", "速览",
 ]
 
 #: 信源权重（未列出的按 1.0）。
 SOURCE_WEIGHTS: dict[str, float] = {
-    # 中文源权重更高：中文节目以中文内容为主，英文源只作补充。
+    # 中文源
     "量子位": 1.1,
     "雷峰网": 1.05,
     "爱范儿": 0.95,
     "钛媒体": 0.9,
     "开源中国": 0.9,
-    "TechCrunch AI": 0.7,
-    "The Verge AI": 0.65,
-    "MIT Tech Review AI": 0.75,
+    # 海外源：官方博客 > 一线科技媒体 > 聚合/研究向
+    "TechCrunch AI": 1.05,
+    "The Verge AI": 1.0,
+    "MIT Tech Review AI": 1.05,
+    "Wired AI": 1.0,
+    "IEEE Spectrum AI": 1.0,
+    "ScienceDaily AI": 0.9,
+    "Ars Technica AI": 1.0,
+    "Google AI Blog": 1.1,
+    "DeepMind Blog": 1.1,
+    "NVIDIA Blog": 1.0,
+    "TechXplore": 0.85,
+    "SyncedReview": 0.9,
+    "The Decoder": 0.9,
+    "MarkTechPost": 0.85,
+    "Engadget": 0.8,
+    "ZDNet AI": 0.9,
+    "SiliconANGLE": 0.85,
+    "The Next Web": 0.8,
+    "TechRadar": 0.7,
+    "AI Business": 0.85,
+    "Analytics India Magazine": 0.8,
 }
 
 #: 可增强"可讲述性"的信号词（融资/产品/研究里程碑）。
