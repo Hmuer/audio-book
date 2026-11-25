@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import secrets
@@ -300,6 +301,51 @@ async def daily_issue_audio(
 # =====================================================================
 # 人工终审
 # =====================================================================
+
+@router.get("/issues/{date}/export")
+async def daily_issue_export(
+    date: str,
+    operator: str = Depends(daily_operator),
+):
+    """导出上架包（ZIP）：音频 + 标题/简介/标签 + 元数据 + 上传说明。
+
+    仅审核通过的期数可导出（未审核内容不能对外发布）。
+    """
+    from ..services.daily.export import build_package
+
+    try:
+        detail = store.read_issue(date)
+    except DailyError as e:
+        raise HTTPException(404, str(e))
+    if detail["issue"]["status"] != "approved":
+        raise HTTPException(409, "只有审核通过的期数才能导出上架包")
+    try:
+        data = await asyncio.to_thread(
+            build_package,
+            date,
+            detail["meta"],
+            shownotes_md=detail["shownotes_md"],
+            script_md=detail["script_md"],
+        )
+    except FileNotFoundError:
+        raise HTTPException(404, "本期还没有音频，无法导出")
+
+    from urllib.parse import quote
+
+    zh_name = f"科技前沿日报_{date}_上架包.zip"
+    ascii_name = f"Tech-Daily-{date}-package.zip"
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"{ascii_name}\"; "
+                f"filename*=UTF-8''{quote(zh_name)}"
+            ),
+            "Cache-Control": "no-store",
+        },
+    )
+
 
 @router.post("/issues/{date}/review")
 async def daily_review(

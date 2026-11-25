@@ -354,3 +354,27 @@ async def test_daily_audio_mp3_alias_and_download_name(_isolate_data_dir, daily_
         r = await c.get(f"/api/daily/issues/{DATE}/audio")
         assert r.status_code == 200
         assert "Tech-Daily-2025-11-24.mp3" in r.headers.get("content-disposition", "")
+
+
+@pytest.mark.asyncio
+async def test_daily_export_package(_isolate_data_dir, daily_env, admin_token):
+    """上架包：仅审核通过可导出；ZIP 内含音频/标题/标签/说明。"""
+    import io
+    import zipfile
+
+    async with _client(admin_token) as c:
+        r = await c.get(f"/api/daily/issues/{DATE}/export")
+        assert r.status_code == 409
+
+        await c.post(f"/api/daily/issues/{DATE}/review", json={"decision": "approve"})
+        r = await c.get(f"/api/daily/issues/{DATE}/export")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("application/zip")
+        assert "Tech-Daily-2025-11-24-package.zip" in r.headers["content-disposition"]
+
+        zf = zipfile.ZipFile(io.BytesIO(r.content))
+        names = zf.namelist()
+        assert "科技前沿日报_2025-11-24.mp3" in names
+        for required in ("标题.txt", "简介.txt", "标签.txt", "元数据.json", "上传说明.txt"):
+            assert required in names
+        assert "AI 辅助" in zf.read("上传说明.txt").decode("utf-8")

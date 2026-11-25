@@ -523,6 +523,12 @@ export const api = {
       }),
     }),
   dailyRunStatus: () => _fetch<DailyRunStatusResp>('/api/daily/run/status'),
+  /** 上架包 ZIP 直链（带 JWT query；仅审核通过的期数可导出） */
+  dailyExportUrl: (date: string): string => {
+    const token = getToken();
+    const base = `/api/daily/issues/${encodeURIComponent(date)}/export`;
+    return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+  },
   /**
    * 音频直链（带 JWT query）。<audio> 无法带 Authorization 头，后端
    * /api/daily/issues/{date}/audio 支持 ?token=，并支持 Range 流式播放 ——

@@ -1405,6 +1405,23 @@ function DailyDetail({ date }: { date: string }) {
               {actionMsg}
             </span>
           )}
+          {issue?.status === 'approved' ? (
+            <a
+              href={api.dailyExportUrl(date)}
+              download
+              className="btn-ghost !py-1.5 !px-3 text-xs shrink-0"
+              title="下载上架包：音频 + 标题/简介/标签 + 元数据 + 上传说明"
+            >
+              导出上架包
+            </a>
+          ) : (
+            <span
+              className="text-[11px] text-ink-500 shrink-0"
+              title="审核通过后可导出上架包"
+            >
+              审核后可导出上架包
+            </span>
+          )}
           <button
             type="button"
             className="btn-ghost !py-1.5 !px-3 text-xs shrink-0"
