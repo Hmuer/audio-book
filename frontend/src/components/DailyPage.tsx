@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * AI 前沿日报（一级菜单 #/daily）
+ * 科技前沿日报（一级菜单 #/daily）
  *
  * - 无 date → 列表：期数列表 + 运行状态条 + 「立即生成」
  * - 有 date → 详情：音频试听 / 简介·脚本·选题三 Tab / 人工审核 / RSS 地址
@@ -160,7 +160,7 @@ function voiceOptionLabel(v: DailyVoiceOption): string {
 }
 
 /** 日报音色试听文案：短句即可（TTS 按字符计费，控制在 40 字内）。 */
-const VOICE_PREVIEW_TEXT = '欢迎收听 AI 前沿日报，今天我们来聊聊人工智能领域最值得关注的进展。';
+const VOICE_PREVIEW_TEXT = '欢迎收听 科技前沿日报，今天我们来聊聊科技领域最值得关注的进展。';
 
 /**
  * 播报音色选择列表：搜索 + 点选；**不做逐个试听**。
@@ -539,7 +539,7 @@ function DailyList() {
             <NewsGlyph size={20} />
           </div>
           <div className="min-w-0 flex-1">
-            <h1 className="headline text-xl">AI 前沿日报</h1>
+            <h1 className="headline text-xl">{config?.show?.title || '科技前沿日报'}</h1>
             <p className="text-xs text-ink-500 mt-1">
               {config?.show?.description || '每日聚合 AI 前沿资讯，自动生成可收听的日报节目。'}
             </p>
@@ -1522,9 +1522,9 @@ function DailyDetail({ date }: { date: string }) {
               href={audioSrc}
               download
               className="text-brand-500 hover:underline"
-              title={`下载文件名：AI前沿日报_${date}.mp3`}
+              title={`下载文件名：科技前沿日报_${date}.mp3`}
             >
-              下载音频（AI前沿日报_{date}.mp3）
+              下载音频（科技前沿日报_{date}.mp3）
             </a>
           )}
         </div>

@@ -159,7 +159,8 @@ async def test_script_fallback_has_disclosure_and_sources(monkeypatch):
     result = await generate_script(
         {"main": topic, "subs": [], "quicks": []}, date="2025-11-24",
     )
-    assert "AI 生成" in result.text
+    assert "AI 辅助" in result.text
+    assert "由 AI 生成" not in result.text
     assert "2025-11-24" in result.text
     assert result.used_llm is False
     assert "https://example.com/" in result.shownotes
@@ -251,7 +252,8 @@ async def test_run_pipeline_end_to_end(monkeypatch, tmp_path):
     detail = store.read_issue("2025-11-24")
     assert detail["issue"]["has_audio"] is True
     assert detail["issue"]["duration_ms"] == 300
-    assert "AI 生成" in detail["script_md"]
+    assert "AI 辅助" in detail["script_md"]
+    assert "由 AI 生成" not in detail["script_md"]
     assert "https://example.com/" in detail["shownotes_md"]
 
     status = store.read_run_status()

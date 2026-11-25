@@ -339,13 +339,13 @@ class Settings(BaseSettings):
     # 仅作熔断阈值，不参与计费口径计算。
     AGENT_TASK_BUDGET_CNY: float = 2.0
 
-    # ============ AI 前沿日报（每日播客流水线）============
+    # ============ 科技前沿日报（每日播客流水线）============
     # 产物目录；留空 = DATA_DIR/daily（跟随运行时数据目录）。
     # 每期一个子目录：meta.json / script.md / shownotes.md / audio.mp3。
     DAILY_OUTPUT_DIR: Path | None = None
     # 节目信息（页面与 RSS 共用）
-    DAILY_SHOW_TITLE: str = "AI 前沿日报"
-    DAILY_SHOW_DESCRIPTION: str = "每天 12 分钟，听懂 AI 与科技前沿。节目由 AI 生成，人工审核后发布。"
+    DAILY_SHOW_TITLE: str = "科技前沿日报"
+    DAILY_SHOW_DESCRIPTION: str = "每天 12 分钟，听懂科技前沿：AI、芯片、机器人、航天、生物科技。"
     DAILY_SHOW_AUTHOR: str = "小布"
     # 信源（JSON 数组：[{"name","url","enabled"}]）；留空用内置默认源
     DAILY_SOURCES_JSON: str = ""

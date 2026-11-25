@@ -494,7 +494,7 @@ export const api = {
       body: JSON.stringify(cfg),
     }),
 
-  // ---------- AI 前沿日报 ----------
+  // ---------- 科技前沿日报 ----------
   // 日期在 URL 里直接用字符串（后端约定 YYYY-MM-DD），前端不做 Date 时区换算，
   // 避免 UTC/Asia-Shanghai 跨时区把「今天」算成相邻一天。
   dailyConfig: () => _fetch<DailyConfig>('/api/daily/config'),
@@ -1070,7 +1070,7 @@ export interface DoubaoModelOptions {
 }
 
 // =====================================================================
-// AI 前沿日报（GET/POST /api/daily/*）
+// 科技前沿日报（GET/POST /api/daily/*）
 // =====================================================================
 
 /** 日报状态：draft=待审 / approved=已通过 / rejected=已退回 / failed=生成失败 */

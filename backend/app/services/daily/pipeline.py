@@ -112,7 +112,7 @@ def _record_failure(message: str) -> None:
     )
     store.append_run_log(f"[failed] {message}")
     _notify_alert(
-        f"[AI 前沿日报] 生成失败（连续第 {failures} 次）\n"
+        f"[科技前沿日报] 生成失败（连续第 {failures} 次）\n"
         f"时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
         f"错误：{message}\n"
         f"状态：{'已熔断，需人工重置' if circuit else '可重试'}"

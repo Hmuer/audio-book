@@ -8,7 +8,7 @@
 硬约束（写进 prompt + 后处理双重保证）：
 - 只使用给定事实，不编造、不补充外部信息；
 - 不做时政/军事/外交评论；
-- 开头有"AI 生成"声明（平台要求，见方案 §六）；
+- 有"AI 辅助制作"声明（平台要求，但放在开场价值陈述之后，不喧宾夺主）；
 - 总字数受 `DAILY_MAX_SCRIPT_CHARS` 限制（TTS 成本/时长护栏）。
 """
 from __future__ import annotations
@@ -54,7 +54,8 @@ def build_prompt(topics: dict[str, Any], *, date: str) -> str:
     subs = topics["subs"]
     quicks = topics["quicks"]
     parts = [
-        "你在为一档 12–15 分钟的 AI/科技前沿单人口播播客写脚本。",
+        "你在为一档 12–15 分钟的科技前沿单人口播播客写脚本（科技为主，包含 AI、芯片、",
+        "机器人、航天、生物科技等）。",
         f"日期：{date}。听众：开发者与产品经理。",
         "",
         "【主话题】",
@@ -77,9 +78,11 @@ def build_prompt(topics: dict[str, Any], *, date: str) -> str:
         "3. 全篇 3400–3900 字，对应约 12–13 分钟；main 约 1300 字，sub1/sub2 各约 600 字，"
         "quick 约 600 字，intro/outro 各 120 字以内。素材少时用「为什么重要 / 谁受影响 / "
         "接下来看什么」展开每个话题，但**不得编造事实、数字与引语**。",
-        "4. intro 必须包含：节目名「AI 前沿日报」、日期、以及一句"
-        "「本节目由 AI 生成，发布前经过人工审核」。",
-        "5. 不做时政、军事、外交评论；观点与事实分离，不写「据传」「据说」。",
+        "4. intro 必须包含节目名「科技前沿日报」与日期；先讲今天有什么值得听，"
+        "最后用一句中性的「本节目为 AI 辅助制作，内容经人工审核」。"
+        "不要在开头强调 AI、也不要写「由 AI 生成」。",
+        "5. 不做时政、军事、外交评论；观点与事实分离，不写「据传」「据说」；"
+        "不要只谈 AI，芯片、机器人、航天、生物科技、能源等科技议题同样优先。",
         "6. title 不超过 24 字，以中文表达为主（专有名词可保留英文），"
         "不要直译腔（例如不要写「与…新负载」），不含日期，不夸张、不制造悬念。",
         "7. 输出 JSON：字段 title / intro / main / sub1 / sub2 / quick / outro。",
@@ -91,12 +94,11 @@ def _fallback_sections(topics: dict[str, Any], *, date: str) -> dict[str, str]:
     main = topics["main"]
     subs = topics["subs"]
     quicks = topics["quicks"]
-    show = settings.DAILY_SHOW_TITLE or "AI 前沿日报"
+    show = settings.DAILY_SHOW_TITLE or "科技前沿日报"
 
     intro = (
-        f"这里是《{show}》，{date}。我是你的 AI 主播。"
-        f"本节目由 AI 生成，发布前经过人工审核。今天我们会用十几分钟，把 AI 与科技领域"
-        f"最值得关注的进展讲清楚。"
+        f"欢迎收听《{show}》，今天是{date}。我们用十几分钟，把科技领域——尤其是人工智能"
+        f"——最值得关注的进展讲清楚。本节目为 AI 辅助制作，内容经人工审核。"
     )
     if main:
         intro += f"头条是：{main.title}。"
@@ -115,7 +117,7 @@ def _fallback_sections(topics: dict[str, Any], *, date: str) -> dict[str, str]:
     quick = "接下来是几条速览。" + "".join(quick_lines) if quick_lines else "今天没有更多速览。"
 
     outro = (
-        f"以上就是今天的《{show}》。本节目由 AI 生成、发布前经过人工审核，"
+        f"以上就是今天的《{show}》。本节目为 AI 辅助制作、内容经人工审核，"
         f"观点仅供参考，所有事实与信源都列在节目简介里。我们明天见。"
     )
     return {
@@ -160,13 +162,13 @@ def _safe_title(raw: str, topics: dict[str, Any]) -> str:
         short = re.sub(r"\s+", " ", short)[:24]
     else:
         short = "AI 与科技前沿"
-    return f"{settings.DAILY_SHOW_TITLE or 'AI 前沿日报'}：{short}"
+    return f"{settings.DAILY_SHOW_TITLE or '科技前沿日报'}：{short}"
 
 
 def _build_shownotes(
     title: str, topics: dict[str, Any], *, date: str, used_llm: bool,
 ) -> str:
-    show = settings.DAILY_SHOW_TITLE or "AI 前沿日报"
+    show = settings.DAILY_SHOW_TITLE or "科技前沿日报"
     lines = [f"# {title}", "", f"{date} · {show}", ""]
     main = topics["main"]
     if main:
@@ -190,7 +192,7 @@ def _build_shownotes(
             for t in [main, *subs, *quicks] if t is not None
         ],
         "",
-        "> 本节目由 AI 生成（脚本与语音），发布前经过人工审核。",
+        "> 本节目为 AI 辅助制作（脚本与语音），内容经人工审核后发布。",
         f"> 脚本生成方式：{'LLM + 规则后处理' if used_llm else '离线模板（未启用 LLM）'}。",
     ]
     return "\n".join(lines)
@@ -243,7 +245,7 @@ async def generate_script(
     if not title:
         main = topics["main"]
         short = (main.title if main else "AI 与科技前沿").strip()
-        title = f"{settings.DAILY_SHOW_TITLE or 'AI 前沿日报'}：{short[:28]}"
+        title = f"{settings.DAILY_SHOW_TITLE or '科技前沿日报'}：{short[:28]}"
     title = _safe_title(title, topics)
 
     shownotes = _build_shownotes(title, topics, date=date, used_llm=used_llm)

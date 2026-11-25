@@ -25,11 +25,11 @@ type Module = {
 };
 
 // ================= 菜单数据 =================
-// 音色库是跨内容类型共享的资源（AI 有声书 / AI 前沿日报都用它），
+// 音色库是跨内容类型共享的资源（AI 有声书 / 科技前沿日报都用它），
 // 因此从「AI有声书」的二级菜单上移为系统级一级菜单。
 const MODULES: Module[] = [
   { key: 'audiobooks', label: 'AI有声书',   icon: 'speaker', href: '#/audiobooks' },
-  { key: 'daily',      label: 'AI前沿日报', icon: 'news',    href: '#/daily' },
+  { key: 'daily',      label: '科技前沿日报', icon: 'news',    href: '#/daily' },
   { key: 'novel',      label: 'AI小说创作', icon: 'pen',     disabled: true },
   { key: 'drama',      label: 'AI短剧',     icon: 'clapper', disabled: true },
   { key: 'comic',      label: 'AI漫画',     icon: 'palette', disabled: true },

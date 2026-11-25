@@ -1,4 +1,4 @@
-"""AI 前沿日报 API（`/api/daily/*`）。
+"""科技前沿日报 API（`/api/daily/*`）。
 
 两类路由：
 - `router`：需要登录（复用 `/api/*` 的 JWT 依赖），挂 `/api/daily/*`；
@@ -229,10 +229,10 @@ def _audio_headers(date: str) -> dict[str, str]:
     公开 URL 用 ASCII（`audio.mp3`，播客客户端按 URL 末段取名）；
     真正下载时用 Content-Disposition 给出统一命名：
         ASCII 回退：AI-daily-YYYY-MM-DD.mp3
-        中文名    ：AI前沿日报_YYYY-MM-DD.mp3
+        中文名    ：科技前沿日报_YYYY-MM-DD.mp3
     """
-    ascii_name = f"AI-daily-{date}.mp3"
-    zh_name = f"AI前沿日报_{date}.mp3"
+    ascii_name = f"Tech-Daily-{date}.mp3"
+    zh_name = f"科技前沿日报_{date}.mp3"
     return {
         "Content-Disposition": (
             f"inline; filename=\"{ascii_name}\"; "

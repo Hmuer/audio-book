@@ -18,7 +18,7 @@ type Route =
   | { name: 'ab-list' }                  // #/audiobooks         列表
   | { name: 'ab-detail'; id: string }    // #/audiobooks/:id     工作台
   | { name: 'voices' }                   // #/voices             音色库（系统级）
-  | { name: 'daily-list' }               // #/daily              AI前沿日报列表
+  | { name: 'daily-list' }               // #/daily              科技前沿日报列表
   | { name: 'daily-detail'; date: string } // #/daily/:date       日报详情
   | { name: 'settings' }                 // #/settings           设置
   | { name: 'unknown' };                 // fallback
@@ -54,7 +54,7 @@ function parseHash(): { route: Route; path: string } {
     return { route: { name: 'ab-list' }, path: '/audiobooks' };
   if (h === '/voices')            return { route: { name: 'voices' }, path: '/voices' };
   if (h === '/settings')          return { route: { name: 'settings' }, path: '/settings' };
-  // AI前沿日报：#/daily 列表 / #/daily/YYYY-MM-DD 详情
+  // 科技前沿日报：#/daily 列表 / #/daily/YYYY-MM-DD 详情
   if (h === '/daily' || h === '/daily/') return { route: { name: 'daily-list' }, path: '/daily' };
   const mDaily = h.match(/^\/daily\/([^/]+)$/);
   if (mDaily) {
@@ -180,7 +180,7 @@ export default function HomePage() {
               {R.name === 'ab-list' && '有声书 · 我的作品库'}
               {R.name === 'ab-detail' && '有声书 · 工作台'}
               {R.name === 'voices' && '系统 · 音色库'}
-              {R.name === 'daily-list' && '日报 · AI前沿日报'}
+              {R.name === 'daily-list' && '日报 · 科技前沿日报'}
               {R.name === 'daily-detail' && '日报 · 当日详情'}
               {R.name === 'settings' && '系统 · 设置'}
             </div>

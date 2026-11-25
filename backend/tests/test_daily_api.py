@@ -345,9 +345,9 @@ async def test_daily_audio_mp3_alias_and_download_name(_isolate_data_dir, daily_
         )
         assert r.status_code == 206
         cd = r.headers.get("content-disposition", "")
-        assert "AI-daily-2025-11-24.mp3" in cd
-        assert "AI%E5%89%8D%E6%B2%BF%E6%97%A5%E6%8A%A5_2025-11-24.mp3" in cd
+        assert "Tech-Daily-2025-11-24.mp3" in cd
+        assert "%E7%A7%91%E6%8A%80%E5%89%8D%E6%B2%BF%E6%97%A5%E6%8A%A5_2025-11-24.mp3" in cd
 
         r = await c.get(f"/api/daily/issues/{DATE}/audio")
         assert r.status_code == 200
-        assert "AI-daily-2025-11-24.mp3" in r.headers.get("content-disposition", "")
+        assert "Tech-Daily-2025-11-24.mp3" in r.headers.get("content-disposition", "")

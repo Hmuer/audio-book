@@ -1,4 +1,4 @@
-"""AI 前沿日报：默认信源与关键词表。
+"""科技前沿日报：默认信源与关键词表。
 
 这些表是对附件方案 §二「三个关键设计」的直接实现：
 
@@ -57,8 +57,13 @@ DEFAULT_SOURCES: list[dict[str, Any]] = [
 TOPIC_TERMS: list[str] = [
     "ai", "aigc", "llm", "agent", "agentic", "rag", "mcp", "copilot",
     "人工智能", "大模型", "模型", "算法", "算力", "智能体", "多模态", "推理",
-    "训练", "微调", "开源模型", "开源框架", "芯片", "gpu", "数据中心", "机器人", "自动驾驶",
-    "生成式", "语音合成", "语音识别", "计算机视觉", "具身智能", "transformer",
+    "训练", "微调", "开源模型", "开源框架", "芯片", "半导体", "gpu", "数据中心",
+    "机器人", "自动驾驶", "生成式", "语音合成", "语音识别", "计算机视觉",
+    "具身智能", "transformer", "科技", "科研", "航天", "太空", "火箭", "卫星",
+    "量子", "生物科技", "基因", "新能源", "电池", "光伏", "核聚变", "材料科学",
+    "通信", "6g", "操作系统", "云计算", "消费电子", "智能硬件",
+    "robotics", "semiconductor", "quantum", "satellite", "biotech", "battery",
+    "energy", "chip", "chips", "tech", "technology", "software", "hardware",
     "openai", "deepseek", "anthropic", "claude", "gemini", "llama", "qwen",
     "英伟达", "nvidia", "智谱", "月之暗面", "字节", "阿里云", "腾讯云", "华为云",
 ]
@@ -168,7 +173,7 @@ def source_list() -> list[dict[str, Any]]:
 def show_config() -> dict[str, Any]:
     """节目信息（页面 / RSS / meta 共用）。"""
     return {
-        "title": settings.DAILY_SHOW_TITLE or "AI 前沿日报",
+        "title": settings.DAILY_SHOW_TITLE or "科技前沿日报",
         "description": settings.DAILY_SHOW_DESCRIPTION or "",
         "author": settings.DAILY_SHOW_AUTHOR or "",
     }

@@ -214,7 +214,7 @@ async def lifespan(app: FastAPI):
         ensure_cleanup_started()
     except Exception as e:
         logger.error(f"[media_sign] 启动清理后台任务失败: {type(e).__name__}: {e}")
-    # AI 前沿日报：清理上次进程退出时残留的"生成中"状态
+    # 科技前沿日报：清理上次进程退出时残留的"生成中"状态
     try:
         from .services.daily.pipeline import recover_stale_run
         if recover_stale_run():
@@ -302,7 +302,7 @@ app.include_router(auth_router)
 app.include_router(public_router)
 # DSH Agent 桥接：不走用户 JWT，由 X-DSH-Token 单独鉴权（见 agent_routes.py）
 app.include_router(agent_router)
-# AI 前沿日报：feed.xml 公开（?key=），其余走用户 JWT（见 daily_routes.py）
+# 科技前沿日报：feed.xml 公开（?key=），其余走用户 JWT（见 daily_routes.py）
 app.include_router(daily_public_router)
 app.include_router(daily_router)
 app.include_router(api_router)
