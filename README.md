@@ -254,11 +254,12 @@ User ──< Project ──┬──< ProjectCharacter ──< 音色 assigned_v
 - 段级 `segment_overrides` voice **最高优先级**
 - 所有段依次合成 → 字节直接拼接 → 最终 MP3
 
-### 对白与音质优化（M1 / M2 / M3）
+### 对白与音质优化（M1 / M2 / M3 / M5）
 
 - **确定性对白分段（M1）**：引号区间由本地解析器 `quote_segmenter` 按 `“”「」『』"` 等稳健切分，LLM 只负责判定「这句是谁说的」。旁白区 = 文本减去全部对白区间，**结构上不可能把对白再念一遍**，也不会因 LLM 偏移不准而漏台词；漏检的引号句用上下文就近角色名兜底音色（默认男/女声，而非旁白）。修复「旁白读一遍、对白再读一遍」与「引号不规范导致漏识别」两类问题。
 - **元文本清洗（M2）**：切章后删除 `求月票/推荐票/本章完/PS/作者的话/公众号` 等非叙事行与章末抓取噪声，并识别「新书预览/公告/广告」整章跳过；只改用于合成的正文副本，不动原文件。开关 `TEXT_CLEANUP_ENABLED`（默认开）。
 - **逐段情绪（M3）**：激活 MiniMax 时，prepare 用 LLM 为每句对白判定 7 类情绪（happy/sad/angry/fearful/surprised/disgusted/calm）写入 `ProjectDialogue.emotion`，合成时逐段下发；豆包仍走自然语言语音指令（`instruction`）。开关 `DIALOGUE_EMOTION_ENABLED`（默认开）。此前 MiniMax 全书固定 `calm`，是「听感平」的主因。
+- **音色与响度（M5）**：角色表 `gender=未知` 时按「名字启发式（姑娘/公子…）→ 书籍分类（女频用女声）→ 男声」兜底，不再一律男声；章节成品用 ffmpeg `loudnorm` 统一到 `AUDIO_LOUDNESS_TARGET_LUFS`（默认 -16 LUFS、峰值 -1.5 dBTP），逐章同参数、章间一致，失败自动回退原音频。开关 `AUDIO_LOUDNESS_NORMALIZE_ENABLED`（默认开）。发音纠错沿用 `ProjectPronunciationRule`（项目设置可手工维护，构建时按角色应用）。
 
 项目源文件可在详情页替换。替换后会清空旧章节、角色、对白和识别进度，状态回到「已导入」，必须重新识别才能启动新合成；已有 Build 与音频仍作为历史产物保留。识别或合成正在运行时，先取消任务再替换文件或删除项目；合成运行时也不能重新识别。
 

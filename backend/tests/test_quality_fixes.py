@@ -7,13 +7,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.services.chapter import Chapter, _build_segments_for_chapter
-from app.services.dialogue import (
+import pytest
+
+from backend.app.services.chapter import Chapter, _build_segments_for_chapter
+from backend.app.services.dialogue import (
     Anchor,
     DialogueAttribution,
     complete_dialogues_with_quotes,
 )
-from app.services.quote_segmenter import segment_quotes
+from backend.app.services.quote_segmenter import segment_quotes
 
 
 def _ormlike(d, emotion: str = "") -> SimpleNamespace:
@@ -133,3 +135,98 @@ def test_untitled_body_does_not_read_title():
     segs = _segments(text, [d])
     assert not any(s.kind == "title" for s in segs)
     assert any(s.kind == "silence" for s in segs)
+
+
+def test_guess_gender_from_name():
+    from backend.app.services.build import _guess_gender_from_name
+
+    assert _guess_gender_from_name("柳姑娘") == "女"
+    assert _guess_gender_from_name("三公子") == "男"
+    assert _guess_gender_from_name("王大少爷") == "男"
+    assert _guess_gender_from_name("李师姐") == "女"
+    assert _guess_gender_from_name("路人") == ""
+    assert _guess_gender_from_name("") == ""
+
+
+class _FakeSession:
+    """最小 fake：第一次 execute 返回角色(gender)，第二次返回对白 speaker 列表。"""
+
+    def __init__(self, chars, speakers):
+        self._chars = chars
+        self._speakers = speakers
+        self.calls = 0
+
+    class _Res:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+        def scalars(self):
+            return self
+
+    async def execute(self, _q):
+        self.calls += 1
+        if self.calls == 1:
+            return self._Res(list(self._chars))
+        return self._Res(list(self._speakers))
+
+
+@pytest.mark.asyncio
+async def test_unknown_gender_uses_female_default_for_female_lead():
+    from backend.app.services.build import _with_unknown_speaker_voices
+
+    allowed = {"minimax:m1", "minimax:f1"}
+    # 未知性别 + 女频 → 女声默认
+    res = await _with_unknown_speaker_voices(
+        _FakeSession([("某甲", "未知")], ["某甲"]), "p", {},
+        "minimax:n", "minimax:m1", "minimax:f1", allowed, book_category="女频",
+    )
+    assert res["某甲"] == "minimax:f1"
+    # 未知性别 + 非女频 → 男声默认
+    res2 = await _with_unknown_speaker_voices(
+        _FakeSession([("某甲", "未知")], ["某甲"]), "p", {},
+        "minimax:n", "minimax:m1", "minimax:f1", allowed, book_category="男频",
+    )
+    assert res2["某甲"] == "minimax:m1"
+    # 名字启发式优先：姑娘 → 女声（即使男频）
+    res3 = await _with_unknown_speaker_voices(
+        _FakeSession([("柳姑娘", "未知")], ["柳姑娘"]), "p", {},
+        "minimax:n", "minimax:m1", "minimax:f1", allowed, book_category="男频",
+    )
+    assert res3["柳姑娘"] == "minimax:f1"
+    # 明确性别不受分类影响
+    res4 = await _with_unknown_speaker_voices(
+        _FakeSession([("铁男", "男")], ["铁男"]), "p", {},
+        "minimax:n", "minimax:m1", "minimax:f1", allowed, book_category="女频",
+    )
+    assert res4["铁男"] == "minimax:m1"
+
+
+@pytest.mark.asyncio
+async def test_loudness_normalize_disabled_is_noop(monkeypatch):
+    from backend.app.core.config import settings
+    from backend.app.services.build import _normalize_chapter_loudness
+
+    monkeypatch.setattr(settings, "AUDIO_LOUDNESS_NORMALIZE_ENABLED", False, raising=False)
+    payload = b"\xff\xfb" + b"\x00" * 200
+    assert await _normalize_chapter_loudness(payload) == payload
+
+
+@pytest.mark.asyncio
+async def test_loudness_normalize_enabled_outputs_valid_frames(monkeypatch):
+    import shutil
+
+    from backend.app.core.config import settings
+    from backend.app.core.mp3_util import make_silent_mp3
+    from backend.app.services.build import _normalize_chapter_loudness
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("no ffmpeg")
+    monkeypatch.setattr(settings, "AUDIO_LOUDNESS_NORMALIZE_ENABLED", True, raising=False)
+    src = make_silent_mp3(400)
+    out = await _normalize_chapter_loudness(src)
+    assert isinstance(out, bytes) and len(out) > 0
+    # 不应带 ID3 头（否则播放器/打包断言会看到非帧首字节）
+    assert out[:1] == b"\xff"

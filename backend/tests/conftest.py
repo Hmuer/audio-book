@@ -51,6 +51,30 @@ def _snapshot_providers_config():
     _cfgmod.settings.PROVIDERS_CONFIG = original
 
 
+@pytest.fixture(autouse=True)
+def _disable_loudness_normalize():
+    """测试默认关闭章节响度归一。
+
+    生产默认开启（ffmpeg loudnorm -16 LUFS）；但测试里的 mock TTS 返回的是
+    **按字数放大的长静音 MP3**，ffmpeg 逐章重编码既慢又会改变字节（例如加 ID3
+    头），会让与耗时/字节相关的用例不稳定。需要验证该功能的用例自行 monkeypatch 打开。
+    """
+    s = _cfgmod.settings
+    orig = getattr(s, "AUDIO_LOUDNESS_NORMALIZE_ENABLED", None)
+    try:
+        try:
+            setattr(s, "AUDIO_LOUDNESS_NORMALIZE_ENABLED", False)
+        except Exception:
+            pass
+        yield
+    finally:
+        if orig is not None:
+            try:
+                setattr(s, "AUDIO_LOUDNESS_NORMALIZE_ENABLED", orig)
+            except Exception:
+                pass
+
+
 def _reset_global_singletons() -> None:
     """E-1：每个用例前重置「模块级可变单例」。
 

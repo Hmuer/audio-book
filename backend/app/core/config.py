@@ -119,6 +119,14 @@ class Settings(BaseSettings):
     # loudness_rate [-50, 100]，0=原响度；与 v3 audio_params.loudness_rate 字段对齐
     DOUBAO_AUDIO_LOUDNESS_RATE: int = 0
 
+    # ===== 章节成品响度归一（M5）=====
+    # 合成完一章后，用 ffmpeg loudnorm 统一响度到目标值（默认 -16 LUFS，峰值 -1.5 dBTP），
+    # 避免整书偏轻（《元尊》实测约 -22.3 LUFS）。逐章同参数归一，章间响度一致。
+    # 无 ffmpeg / 归一失败时自动回退原音频，绝不因此让构建失败。
+    AUDIO_LOUDNESS_NORMALIZE_ENABLED: bool = True
+    AUDIO_LOUDNESS_TARGET_LUFS: float = -16.0
+    AUDIO_LOUDNESS_TRUE_PEAK: float = -1.5
+
     # RPM 限流（多厂商独立桶）
     DOUBAO_TTS_RPM_LIMIT: int = 60
     # 官方 T2A v2：免费账号 10 RPM、充值账号 20 RPM；默认按免费额度匀速发送。

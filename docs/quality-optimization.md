@@ -148,7 +148,8 @@
 | M2 元文本清洗 | ✅ 已实现 | `services/text_cleanup.py`（新）、`services/project.py`（切章后清洗 + 跳过非正文页） |
 | M3 MiniMax 逐段情绪 | ✅ 已实现 | `db/models.py` + `db/session.py`（新增 `ProjectDialogue.emotion` 列，旧库自动迁移）、`services/dialogue_style.py`（新，LLM 生成情绪）、`services/project.py`（minimax 不再跳过语气阶段）、`services/chapter.py` + `services/build.py`（逐段透传/纳入 digest） |
 | M4 长书健壮性（核心） | ✅ 已实现 | `services/project.py`（角色去重遇 422/异常降级不中断，解决《仙途遗祸》致命失败）、`services/dialogue.py`（空结果改为引号补全而非整批抛错） |
-| M5 音色/响度/发音、M6 产能 | ⏳ 方案已列，未实现 | 后续迭代 |
+| M5 音色/响度/发音 | ✅ 音色兜底 + 响度归一已实现；发音沿用人工规则 | `services/build.py`（`_guess_gender_from_name` + 未知性别按分类/名字兜底；`_normalize_chapter_loudness` 章节 loudnorm -16 LUFS）、`core/config.py`（`AUDIO_LOUDNESS_*`）。发音规则 `ProjectPronunciationRule` 仍手工维护、构建时应用 |
+| M6 产能 | ⏳ 未实现 | 后续迭代 |
 
 **验证**
 - 全量 `pytest backend/tests -q`：**590 passed**。

@@ -22,6 +22,7 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import tempfile
 import time as _time
 import uuid
@@ -50,6 +51,7 @@ from ..core.mp3_util import (
     concat_mp3_files,
     mp3_duration_ms,
     mp3_channel_modes,
+    mp3_sample_rate,
 )
 from .chapter import Chapter, _Segment, _build_segments_for_chapter
 from .book_split import strip_chapter_prefix
@@ -617,12 +619,85 @@ async def _resolve_build_voice_defaults(
     return narrator, pick(male_voice_id, "male"), pick(female_voice_id, "female"), set(by_id)
 
 
+# 名字性别启发式：仅用于「角色表 gender=未知」时挑选默认男/女声，避免女角色被分到男声。
+_FEMALE_NAME_MARKERS = (
+    "姑娘", "小姐", "夫人", "太太", "婆婆", "嬷嬷", "姐姐", "妹妹", "大姐",
+    "公主", "妃", "皇后", "女", "母", "娘", "妇", "婆", "姐", "妹",
+)
+_MALE_NAME_MARKERS = (
+    "少爷", "公子", "老爷", "大爷", "先生", "兄台", "大哥", "师兄", "师弟",
+    "爷", "兄", "郎", "弟", "叔", "伯", "父", "公", "僧", "道人",
+)
+
+
+def _guess_gender_from_name(name: str) -> str:
+    """从称呼后缀猜性别，返回「男」/「女」/空串（不确定）。"""
+    n = str(name or "")
+    if not n:
+        return ""
+    for m in _FEMALE_NAME_MARKERS:
+        if m in n:
+            return "女"
+    for m in _MALE_NAME_MARKERS:
+        if m in n:
+            return "男"
+    return ""
+
+
+async def _normalize_chapter_loudness(mp3: bytes) -> bytes:
+    """章节成品响度归一（M5）：ffmpeg loudnorm 到目标 LUFS；失败/无 ffmpeg 回退原音频。"""
+    if not bool(getattr(settings, "AUDIO_LOUDNESS_NORMALIZE_ENABLED", False)):
+        return mp3
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg or not mp3:
+        return mp3
+    target = float(getattr(settings, "AUDIO_LOUDNESS_TARGET_LUFS", -16.0) or -16.0)
+    peak = float(getattr(settings, "AUDIO_LOUDNESS_TRUE_PEAK", -1.5) or -1.5)
+    try:
+        rate = mp3_sample_rate(mp3) or 32000
+    except Exception:
+        rate = 32000
+
+    def _run() -> bytes:
+        with tempfile.TemporaryDirectory(prefix="loudnorm-") as tmp:
+            src = Path(tmp) / "in.mp3"
+            dst = Path(tmp) / "out.mp3"
+            src.write_bytes(mp3)
+            proc = subprocess.run(
+                [
+                    ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", str(src),
+                    "-af", f"loudnorm=I={target}:TP={peak}:LRA=11",
+                    "-ar", str(rate), "-ac", "1", "-b:a", "128k",
+                    "-map_metadata", "-1", "-id3v2_version", "0", "-write_xing", "0",
+                    str(dst),
+                ],
+                capture_output=True,
+                timeout=300,
+            )
+            if proc.returncode != 0 or not dst.is_file():
+                raise RuntimeError(proc.stderr.decode("utf-8", "replace")[:200])
+            return dst.read_bytes()
+
+    try:
+        out = await asyncio.to_thread(_run)
+        return out or mp3
+    except Exception as e:
+        logger.warning("[build] 章节响度归一失败，使用原音频: %s", e)
+        return mp3
+
+
 async def _with_unknown_speaker_voices(
     session: Any, project_id: str, voice_assignments: dict[str, str],
     narrator_voice_id: str, default_male_voice_id: str,
     default_female_voice_id: str, allowed_voice_ids: set[str],
+    book_category: str = "",
 ) -> dict[str, str]:
-    """未分配角色、未识别对白按性别兜底；未知性别使用男声。"""
+    """未分配角色、未识别对白按性别兜底。
+
+    性别来源优先级：角色表 gender → 名字启发式（姑娘/公子…）→ 书籍分类（女频用女声）
+    → 默认男声。旧实现「未知一律男声」会把女角色配到男声，这里修正。
+    """
     chars = (await session.execute(select(ProjectCharacter.name, ProjectCharacter.gender).where(
         ProjectCharacter.project_id == project_id
     ))).all()
@@ -640,10 +715,24 @@ async def _with_unknown_speaker_voices(
         if value not in allowed_voice_ids:
             raise ValueError(f"角色 {name} 的音色 {value} 不属于当前激活 TTS")
         out[name] = value
+    female_lead = str(book_category or "").strip() == "女频"
     for name in set(gender_by_name) | {name or "" for name in dialogue_names}:
-        if not out.get(name):
-            gender = str(gender_by_name.get(name) or "").lower()
-            out[name] = default_female_voice_id if gender in ("女", "female", "女声") else default_male_voice_id
+        if out.get(name):
+            continue
+        gender = str(gender_by_name.get(name) or "").lower()
+        if gender in ("女", "female", "女声"):
+            is_female = True
+        elif gender in ("男", "male", "男声"):
+            is_female = False
+        else:
+            guess = _guess_gender_from_name(name)
+            if guess == "女":
+                is_female = True
+            elif guess == "男":
+                is_female = False
+            else:
+                is_female = female_lead
+        out[name] = default_female_voice_id if is_female else default_male_voice_id
     return out
 
 
@@ -1524,6 +1613,7 @@ async def _start_build_impl(
         voice_assignments = await _with_unknown_speaker_voices(
             session, project_id, voice_assignments, narrator_voice_id,
             default_male_voice_id, default_female_voice_id, allowed_voice_ids,
+            book_category=(p.book_category or ""),
         )
 
         # A-7：把正文/对白/发音规则的内容哈希纳入 digest（放在读书 chapters 之后，
@@ -2682,6 +2772,8 @@ async def _run_build_inner(
                         f"MiniMax 章节音频声道模式不一致: {sorted(modes)}，"
                         "请检查上游音频或段级缓存"
                     )
+            # M5：章节成品响度归一（默认 -16 LUFS），避免整书偏轻
+            ch_bytes = await _normalize_chapter_loudness(ch_bytes)
             ch_fname = _audio_filename(build_id, ch_idx, failed=False)
             ch_fpath = str(audio_dir / ch_fname)
             # 原子写：先写 .tmp 再 os.replace，避免崩溃留半成品
