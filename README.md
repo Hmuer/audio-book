@@ -107,7 +107,7 @@ cp .env.example "${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.env"
 
 ### TTS 厂商与音色
 
-在「设置 → 模型厂商」启用豆包或 MiniMax，并在「激活 TTS」选定厂商及模型。MiniMax 可选 `speech-2.8-hd`（音质优先）或 `speech-2.8-turbo`（速度和成本优先），使用 MiniMax API Key；中文语音接口默认使用官方 `https://api.minimax.cn/v1`。豆包使用官方 `seed-tts-2.0` 系统音色。音色库、试听、角色推荐、全局旁白、构建与重试均限定为当前激活厂商的官方音色。MiniMax 音色从官方 `/v1/get_voice` 的 `system` 分类读取中文系统音色；接口暂不可用时使用仓库附带的官方中文清单。项目不提供上传或复刻音色。
+在「设置 → 模型厂商」启用豆包或 MiniMax，并在「激活 TTS」选定厂商及模型。MiniMax 可选 `speech-2.8-hd`（音质优先）或 `speech-2.8-turbo`（速度和成本优先），使用 MiniMax API Key；中文语音接口默认使用官方 `https://api.minimax.cn/v1`。豆包使用官方 `seed-tts-2.0` 系统音色。音色库、试听、角色推荐、全局旁白、构建与重试均限定为当前激活厂商的官方音色。MiniMax 音色从官方 `/v1/get_voice` 的 `system` 分类读取**普通话中文系统音色**；接口暂不可用时使用仓库附带的官方普通话音色清单。粤语、四川话等非普通话音色不进入音色库，也不会参与试听、角色推荐或构建；历史数据里已保存的粤语（zh-HK）音色引用会在启动迁移中清理（角色音色置空，构建快照回退到同性别普通话音色）。项目不提供上传或复刻音色。
 
 「启动新构建」弹窗为**本次构建**选择默认男声和女声，未选时分别取当前厂商列表中第一条相应性别音色；若与旁白相同，则取下一条。默认音色不能与旁白相同，男女默认音色可以相同。未分配音色的角色与未识别归属的对白按角色性别使用默认男声或女声，未知性别使用默认男声。这两个默认音色写入 Build 快照，重试继承，不写入项目全局设置。切换 TTS 厂商后，旧角色音色须重新选择或让新构建使用默认音色。
 
@@ -603,7 +603,7 @@ P1 待做：建项目 / 导入书库 / 启动构建 / 保存文案 / 质检 / �
 3. **不做流式合成**：所有段 TTS 完成后才返回最终 MP3（单请求 600s 超时足够）。如需体验更好可以加 WebSocket / SSE，本 v1 不做。
 4. **后台任务仍按单进程部署**：`JobTask` 在数据库中记录心跳，重启后会检测过期任务并尝试从 checkpoint 恢复；当前没有跨多实例共享的任务队列。
 5. **角色去重只两两组合**：N 个角色产生 N(N-1)/2 对。超过 30 角色时单次调用 token 会较大，可以后续拆批。
-6. **官方音色清单**：豆包内置清单位于 `backend/app/ai/providers/doubao/tts.py`；MiniMax 中文清单位于 `backend/app/ai/providers/minimax/system_voices_zh.json`，并结合官方系统音色查询接口补充。
+6. **官方音色清单**：豆包内置清单位于 `backend/app/ai/providers/doubao/tts.py`；MiniMax 普通话音色清单位于 `backend/app/ai/providers/minimax/system_voices_zh.json`，并结合官方系统音色查询接口补充。加载与动态补充都会过滤掉粤语等非普通话音色，保证音色库只含普通话。
 7. **依赖策略**：运行依赖见 `requirements.txt` 和 `requirements.lock`，开发测试依赖见 `requirements-dev.txt`；CI、Dependabot 与依赖审计配置位于 `.github/`。
 
 ---
@@ -784,7 +784,7 @@ sudo systemctl stop audio-book       # 停止
 → 当前为多用户隔离设计。`admin` 可见所有；普通用户只能看到自己 own 的项目。如需分享，请创建独立账号或开放 admin。
 
 **Q: 音色列表与预期不同**
-→ 音色库只显示当前激活 TTS 的官方中文系统音色。请先确认「设置 → 激活 TTS」中的厂商和模型；MiniMax 接口暂不可用时会显示仓库附带的中文系统清单。
+→ 音色库只显示当前激活 TTS 的官方中文系统音色（MiniMax 仅保留普通话；粤语等非普通话音色已被过滤）。请先确认「设置 → 激活 TTS」中的厂商和模型；MiniMax 接口暂不可用时会显示仓库附带的普通话音色清单。
 
 **Q: 前端打开 404**
 → 若 `frontend/out/index.html` 不存在，首次运行 `./start.sh` 会自动构建。升级后前端显示旧版本时运行 `./deploy.sh`，它会重新安装依赖并构建静态产物。

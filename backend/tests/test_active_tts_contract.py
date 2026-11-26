@@ -11,7 +11,7 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_minimax_lists_only_chinese_system_voices_and_synthesizes(monkeypatch):
+async def test_minimax_lists_only_mandarin_system_voices_and_synthesizes(monkeypatch):
     from backend.app.ai.providers.minimax import tts as module
 
     monkeypatch.setattr(module, "get_provider", lambda _id: {
@@ -27,6 +27,9 @@ async def test_minimax_lists_only_chinese_system_voices_and_synthesizes(monkeypa
             return httpx.Response(200, json={"base_resp": {"status_code": 0}, "system_voice": [
                 {"voice_id": "Chinese (Mandarin)_Reliable_Executive", "voice_name": "可靠主管", "description": ["中文"]},
                 {"voice_id": "English_Test", "voice_name": "English", "description": ["English"]},
+                # 官方接口同时返回粤语音色：不得补入音色库
+                {"voice_id": "Cantonese_PlayfulMan", "voice_name": "活泼男声", "description": ["粤语"]},
+                {"voice_id": "Cantonese_NewVoice", "voice_name": "中文男声", "description": ["中文", "粤语"]},
             ]})
         assert request.url.path.endswith("/t2a_v2")
         payload = json.loads(request.content)
@@ -41,13 +44,49 @@ async def test_minimax_lists_only_chinese_system_voices_and_synthesizes(monkeypa
     ))
     provider = module.MiniMaxTTSProvider()
     voices = await provider.list_voices()
-    assert len(voices) >= 64
+    voice_ids = {v["id"] for v in voices}
+    # 移除 6 个粤语音色后静态清单剩 58 条；API 补入的普通话音色不重复计数。
+    assert len(voices) >= 58
     assert all(v["provider"] == "minimax" and v["id"].startswith("minimax:") for v in voices)
-    assert "minimax:English_Test" not in {v["id"] for v in voices}
+    assert "minimax:English_Test" not in voice_ids
+    # 非普通话音色（粤语）不得进入音色库
+    assert not [v for v in voices if "cantonese" in v["id"].lower()]
+    assert "minimax:Cantonese_PlayfulMan" not in voice_ids
+    assert "minimax:Cantonese_NewVoice" not in voice_ids
     data, duration = await provider.synthesize_to_bytes("你好", "minimax:male-qn-qingse")
     assert data == b"ID3"
     assert duration == 750000
+    with pytest.raises(ValueError, match="普通话"):
+        await provider.synthesize_to_bytes("你好", "minimax:Cantonese_PlayfulMan")
     assert len(requests) == 2
+
+
+def test_minimax_static_voice_catalogue_is_mandarin_only():
+    """仓库附带的 MiniMax 静态清单只能包含普通话中文音色。"""
+    from pathlib import Path
+
+    from backend.app.ai.providers.minimax import tts as module
+
+    raw = json.loads(
+        Path(module.__file__).with_name("system_voices_zh.json").read_text(encoding="utf-8")
+    )
+    assert len(module._SYSTEM_VOICES) == len(raw)  # 加载时没有被过滤掉的非普通话音色
+    assert len(raw) >= 50
+    assert {v["language"] for v in raw} == {"zh-CN"}
+    assert not [v for v in raw if "cantonese" in v["id"].lower()]
+    assert all(v.get("id") and v.get("name") and v.get("gender") for v in raw)
+
+
+def test_minimax_dynamic_filter_rejects_region_and_dialect_voices():
+    """动态补入只接受普通话；地区/方言变体中文 id 一律拒绝。"""
+    from backend.app.ai.providers.minimax import tts as module
+
+    assert module._is_mandarin_new_voice("Chinese (Mandarin)_Warm_Girl", "中文")
+    assert module._is_mandarin_new_voice("Chinese (Mandarin)_Brand_New", "普通话")
+    assert not module._is_mandarin_new_voice("Chinese (Hong Kong)_News", "中文")
+    assert not module._is_mandarin_new_voice("Chinese (Sichuan)_News", "中文")
+    assert not module._is_mandarin_new_voice("Cantonese_PlayfulMan", "粤语")
+    assert not module._is_mandarin_new_voice("English_Test", "English")
 
 
 @pytest.mark.asyncio

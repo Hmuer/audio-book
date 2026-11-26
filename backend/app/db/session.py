@@ -286,6 +286,28 @@ def _migrate_existing_sync(conn) -> None:
                     f" project_id={str(_pid)[:8]}...: {type(e).__name__}: {e}"
                 )
 
+    # 音色池收敛为普通话后，历史数据可能仍指向已移除的粤语（zh-HK）音色
+    # （project_characters.assigned_voice_id / builds 音色快照 / projects 的
+    # prepare 推荐音色），合成时会拿到未知音色。这里做一次性幂等修复；
+    # 逐行容错 + 整段 try/except：任何失败都只记日志，绝不阻断启动。
+    if "project_characters" in tables:
+        try:
+            from .voice_cleanup import cleanup_non_mandarin_voice_refs
+
+            _voice_counts = cleanup_non_mandarin_voice_refs(conn)
+            if any(_voice_counts.values()):
+                logger.warning(
+                    "[migrate] 非普通话音色引用清理完成: "
+                    f"project_characters={_voice_counts.get('project_characters', 0)} "
+                    f"builds={_voice_counts.get('builds', 0)} "
+                    f"projects={_voice_counts.get('projects', 0)}"
+                )
+        except Exception as e:  # noqa: BLE001 - 启动迁移绝不能被音色清理拖垮
+            logger.warning(
+                f"[migrate] 非普通话音色引用清理失败（不影响启动）: "
+                f"{type(e).__name__}: {e}"
+            )
+
 
 async def init_db() -> None:
     # 确保 data dir 存在

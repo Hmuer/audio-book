@@ -346,41 +346,5 @@
     "name": "柔和少女",
     "gender": "female",
     "language": "zh-CN"
-  },
-  {
-    "id": "Cantonese_ProfessionalHost（F)",
-    "name": "专业女主持",
-    "gender": "female",
-    "language": "zh-HK"
-  },
-  {
-    "id": "Cantonese_GentleLady",
-    "name": "温柔女声",
-    "gender": "female",
-    "language": "zh-HK"
-  },
-  {
-    "id": "Cantonese_ProfessionalHost（M)",
-    "name": "专业男主持",
-    "gender": "male",
-    "language": "zh-HK"
-  },
-  {
-    "id": "Cantonese_PlayfulMan",
-    "name": "活泼男声",
-    "gender": "male",
-    "language": "zh-HK"
-  },
-  {
-    "id": "Cantonese_CuteGirl",
-    "name": "可爱女孩",
-    "gender": "female",
-    "language": "zh-HK"
-  },
-  {
-    "id": "Cantonese_KindWoman",
-    "name": "善良女声",
-    "gender": "female",
-    "language": "zh-HK"
   }
 ]

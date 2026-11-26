@@ -18,7 +18,60 @@ from ....core.config import get_active, get_provider, settings
 from ....core.mp3_util import mp3_duration_ms
 
 
-_SYSTEM_VOICES = json.loads(Path(__file__).with_name("system_voices_zh.json").read_text(encoding="utf-8"))
+# 音色库只保留普通话（Mandarin）中文系统音色：粤语等非普通话音色不得被
+# 角色推荐、试听、构建引用，否则中文有声书的角色会被分到粤语音色。
+_NON_MANDARIN_MARKERS = (
+    "cantonese", "粤语", "粵語", "广东话", "廣東話", "zh-hk", "hong kong", "香港",
+    "sichuanese", "sichuan", "四川话", "四川話", "四川",
+    "shanghainese", "shanghai", "上海话", "上海話",
+    "hokkien", "minnan", "闽南语", "閩南語", "闽南", "閩南",
+    "taiwanese", "taiwan", "台湾话", "台灣話", "台湾", "台灣",
+    "hakka", "客家话", "客家話", "客家",
+    "northeastern", "dongbei", "东北话", "東北話", "东北", "東北",
+    "tianjin", "天津话", "天津話",
+    "shaanxi", "陕西话", "陝西話", "henan", "河南话", "河南話",
+    "changsha", "长沙话", "長沙話", "hefei", "合肥话", "合肥話",
+    "shandong", "山东话", "山東話", "xinjiang", "新疆话", "新疆話",
+)
+_MANDARIN_MARKERS = ("普通话", "普通話", "mandarin", "中文")
+
+
+def _is_non_mandarin_voice_text(text: str) -> bool:
+    """文本（音色 id/名称/描述）是否指向粤语等非普通话音色。"""
+    normalized = str(text or "").lower()
+    return any(marker in normalized for marker in _NON_MANDARIN_MARKERS)
+
+
+def _is_mandarin_system_voice(voice: dict[str, Any]) -> bool:
+    """静态清单条目是否为普通话中文系统音色（zh-CN 且非方言音色）。"""
+    if not isinstance(voice, dict):
+        return False
+    language = str(voice.get("language") or "").strip().lower()
+    if language not in ("zh-cn", "zh"):
+        return False
+    blob = " ".join(str(voice.get(key) or "") for key in ("id", "name", "description"))
+    return not _is_non_mandarin_voice_text(blob)
+
+
+def _is_mandarin_new_voice(voice_id: str, description: str) -> bool:
+    """官方 /get_voice 动态音色：只补普通话中文音色，排除方言与外语音色。"""
+    blob = f"{voice_id}；{description}".lower()
+    if _is_non_mandarin_voice_text(blob):
+        return False
+    # 中文类音色 id 必须显式标注 Mandarin（如 "Chinese (Mandarin)_XXX"）；
+    # "Chinese (Hong Kong)_…"、"Chinese (Sichuan)_…" 等地区/方言变体一律不补入。
+    normalized_id = str(voice_id or "").lower()
+    if "chinese" in normalized_id and "mandarin" not in normalized_id:
+        return False
+    return any(marker in blob for marker in _MANDARIN_MARKERS)
+
+
+_SYSTEM_VOICES = [
+    voice for voice in json.loads(
+        Path(__file__).with_name("system_voices_zh.json").read_text(encoding="utf-8")
+    )
+    if _is_mandarin_system_voice(voice)
+]
 _BY_ID = {v["id"]: v for v in _SYSTEM_VOICES}
 BUILD_TTS_MODEL: ContextVar[str] = ContextVar("minimax_build_tts_model", default="")
 SUPPORTED_TTS_MODELS = frozenset({
@@ -159,7 +212,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
     async def list_voices(self) -> list[dict[str, Any]]:
-        """只展示系统中文音色；官方 API 有新增音色时动态补齐。"""
+        """只展示系统普通话中文音色；官方 API 有新增普通话音色时动态补齐。"""
         if self._voices is not None and time.monotonic() - self._voices_at < 3600:
             return list(self._voices)
         found = {v["id"]: dict(v) for v in _SYSTEM_VOICES}
@@ -179,11 +232,12 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                     if isinstance(raw_description, str):
                         raw_description = [raw_description]
                     description = "；".join(str(x) for x in raw_description)
-                    # 官方查询包含多语种；新增的中文音色需有中文语言说明才补入。
-                    if not voice_id or (voice_id not in found and not any(
-                        word in f"{voice_id}；{description}" for word in
-                        ("中文", "普通话", "粤语", "Mandarin", "Cantonese")
-                    )):
+                    # 官方查询包含多语种/方言；只补入普通话中文音色，
+                    # 粤语等非普通话音色一律剔除，避免被推荐/构建引用。
+                    if not voice_id or (
+                        voice_id not in found
+                        and not _is_mandarin_new_voice(voice_id, description)
+                    ):
                         continue
                     old = found.get(voice_id, {})
                     found[voice_id] = {
@@ -215,7 +269,7 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             raise ValueError("MiniMax 同步合成单次最多 10000 字符，请先分段")
         bare_id = voice_id.removeprefix("minimax:")
         if bare_id not in {v["id"].removeprefix("minimax:") for v in await self.list_voices()}:
-            raise ValueError(f"MiniMax 官方中文音色不存在: {voice_id}")
+            raise ValueError(f"MiniMax 官方普通话音色不存在: {voice_id}")
         _, active_model, _ = get_active("tts")
         model = BUILD_TTS_MODEL.get() or active_model
         if model not in SUPPORTED_TTS_MODELS:
