@@ -1864,6 +1864,11 @@ function TopicsTable({ topics }: { topics: DailyTopic[] }) {
                 ) : (
                   <span className="text-ink-800 break-words">{t.title || '—'}</span>
                 )}
+                {t.title_original && t.title_original !== t.title && (
+                  <div className="mt-0.5 text-[10px] text-ink-500 leading-4 line-clamp-1" title={t.title_original}>
+                    原文：{t.title_original}
+                  </div>
+                )}
                 {t.summary && (
                   <div className="mt-0.5 text-[11px] text-ink-500 leading-5 line-clamp-2">{t.summary}</div>
                 )}

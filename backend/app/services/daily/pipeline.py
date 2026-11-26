@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ...core.config import settings
-from . import prefs, store, subtitles
+from . import localize, prefs, store, subtitles
 from .cluster import cluster_items
 from .collect import collect
 from .constants import show_config
@@ -138,12 +138,19 @@ async def _run_guarded(*, date: str, max_items: int | None) -> None:
         _task = None
 
 
-def _topic_public(topic: Any) -> dict[str, Any]:
+def _topic_public(
+    topic: Any, localized: dict[str, dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    title, summary = localize.topic_text(topic, localized)
     return {
-        "title": topic.title,
+        "title": title,
+        "title_original": topic.title if title != topic.title else None,
         "url": topic.url,
         "source": topic.source,
-        "summary": (topic.summary or "")[:400],
+        "summary": (summary or "")[:400],
+        "summary_original": (
+            (topic.summary or "")[:400] if summary != topic.summary else None
+        ),
         "score": topic.score,
         "dims": topic.dims,
         "reasons": topic.reasons,
@@ -180,13 +187,23 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
     if len(topics) < 3:
         raise DailyError(f"有效选题不足（闸门后 {len(topics)} 条），本期跳过")
     selected = split_topics(topics)
+    selected_topics = [
+        t for t in (selected["main"], *selected["subs"], *selected["quicks"])
+        if t is not None
+    ]
     store.append_run_log(
         f"[score] 保留 {len(topics)} 个选题，跨期重复排除 {len(dropped)} 个"
     )
 
+    _stage("localize", 52, "[localize] 英文选题中文化")
+    localized = await localize.localize_topics(selected_topics)
+    if localized:
+        store.append_run_log(f"[localize] 翻译 {len(localized)} 条英文选题")
+
     _stage("script", 60, "[script] 生成口播稿")
     script = await generate_script(
         selected, date=date, show_number=store.next_issue_number(),
+        localized=localized,
     )
     store.append_run_log(
         f"[script] {len(script.text)} 字，{'LLM' if script.used_llm else '模板'}"
@@ -208,16 +225,13 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
     )
 
     _stage("store", 92, "[store] 写入产物")
-    selected_topics = [
-        t for t in (selected["main"], *selected["subs"], *selected["quicks"]) if t is not None
-    ]
     meta: dict[str, Any] = {
         "date": date,
         "title": script.title,
         "created_at": store.utcnow_iso(),
         "duration_ms": int(duration_ms),
         "item_count": len(selected_topics),
-        "topics": [_topic_public(t) for t in selected_topics],
+        "topics": [_topic_public(t, localized) for t in selected_topics],
         "sections": script.sections,
         "stats": {
             "candidates": len(items),
@@ -229,6 +243,7 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
             "used_llm": script.used_llm,
             "tts": tts_stats,
             "subtitles_cues": srt.count("-->"),
+            "translated_topics": len(localized),
             "source_errors": errors,
             "elapsed_seconds": None,
         },

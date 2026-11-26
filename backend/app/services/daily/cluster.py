@@ -55,6 +55,31 @@ def normalize_title(title: str) -> str:
     return text.lower()
 
 
+def overlap_coefficient(a: set[str], b: set[str]) -> float:
+    """重叠系数：交集 / 较小集合（对"短标题 vs 长标题"比 Jaccard 更敏感）。"""
+    if not a or not b:
+        return 0.0
+    return len(a & b) / min(len(a), len(b))
+
+
+def lcs_len(a: str, b: str, cap: int = 120) -> int:
+    """最长公共子串长度（归一化标题，用于识别同一公司的不同措辞）。"""
+    x, y = (a or "")[:cap], (b or "")[:cap]
+    if not x or not y:
+        return 0
+    prev = [0] * (len(y) + 1)
+    best = 0
+    for i in range(1, len(x) + 1):
+        cur = [0] * (len(y) + 1)
+        for j in range(1, len(y) + 1):
+            if x[i - 1] == y[j - 1]:
+                cur[j] = prev[j - 1] + 1
+                if cur[j] > best:
+                    best = cur[j]
+        prev = cur
+    return best
+
+
 def jaccard(a: set[str], b: set[str]) -> float:
     if not a or not b:
         return 0.0
@@ -69,6 +94,7 @@ def cluster_items(items: Iterable[NewsItem], *, threshold: float = MERGE_THRESHO
     clusters: list[Cluster] = []
     cluster_tokens: list[set[str]] = []
     cluster_titles: list[str] = []
+    cluster_sources: list[set[str]] = []
 
     for item in ordered:
         tokens = tokenize(item.title)
@@ -82,17 +108,25 @@ def cluster_items(items: Iterable[NewsItem], *, threshold: float = MERGE_THRESHO
             ):
                 best_idx = idx
                 break
+            # 同一来源 + 标题有 ≥5 字连续公共片段（常见于同一公司的两种措辞）→ 视为同一事件
+            if item.source in cluster_sources[idx] and lcs_len(norm, cluster_titles[idx]) >= 5:
+                best_idx = idx
+                break
             score = jaccard(tokens, existing)
-            if score >= threshold and score > best_score:
-                best_idx, best_score = idx, score
+            overlap = overlap_coefficient(tokens, existing)
+            if score >= threshold or overlap >= 0.45:
+                if score > best_score:
+                    best_idx, best_score = idx, score
         if best_idx >= 0:
             clusters[best_idx].items.append(item)
             cluster_tokens[best_idx] |= tokens
             cluster_titles[best_idx] = cluster_titles[best_idx] or norm
+            cluster_sources[best_idx].add(item.source)
         else:
             clusters.append(Cluster(items=[item]))
             cluster_tokens.append(set(tokens))
             cluster_titles.append(norm)
+            cluster_sources.append({item.source})
 
     # 每簇内部按信息量排序：摘要长的在前（作为 primary）
     for cluster in clusters:

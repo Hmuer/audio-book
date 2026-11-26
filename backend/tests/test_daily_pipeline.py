@@ -241,8 +241,12 @@ async def test_run_pipeline_end_to_end(monkeypatch, tmp_path):
             "segment_timings": [{"text": text, "start_ms": 0, "duration_ms": 300}],
         }
 
+    async def fake_localize(_topics):
+        return {}
+
     monkeypatch.setattr(pipeline, "collect", fake_collect)
     monkeypatch.setattr(pipeline, "synthesize", fake_synthesize)
+    monkeypatch.setattr(pipeline.localize, "localize_topics", fake_localize)
 
     meta = await pipeline.run_pipeline(date="2025-11-24")
 
@@ -529,3 +533,41 @@ def test_subtitles_split_and_format():
     assert "-->" in srt and "第三段" in srt
     approx = build_from_script("这是口播稿。这是第二句。", 6000)
     assert approx.startswith("1\n") and "-->" in approx
+
+
+def test_cluster_merges_same_source_near_duplicates():
+    """同一来源里同一事件的两种措辞（Jaccard 低）也要合并。"""
+    a = _item(
+        "算力唤醒真实世界：九章云极发布物理AI工厂与生态开放计划",
+        "九章云极发布物理 AI 工厂。", source="雷峰网",
+    )
+    b = _item(
+        "九章云极携手多方战略合作，物理AI工厂生态协作走进真实场景",
+        "生态协作落地。", source="雷峰网",
+    )
+    batches = cluster_items([a, b])
+    assert len(batches) == 1, "同源近重复新闻应聚为一簇"
+
+
+def test_script_uses_localized_titles():
+    from backend.app.services.daily.script import build_prompt
+
+    topic = ScoredTopic(
+        cluster=_cluster("OpenAI launches new agent framework", "English summary here."),
+        score=1.0, dims={}, reasons=[],
+    )
+    localized = {topic.url: {"title": "OpenAI 发布智能体框架", "summary": "中文摘要。"}}
+    prompt = build_prompt({"main": topic, "subs": [], "quicks": []}, date="2025-11-25", localized=localized)
+    assert "OpenAI 发布智能体框架" in prompt
+    assert "中文摘要" in prompt
+    assert "English summary here." not in prompt
+
+
+def test_localize_helpers():
+    from backend.app.services.daily.localize import has_cjk, topic_text
+
+    assert has_cjk("中文标题") and not has_cjk("English title")
+    topic = ScoredTopic(cluster=_cluster("English title"), score=1.0, dims={}, reasons=[])
+    localized = {topic.url: {"title": "中文标题", "summary": "中文摘要"}}
+    assert topic_text(topic, localized) == ("中文标题", "中文摘要")
+    assert topic_text(topic, {}) == ("English title", "")

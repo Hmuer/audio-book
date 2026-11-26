@@ -1109,6 +1109,10 @@ export interface DailyIssue {
 /** 选题明细（详情页「选题明细」Tab） */
 export interface DailyTopic {
   title: string;
+  /** 外媒选题的英文原标题（翻译后保留追溯） */
+  title_original?: string | null;
+  /** 外媒选题的英文原摘要 */
+  summary_original?: string | null;
   url: string;
   source: string;
   score: number;

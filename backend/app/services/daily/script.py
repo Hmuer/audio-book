@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from ...core.config import settings
 from .types import ScoredTopic, ScriptResult
+from .localize import topic_text
 
 logger = logging.getLogger(__name__)
 
@@ -40,16 +41,23 @@ class DailyScriptLLM(BaseModel):
     outro: str = Field(max_length=300)
 
 
-def _fmt_facts(topic: ScoredTopic, index: int) -> str:
+def _fmt_facts(
+    topic: ScoredTopic, index: int,
+    localized: dict[str, dict[str, str]] | None = None,
+) -> str:
+    title, summary = topic_text(topic, localized)
     lines = [
-        f"{index}. 标题：{topic.title}",
+        f"{index}. 标题：{title}",
         f"   来源：{topic.source}",
-        f"   摘要：{topic.summary[:300] or '（无摘要）'}",
+        f"   摘要：{summary[:300] or '（无摘要）'}",
     ]
     return "\n".join(lines)
 
 
-def build_prompt(topics: dict[str, Any], *, date: str) -> str:
+def build_prompt(
+    topics: dict[str, Any], *, date: str,
+    localized: dict[str, dict[str, str]] | None = None,
+) -> str:
     main = topics["main"]
     subs = topics["subs"]
     quicks = topics["quicks"]
@@ -59,16 +67,16 @@ def build_prompt(topics: dict[str, Any], *, date: str) -> str:
         f"日期：{date}。听众：开发者与产品经理。",
         "",
         "【主话题】",
-        _fmt_facts(main, 1) if main else "（无）",
+        _fmt_facts(main, 1, localized) if main else "（无）",
         "",
         "【次话题】",
     ]
     for i, t in enumerate(subs, start=1):
-        parts.append(_fmt_facts(t, i))
+        parts.append(_fmt_facts(t, i, localized))
     parts.append("")
     parts.append("【速览（条目数以实际列出为准，每条 1–2 句）】")
     for i, t in enumerate(quicks, start=1):
-        parts.append(_fmt_facts(t, i))
+        parts.append(_fmt_facts(t, i, localized))
     parts.extend([
         "",
         "写作要求：",
@@ -90,7 +98,10 @@ def build_prompt(topics: dict[str, Any], *, date: str) -> str:
     return "\n".join(parts)
 
 
-def _fallback_sections(topics: dict[str, Any], *, date: str) -> dict[str, str]:
+def _fallback_sections(
+    topics: dict[str, Any], *, date: str,
+    localized: dict[str, dict[str, str]] | None = None,
+) -> dict[str, str]:
     main = topics["main"]
     subs = topics["subs"]
     quicks = topics["quicks"]
@@ -101,11 +112,12 @@ def _fallback_sections(topics: dict[str, Any], *, date: str) -> dict[str, str]:
         f"——最值得关注的进展讲清楚。本节目为 AI 辅助制作，内容经人工审核。"
     )
     if main:
-        intro += f"头条是：{main.title}。"
+        intro += f"头条是：{topic_text(main, localized)[0]}。"
 
     def _topic_block(topic: ScoredTopic) -> str:
-        summary = topic.summary or "这条消息的具体细节仍在披露中。"
-        return f"{topic.title}。{summary} 这条消息来自{topic.source}。"
+        title, summary = topic_text(topic, localized)
+        summary = summary or "这条消息的具体细节仍在披露中。"
+        return f"{title}。{summary} 这条消息来自{topic.source}。"
 
     main_text = _topic_block(main) + "我们把它拆开来看：它意味着什么，谁会受影响，以及接下来值得观察什么。" if main else ""
     sub_parts: list[str] = []
@@ -113,7 +125,8 @@ def _fallback_sections(topics: dict[str, Any], *, date: str) -> dict[str, str]:
         sub_parts.append(_topic_block(topic))
     quick_lines: list[str] = []
     for i, topic in enumerate(quicks, start=1):
-        quick_lines.append(f"第{'一二三四五'[i - 1] if i <= 5 else i}条，{topic.title}。{topic.summary[:80]}")
+        title, summary = topic_text(topic, localized)
+        quick_lines.append(f"第{'一二三四五'[i - 1] if i <= 5 else i}条，{title}。{summary[:80]}")
     quick = "接下来是几条速览。" + "".join(quick_lines) if quick_lines else "今天没有更多速览。"
 
     outro = (
@@ -167,28 +180,29 @@ def _safe_title(raw: str, topics: dict[str, Any]) -> str:
 
 def _build_shownotes(
     title: str, topics: dict[str, Any], *, date: str, used_llm: bool,
+    localized: dict[str, dict[str, str]] | None = None,
 ) -> str:
     show = settings.DAILY_SHOW_TITLE or "科技前沿日报"
     lines = [f"# {title}", "", f"{date} · {show}", ""]
     main = topics["main"]
     if main:
-        lines += ["## 本期主话题", f"- [{main.title}]({main.url}) — {main.source}", ""]
+        lines += ["## 本期主话题", f"- [{topic_text(main, localized)[0]}]({main.url}) — {main.source}", ""]
     subs = topics["subs"]
     if subs:
         lines.append("## 次话题")
         for t in subs:
-            lines.append(f"- [{t.title}]({t.url}) — {t.source}")
+            lines.append(f"- [{topic_text(t, localized)[0]}]({t.url}) — {t.source}")
         lines.append("")
     quicks = topics["quicks"]
     if quicks:
         lines.append("## 速览")
         for t in quicks:
-            lines.append(f"- [{t.title}]({t.url}) — {t.source}")
+            lines.append(f"- [{topic_text(t, localized)[0]}]({t.url}) — {t.source}")
         lines.append("")
     lines += [
         "## 信源",
         *[
-            f"- {t.source}：[{t.title}]({t.url})"
+            f"- {t.source}：[{topic_text(t, localized)[0]}]({t.url})"
             for t in [main, *subs, *quicks] if t is not None
         ],
         "",
@@ -202,11 +216,12 @@ async def generate_script(
     topics: dict[str, Any], *,
     date: str | None = None,
     show_number: int = 0,
+    localized: dict[str, dict[str, str]] | None = None,
 ) -> ScriptResult:
     """生成脚本：优先 LLM，失败/关闭则模板。"""
     date = date or datetime.now().strftime("%Y-%m-%d")
     used_llm = False
-    sections = _fallback_sections(topics, date=date)
+    sections = _fallback_sections(topics, date=date, localized=localized)
     title = ""
 
     if settings.DAILY_LLM_ENABLED:
@@ -215,7 +230,7 @@ async def generate_script(
 
             llm = get_llm()
             out: DailyScriptLLM = await llm.chat_structured(
-                build_prompt(topics, date=date),
+                build_prompt(topics, date=date, localized=localized),
                 DailyScriptLLM,
                 system_prompt=(
                     "你是一位严谨的 AI 科技播客主编。只使用用户提供的事实，"
@@ -244,11 +259,13 @@ async def generate_script(
 
     if not title:
         main = topics["main"]
-        short = (main.title if main else "AI 与科技前沿").strip()
+        short = (topic_text(main, localized)[0] if main else "科技与前沿").strip()
         title = f"{settings.DAILY_SHOW_TITLE or '科技前沿日报'}：{short[:28]}"
     title = _safe_title(title, topics)
 
-    shownotes = _build_shownotes(title, topics, date=date, used_llm=used_llm)
+    shownotes = _build_shownotes(
+        title, topics, date=date, used_llm=used_llm, localized=localized,
+    )
     return ScriptResult(
         title=title,
         text=text,
