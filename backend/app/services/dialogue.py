@@ -9,6 +9,18 @@ from ..core.config import settings
 from .character import Character
 from .usage import track_llm
 
+# 确定性引号解析（把「分段」从 LLM 手里收回）：LLM 只负责「这句是谁说的」。
+# 这样能根治两类线上问题：
+#  1) 对白重复朗读：LLM 给的 anchor 偏移不准 → 旁白切片把对白原文吞进去，
+#     随后对白段又读一遍。改为按确定性引号区间切分，旁白区结构上不含对白。
+#  2) 对白漏识别：LLM 会漏引号句/合并连续引号 → 漏掉的被当旁白平读。
+#     改为每个引号区间都必成一条对白。
+try:
+    from .quote_segmenter import segment_quotes
+except Exception:  # pragma: no cover - 模块缺失时降级为旧行为
+    segment_quotes = None  # type: ignore
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +213,103 @@ def _backfill_anchor_text(
     return kept
 
 
+def _norm_inner(s: str | None) -> str:
+    """把引号/空白归一化，用于把「确定性引号区间」和 LLM 对白条目对齐。"""
+    return (s or "").strip().strip("「」『』“”\"'＂„‟").strip()
+
+
+def _infer_speaker_from_context(chapter_text: str, start: int, known_names) -> str:
+    """从引号区间前 ~28 字内找最靠后的已知角色名，作为缺省说话人（best-effort）。
+
+    找不到就返回 ""：合成时该段会落到「默认男/女声」而不是旁白音色，
+    绝不会退化成「旁白念对白」。
+    """
+    if not known_names:
+        return ""
+    window = chapter_text[max(0, start - 28):start]
+    best = ""
+    best_pos = -1
+    for name in known_names:
+        if not name:
+            continue
+        p = window.rfind(name)
+        if p > best_pos:
+            best_pos = p
+            best = name
+    return best
+
+
+def complete_dialogues_with_quotes(
+    chapter_text: str,
+    dialogues: list[DialogueAttribution],
+    known_names=None,
+) -> list[DialogueAttribution]:
+    """用确定性引号区间补全/校正对白列表（M1 核心）。
+
+    - 以 `segment_quotes(chapter_text)` 的区间为准，保证：
+      · 每个引号区间都有一条对白（不漏识别）；
+      · anchor.start/end 精确等于引号区间（不再受 LLM 偏移不准影响）；
+      · 区间有序且互不重叠（旁白区结构上不含对白 → 不重复）。
+    - speaker 仍然来自 LLM：按「文本匹配 / anchor 区间重叠」把 LLM 结果对到区间上；
+      未对上的区间用上下文就近角色名兜底，再退化为空（默认音色）。
+    """
+    if segment_quotes is None:
+        return dialogues
+    try:
+        spans = segment_quotes(chapter_text)
+    except Exception:
+        logger.warning("[dialogue] segment_quotes 失败，回退原始对白", exc_info=True)
+        return dialogues
+    if not spans:
+        return dialogues
+
+    known = set(known_names or [])
+    # 预取 LLM 对白的关键字段（兼容 dict / Pydantic）
+    norm: list[tuple[int, str, str, object]] = []
+    for i, d in enumerate(dialogues):
+        a = d.anchor if getattr(d, "anchor", None) is not None else None
+        a_text = (a.text if a is not None else "") or ""
+        norm.append((i, _norm_inner(getattr(d, "text", "")), _norm_inner(a_text), d))
+
+    used: set[int] = set()
+    out: list[DialogueAttribution] = []
+    for span in spans:
+        inner_n = _norm_inner(span.inner)
+        match_idx = None
+        for i, dt, at, d in norm:
+            if i in used:
+                continue
+            a = d.anchor if getattr(d, "anchor", None) is not None else None
+            overlap = bool(
+                a is not None
+                and 0 <= a.start < a.end
+                and not (a.end <= span.start or a.start >= span.end)
+            )
+            if (
+                (dt and (dt == inner_n or dt in inner_n or inner_n in dt))
+                or (at and at == _norm_inner(span.outer))
+                or overlap
+            ):
+                match_idx = i
+                break
+        if match_idx is not None:
+            used.add(match_idx)
+            d = dialogues[match_idx]
+            speaker = str(getattr(d, "speaker", "") or "")
+            conf = getattr(d, "confidence", 0.5)
+            conf = float(conf) if conf is not None else 0.5
+        else:
+            speaker = _infer_speaker_from_context(chapter_text, span.start, known)
+            conf = 0.2
+        out.append(DialogueAttribution(
+            anchor=Anchor(text=span.outer, start=span.start, end=span.end),
+            speaker=speaker,
+            confidence=conf,
+            text=span.inner,
+        ))
+    return out
+
+
 async def attribute_dialogues_with_llm(
     text: str, characters: list[Character]
 ) -> list[DialogueAttribution]:
@@ -360,11 +469,15 @@ async def _attribute_dialogues_batch_direct(
     final: list[ChapterDialogueBatchResult] = []
     for idx, _ in chapters:
         if idx in got_map:
-            # 成章内存在多处明确对白线索却返回空列表，不能写成「已完成」。
-            # 非虚构作品中的引文可能也带引号，所以要求多处引号且伴随说话动词。
+            # 章内存在多处明确对白线索却返回空列表：不再整批抛错（会触发无谓重试），
+            # 改为保留空结果交由 prepare 的确定性引号补全（complete_dialogues_with_quotes）
+            # 回收这些引号句——避免「模型偶发漏检 → 整批重试/漏台词」。
             text = text_by_idx[idx]
             if not got_map[idx].dialogues and _has_likely_dialogue(text):
-                raise ValueError(f"chapter_idx={idx} 含多处对白线索，但模型返回 0 条对白")
+                logger.warning(
+                    f"[dialogue_batch] chapter_idx={idx} 有多处对白线索但模型返回 0 条，"
+                    f"交由引号区间补全兜底"
+                )
             final.append(got_map[idx])
         else:
             logger.warning(

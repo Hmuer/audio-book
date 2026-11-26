@@ -1172,7 +1172,7 @@ async def _calc_content_digest(
             (
                 f"d|{d.chapter_idx}|{d.segment_index}|{d.anchor_start}|{d.anchor_end}|"
                 f"{d.speaker or ''}|{d.anchor_text or ''}|{d.text or ''}|"
-                f"{getattr(d, 'instruction', '') or ''}\n"
+                f"{getattr(d, 'instruction', '') or ''}|{getattr(d, 'emotion', '') or ''}\n"
             ).encode("utf-8")
         )
     # 3) 发音规则（仅启用中的参与替换，故 enabled 一并纳入）

@@ -255,6 +255,18 @@ class Settings(BaseSettings):
     # 批并发度：同时在飞的批数量（provider 层 LLM semaphore 会再行串行兜底）
     VOICE_INSTRUCTION_BATCH_CONCURRENCY: int = 2
 
+    # ===== 逐段情绪标签（MiniMax 等按 emotion 参数合成的厂商）=====
+    # 与豆包语音指令互补：MiniMax 只认 7 类 emotion 枚举，不认自然语言指令。
+    # 开启后 prepare 会为每句对白用 LLM 判定情绪标签并落库，合成时逐段下发，
+    # 解决「激活 MiniMax 时整本书都用 calm 平读」的质量问题。
+    DIALOGUE_EMOTION_ENABLED: bool = True
+
+    # ===== 元文本清洗（拉票 / 作者注释 / 本章完 / 广告预览页）=====
+    # 切章后、落库前清洗每章正文：删除「求月票/求推荐票/本章完/PS/公众号」等
+    # 非叙事行，并识别「新书预览/公告/广告」整章跳过（不朗读）。默认开启；
+    # 清洗只作用于用于合成的正文副本，不修改用户上传的原文件。
+    TEXT_CLEANUP_ENABLED: bool = True
+
     # TTS 并发限流（全局，段级）：同时最多 N 个 TTS synthesize 调用在飞。
     # 现在已经改成 **段级** semaphore（不是"每章并发"），默认 100 段并行是
     # 相对保守的值：短对白 1s/TTS，100 并发 ≈ 100 段/秒的吞吐。

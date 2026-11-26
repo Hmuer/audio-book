@@ -138,6 +138,43 @@ def _title_tts_text(ch: "Chapter") -> str:
     return f"第{ch.idx + 1}章 {title}"
 
 
+_QUOTE_WRAP_PAIRS = (("「", "」"), ("『", "』"), ("“", "”"), ('"', '"'))
+
+
+def _resolve_dialog_span(chapter_text: str, dlg, search_from: int = 0):
+    """把一条对白解析成原文中的 [start, end) 区间（用于从旁白中排除）。
+
+    优先采信精确命中的 anchor；否则用对白文本/带引号文本在原文定位。
+    解析失败返回 None（该条不参与切分）。
+    """
+    ch_len = len(chapter_text)
+    at = (getattr(dlg, "anchor_text", "") or "").strip()
+    dt = (getattr(dlg, "text", "") or "").strip()
+    s = int(getattr(dlg, "anchor_start", 0) or 0)
+    e = int(getattr(dlg, "anchor_end", 0) or 0)
+    if at and 0 <= s < e <= ch_len and chapter_text[s:e] == at:
+        return s, e
+    needles: list[str] = []
+    if at:
+        needles.append(at)
+    if dt:
+        for o, c in _QUOTE_WRAP_PAIRS:
+            needles.append(f"{o}{dt}{c}")
+        needles.append(dt)
+    for n in needles:
+        if not n:
+            continue
+        p = chapter_text.find(n, search_from)
+        if p < 0:
+            p = chapter_text.find(n)
+        if p >= 0:
+            return p, p + len(n)
+    if 0 <= s < ch_len:
+        e2 = e if e > s else min(ch_len, s + max(len(dt), 1))
+        return s, min(e2, ch_len)
+    return None
+
+
 class Chapter(BaseModel):
     idx: int
     title: str
@@ -231,36 +268,33 @@ def _build_segments_for_chapter(
         ))
         idx += 1
 
-    # 2. 扫描 text，按对白 anchor 间隙切片
-    cursor = 0
+    # 2. 解析对白区间（单调、去重叠），按区间切旁白/对白。
+    #    关键：旁白区 = 文本中「对白区间之外」的部分 → 旁白**结构上不可能**包含
+    #    对白原文，从根本上消除「旁白读一遍、对白再读一遍」的重复播放。
     chapter_len = len(ch.text)
+    resolved: list[tuple[int, int, object]] = []
+    probe = 0
     for dlg in dialogues:
-        # anchor 是全局位置或本章内位置，调用方保证传入时已转换为"本章内位置"
-        local_start = dlg.anchor_start
-        local_end = dlg.anchor_end
-        # 校验并修正 anchor 位置：LLM 返回的位置可能不准（尤其中文/字节位置错位），
-        # 优先用 anchor_text 在 ch.text 中精确定位，避免 narrator 段误切片包含对白内容。
-        #
-        # ⚠️ 查找必须**从 cursor 单调往后**。同一句短对白（「嗯。」「什么？」）在一章里
-        # 会重复出现，而 `ch.text.find()` 只返回**第一处** —— 于是第 2..N 句对白全被搬到
-        # 第一处，两处对白之间的旁白切片全部错位（挤成一坨），收尾旁白还会把已经读过的
-        # 对白原文再朗读一遍。听感上就是「对白和它附近的旁白内容混乱」。
-        if getattr(dlg, "anchor_text", None):
-            a_text = dlg.anchor_text
-            if local_start >= cursor and ch.text.startswith(a_text, local_start):
-                # LLM 给的 start 与原文对得上（重复对白排在后面时也走这里），直接采信
-                local_end = local_start + len(a_text)
-            else:
-                found = ch.text.find(a_text, cursor)
-                if found < 0:
-                    # cursor 之后找不到：anchor 与已消费区间重叠或排序异常，退化为全文查找
-                    found = ch.text.find(a_text)
-                if found >= 0:
-                    local_start = found
-                    local_end = found + len(a_text)
-        # narrator 段：[cursor, local_start)
-        if cursor < local_start:
-            narrator_text = ch.text[cursor:local_start].strip()
+        span = _resolve_dialog_span(ch.text, dlg, probe)
+        if span is None:
+            continue
+        resolved.append((span[0], span[1], dlg))
+        probe = max(probe, span[1])
+    resolved.sort(key=lambda x: x[0])
+    # 去重叠：M1 之后区间本就不重叠；旧数据重叠时保留靠前者，避免重复朗读。
+    clean: list[tuple[int, int, object]] = []
+    last_end = 0
+    for s, e, dlg in resolved:
+        if s < last_end:
+            continue
+        clean.append((s, e, dlg))
+        last_end = e
+
+    cursor = 0
+    for s, e, dlg in clean:
+        # narrator 段：[cursor, s)
+        if s > cursor:
+            narrator_text = ch.text[cursor:s].strip()
             if narrator_text:
                 _append_text_segs(
                     segs, kind="narrator", idx_holder=[idx],
@@ -273,17 +307,12 @@ def _build_segments_for_chapter(
                 ))
                 idx += 1
 
-        # dialogue 段：对白文本（去掉引号的 text）
+        # dialogue 段：对白文本（去引号后的 text），情绪/指令逐段透传
         speaker = getattr(dlg, "speaker", None)
         seg_voice_id = voice_assignments.get(speaker or "", narrator_voice_id)
-        dlg_pieces = _split_long_text(getattr(dlg, "text", ""), max_seg_chars)
-        # 逐段语音指令：对白语气**只**来自对白自身的 instruction（prepare 阶段
-        # LLM 按每句对白内容生成），不与角色绑定；为空 = 不下发指令，用 provider
-        # 默认语气。emotion 对对白段恒为空（豆包 2.0 的语气控制走 instruction_text）。
-        # 该值在子段循环外计算，故被 _split_long_text 切出的多个子段共享同一条
-        # 指令（子段共用父对白指令，不重复生成）。
-        # 用 getattr 防御：ProjectDialogue / DbDialogue 两种对象都兼容。
+        dlg_emotion = (getattr(dlg, "emotion", "") or "").strip()
         dlg_instruction = (getattr(dlg, "instruction", "") or "").strip()
+        dlg_pieces = _split_long_text(getattr(dlg, "text", ""), max_seg_chars)
         for piece in dlg_pieces:
             segs.append(_Segment(
                 kind="dialogue", chapter_idx=ch.idx, idx=idx,
@@ -291,7 +320,7 @@ def _build_segments_for_chapter(
                 voice_id=seg_voice_id,
                 text=piece,
                 confidence=getattr(dlg, "confidence", None),
-                emotion="",
+                emotion=dlg_emotion,
                 instruction=dlg_instruction,
             ))
             idx += 1
@@ -301,10 +330,7 @@ def _build_segments_for_chapter(
                 silence_ms=SILENCE_BETWEEN_SEGMENTS_MS,
             ))
             idx += 1
-
-        # 推进 cursor 到对白结束位置（防止 anchor 错位时 cursor 倒退导致重复切片）
-        if local_end > cursor:
-            cursor = local_end
+        cursor = max(cursor, e)
 
     # 收尾 narrator
     if cursor < chapter_len:

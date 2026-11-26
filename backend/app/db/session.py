@@ -119,6 +119,8 @@ _BUILD_NEW_COLUMNS = {
 # 对白：逐段语音指令（豆包 2.0 context_texts，旧库补列；空串=不下发）
 _PROJECT_DIALOGUES_NEW_COLUMNS = {
     "instruction": "VARCHAR(512) DEFAULT ''",
+    # 逐段情绪标签（MiniMax 用）：happy/sad/angry/fearful/surprised/disgusted/calm
+    "emotion": "VARCHAR(16) DEFAULT ''",
 }
 
 # 需要在旧库上补建的索引（SQLAlchemy 的 create_all 只对「新建的表」建索引，

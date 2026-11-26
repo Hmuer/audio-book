@@ -48,6 +48,9 @@ from .dialogue import (
     attribute_dialogues_with_llm,
     attribute_dialogues_batch_with_llm,
     ChapterDialogueBatchResult,
+    complete_dialogues_with_quotes,
+    DialogueAttribution,
+    Anchor,
 )
 from .voice_recommender import VoiceRecommendation, recommend_voices_with_llm
 from .voice_instruction import generate_dialogue_instructions
@@ -1464,6 +1467,39 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             f"split_chapters={len(chapters)} ms={int((_time.perf_counter()-pt)*1000)}"
         )
 
+        # 2.5 元文本清洗（M2）：删除拉票/本章完/PS/公众号等非叙事行；识别并跳过
+        #     「新书预览/公告/广告」整章。只改用于合成的正文副本，不动用户原文件。
+        if bool(getattr(settings, "TEXT_CLEANUP_ENABLED", True)) and chapters:
+            try:
+                from .text_cleanup import clean_chapter_text, is_non_story_page
+                _kept: list[Chapter] = []
+                _dropped_pages: list[int] = []
+                _removed_lines = 0
+                _removed_chars = 0
+                for _ch in chapters:
+                    if is_non_story_page(_ch.title or "", _ch.text or ""):
+                        _dropped_pages.append(_ch.idx)
+                        continue
+                    _clean, _rep = clean_chapter_text(_ch.text or "")
+                    _removed_lines += int((_rep or {}).get("removed_lines", 0) or 0)
+                    _removed_chars += int((_rep or {}).get("removed_chars", 0) or 0)
+                    _ch.text = _clean
+                    _kept.append(_ch)
+                if _dropped_pages:
+                    chapters = _kept
+                    for _i, _ch in enumerate(chapters):
+                        _ch.idx = _i
+                logger.info(
+                    f"[project_prepare] 元文本清洗：跳过非正文页 {len(_dropped_pages)} 章"
+                    f"{_dropped_pages[:12]}，删除元文本行 {_removed_lines} 行/{_removed_chars} 字，"
+                    f"剩余 {len(chapters)} 章"
+                )
+            except Exception as _ce:
+                logger.warning(
+                    f"[project_prepare] 元文本清洗失败，保留原文："
+                    f"{type(_ce).__name__}: {_ce}"
+                )
+
         # F-8：算一下这次 prepare 大概要串行多少次 LLM 调用，并在「调用量大 + 并发=1」时
         # 明确提示。背景：LLM_MAX_CONCURRENCY=1 是为了避免按量套餐 RPM 429 的保守默认值，
         # 但它会让 DIALOGUE_BATCH_CONCURRENCY / VOICE_INSTRUCTION_BATCH_CONCURRENCY **失效**。
@@ -2247,8 +2283,29 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                 names = [c.name for c in characters_merged]
                 # dedup 不再传全文：原实现把 142 万字全文塞给 M2.x（204800 上下文）
                 # 直接 HTTP 400；且全文对 dedup 无信息增益，靠名字字符串本身判断即可
-                dedup_results = await deduplicate_characters_with_llm(names)
-                characters, name_map = apply_dedup(characters_merged, dedup_results)
+                try:
+                    dedup_results = await deduplicate_characters_with_llm(names)
+                    characters, name_map = apply_dedup(characters_merged, dedup_results)
+                except LLMQuotaExhaustedError:
+                    raise
+                except LLMContentRejectedError as e:
+                    # 422 内容审核拒绝是确定性的：长书角色名单巨大时偶发。不能因此
+                    # 打断整个 prepare（《仙途遗祸》即因这类异常变成 failed、章节全丢）。
+                    # 降级：放弃去重，直接用合并前角色表继续（宁可不合并，不失败）。
+                    logger.warning(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"角色去重被内容审核拒绝（422），跳过去重继续：{e}"
+                    )
+                    characters = characters_merged
+                    name_map = {c.name: c.name for c in characters}
+                except Exception as e:
+                    # 去重失败同理不致命：保留合并前角色表，后续仍可归属/合成。
+                    logger.warning(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"角色去重失败（{type(e).__name__}），跳过去重继续：{e}"
+                    )
+                    characters = characters_merged
+                    name_map = {c.name: c.name for c in characters}
             else:
                 characters = characters_merged
                 name_map = {c.name: c.name for c in characters}
@@ -2385,16 +2442,26 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                             f"{dialogue_batch_retries+1} start"
                         )
                         results = await attribute_dialogues_batch_with_llm(batch, characters)
-                    returned = {r.chapter_idx for r in results}
+                    resp_by_idx = {r.chapter_idx: r.dialogues for r in results}
+                    returned = set(resp_by_idx)
                     missing = {idx for idx, _ in batch} - returned
                     if missing:
-                        raise ValueError(f"对白结果缺少章节 {sorted(missing)}")
+                        # M1：LLM 整章漏返回时不再让整批失败——用确定性引号区间
+                        # 兜底补全（漏掉的引号句/连续引号都能回收），保证「不漏台词」。
+                        logger.warning(
+                            f"[project_prepare] project_id={project_id[:8]}... "
+                            f"dialogue 批 {batch_idx+1} LLM 未返回章 {sorted(missing)}，"
+                            f"用引号区间兜底补全"
+                        )
+                    known_names = {c.name for c in characters}
                     out: list[tuple[int, list]] = []
-                    for r in results:
-                        attrs = r.dialogues
-                        for a in attrs:
+                    for ch_idx_b, ch_text_b in batch:
+                        attrs0 = resp_by_idx.get(ch_idx_b, [])
+                        # M1：按确定性引号区间补全/校正（锚点精确、不漏、不重复）
+                        completed = complete_dialogues_with_quotes(ch_text_b, attrs0, known_names)
+                        for a in completed:
                             a.speaker = name_map.get(a.speaker, a.speaker)
-                        out.append((r.chapter_idx, [a.model_dump() for a in attrs]))
+                        out.append((ch_idx_b, [a.model_dump() for a in completed]))
                     return batch_idx, out, None
                 except LLMQuotaExhaustedError:
                     # H-22：配额耗尽不算批失败（failed checkpoint 由中止语义
@@ -2554,77 +2621,109 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
         # H-13：instructions 阶段计时（命中 checkpoint / 整段跳过则 start+end 同刻）
         _stage_timing_touch(prog, "instructions")
         instruction_map: dict[tuple[int, int], str] = {}
+        emotion_map: dict[tuple[int, int], str] = {}
         from ..core.config import get_active
         active_tts = get_active("tts")[0] or "doubao"
-        if active_tts == "minimax" or not bool(getattr(settings, "VOICE_INSTRUCTION_ENABLED", True)):
-            logger.info(
-                f"[project_prepare] project_id={project_id[:8]}... "
-                f"激活 TTS 不使用逐段指令，整段跳过（按空串落库）"
-            )
-            prog["stage"] = "instructions"
-            prog["instructions_done"] = True
-            prog["instructions_raw"] = {}
-            prog["instructions_provider"] = active_tts
-            await _write_progress(prog)
-        elif (prog.get("stage") in ("resume", "partial", "instructions", "voice_recs", "done")
-              and prog.get("instructions_done")
-              and prog.get("instructions_provider") in (None, active_tts)):
-            raw_instr = prog.get("instructions_raw", {}) or {}
-            if isinstance(raw_instr, dict):
-                for k, v in raw_instr.items():
+        _emotion_enabled = bool(getattr(settings, "DIALOGUE_EMOTION_ENABLED", True)) and active_tts == "minimax"
+        _instruction_enabled = bool(getattr(settings, "VOICE_INSTRUCTION_ENABLED", True)) and active_tts != "minimax"
+        _ck_ok = (
+            prog.get("stage") in ("resume", "partial", "instructions", "voice_recs", "done")
+            and prog.get("instructions_done")
+            and prog.get("instructions_provider") in (None, active_tts)
+        )
+        # 旧版 minimax 项目曾把「跳过指令」写成 instructions_done=True 的空 checkpoint：
+        # 现在启用逐段情绪后必须识别为「未生成」并重跑，否则情绪永远是空。
+        if _ck_ok and _emotion_enabled and total_dialogues > 0 and not (prog.get("emotion_raw") or {}):
+            _ck_ok = False
+
+        def _load_kv(raw) -> dict[tuple[int, int], str]:
+            out: dict[tuple[int, int], str] = {}
+            if isinstance(raw, dict):
+                for k, v in raw.items():
                     try:
                         ch_s, seg_s = str(k).split(":", 1)
-                        instruction_map[(int(ch_s), int(seg_s))] = str(v or "")
+                        out[(int(ch_s), int(seg_s))] = str(v or "")
                     except Exception:
                         continue
-            elif isinstance(raw_instr, list):
-                # 兼容 list of dict 形态（chapter_idx/segment_index/instruction）
-                for item in raw_instr:
+            elif isinstance(raw, list):
+                for item in raw:
                     try:
-                        instruction_map[
-                            (int(item["chapter_idx"]), int(item["segment_index"]))
-                        ] = str(item.get("instruction") or "")
+                        out[(int(item["chapter_idx"]), int(item["segment_index"]))] = str(
+                            item.get("instruction") or item.get("emotion") or ""
+                        )
                     except Exception:
                         continue
+            return out
+
+        if _ck_ok:
+            instruction_map = _load_kv(prog.get("instructions_raw", {}))
+            emotion_map = _load_kv(prog.get("emotion_raw", {}))
             logger.info(
                 f"[project_prepare] project_id={project_id[:8]}... "
-                f"命中逐段语音指令 checkpoint：instructions={len(instruction_map)}"
+                f"命中逐段语气 checkpoint：instructions={len(instruction_map)} "
+                f"emotions={len(emotion_map)}"
             )
-        else:
+        elif _emotion_enabled or _instruction_enabled:
             # all_attrs_per_chapter 按章下标 = ch.idx 排列，逐段下标即落库用的 segment_index
             dialogues_for_instr: dict[int, list] = {
                 ch_idx: attrs
                 for ch_idx, attrs in enumerate(all_attrs_per_chapter)
                 if attrs
             }
-            try:
-                instruction_map = await generate_dialogue_instructions(
-                    chapters, dialogues_for_instr, characters
-                )
-            except LLMQuotaExhaustedError:
-                # H-22：配额耗尽穿透（否则下方会把全空指令写成
-                # instructions_done=True 的投毒 checkpoint，重跑直接跳过）
-                raise
-            except Exception as e:
-                # service 内已做批级容错，这里再保一层：指令生成失败绝不能拖垮 prepare
-                logger.warning(
-                    f"[project_prepare] project_id={project_id[:8]}... "
-                    f"voice_instruction failed: {type(e).__name__}: {e}"
-                )
-                instruction_map = {}
+            if _emotion_enabled:
+                try:
+                    from .dialogue_style import generate_dialogue_emotions
+                    emotion_map = await generate_dialogue_emotions(
+                        chapters, dialogues_for_instr, characters
+                    )
+                except LLMQuotaExhaustedError:
+                    raise
+                except Exception as e:
+                    logger.warning(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"dialogue_emotion failed: {type(e).__name__}: {e}"
+                    )
+                    emotion_map = {}
+            if _instruction_enabled:
+                try:
+                    instruction_map = await generate_dialogue_instructions(
+                        chapters, dialogues_for_instr, characters
+                    )
+                except LLMQuotaExhaustedError:
+                    raise
+                except Exception as e:
+                    logger.warning(
+                        f"[project_prepare] project_id={project_id[:8]}... "
+                        f"voice_instruction failed: {type(e).__name__}: {e}"
+                    )
+                    instruction_map = {}
             prog["stage"] = "instructions"
             prog["instructions_done"] = True
             prog["instructions_provider"] = active_tts
             prog["instructions_raw"] = {
                 f"{k[0]}:{k[1]}": v for k, v in instruction_map.items()
             }
+            prog["emotion_raw"] = {
+                f"{k[0]}:{k[1]}": v for k, v in emotion_map.items()
+            }
+            await _write_progress(prog)
+        else:
+            logger.info(
+                f"[project_prepare] project_id={project_id[:8]}... "
+                f"逐段语气生成关闭（TTS={active_tts}），按空串落库"
+            )
+            prog["stage"] = "instructions"
+            prog["instructions_done"] = True
+            prog["instructions_provider"] = active_tts
+            prog["instructions_raw"] = {}
+            prog["emotion_raw"] = {}
             await _write_progress(prog)
         # H-13：instructions 阶段结束
         _stage_timing_touch(prog, "instructions", end=True)
         logger.info(
             f"[project_prepare] project_id={project_id[:8]}... "
-            f"instructions={len(instruction_map)} "
-            f"non_empty={sum(1 for v in instruction_map.values() if v)} "
+            f"instructions={len(instruction_map)} emotions={len(emotion_map)} "
+            f"non_calm={sum(1 for v in emotion_map.values() if v and v != 'calm')} "
             f"ms={int((_time.perf_counter()-pt)*1000)}"
         )
 
@@ -2796,6 +2895,8 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     conf_raw = _f(a, "confidence", 1.0)
                     # 逐段语音指令：按 (chapter_idx, segment_index) 对齐回填；缺失/空 → 空串
                     dlg_instruction = (instruction_map.get((ch_idx, seg_idx), "") or "")[:512]
+                    # 逐段情绪标签（MiniMax 用）：缺失 → 空串（合成时回落 calm）
+                    dlg_emotion = (emotion_map.get((ch_idx, seg_idx), "") or "")[:16]
                     session.add(ProjectDialogue(
                         project_id=project_id,
                         chapter_idx=ch_idx,
@@ -2807,6 +2908,7 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                         text=str(text_raw),
                         confidence=float(conf_raw) if conf_raw is not None else 1.0,
                         instruction=dlg_instruction,
+                        emotion=dlg_emotion,
                     ))
             p.chapters_json = chapters_json
             p.chapter_count = len(chapters)

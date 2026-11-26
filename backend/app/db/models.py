@@ -270,6 +270,10 @@ class ProjectDialogue(Base):
     # instructions 阶段逐段生成；空串 = 不下发指令（用音色默认语气）。
     # 对白语气只来自这里，不与角色绑定。
     instruction: Mapped[str] = mapped_column(String(512), default="")
+    # 该句对白的情绪标签（MiniMax 等「按情绪参数合成」的厂商用）：
+    # happy/sad/angry/fearful/surprised/disgusted/calm 之一；空串 = 用厂商默认（calm）。
+    # 由 prepare 的 emotion 阶段逐段生成；与豆包 instruction 互补（不同厂商各取所需）。
+    emotion: Mapped[str] = mapped_column(String(16), default="")
 
     project: Mapped[Project] = relationship(back_populates="project_dialogues")
 
