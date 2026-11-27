@@ -169,11 +169,22 @@ async def test_script_fallback_has_disclosure_and_sources(monkeypatch):
 
 def test_split_segments_keeps_sentences_whole():
     text = "第一句话。第二句话！第三句话？" * 10
-    # 函数把段长下限钳在 40，避免切得过碎
-    segments = split_segments(text, max_chars=40)
+    segments = split_segments(text, max_chars=500)
     assert segments
-    assert all(len(s) <= 40 for s in segments)
+    assert all(len(s) <= 500 for s in segments)
     assert "".join(segments).replace(" ", "") == text.replace(" ", "")
+
+
+def test_split_chunks_is_paragraph_aware():
+    from backend.app.services.daily.tts import split_chunks
+
+    text = "第一段第一句。第一段第二句。\n\n第二段第一句。第二段第二句。第二段第三句。"
+    chunks = split_chunks(text, max_chars=500)
+    assert chunks, "应切成多块"
+    assert all(len(c) <= 500 for c, _ in chunks)
+    # 短段落会被合并成大块；只要不碎成每句一块即可
+    assert len(chunks) <= 3, chunks
+    assert chunks[-1][1] is True, "最后一块应标记段落结尾"
 
 
 def test_feed_enclosure_is_absolute_and_keyed(tmp_path):
@@ -571,3 +582,15 @@ def test_localize_helpers():
     localized = {topic.url: {"title": "中文标题", "summary": "中文摘要"}}
     assert topic_text(topic, localized) == ("中文标题", "中文摘要")
     assert topic_text(topic, {}) == ("English title", "")
+
+
+def test_split_chunks_merges_llm_sentence_paragraphs():
+    """LLM 常把每句写成独立段落；不能因此切出几十个碎块。"""
+    from backend.app.services.daily.tts import split_chunks
+
+    sentences = ["这是第一句测试文本。" * 2, "这是第二句测试文本。" * 2, "这是第三句测试文本。" * 2]
+    text = "\n\n".join(sentences * 12)  # 每句独立段落，共 36 段
+    chunks = split_chunks(text, max_chars=500)
+    assert len(chunks) <= 15, f"块数过多: {len(chunks)}"
+    assert all(len(c) <= 500 for c, _ in chunks)
+    assert all(len(c) >= 100 for c, _ in chunks[:-1]), "除末块外不应有碎块"

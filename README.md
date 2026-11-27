@@ -92,6 +92,11 @@ cp .env.example "${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.env"
 | `DAILY_OUTPUT_DIR` | | `$DATA_DIR/daily` | 日报产物根目录（每期一个子目录） |
 | `DAILY_SOURCES_JSON` | | 空=内置 7 个源 | 信源数组 `[{"name","url","enabled"}]`，整体覆盖内置列表 |
 | `DAILY_TTS_VOICE_ID` | | 空=自动挑 | 日报播报音色；留空取当前 TTS 厂商第一个可用音色 |
+| `DAILY_TTS_CHUNK_CHARS` | | `500` | 单次合成块大小：越大语气越连贯，但字幕按块内比例切分、过大会影响字幕精度 |
+| `DAILY_TTS_SENTENCE_GAP_MS` | | `350` | 句间停顿（毫秒，实际会 ±90ms 抖动） |
+| `DAILY_TTS_PARAGRAPH_GAP_MS` | | `900` | 段落间停顿（毫秒，实际会 ±90ms 抖动） |
+| `DAILY_TTS_SPEED` | | `1.0` | 语速（0.85–1.1 之间较自然） |
+| `DAILY_TTS_EMOTION` | | `calm` | MiniMax 情绪参数（calm/happy/sad/angry/fearful/disgusted/surprised） |
 | `DAILY_FEED_KEY` | | 空 | 播客 RSS 的 `?key=` 订阅密钥；**留空则 RSS 不开放** |
 | `DAILY_LLM_ENABLED` | | `true` | 关闭后用离线模板出稿（无 LLM Key 也能跑） |
 | `DAILY_TARGET_MINUTES` | | `12` | 目标时长（写进脚本 prompt） |
@@ -450,6 +455,20 @@ P1 待做：建项目 / 导入书库 / 启动构建 / 保存文案 / 质检 / �
 - 翻译失败不影响出片：自动回退英文原文，`run_summary` 里记 warning。
 
 成本：每期多一次很小的 LLM 调用（只翻标题+摘要，约 1–2k tokens）。
+
+### 停顿与自然度（为什么现在听起来不那么"机器"）
+
+早期版本按 240 字切碎合成，再固定插 350ms 静音，结果是：每段语气重置、拼接点可闻、
+停顿节奏像节拍器。现在改成：
+
+- **按段落/句子打包成 ~500 字的大块**再合成（块越大，语气越连贯）；
+- 块间停顿**分类型**：句间 350ms、段落间 900ms，并加 ±90ms 的确定性抖动，避免机械节拍；
+- 脚本 prompt 要求短句（≤35 字）、自然过渡词（如「先说…」「这里有个细节」）、
+  每 2–4 句成段；
+- 语速与情绪可通过 `DAILY_TTS_*` 调整（见 `.env` 表格）。
+
+> 取舍：块越大越连贯，但字幕只能在块内按字数比例切分，块过大字幕时间会漂移；
+> 500 字是自然度与字幕精度的折中（可调）。
 
 ### 音频命名规范
 

@@ -22,41 +22,84 @@ from ...core.mp3_util import concat_mp3_files, make_silent_mp3
 
 logger = logging.getLogger(__name__)
 
-#: 段间静音（毫秒）：换段太硬会显得像机器拼接
-SEGMENT_GAP_MS = 350
-#: 单期最多合成段数（护栏：防止脚本异常导致上百次 TTS 调用）
+#: 单期最多合成块数（护栏：防止脚本异常导致上百次 TTS 调用）
 MAX_SEGMENTS = 120
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?；;…\n])")
+_PARAGRAPH_SPLIT = re.compile(r"\n\s*\n")
+
+
+def split_chunks(text: str, max_chars: int = 500) -> list[tuple[str, bool]]:
+    """把口播稿切成大块（≤max_chars），返回 [(chunk, 是否段落结尾)]。
+
+    关键点：
+    - 先把所有空白归一化：连续换行视作段落分隔，单换行视作空格
+      （LLM 常把每句话都写成独立段落，直接按空行切会得到几十个碎块）；
+    - 按句号切句，再把句子打包成 ~max_chars 的大块，块越大语气越连贯；
+    - 只有块长 ≥ 260 字时才在"真正的段落边界"处断开，避免一句话一块；
+    - 块尾标出是否落在段落边界，供合成后决定"句间停"还是"段间停"。
+    """
+    max_chars = max(160, int(max_chars))
+    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    # 用一个不常见标记保留"真正的段落边界"，其余空白压成单空格
+    marked = re.sub(r"\n[ \t]*\n+", "\u0001", normalized)
+    marked = re.sub(r"\s+", " ", marked)
+    paragraphs = [p.strip() for p in marked.split("\u0001") if p.strip()]
+    if not paragraphs:
+        return []
+
+    # 逐句展开：记录该句之后是否紧跟段落边界
+    units: list[tuple[str, bool]] = []
+    for pi, paragraph in enumerate(paragraphs):
+        sentences = [x.strip() for x in _SENTENCE_SPLIT.split(paragraph) if x.strip()]
+        for si, sentence in enumerate(sentences):
+            # 最后一句结束于段落边界
+            units.append((sentence, si == len(sentences) - 1))
+    if not units:
+        return []
+
+    chunks: list[tuple[str, bool]] = []
+    buf = ""
+    buf_para_end = False
+    for sentence, para_break in units:
+        if len(sentence) > max_chars:
+            if buf:
+                chunks.append((buf, buf_para_end))
+                buf = ""
+            parts = [x.strip() for x in re.split(r"(?<=[，,])", sentence) if x.strip()]
+            local = ""
+            for part in parts:
+                if len(local) + len(part) <= max_chars:
+                    local += part
+                else:
+                    if local:
+                        chunks.append((local, False))
+                    local = part
+            buf = local
+            buf_para_end = para_break
+            continue
+        # 块接近上限，或已在段落边界且块足够长 → 断块
+        if len(buf) + len(sentence) > max_chars or (buf and buf_para_end and para_break and len(buf) >= 260):
+            chunks.append((buf, buf_para_end))
+            buf = ""
+            buf_para_end = False
+        buf += sentence
+        buf_para_end = para_break
+    if buf:
+        chunks.append((buf, buf_para_end))
+        buf = ""
+    return chunks[:MAX_SEGMENTS]
 
 
 def split_segments(text: str, max_chars: int = 240) -> list[str]:
-    """按句切分并打包成 ≤max_chars 的段（不切断句子）。"""
-    max_chars = max(40, int(max_chars))
-    sentences = [s.strip() for s in _SENTENCE_SPLIT.split(text or "") if s.strip()]
-    segments: list[str] = []
-    buf = ""
-    for sentence in sentences:
-        if len(sentence) > max_chars:
-            # 单句过长：按逗号再切一次
-            parts = [p.strip() for p in re.split(r"(?<=[，,])", sentence) if p.strip()]
-            for part in parts:
-                while len(part) > max_chars:
-                    segments.append(part[:max_chars])
-                    part = part[max_chars:]
-                if part:
-                    segments.append(part)
-            buf = ""
-            continue
-        if len(buf) + len(sentence) <= max_chars:
-            buf += sentence
-        else:
-            if buf:
-                segments.append(buf)
-            buf = sentence
-    if buf:
-        segments.append(buf)
-    return segments[:MAX_SEGMENTS]
+    """兼容旧测试：只返回文本块。"""
+    return [chunk for chunk, _ in split_chunks(text, max_chars)]
+
+
+def _gap_ms(base: int, seed: str, spread: int = 90) -> int:
+    """给停顿加一点确定性抖动（同一文本可复现），避免节拍器般的机械感。"""
+    jitter = (hash(seed) % (spread * 2 + 1)) - spread
+    return max(120, int(base) + jitter)
 
 
 def _pick_voice(voices: list[dict[str, Any]]) -> str:
@@ -101,10 +144,6 @@ async def _normalize_loudness(mp3: bytes) -> bytes:
 
 async def synthesize(text: str, *, voice_id: str = "") -> tuple[bytes, int, dict[str, Any]]:
     """合成整期音频，返回 (mp3 bytes, duration_ms, stats)。"""
-    segments = split_segments(text, settings.DAILY_TTS_SEGMENT_CHARS)
-    if not segments:
-        raise RuntimeError("口播稿为空，无法合成")
-
     tts = get_tts()
     voices = await tts.list_voices()
     voice = voice_id.strip()
@@ -118,13 +157,21 @@ async def synthesize(text: str, *, voice_id: str = "") -> tuple[bytes, int, dict
     parts: list[bytes] = []
     duration_ms = 0
     chars = 0
-    silence = make_silent_mp3(SEGMENT_GAP_MS)
-    #: 分段计时（供字幕 SRT 使用）：每段开始时间 + 真实时长
+    chunks = split_chunks(text, settings.DAILY_TTS_CHUNK_CHARS)
+    if not chunks:
+        raise RuntimeError("口播稿为空，无法合成")
+    speed = float(settings.DAILY_TTS_SPEED or 1.0)
+    emotion = (settings.DAILY_TTS_EMOTION or "calm").strip() or "calm"
+    sentence_gap = int(settings.DAILY_TTS_SENTENCE_GAP_MS or 350)
+    paragraph_gap = int(settings.DAILY_TTS_PARAGRAPH_GAP_MS or 900)
+    #: 分块计时（供字幕 SRT 使用）：每块开始时间 + 真实时长
     timings: list[dict[str, Any]] = []
 
-    for idx, segment in enumerate(segments):
+    for idx, (segment, para_end) in enumerate(chunks):
         async with sem:
-            data, dur = await tts.synthesize_to_bytes(segment, voice, emotion="calm", speed=1.0)
+            data, dur = await tts.synthesize_to_bytes(
+                segment, voice, emotion=emotion, speed=speed,
+            )
         if not data:
             raise RuntimeError(f"第 {idx + 1} 段合成返回空音频")
         parts.append(data)
@@ -135,19 +182,21 @@ async def synthesize(text: str, *, voice_id: str = "") -> tuple[bytes, int, dict
         })
         duration_ms += int(dur or 0)
         chars += len(segment)
-        if idx < len(segments) - 1:
-            parts.append(silence)
-            duration_ms += SEGMENT_GAP_MS
+        if idx < len(chunks) - 1:
+            gap = paragraph_gap if para_end else sentence_gap
+            gap = _gap_ms(gap, segment)
+            parts.append(make_silent_mp3(gap))
+            duration_ms += gap
 
     audio = concat_mp3_files(*parts)
     audio = await _normalize_loudness(audio)
     stats = {
-        "segments": len(segments),
+        "segments": len(chunks),
         "chars": chars,
         "voice_id": voice,
         "voice_name": voice_name,
         "duration_ms": duration_ms,
         "segment_timings": timings,
     }
-    logger.info("[daily] TTS 完成 segments=%d chars=%d dur=%.1fs", len(segments), chars, duration_ms / 1000)
+    logger.info("[daily] TTS 完成 chunks=%d chars=%d dur=%.1fs", len(chunks), chars, duration_ms / 1000)
     return audio, duration_ms, stats

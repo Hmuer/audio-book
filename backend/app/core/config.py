@@ -377,8 +377,15 @@ class Settings(BaseSettings):
     DAILY_MAX_SCRIPT_CHARS: int = 4800
     # TTS 音色；为空 → 取当前 TTS 厂商的第一个可用音色
     DAILY_TTS_VOICE_ID: str = ""
-    # 单段 TTS 字符上限（过长会被合成厂商拒）
+    # 单段 TTS 字符上限（越大越连贯、越少"拼接感"；MiniMax 单次上限 10000）
     DAILY_TTS_SEGMENT_CHARS: int = 240
+    DAILY_TTS_CHUNK_CHARS: int = 500
+    # 停顿时长（毫秒）：句间短停、段落间长停；合成后按标点/段落插入
+    DAILY_TTS_SENTENCE_GAP_MS: int = 350
+    DAILY_TTS_PARAGRAPH_GAP_MS: int = 900
+    # 语速与情绪（MiniMax 支持 happy/sad/angry/fearful/disgusted/surprised/calm）
+    DAILY_TTS_SPEED: float = 1.0
+    DAILY_TTS_EMOTION: str = "calm"
     # 是否用 LLM 写口播稿；关闭后用离线模板（无 Key 环境也能出稿）
     DAILY_LLM_ENABLED: bool = True
     # RSS 对外地址；留空 = 按请求的 scheme://host 推导

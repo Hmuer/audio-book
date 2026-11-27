@@ -513,34 +513,71 @@ def _h5_quality_summary(
     return {"suspicious": suspicious, "failed_n": failed_n, "checked_n": checked}
 
 
-def _select_build_chapters(project_status: str, progress_json: "str | None", chapters: "list[Chapter]"):
-    """Phase2：选择本次构建的章节。
+def _select_build_chapters(
+    project_status: str, progress_json: "str | None", chapters: "list[Chapter]",
+    chapter_range: "tuple[int, int] | None" = None,
+):
+    """Phase2/3：选择本次构建的章节。
 
-    - 普通（ready/done）：全部章节，only=None。
-    - partial_success 且 progress 里有 dialogue_completed_chapters：
-      只构建「对白阶段已完成」的章节（未识别的章不合成成整本旁白），并返回 only。
+    - chapter_range=(start,end)：只构建 [start, end) 的章（分卷/区间构建）。
+    - partial_success 且 progress 有 dialogue_completed_chapters：只构建已识别章。
     返回 (chapters_to_build, only_idxs_or_None)。
     """
-    if project_status != "partial_success":
-        return chapters, None
-    try:
-        prog = json.loads(progress_json or "{}")
-        if not isinstance(prog, dict):
-            prog = {}
-    except Exception:
-        prog = {}
-    want: set[int] = set()
-    for x in (prog.get("dialogue_completed_chapters") or []):
+    def _range_filter(chs):
+        if not chapter_range:
+            return chs
         try:
-            want.add(int(x))
+            s, e = int(chapter_range[0]), int(chapter_range[1])
         except Exception:
-            pass
-    if not want:
-        return chapters, None
-    filtered = [c for c in chapters if c.idx in want]
-    if not filtered or len(filtered) >= len(chapters):
-        return chapters, None
-    return filtered, [c.idx for c in filtered]
+            return chs
+        return [c for c in chs if s <= c.idx < e]
+
+    chapters2 = _range_filter(chapters)
+    ranged_subset = chapter_range is not None and len(chapters2) != len(chapters)
+
+    if project_status == "partial_success":
+        try:
+            prog = json.loads(progress_json or "{}")
+            if not isinstance(prog, dict):
+                prog = {}
+        except Exception:
+            prog = {}
+        want: set[int] = set()
+        for x in (prog.get("dialogue_completed_chapters") or []):
+            try:
+                want.add(int(x))
+            except Exception:
+                pass
+        if want:
+            filtered = [c for c in chapters2 if c.idx in want]
+            if filtered and len(filtered) < len(chapters2):
+                return filtered, [c.idx for c in filtered]
+    if ranged_subset:
+        return chapters2, [c.idx for c in chapters2]
+    return chapters2, None
+
+
+def plan_volumes(total_chapters: int, max_per_volume: "int | None" = None) -> list[dict]:
+    """Phase3：把整本书按每卷 N 章切成若干卷，返回 [{'start','end','count'}]。
+
+    start 含、end 不含（chapter_idx 语义）。total<=每卷上限时返回单卷。
+    """
+    try:
+        total = max(0, int(total_chapters))
+    except Exception:
+        total = 0
+    per = int(max_per_volume or getattr(settings, "BUILD_VOLUME_MAX_CHAPTERS", 200) or 200)
+    per = max(1, per)
+    if total == 0:
+        return []
+    out: list[dict] = []
+    start = 0
+    while start < total:
+        end = min(total, start + per)
+        out.append({"start": start, "end": end, "count": end - start})
+        start = end
+    return out
+
 
 
 def _h4_progress_meta_json(
@@ -1535,6 +1572,7 @@ async def _start_build_impl(
     tts_provider: str | None = None,
     narrator_emotion: str = "",
     narrator_instruction: str = "",
+    chapter_range: "tuple[int, int] | None" = None,
 ) -> BuildResp:
     """
     创建 Build + 每章 BuildArtifact（pending），启动后台 worker，立即返回。
@@ -1651,12 +1689,15 @@ async def _start_build_impl(
         # Phase2：项目「部分完成」时只构建已识别（对白阶段已完成）的章节，
         # 避免把未识别章合成成整本旁白平读。dcc = dialogue_completed_chapters。
         chapters, only_chapter_idxs_for_build = _select_build_chapters(
-            p.status, p.progress_json, chapters
+            p.status, p.progress_json, chapters, chapter_range
         )
+        if not chapters:
+            raise ValueError("所选章节范围为空或不存在")
         if only_chapter_idxs_for_build:
             logger.info(
-                f"[build_start] project_id={project_id[:8]}... 部分完成，"
-                f"仅构建已识别章 {len(chapters)} 章"
+                f"[build_start] project_id={project_id[:8]}... "
+                f"仅构建所选/已识别章 {len(chapters)} 章"
+                + (f" range={chapter_range}" if chapter_range else "")
             )
 
         # 未归属对白兜底音色（见 _with_unknown_speaker_voices）。必须放在 digest 计算

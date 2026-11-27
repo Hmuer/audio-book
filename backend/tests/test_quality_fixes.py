@@ -305,3 +305,26 @@ def test_select_build_chapters_partial():
 
     out4, only4 = _select_build_chapters("partial_success", "{}", chs)
     assert only4 is None
+
+    # Phase3：区间构建（分卷）
+    out5, only5 = _select_build_chapters("ready", "{}", chs, chapter_range=(1, 3))
+    assert [c.idx for c in out5] == [1, 2] and only5 == [1, 2]
+    # 区间 + partial 叠加：partial 识别集是 {0,2}，区间 (1,4) → 只剩 2
+    out6, only6 = _select_build_chapters(
+        "partial_success", json.dumps({"dialogue_completed_chapters": [0, 2]}), chs,
+        chapter_range=(1, 4),
+    )
+    assert [c.idx for c in out6] == [2] and only6 == [2]
+
+
+def test_plan_volumes():
+    from backend.app.services.build import plan_volumes
+
+    assert plan_volumes(0) == []
+    assert plan_volumes(50, max_per_volume=200) == [{"start": 0, "end": 50, "count": 50}]
+    vols = plan_volumes(450, max_per_volume=200)
+    assert vols == [
+        {"start": 0, "end": 200, "count": 200},
+        {"start": 200, "end": 400, "count": 200},
+        {"start": 400, "end": 450, "count": 50},
+    ]

@@ -2835,6 +2835,34 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             f"ms={int((_time.perf_counter()-pt)*1000)}"
         )
 
+        # Phase2：把逐段情绪/指令**按章写回已落盘的对白行**。这样即便后续
+        # （书籍资料/音色推荐/收尾持久化）失败，已落盘章也带着情绪可部分构建，
+        # 而不是回落到默认 calm。
+        if instruction_map or emotion_map:
+            try:
+                async with factory() as _ss:
+                    for _ch in chapters:
+                        _attrs = (
+                            all_attrs_per_chapter[_ch.idx]
+                            if 0 <= _ch.idx < len(all_attrs_per_chapter) else []
+                        )
+                        if not _attrs:
+                            continue
+                        await _replace_chapter_dialogues(
+                            _ss, project_id, _ch.idx, _attrs,
+                            instruction_map=instruction_map, emotion_map=emotion_map,
+                        )
+                    await _ss.commit()
+                logger.info(
+                    f"[project_prepare] project_id={project_id[:8]}... "
+                    f"逐章写回情绪/指令完成 chapters={len(chapters)}"
+                )
+            except Exception as _we:
+                logger.warning(
+                    f"[project_prepare] project_id={project_id[:8]}... "
+                    f"逐章写回情绪/指令失败（收尾会再写一次）：{type(_we).__name__}: {_we}"
+                )
+
         # 6. 书籍资料和旁白先于角色音色推荐落库，推荐器才能排除旁白专用音色。
         try:
             await generate_project_metadata(project_id, chapters=chapters)
