@@ -302,11 +302,17 @@ class ZipShardResp(BaseModel):
 
 
 class QualitySuspiciousChapter(BaseModel):
-    """H-5：可疑章（音频时长与文本长度比例异常）。"""
+    """可疑章（音频时长比例异常 / 对白漏识别 / 说话人置信度低等）。"""
     chapter_idx: int
     chars: int
     duration_ms: int | None = None
     chars_per_sec: float | None = None
+    # M-QA：逐章质检原因与指标（向后兼容，旧 build 无这些字段）
+    reasons: list[str] = []
+    quote_count: int | None = None
+    dialogue_count: int | None = None
+    low_conf_ratio: float | None = None
+    unknown_ratio: float | None = None
 
 
 class QualityReport(BaseModel):
@@ -468,15 +474,17 @@ def _parse_progress_meta(b: Build) -> BuildProgressMeta | None:
 def _h5_quality_summary(
     chapters: "list[Chapter]",
     art_rows: "list[BuildArtifact]",
+    dialogues_by_chapter: "dict[int, list] | None" = None,
 ) -> dict:
-    """H-5：build 终态质检摘要。
+    """build 终态质检摘要（逐章 M-QA）。
 
-    可疑判据：status=done 且 chars_per_sec = text_len / (duration_ms/1000)
-    ∉ [0.8, 25]（1s 静音占位 → 2500 字/s 必中；正常语速 4~6 字/s，
-    speed 0.5~2 倍速均在区间内，不误报）。duration 缺失/文本为空的章
-    无法判定，计入 checked 但不标可疑。suspicious 上限 200 条（防爆 payload）。
+    每人章由 `chapter_qa.assess_chapter_quality` 给出可疑判定与原因：
+    时长/字数比异常、引号句漏识别、未知说话人过多、低置信度过多。
+    传入 dialogues_by_chapter 时启用对白相关维度；不传则仅做时长检查。
     """
-    text_len_by_idx = {ch.idx: len(ch.text or "") for ch in chapters}
+    from .chapter_qa import assess_chapter_quality
+
+    text_by_idx = {ch.idx: (ch.text or "") for ch in chapters}
     suspicious: list[dict] = []
     checked = 0
     failed_n = 0
@@ -487,17 +495,20 @@ def _h5_quality_summary(
         if a.status != "done":
             continue
         checked += 1
-        dur_s = (a.duration_ms or 0) / 1000.0
-        text_len = text_len_by_idx.get(a.chapter_idx, 0)
-        if dur_s <= 0 or text_len <= 0:
-            continue
-        cps = text_len / dur_s
-        if not (0.8 <= cps <= 25.0) and len(suspicious) < 200:
+        text = text_by_idx.get(a.chapter_idx, "")
+        dlgs = (dialogues_by_chapter or {}).get(a.chapter_idx) or []
+        qa = assess_chapter_quality(text, dlgs, a.duration_ms)
+        if qa.get("suspicious") and len(suspicious) < 200:
             suspicious.append({
                 "chapter_idx": a.chapter_idx,
-                "chars": text_len,
+                "chars": qa.get("chars", len(text)),
                 "duration_ms": a.duration_ms,
-                "chars_per_sec": round(cps, 2),
+                "chars_per_sec": qa.get("chars_per_sec"),
+                "reasons": qa.get("reasons", []),
+                "quote_count": qa.get("quote_count"),
+                "dialogue_count": qa.get("dialogue_count"),
+                "low_conf_ratio": qa.get("low_conf_ratio"),
+                "unknown_ratio": qa.get("unknown_ratio"),
             })
     return {"suspicious": suspicious, "failed_n": failed_n, "checked_n": checked}
 
@@ -3177,7 +3188,7 @@ async def _run_build_inner(
                     select(BuildArtifact).where(BuildArtifact.build_id == build_id)
                 )).scalars().all()
             )
-        quality_summary = _h5_quality_summary(chapters, art_rows_q)
+        quality_summary = _h5_quality_summary(chapters, art_rows_q, dialogues_by_chapter=dialogues_by_chapter)
         if quality_summary["suspicious"]:
             logger.info(
                 f"[build_worker] build_id={build_id[:8]}... 质检发现 "

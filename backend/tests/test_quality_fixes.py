@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import json
+
 import pytest
 
 from backend.app.services.chapter import Chapter, _build_segments_for_chapter
@@ -230,3 +232,51 @@ async def test_loudness_normalize_enabled_outputs_valid_frames(monkeypatch):
     assert isinstance(out, bytes) and len(out) > 0
     # 不应带 ID3 头（否则播放器/打包断言会看到非帧首字节）
     assert out[:1] == b"\xff"
+
+
+def test_chapter_qa_flags_missed_dialogue_and_unknown():
+    from backend.app.services.chapter_qa import assess_chapter_quality
+
+    text = "「甲。」他说。「乙。」她答。「丙丙丙。」另一人道。"
+    # 只识别出 1 条，且说话人未知 → 既漏识别又有未知说话人
+    dlgs = [{"speaker": "", "confidence": 0.4, "text": "甲。"}]
+    qa = assess_chapter_quality(text, dlgs, 2000)
+    assert qa["suspicious"] is True
+    assert "dialogue_missed" in qa["reasons"]
+    assert "many_unknown_speakers" in qa["reasons"]
+    assert "low_confidence_speakers" in qa["reasons"]
+
+
+def test_chapter_qa_normal_is_not_suspicious():
+    from backend.app.services.chapter_qa import assess_chapter_quality
+
+    text = "「你好。」他说。「你也好。」她答。「走吧。」"
+    dlgs = [
+        {"speaker": "张三", "confidence": 0.95, "text": "你好。"},
+        {"speaker": "李四", "confidence": 0.92, "text": "你也好。"},
+        {"speaker": "张三", "confidence": 0.9, "text": "走吧。"},
+    ]
+    qa = assess_chapter_quality(text, dlgs, 2000)  # 约 3 字/s，正常
+    assert qa["suspicious"] is False
+    assert qa["dialogue_count"] == 3
+
+
+def test_chapter_qa_flags_duration_anomaly():
+    from backend.app.services.chapter_qa import assess_chapter_quality
+
+    qa = assess_chapter_quality("字" * 1000, [], 100)  # 1 万字/秒，异常
+    assert "duration_anomaly" in qa["reasons"]
+
+
+def _proj(chapter_count: int, progress: dict):
+    return SimpleNamespace(chapter_count=chapter_count,
+                           progress_json=json.dumps(progress, ensure_ascii=False))
+
+
+def test_prepare_reached_partial():
+    from backend.app.services.project import _prepare_reached_partial
+
+    assert _prepare_reached_partial(_proj(0, {"dialogue_completed_chapters": [0]})) is False
+    assert _prepare_reached_partial(_proj(5, {"stage": "characters"})) is False
+    assert _prepare_reached_partial(_proj(5, {"dialogue_completed_chapters": [0, 1]})) is True
+    assert _prepare_reached_partial(_proj(5, {"instructions_done": True})) is True

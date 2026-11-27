@@ -149,6 +149,8 @@
 | M3 MiniMax 逐段情绪 | ✅ 已实现 | `db/models.py` + `db/session.py`（新增 `ProjectDialogue.emotion` 列，旧库自动迁移）、`services/dialogue_style.py`（新，LLM 生成情绪）、`services/project.py`（minimax 不再跳过语气阶段）、`services/chapter.py` + `services/build.py`（逐段透传/纳入 digest） |
 | M4 长书健壮性（核心） | ✅ 已实现 | `services/project.py`（角色去重遇 422/异常降级不中断，解决《仙途遗祸》致命失败）、`services/dialogue.py`（空结果改为引号补全而非整批抛错） |
 | M5 音色/响度/发音 | ✅ 音色兜底 + 响度归一已实现；发音沿用人工规则 | `services/build.py`（`_guess_gender_from_name` + 未知性别按分类/名字兜底；`_normalize_chapter_loudness` 章节 loudnorm -16 LUFS）、`core/config.py`（`AUDIO_LOUDNESS_*`）。发音规则 `ProjectPronunciationRule` 仍手工维护、构建时应用 |
+| M-QA 章级质检 | ✅ 已实现 | `services/chapter_qa.py`（新）、`services/build.py:_h5_quality_summary`（逐章 reasons：时长异常/漏识别/未知/低置信） |
+| 提前落盘章节 | ✅ 已实现 | `services/project.py` 切章+清洗后立即 `save_chapters` |
 | M6 产能 | ⏳ 未实现 | 后续迭代 |
 
 **验证**
@@ -157,3 +159,16 @@
 - 真实《元尊》前 120 章回归：见 `docs/quality-sample-diff.md`（旧逻辑 113/120 章存在「旁白吞对白」，新逻辑 0）。
 
 **注意**：新代码需用户执行 `/opt/audio-book/reinstall.sh` 重启后生效（遵循 AGENTS.md 不代部署）；真实音频样章需在新代码运行后再生成（详见样章对比文档）。
+
+---
+
+## 7. 分阶段架构改造（Phase，按用户批准推进）
+
+**Phase 1（已实现并部署）**
+- 提前落盘章节（切章+清洗后立即写 `project_chapters`/`chapter_count`），长书失败不再「0 章」。
+- 章级质检 M-QA（`services/chapter_qa.py`）：时长/字数比、引号句漏识别、未知/低置信说话人；`quality_report.suspicious` 带 `reasons`。
+- 失败收尾：仅当「已落盘且有 `project_dialogues` 行」才置 `partial_success`，避免产出整本旁白平读的坏成品（真正的「按已完成章构建」在 Phase 2 落地）。
+
+**Phase 2（待实现）**：prepare 重构为「A 全局实体分析（角色/去重/音色/资料）」+「B 章节级独立 worker（并发/限流/章级 checkpoint、逐章落盘对白与情绪）」，并支持按已完成章构建 / 单章重试。
+
+**Phase 3（待实现）**：超长书自动分卷（每 N 章一个子构建）+ 逐章试听/校对工作流。

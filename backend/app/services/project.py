@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from pydantic import BaseModel
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 
 from ..core.config import settings
 import re as _re
@@ -1091,19 +1091,59 @@ async def _run_prepare_project_in_background(
                 pass
 
 
+def _prepare_reached_partial(proj: "Project | None") -> bool:
+    """判断一次失败的 prepare 是否已产出「可构建」的部分成果。
+
+    条件：已提前落盘章节，且识别已推进到对白完成/语气/音色阶段（有已完成对白章）。
+    ⚠️ 仅看 progress 还不够：对白是否真的**落库**由 `_mark_project_failed` 再查
+    project_dialogues 行数确认，避免「内存里有对白、库里没有 → 构建成整本旁白」。
+    """
+    if proj is None or (proj.chapter_count or 0) <= 0:
+        return False
+    try:
+        prog = json.loads(proj.progress_json or "{}")
+        if not isinstance(prog, dict):
+            prog = {}
+    except Exception:
+        prog = {}
+    if prog.get("dialogue_completed_chapters"):
+        return True
+    stage = str(prog.get("stage") or "")
+    return bool(prog.get("instructions_done")) or stage in (
+        "instructions", "voice_recs", "done", "partial",
+    )
+
+
 async def _mark_project_failed(project_id: str) -> None:
-    """把项目置为 failed，不抛异常。"""
+    """把项目置为 failed；仅当「已落盘且有对白数据」的部分成果才置 partial_success。"""
     factory = get_session_factory()
     try:
         async with factory() as sess:
             proj = await sess.get(Project, project_id)
-            if proj and proj.status not in ("ready", "failed"):
+            if not proj or proj.status in ("ready", "failed", "partial_success", "done"):
+                return
+            partial = False
+            if _prepare_reached_partial(proj):
+                # 关键安全门：确认 project_dialogues 已有行（否则构建会变成整本旁白平读）
+                cnt = (await sess.execute(
+                    select(func.count()).select_from(ProjectDialogue).where(
+                        ProjectDialogue.project_id == project_id
+                    )
+                )).scalar() or 0
+                partial = cnt > 0
+            if partial:
+                proj.status = "partial_success"
+                logger.warning(
+                    f"[project_prepare] project_id={project_id[:8]}... "
+                    f"识别未全部完成但已有落盘对白 → status=partial_success（可先构建已识别章）"
+                )
+            else:
                 proj.status = "failed"
-                await sess.commit()
+            await sess.commit()
     except Exception as e:
         logger.warning(
             f"[project_prepare] project_id={project_id[:8]}... "
-            f"写 status=failed 失败: {type(e).__name__}: {e}"
+            f"写 status 失败: {type(e).__name__}: {e}"
         )
 
 
@@ -1499,6 +1539,27 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                     f"[project_prepare] 元文本清洗失败，保留原文："
                     f"{type(_ce).__name__}: {_ce}"
                 )
+
+        # 2.6 提前落盘章节（Phase1）：切章 + 清洗后立刻持久化 chapters/chapter_count，
+        #     长书后续任何阶段失败也不至于 chapter_count=0；章节列表立即可见、可断点。
+        try:
+            async with factory() as _cs:
+                _p_early = await _cs.get(Project, project_id)
+                if _p_early is not None:
+                    _p_early.chapter_count = len(chapters)
+                    _p_early.chapters_json = json.dumps(
+                        [{"idx": c.idx, "title": c.title, "text": c.text} for c in chapters],
+                        ensure_ascii=False,
+                    )
+                    await save_chapters(_cs, project_id, chapters)
+                    await _cs.commit()
+            logger.info(
+                f"[project_prepare] project_id={project_id[:8]}... 提前落盘章节 {len(chapters)} 章"
+            )
+        except Exception as _pe:
+            logger.warning(
+                f"[project_prepare] 提前落盘章节失败（不影响识别）：{type(_pe).__name__}: {_pe}"
+            )
 
         # F-8：算一下这次 prepare 大概要串行多少次 LLM 调用，并在「调用量大 + 并发=1」时
         # 明确提示。背景：LLM_MAX_CONCURRENCY=1 是为了避免按量套餐 RPM 429 的保守默认值，
@@ -2942,18 +3003,14 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             voice_recommendations=[r.model_dump() for r in voice_recs],
         )
     except Exception as e:
-        # 任何失败都把项目置为 failed，便于前端显示
+        # 失败收尾：已有部分成果则 partial_success（可先构建已识别章），否则 failed
         logger.error(
             f"[project_prepare] FAIL project_id={project_id[:8]}... "
             f"{type(e).__name__}: {e}",
             exc_info=True,
         )
         try:
-            async with factory() as s2:
-                p2 = await s2.get(Project, project_id)
-                if p2:
-                    p2.status = "failed"
-                    await s2.commit()
+            await _mark_project_failed(project_id)
         except Exception:
             pass
         raise
