@@ -169,9 +169,13 @@
 - 章级质检 M-QA（`services/chapter_qa.py`）：时长/字数比、引号句漏识别、未知/低置信说话人；`quality_report.suspicious` 带 `reasons`。
 - 失败收尾：仅当「已落盘且有 `project_dialogues` 行」才置 `partial_success`，避免产出整本旁白平读的坏成品（真正的「按已完成章构建」在 Phase 2 落地）。
 
-**Phase 2（本轮已落地核心；端到端章节 worker 化待续）**
+**Phase 2（已落地）**
 - 章节级增量落盘：对白阶段每批处理完立即写该批章节的 `project_dialogues`（`_replace_chapter_dialogues`），长书中途失败时已完成批次的对白已入库，可断点续跑/部分构建。
 - 部分构建：`start_build` 在 `project.status=partial_success` 且有 `dialogue_completed_chapters` 时，**只构建已识别章节**（`_select_build_chapters`），未识别章不会被合成成整本旁白平读。
-- 待续：把情绪/指令阶段也并入"逐章 worker"（真正端到端独立 + 章级并发限流）。
+- 情绪/指令逐章写回：情绪/指令阶段生成后立即按章 UPDATE 已落盘对白行的 emotion/instruction，后续阶段失败时部分构建也能带情绪（而非回落 calm）。
 
-**Phase 3（待实现）**：超长书自动分卷（每 N 章一个子构建）+ 逐章试听/校对工作流。
+**Phase 3（后端已落地，UI 待接）**
+- `plan_volumes(total, max_per_volume)`：把超长书按每卷 N 章（默认 `BUILD_VOLUME_MAX_CHAPTERS=200` 常量兜底）切卷。
+- `start_build(..., chapter_range=(start,end))`：只构建指定章区间（分卷构建）；与 partial_success 的已识别章集合可叠加。
+- 逐章试听：构建页已支持单章播放/下载（既有能力）。
+- 待接：前端"按卷构建/可疑章重跑"按钮（后端 `retry-failed` 已支持 `chapters` 指定章）。
