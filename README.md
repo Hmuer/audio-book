@@ -108,7 +108,7 @@ cp .env.example "${NOVEL_TTS_HOME:-$HOME/.novel-tts}/.env"
 
 设置页支持 **MiniMax（LLM 与 TTS）**、**豆包 TTS**、**OpenAI 兼容 LLM** 与自定义 LLM 端点。`PROVIDERS_CONFIG` 保存厂商信息，`ACTIVE_TTS_PROVIDER` / `ACTIVE_TTS_MODEL` / `ACTIVE_LLM_PROVIDER` / `ACTIVE_LLM_MODEL` 指向激活的模型。旧的 `LLM_BASE_URL` / `LLM_MODEL_PRO` / `LLM_MODEL_FAST` 字段仅用于迁移，设置页不展示。
 
-**思考模式开关（默认关闭）**：每个 LLM 模型条目带 `thinking` 布尔字段，设置页 LLM 模型行内显示「思考·开/关」按钮，默认关闭。关闭时：MiniMax 下发 `thinking: {"type":"disabled"}`；其它 OpenAI 兼容厂商下发 `enable_thinking: false` 并使用 `response_format=json_object`（schema 写入 system prompt 约束）。开启思考则保留模型默认推理行为（更慢、更耗 token）。任意 OpenAI 兼容端点（如 **Magpie**：Base URL `https://magpie.ls-lh.cn/v1`、模型 `group/tiered`）都可直接作为一个厂商卡片添加，并在「激活 LLM」中选用；切换后 `PUT /providers` 会即时清空 LLM 实例缓存生效，无需重启。
+**思考模式开关（默认关闭）**：每个 LLM 模型条目带 `thinking` 布尔字段，设置页 LLM 模型行内显示「思考·开/关」按钮，默认关闭。关闭时统一向网关下发 `thinking: {"type":"disabled"}`（对 MiniMax 直连与 magpie 等 OpenAI 兼容网关通用；实测 magpie 不认 `enable_thinking:false`，会仍思考并把 `<think>` 泄进正文导致非法 JSON），并使用 `response_format=json_object`（schema 写入 system prompt 约束）。开启思考则不强制关闭、保留模型默认推理行为（更慢、更耗 token）。任意 OpenAI 兼容端点（如 **Magpie**：Base URL `https://magpie.ls-lh.cn/v1`、LLM 模型 `group/book`）都可直接作为一个厂商卡片添加，并在「激活 LLM」中选用；切换后 `PUT /providers` 会即时清空 LLM 实例缓存生效，无需重启。
 
 具体厂商卡片配置请在「设置」页按厂商填写 API Key（仅管理员可见明文；其他用户只能看到脱敏后的 `***LAST4`）。
 

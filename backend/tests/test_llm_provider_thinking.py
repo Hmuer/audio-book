@@ -1,8 +1,8 @@
 """多厂商 LLM 通用化 + 思考模式开关测试。
 
 - 任意激活的 OpenAI 兼容厂商（如 magpie group/tiered）都能驱动同一个 LLM provider；
-- 请求体：MiniMax 用 json_schema + thinking disabled；其它厂商用 json_object + enable_thinking；
-- 思考开关默认关闭（thinking=False → enable_thinking=False / minimax thinking=disabled）。
+- 请求体：MiniMax 用 json_schema + thinking disabled；其它厂商用 json_object + thinking:disabled；
+- 思考开关默认关闭（thinking=False → 非MiniMax thinking=disabled / minimax thinking=disabled）。
 """
 from __future__ import annotations
 
@@ -83,8 +83,9 @@ async def test_magpie_openai_compat_thinking_off(monkeypatch):
     body = captured["json"]
     assert body["model"] == "group/tiered"
     assert body["response_format"]["type"] == "json_object"
-    assert body["enable_thinking"] is False
-    assert "thinking" not in body and "reasoning_split" not in body
+    # 非 MiniMax 网关用 thinking:{type:disabled} 关思考（enable_thinking 在 magpie 不生效）
+    assert body["thinking"] == {"type": "disabled"}
+    assert "enable_thinking" not in body and "reasoning_split" not in body
     assert captured["url"].endswith("/v1/chat/completions")
 
 
@@ -103,7 +104,8 @@ async def test_magpie_thinking_on(monkeypatch):
     prov = llm_mod.MiniMaxLLMProvider()
     assert prov.thinking_enabled is True
     await prov.chat_structured("返回 ok", _R, max_retries=1)
-    assert captured["json"]["enable_thinking"] is True
+    assert captured["json"].get("enable_thinking") is None
+    assert "thinking" not in captured["json"]  # 开启思考时不强制 disabled
 
 
 @pytest.mark.asyncio

@@ -491,7 +491,7 @@ class MiniMaxLLMProvider(BaseLLMProvider):
             use_model = self.model_pro if thinking_loop_detected else model
             use_reasoning_split = not thinking_loop_detected
             # 组装请求体：MiniMax 用 json_schema + thinking/reasoning_split 控制；
-            # 其它 OpenAI 兼容网关（如 magpie）用 json_object + enable_thinking 开关。
+            # 其它 OpenAI 兼容网关（如 magpie）用 json_object + thinking 关闭开关。
             req_json = {
                 "model": use_model,
                 "temperature": min(temperature + (attempt - 1) * 0.1, 1.0),
@@ -512,8 +512,12 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                 req_json["reasoning_split"] = use_reasoning_split
             else:
                 req_json["response_format"] = {"type": "json_object"}
-                # 思考模式开关：默认关闭 → enable_thinking=false
-                req_json["enable_thinking"] = bool(self.thinking_enabled)
+                # 思考模式开关：关闭时发 thinking:{"type":"disabled"}。
+                # 实测 magpie 网关不认 enable_thinking=false（仍会思考并把 <think> 泄进正文
+                # → 非法 JSON）；thinking:{type:disabled} 对 magpie 各上游(minimax/deepseek/官方组)
+                # 通用生效。开启思考时不发该字段，保留模型默认推理。
+                if not self.thinking_enabled:
+                    req_json["thinking"] = {"type": "disabled"}
             try:
                 # 关键：在 semaphore 内发请求，限流同时并发的 HTTP 调用数
                 # 业务层 asyncio.gather 多个 LLM 调用时，这里会强制排队
