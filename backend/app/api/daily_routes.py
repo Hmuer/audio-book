@@ -298,50 +298,72 @@ async def daily_issue_audio(
     )
 
 
-@router.get("/issues/{date}/subtitles.srt")
-async def daily_issue_subtitles(
-    date: str,
-    access: str = Depends(daily_audio_access),
-):
-    """字幕（SRT）。新期数用 TTS 分段真实计时；老期数按字数比例兜底。"""
+def _subtitle_payload(date: str, kind: str) -> tuple[str, str, str]:
+    """返回 (text, media_type, 后缀)；kind = srt | lrc。"""
     from ..services.daily import subtitles
 
+    base = store.issue_dir(date)
+    meta = store.load_meta(date)
+    if kind == "lrc":
+        path = base / store.SUBTITLES_LRC_NAME
+        if path.is_file():
+            return path.read_text(encoding="utf-8"), "text/plain; charset=utf-8", "lrc"
+        detail = store.read_issue(date)
+        text = subtitles.build_lrc_from_script(
+            detail["script_md"], int(meta.get("duration_ms") or 0),
+        )
+        return text, "text/plain; charset=utf-8", "lrc"
+    path = base / store.SUBTITLES_NAME
+    if path.is_file():
+        return path.read_text(encoding="utf-8"), "application/x-subrip; charset=utf-8", "srt"
+    detail = store.read_issue(date)
+    text = subtitles.build_from_script(detail["script_md"], int(meta.get("duration_ms") or 0))
+    return text, "application/x-subrip; charset=utf-8", "srt"
+
+
+async def _subtitles_response(date: str, kind: str, access: str) -> Response:
     try:
-        base = store.issue_dir(date)
         meta = store.load_meta(date)
     except DailyError as e:
         raise HTTPException(404, str(e))
     if access == "feed" and store.issue_summary(meta)["status"] != "approved":
         raise HTTPException(403, "本期还未通过人工审核，不能通过订阅源访问")
-
-    srt_path = base / store.SUBTITLES_NAME
-    if srt_path.is_file():
-        text = srt_path.read_text(encoding="utf-8")
-    else:
-        detail = store.read_issue(date)
-        text = subtitles.build_from_script(detail["script_md"], int(meta.get("duration_ms") or 0))
+    text, media_type, suffix = _subtitle_payload(date, kind)
     if not text:
         raise HTTPException(404, "本期还没有字幕")
-
     title = str(meta.get("title") or date).replace("/", "_").replace("\\", "_")
     from urllib.parse import quote as _quote
 
     return Response(
         content=text,
-        media_type="application/x-subrip; charset=utf-8",
+        media_type=media_type,
         headers={
             "Content-Disposition": (
-                f'inline; filename="tech-daily-{date}.srt"; '
-                f"filename*=UTF-8''{_quote(f'{title}.srt')}"
+                f'inline; filename="tech-daily-{date}.{suffix}"; '
+                f"filename*=UTF-8''{_quote(f'{title}.{suffix}')}"
             ),
             "Cache-Control": "private, max-age=600",
         },
     )
 
 
-# =====================================================================
-# 人工终审
-# =====================================================================
+@router.get("/issues/{date}/subtitles.srt")
+async def daily_issue_subtitles(
+    date: str,
+    access: str = Depends(daily_audio_access),
+):
+    """字幕（SRT）。新期数用 TTS 分段真实计时；老期数按字数比例兜底。"""
+    return await _subtitles_response(date, "srt", access)
+
+
+@router.get("/issues/{date}/subtitles.lrc")
+async def daily_issue_subtitles_lrc(
+    date: str,
+    access: str = Depends(daily_audio_access),
+):
+    """字幕（LRC，喜马拉雅上传用）。"""
+    return await _subtitles_response(date, "lrc", access)
+
 
 @router.get("/issues/{date}/export")
 async def daily_issue_export(

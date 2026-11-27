@@ -1546,12 +1546,12 @@ function DailyDetail({ date }: { date: string }) {
           )}
           {hasAudio && (
             <a
-              href={api.dailySubtitlesUrl(date)}
+              href={api.dailyLrcUrl(date)}
               download
               className="text-brand-500 hover:underline"
-              title="下载字幕（SRT，可直接上传喜马拉雅）"
+              title="下载字幕（LRC，喜马拉雅上传格式）"
             >
-              下载字幕（SRT）
+              下载字幕（LRC）
             </a>
           )}
         </div>

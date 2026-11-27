@@ -219,6 +219,10 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
         subtitles.build_from_timings(timings)
         if timings else subtitles.build_from_script(script.text, duration_ms)
     )
+    lrc = (
+        subtitles.build_lrc_from_timings(timings)
+        if timings else subtitles.build_lrc_from_script(script.text, duration_ms)
+    )
     store.append_run_log(
         f"[tts] {tts_stats['segments']} 段 / {duration_ms / 1000:.0f}s / "
         f"{len(audio) / 1024 / 1024:.1f} MB / 字幕 {srt.count('-->')} 条"
@@ -266,6 +270,7 @@ async def run_pipeline(*, date: str | None = None, max_items: int | None = None)
         duration_ms=int(duration_ms),
         meta=meta,
         subtitles_srt=srt,
+        subtitles_lrc=lrc,
     )
 
     store.write_run_status(

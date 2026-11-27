@@ -24,6 +24,64 @@ def _ts(ms: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{milli:03d}"
 
 
+def _lrc_ts(ms: int) -> str:
+    ms = max(0, int(ms))
+    h, rem = divmod(ms, 3600_000)
+    m, rem = divmod(rem, 60_000)
+    sec, milli = divmod(rem, 1000)
+    return f"[{h:02d}:{m:02d}:{sec:02d}.{milli:03d}]"
+
+
+def build_lrc(rows: list[tuple[int, int, str]]) -> str:
+    """rows: [(start_ms, end_ms, text)] → LRC（喜马拉雅字幕格式：整行一个时间戳）。
+
+    喜马拉雅示例：`[00:00:11.780] 我一直在寻找一个理由`。LRC 没有结束时间，
+    每行持续到下一行开始，所以这里只需要起始时间。
+    """
+    lines: list[str] = []
+    for start, _end, text in rows:
+        clean = (text or "").replace("\n", " ").strip()
+        if clean:
+            lines.append(f"{_lrc_ts(start)}{clean}")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+_SNIP_SEPS = ("，", "。", "；", "、", "：", ",", " ", "！", "？", "!", "?")
+
+
+def _cut_point(text: str, max_chars: int) -> int:
+    """在 max_chars 附近找一个"不切断英文单词/数字"的切点。"""
+    if len(text) <= max_chars:
+        return len(text)
+    window = text[:max_chars]
+    for sep in _SNIP_SEPS:
+        idx = window.rfind(sep)
+        if idx >= max(4, max_chars // 2):
+            return idx + len(sep)
+    # 没找到标点：避免把 Kubernetes 这类英文词切成两半
+    idx = max_chars
+    if idx < len(text) and text[idx - 1].isascii() and text[idx - 1].isalnum() \
+            and text[idx].isascii() and text[idx].isalnum():
+        j = idx
+        while j > 0 and text[j - 1].isascii() and text[j - 1].isalnum():
+            j -= 1
+        if j > 0:
+            idx = j
+    return idx
+
+
+def _split_long(text: str, max_chars: int) -> list[str]:
+    out: list[str] = []
+    rest = text
+    while len(rest) > max_chars:
+        cut = _cut_point(rest, max_chars)
+        out.append(rest[:cut])
+        rest = rest[cut:]
+    if rest:
+        out.append(rest)
+    return out
+
+
 def split_cues(text: str, max_chars: int = MAX_CUE) -> list[str]:
     """把一段文本切成适合做字幕的短句（优先按句号，再按逗号）。"""
     raw = (text or "").strip()
@@ -48,11 +106,8 @@ def split_cues(text: str, max_chars: int = MAX_CUE) -> list[str]:
                 if buf:
                     cues.append(buf)
                 buf = clause
-                while len(buf) > max_chars:
-                    cues.append(buf[:max_chars])
-                    buf = buf[max_chars:]
         if buf:
-            cues.append(buf)
+            cues.extend(_split_long(buf, max_chars))
     # 合并过短的尾巴
     merged: list[str] = []
     for cue in cues:
@@ -107,3 +162,37 @@ def build_from_script(text: str, duration_ms: int) -> str:
         rows.append((acc, acc + span, cue))
         acc += span
     return build_srt(rows)
+
+
+def build_lrc_from_timings(timings: list[dict[str, Any]]) -> str:
+    """按 TTS 分块真实时长生成 LRC（与 SRT 使用同一套切分逻辑）。"""
+    rows: list[tuple[int, int, str]] = []
+    for item in timings or []:
+        text = str(item.get("text") or "")
+        start = int(item.get("start_ms") or 0)
+        duration = int(item.get("duration_ms") or 0)
+        cues = split_cues(text)
+        if not cues or duration <= 0:
+            continue
+        total_chars = sum(len(c) for c in cues) or 1
+        acc = start
+        for cue in cues:
+            span = max(MIN_CUE_MS, int(duration * len(cue) / total_chars))
+            rows.append((acc, acc + span, cue))
+            acc += span
+    return build_lrc(rows)
+
+
+def build_lrc_from_script(text: str, duration_ms: int) -> str:
+    """兜底：没有计时数据的老期数按字数比例投影。"""
+    cues = split_cues(text)
+    if not cues or duration_ms <= 0:
+        return ""
+    total_chars = sum(len(c) for c in cues) or 1
+    rows: list[tuple[int, int, str]] = []
+    acc = 0
+    for cue in cues:
+        span = max(MIN_CUE_MS, int(duration_ms * len(cue) / total_chars))
+        rows.append((acc, acc + span, cue))
+        acc += span
+    return build_lrc(rows)

@@ -523,6 +523,12 @@ export const api = {
       }),
     }),
   dailyRunStatus: () => _fetch<DailyRunStatusResp>('/api/daily/run/status'),
+  /** 字幕 LRC 直链（喜马拉雅上传格式，带 JWT query） */
+  dailyLrcUrl: (date: string): string => {
+    const token = getToken();
+    const base = `/api/daily/issues/${encodeURIComponent(date)}/subtitles.lrc`;
+    return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+  },
   /** 字幕 SRT 直链（带 JWT query；JWT 或 approved 的 feed key 均可） */
   dailySubtitlesUrl: (date: string): string => {
     const token = getToken();

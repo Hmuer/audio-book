@@ -275,6 +275,8 @@ async def test_run_pipeline_end_to_end(monkeypatch, tmp_path):
     assert "https://example.com/" in detail["shownotes_md"]
     srt = (store.issue_dir("2025-11-24") / "subtitles.srt").read_text(encoding="utf-8")
     assert "00:00:00,000 --> " in srt and srt.strip()
+    lrc = (store.issue_dir("2025-11-24") / "subtitles.lrc").read_text(encoding="utf-8")
+    assert lrc.startswith("[00:00:00.000]")
 
     status = store.read_run_status()
     assert status["status"] == "success"
@@ -594,3 +596,28 @@ def test_split_chunks_merges_llm_sentence_paragraphs():
     assert len(chunks) <= 15, f"块数过多: {len(chunks)}"
     assert all(len(c) <= 500 for c, _ in chunks)
     assert all(len(c) >= 100 for c, _ in chunks[:-1]), "除末块外不应有碎块"
+
+
+def test_lrc_format():
+    from backend.app.services.daily.subtitles import (
+        build_lrc_from_script, build_lrc_from_timings,
+    )
+
+    lrc = build_lrc_from_timings([
+        {"text": "第一段。第二段。", "start_ms": 0, "duration_ms": 2000},
+        {"text": "第三段。", "start_ms": 2350, "duration_ms": 1000},
+    ])
+    assert lrc.startswith("[00:00:00.000]")
+    assert "第二段" in lrc and "第三段" in lrc
+    assert "-->" not in lrc
+    approx = build_lrc_from_script("这是口播稿。这是第二句。", 6000)
+    assert approx.startswith("[00:00:00.000]")
+
+
+def test_lrc_does_not_split_english_words():
+    from backend.app.services.daily.subtitles import split_cues
+
+    cues = split_cues("今天聊聊GPUWorks接入Kubernetes和Slurm，再看机器人如何拥有可修正的三维地图与跨任务记忆。", max_chars=22)
+    flat = "".join(cues)
+    assert "Kubernetes" in flat, cues
+    assert "Slurm" in flat, cues

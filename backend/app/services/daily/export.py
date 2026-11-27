@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Any
 
 from .constants import TOPIC_TERMS, show_config
-from .store import AUDIO_NAME, SUBTITLES_NAME, issue_dir
+from .store import AUDIO_NAME, SUBTITLES_LRC_NAME, SUBTITLES_NAME, issue_dir
 from . import subtitles
 
 
@@ -83,7 +83,7 @@ def _upload_title(show_title: str, date: str, title: str) -> str:
     return f"{date}｜{topic[:room]}"
 
 
-def _upload_guide(date: str, mp3_name: str, srt_name: str) -> str:
+def _upload_guide(date: str, mp3_name: str, srt_name: str, lrc_name: str) -> str:
     return f"""科技前沿日报 · 上架说明（{date}）
 
 一、喜马拉雅创作中心（手动上传，约 1–2 分钟）
@@ -95,7 +95,8 @@ def _upload_guide(date: str, mp3_name: str, srt_name: str) -> str:
 5. 标签参考「标签.txt」，按平台限制挑选；
 6. 分类选择「科技 / 资讯」附近的热门分类（按后台实际选项为准）；
 7. 「是否 AI 合成」按实际情况选择（本节目为 AI 辅助制作，应如实勾选）；
-8. 字幕文件选择本包里的「{srt_name}」；
+8. 字幕文件选择本包里的「{lrc_name}」（喜马拉雅要求 LRC 格式；
+   .srt 留给其他平台，时间轴相同）；
 9. 提交审核。
 
 二、注意事项
@@ -123,6 +124,7 @@ def build_package(date: str, meta: dict[str, Any], *, shownotes_md: str, script_
     safe_title = _safe_name(upload_title, f"{show['title']} {date}")
     mp3_name = f"{safe_title}.mp3"
     srt_name = f"{safe_title}.srt"
+    lrc_name = f"{safe_title}.lrc"
 
     tags = suggest_tags(meta)
     meta_json = {
@@ -152,12 +154,21 @@ def build_package(date: str, meta: dict[str, Any], *, shownotes_md: str, script_
             srt_text = subtitles.build_from_script(script_md, int(meta.get("duration_ms") or 0))
         if srt_text:
             zf.writestr(srt_name, srt_text)
+        lrc_path = base / SUBTITLES_LRC_NAME
+        if lrc_path.is_file():
+            lrc_text = lrc_path.read_text(encoding="utf-8")
+        else:
+            lrc_text = subtitles.build_lrc_from_script(
+                script_md, int(meta.get("duration_ms") or 0),
+            )
+        if lrc_text:
+            zf.writestr(lrc_name, lrc_text)
         zf.writestr("标题.txt", upload_title + "\n")
         zf.writestr("简介.txt", _plain_markdown(shownotes_md))
         zf.writestr("节目简介.md", shownotes_md or "")
         zf.writestr("标签.txt", "、".join(tags) + "\n")
         zf.writestr("元数据.json", json.dumps(meta_json, ensure_ascii=False, indent=2))
-        zf.writestr("上传说明.txt", _upload_guide(date, mp3_name, srt_name))
+        zf.writestr("上传说明.txt", _upload_guide(date, mp3_name, srt_name, lrc_name))
         if script_md:
             zf.writestr("口播稿.txt", script_md + "\n")
     return buf.getvalue()

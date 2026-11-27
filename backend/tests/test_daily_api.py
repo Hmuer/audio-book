@@ -375,7 +375,10 @@ async def test_daily_export_package(_isolate_data_dir, daily_env, admin_token):
         zf = zipfile.ZipFile(io.BytesIO(r.content))
         names = zf.namelist()
         assert "科技前沿日报 2025-11-24｜测试标题.mp3" in names
-        assert any(n.endswith(".srt") for n in names), "上架包应包含字幕"
+        assert any(n.endswith(".srt") for n in names), "上架包应包含 SRT"
+        lrc = [n for n in names if n.endswith(".lrc")]
+        assert lrc, "上架包应包含 LRC（喜马拉雅格式）"
+        assert zf.read(lrc[0]).decode().startswith("[00:00:00.000]"), "LRC 应为 [HH:MM:SS.mmm] 时间轴"
         for required in ("标题.txt", "简介.txt", "标签.txt", "元数据.json", "上传说明.txt"):
             assert required in names
         assert "AI 辅助" in zf.read("上传说明.txt").decode("utf-8")
@@ -403,3 +406,25 @@ async def test_daily_subtitles_endpoint(_isolate_data_dir, daily_env, admin_toke
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         r = await c.get(f"/api/daily/issues/{DATE}/subtitles.srt", params={"key": "test-feed-key"})
         assert r.status_code == 200 and "-->" in r.text
+
+
+@pytest.mark.asyncio
+async def test_daily_lrc_endpoint(_isolate_data_dir, daily_env, admin_token):
+    """LRC 字幕：格式符合喜马拉雅（[00:00:00.000] 开头），权限与 SRT 一致。"""
+    from httpx import ASGITransport, AsyncClient
+    from backend.app.main import app
+
+    async with _client(admin_token) as c:
+        r = await c.get(f"/api/daily/issues/{DATE}/subtitles.lrc")
+        assert r.status_code == 200
+        assert r.text.startswith("[00:00:00.000]")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.get(f"/api/daily/issues/{DATE}/subtitles.lrc", params={"key": "test-feed-key"})
+        assert r.status_code == 403
+
+    async with _client(admin_token) as c:
+        await c.post(f"/api/daily/issues/{DATE}/review", json={"decision": "approve"})
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.get(f"/api/daily/issues/{DATE}/subtitles.lrc", params={"key": "test-feed-key"})
+        assert r.status_code == 200 and r.text.startswith("[")
