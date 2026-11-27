@@ -1035,6 +1035,8 @@ export interface ProviderModel {
   id: string;
   label: string;
   kind: 'tts' | 'llm' | 'image';
+  /** 仅 LLM：是否开启思考模式（默认关闭）。 */
+  thinking?: boolean;
 }
 export interface ProviderConfig {
   id: string;

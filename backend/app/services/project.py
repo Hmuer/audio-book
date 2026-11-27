@@ -838,7 +838,9 @@ def _stage_timing_touch(prog: dict, stage: str, *, end: bool = False) -> None:
     now_ms = _now_ms()
     st.setdefault("started_ms", now_ms)
     if end:
-        st["elapsed_ms"] = now_ms - int(st.get("started_ms") or now_ms)
+        # 幂等：已写死 elapsed_ms 后再次 end 不再随 now 漂移（避免 1ms 抖动）
+        if "elapsed_ms" not in st:
+            st["elapsed_ms"] = now_ms - int(st.get("started_ms") or now_ms)
 
 
 def _stamp_server_now(prog: dict) -> None:

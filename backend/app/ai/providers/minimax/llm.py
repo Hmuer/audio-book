@@ -381,25 +381,33 @@ class MiniMaxLLMProvider(BaseLLMProvider):
     def __init__(self, api_key: str | None = None, base_url: str | None = None,
                  model_pro: str | None = None, model_fast: str | None = None,
                  extra_headers: dict[str, str] | None = None):
-        # 优先取多厂商配置；不再需要 fast/pro 双模型区分（用户要求合并为一个激活模型）
-        from ....core.config import get_active_llm_provider
+        # 支持任意激活厂商的 OpenAI 兼容 LLM（minimax / magpie / 其他自定义）。
+        from ....core.config import get_active_llm_provider, get_active
         prov = get_active_llm_provider()
-        if prov and prov.get("id") == "minimax" and prov.get("api_key"):
+        _, active_mid, _ = get_active("llm")
+        self.provider_id = "minimax"
+        self.thinking_enabled = False
+        if prov and prov.get("api_key"):
+            self.provider_id = str(prov.get("id") or "minimax")
             self.api_key = api_key or prov["api_key"]
             self.base_url = (base_url or prov.get("base_url") or settings.LLM_BASE_URL).rstrip("/")
-            # 单一激活模型：fast/pro 共用
-            single = settings.ACTIVE_LLM_MODEL or "MiniMax-M3"
-            self.model_pro = single
-            self.model_fast = single
+            single = active_mid or settings.ACTIVE_LLM_MODEL or "MiniMax-M3"
             self.extra_headers = dict(prov.get("extra_headers") or {})
+            # 思考模式开关：读激活模型条目上的 thinking（默认关闭）
+            mid_to_find = active_mid or settings.ACTIVE_LLM_MODEL
+            mentry = next(
+                (m for m in (prov.get("models") or []) if m.get("id") == mid_to_find), {}
+            ) or {}
+            self.thinking_enabled = bool(mentry.get("thinking", False))
         else:
             self.api_key = api_key or settings.LLM_API_KEY
             self.base_url = (base_url or settings.LLM_BASE_URL).rstrip("/")
             # 兜底：.env LLM_MODEL_PRO / LLM_MODEL_FAST；用户已确认 fast/pro 合并
-            single = settings.ACTIVE_LLM_MODEL or settings.LLM_MODEL_PRO or "MiniMax-M3"
-            self.model_pro = single
-            self.model_fast = single
+            single = active_mid or settings.ACTIVE_LLM_MODEL or settings.LLM_MODEL_PRO or "MiniMax-M3"
             self.extra_headers = dict(extra_headers or {})
+            self.thinking_enabled = False
+        self.model_pro = single
+        self.model_fast = single
         self.timeout = httpx.Timeout(
             connect=settings.LLM_TIMEOUT,
             read=settings.LLM_TIMEOUT,
@@ -437,6 +445,17 @@ class MiniMaxLLMProvider(BaseLLMProvider):
         # schema 是否期望"对象"顶层：决定 JSON 兜底提取时优先选 { } 而不是 [ ]
         expect_object = schema_dict.get("type") == "object"
         required_keys = tuple(schema_dict.get("required") or ())
+        # 非 MiniMax 的 OpenAI 兼容网关（如 magpie）：用 json_object 模式，必须把 schema
+        # 明确写进 system prompt，否则模型不知道字段。
+        if self.provider_id != "minimax":
+            try:
+                sys_prompt = (
+                    sys_prompt
+                    + "\n必须只返回**一个**符合此 JSON Schema 的 JSON 对象（不要 markdown/代码块/解释）：\n"
+                    + json.dumps(schema_dict, ensure_ascii=False)
+                )
+            except Exception:
+                pass
         prompt_chars = len(prompt) + len(sys_prompt)
 
         total_start = _time.perf_counter()
@@ -471,6 +490,30 @@ class MiniMaxLLMProvider(BaseLLMProvider):
             # 检测到 thinking 循环时，重试切换到 M3（可真正关闭 thinking，不会循环）
             use_model = self.model_pro if thinking_loop_detected else model
             use_reasoning_split = not thinking_loop_detected
+            # 组装请求体：MiniMax 用 json_schema + thinking/reasoning_split 控制；
+            # 其它 OpenAI 兼容网关（如 magpie）用 json_object + enable_thinking 开关。
+            req_json = {
+                "model": use_model,
+                "temperature": min(temperature + (attempt - 1) * 0.1, 1.0),
+                "max_tokens": max_tokens,
+                "messages": [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": prompt + attempt_hint},
+                ],
+            }
+            if self.provider_id == "minimax":
+                req_json["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {"name": schema_name, "schema": schema_dict, "strict": False},
+                }
+                # thinking 控制：默认关闭（不开启思考）；仅当开关打开时保留 adaptive。
+                if not self.thinking_enabled:
+                    req_json["thinking"] = {"type": "disabled"}
+                req_json["reasoning_split"] = use_reasoning_split
+            else:
+                req_json["response_format"] = {"type": "json_object"}
+                # 思考模式开关：默认关闭 → enable_thinking=false
+                req_json["enable_thinking"] = bool(self.thinking_enabled)
             try:
                 # 关键：在 semaphore 内发请求，限流同时并发的 HTTP 调用数
                 # 业务层 asyncio.gather 多个 LLM 调用时，这里会强制排队
@@ -482,32 +525,7 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                                 "Authorization": f"Bearer {self.api_key}",
                                 "Content-Type": "application/json",
                             },
-                            json={
-                                "model": use_model,
-                                "temperature": min(temperature + (attempt - 1) * 0.1, 1.0),
-                                "max_tokens": max_tokens,
-                                "messages": [
-                                    {"role": "system", "content": sys_prompt},
-                                    {"role": "user", "content": prompt + attempt_hint},
-                                ],
-                                "response_format": {
-                                    "type": "json_schema",
-                                    "json_schema": {
-                                        "name": schema_name,
-                                        "schema": schema_dict,
-                                        "strict": False,
-                                    },
-                                },
-                                # thinking 控制（参考官方文档 thinking 控制章节）：
-                                # - M3: thinking 默认 adaptive 开启，传 disabled 可关闭
-                                # - M2.x: 官方明确说明 thinking 无法关闭，disabled 不生效
-                                # 对 M2.x 用 reasoning_split=true：把 thinking 拆分到
-                                # reasoning_content，让 content 保持干净 JSON。
-                                # 检测到 thinking 循环时切换到 M3 + 关闭 reasoning_split，
-                                # M3 可真正关 thinking，不会循环。
-                                "thinking": {"type": "disabled"},
-                                "reasoning_split": use_reasoning_split,
-                            },
+                            json=req_json,
                         )
                     http_status = resp.status_code
                     req_id = (

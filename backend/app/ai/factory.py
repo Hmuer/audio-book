@@ -36,6 +36,12 @@ def get_llm() -> BaseLLMProvider:
     return _llm_instance
 
 
+def invalidate_llm_cache() -> None:
+    """清空 LLM 单例缓存（改激活厂商/模型/base_url/key/thinking 后立即生效）。"""
+    global _llm_instance
+    _llm_instance = None
+
+
 # =====================================================================
 # TTS 多厂商 Registry：音色 ID 前缀 → provider 工厂函数
 # =====================================================================

@@ -279,6 +279,7 @@ export default function ProviderModelsEditor() {
       id: '',
       label: kind === 'tts' ? '新语音模型' : kind === 'llm' ? '新语言模型' : '新图片模型',
       kind,
+      ...(kind === 'llm' ? { thinking: false } : {}),
     };
     p.models = [...p.models, newModel];
     next[pIdx] = p;
@@ -730,6 +731,7 @@ function ProviderCard({
             onRemoveModel(pIdx, gIdx);
           }}
           allModels={p.models}
+          showThinking
         />
         <ModelSection
           title="图片模型（MiniMax 官方接口或兼容 /images/generations）"
@@ -819,7 +821,7 @@ function ActiveSelector({
 // =====================================================================
 function ModelSection({
   title, icon, accent, models, onAdd, onUpdate, onRemove, allModels,
-  idAsSelect, selectOptions,
+  idAsSelect, selectOptions, showThinking,
 }: {
   title: string;
   icon: React.ReactNode;
@@ -832,6 +834,8 @@ function ModelSection({
   /** 模型 id 用 <select> 而非 <input>。仅在已知枚举（如豆包 TTS）时启用。 */
   idAsSelect?: boolean;
   selectOptions?: { id: string; label: string; description: string }[];
+  /** 显示「思考模式」开关（仅 LLM 段启用；默认关闭）。 */
+  showThinking?: boolean;
 }) {
   return (
     <div className="rounded-md border border-ink-300/70 overflow-hidden">
@@ -852,7 +856,7 @@ function ModelSection({
           const globalIdx = allModels.indexOf(m);
           // key 用全局下标而非模型 id：id 正在被编辑时若 key 跟随变化会卸载重建、输入框失焦
           return (
-            <div key={globalIdx} className="px-3 py-2 grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
+            <div key={globalIdx} className={`px-3 py-2 grid ${showThinking ? 'grid-cols-[1fr_1fr_auto_auto]' : 'grid-cols-[1fr_1fr_auto]'} gap-2 items-center`}>
               <input
                 value={m.label}
                 onChange={e => onUpdate(globalIdx, { label: e.target.value })}
@@ -880,6 +884,20 @@ function ModelSection({
                   className="input-base !py-1 !text-xs font-mono"
                   spellCheck={false}
                 />
+              )}
+              {showThinking && (
+                <button
+                  type="button"
+                  onClick={() => onUpdate(globalIdx, { thinking: !m.thinking })}
+                  className={`text-[10px] px-2 py-1 rounded border whitespace-nowrap transition-colors ${
+                    m.thinking
+                      ? 'border-amber-400/50 text-amber-200 bg-amber-500/15'
+                      : 'border-white/15 text-ink-400 bg-white/[0.04] hover:text-ink-200'
+                  }`}
+                  title="思考模式（默认关闭；关闭更稳更快，开启会更慢更耗 token）"
+                >
+                  {m.thinking ? '思考·开' : '思考·关'}
+                </button>
               )}
               <button
                 onClick={() => onRemove(idx)}

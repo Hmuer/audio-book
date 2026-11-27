@@ -2340,6 +2340,12 @@ async def update_providers(
     settings.ACTIVE_TTS_MODEL = tts_a.get("model_id") or ""
     settings.ACTIVE_LLM_PROVIDER = llm_a.get("provider_id") or ""
     settings.ACTIVE_LLM_MODEL = llm_a.get("model_id") or ""
+    # 让新的激活 LLM 厂商/模型/思考开关即时生效（否则单例会缓存旧实例）
+    try:
+        from ..ai.factory import invalidate_llm_cache
+        invalidate_llm_cache()
+    except Exception:
+        pass
 
     return {
         "ok": True,
