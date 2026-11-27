@@ -178,15 +178,16 @@ async def available_voices(*, force: bool = False) -> list[dict[str, Any]]:
 
 
 def pick_default_voice(voices: list[dict[str, Any]]) -> str:
-    """默认音色：新闻/播报/主播优先 → 有声书场景 → 第一个成年音色。
+    """默认音色：电台/对话感优先 → 新闻播报 → 有声书场景 → 第一个成年音色。
 
-    当前 MiniMax 音色表里有「新闻女声」（Chinese (Mandarin)_News_Anchor），
-    它就是日报的默认主播；换厂商时按名字/场景回退，不会硬编码某个 ID。
+    日报是"聊天式科技播客"，播音腔太重会显得机械；因此默认优先「电台/温润/
+    阅历/温暖」这类自然音色（如「电台男主播」），再回退到新闻播报音色。
+    换厂商时按名字/场景回退，不会硬编码某个 ID。
     """
     if not voices:
         raise DailyError("当前 TTS 厂商没有可用音色，请先在设置页配置 TTS")
 
-    keywords = ("新闻", "播报", "主播", "资讯")
+    keywords = ("电台", "温润", "阅历", "温暖", "新闻", "播报", "主播", "资讯")
     for voice in voices:
         text = f"{voice.get('name') or ''} {voice.get('description') or ''}"
         if any(k in text for k in keywords):
