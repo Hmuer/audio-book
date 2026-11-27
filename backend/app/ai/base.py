@@ -6,13 +6,11 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class LLMQuotaExhaustedError(RuntimeError):
-    """LLM 计费配额或套餐级限流（HTTP 402，或 MiniMax 2062/Token Plan 429）。
+    """LLM 计费配额耗尽（HTTP 402，套餐周期内额度用完）。
 
-    与普通瞬时错误（429 / 网络抖动 / schema 校验失败）的本质区别：**重试无用**——
-    配额按周期重置（Token Plan 约 5 小时一个窗口），窗口内重试只会刷日志。
-    provider 层必须：不重试、不打 traceback、进入熔断快速失败；
-    业务层（prepare）必须：中止整个流水线（各阶段 checkpoint 保住已完成部分，
-    配额恢复后重跑自动续跑），绝不能把"全空结果"写成 done checkpoint。
+    注意：MiniMax **错误码 2062「Token Plan 速率限制」不是本错误**——那是速率/并发
+    超限（可退避 + 动态降并发后重试），provider 按瞬时限流处理，绝不熔断 5 小时、
+    绝不中止整个 prepare。本错误只用于真正的计费额度耗尽 402：重试无用，按周期重置。
     """
     pass
 

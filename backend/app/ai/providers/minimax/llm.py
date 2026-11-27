@@ -65,19 +65,77 @@ def _open_quota_breaker() -> None:
     _quota_blocked_until = time.monotonic() + _quota_breaker_secs()
 
 
+# ---------------------------------------------------------------------
+# MiniMax「Token Plan 速率限制」(HTTP 429 + 错误码 2062) 不是「额度用完」，
+# 而是**速率/并发超限**（官方文案：请升级套餐或切换按量付费）。正确处理：
+# 不熔断 5h、不中止流程，而是**动态降并发 + 指数退避重试**，成功后逐步恢复。
+# 否则用户明明套餐只用 11% 却报「配额耗尽」。
+# ---------------------------------------------------------------------
+_rate_cap: int | None = None   # 动态并发上限（None=跟随 settings）
+_rate_success_streak: int = 0
+
+
+def _base_llm_concurrency() -> int:
+    try:
+        return max(1, int(settings.LLM_MAX_CONCURRENCY))
+    except Exception:
+        return 1
+
+
+def _effective_llm_concurrency() -> int:
+    base = _base_llm_concurrency()
+    return min(base, _rate_cap) if _rate_cap is not None else base
+
+
+def reset_rate_cap() -> None:
+    """手动/测试用：清掉动态并发降级。"""
+    global _rate_cap, _rate_success_streak
+    _rate_cap = None
+    _rate_success_streak = 0
+
+
+def _reduce_rate_cap() -> None:
+    """遇到 2062 → 并发减半（最低 1），缓解速率/并发超限。"""
+    global _rate_cap, _rate_success_streak
+    base = _base_llm_concurrency()
+    cur = _rate_cap if _rate_cap is not None else base
+    new = max(1, cur // 2)
+    _rate_cap = new
+    _rate_success_streak = 0
+    logger.warning(
+        f"[LLM] Token Plan 速率限制(2062)：动态降并发 {cur} -> {new}（非配额耗尽，退避重试）"
+    )
+
+
+def _note_llm_success() -> None:
+    """连续成功 20 次后并发 +1，逐步恢复到 settings 上限。"""
+    global _rate_cap, _rate_success_streak
+    if _rate_cap is None:
+        return
+    _rate_success_streak += 1
+    if _rate_success_streak >= 20:
+        _rate_success_streak = 0
+        base = _base_llm_concurrency()
+        if _rate_cap < base:
+            _rate_cap += 1
+            logger.info(f"[LLM] Token Plan 速率恢复中：并发 -> {_rate_cap}/{base}")
+
+
 def _get_llm_sem() -> asyncio.Semaphore:
     """惰性初始化 semaphore（在事件循环内创建，避免跨循环报错）。
 
     H-1 热更新：settings.LLM_MAX_CONCURRENCY 变化时立即重建 —— 用户在设置页
     调高/调低并发**不需要重启后端**。旧 sem 由在飞请求的持有者自然释放（不中断
     在飞请求）；新请求立即按新并发度限流。
+    额外：遇 2062 速率限制时按 `_effective_llm_concurrency()` 动态降并发。
     """
     global _llm_sem, _llm_sem_value
-    n = max(1, int(settings.LLM_MAX_CONCURRENCY))
+    n = _effective_llm_concurrency()
     if _llm_sem is None or _llm_sem_value != n:
         _llm_sem = asyncio.Semaphore(n)
         _llm_sem_value = n
     return _llm_sem
+
 
 
 # =====================================================================
@@ -404,6 +462,7 @@ class MiniMaxLLMProvider(BaseLLMProvider):
             req_id: Optional[str] = None
             http_status: Optional[int] = None
             is_rate_limited = False
+            token_plan_limited = False
             # 失败诊断用（FAIL 日志需要看到"响应是否被截断/token 用量/原始片段"）
             finish_reason: Optional[str] = None
             completion_tokens: Optional[int] = None
@@ -478,18 +537,17 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                                 err_msg = f"{err_msg} ({err_code})"
                         except Exception:
                             err_msg = body_preview
-                        # 429 速率限制：普通 429 走指数退避；MiniMax 2062
-                        # 是 Token Plan 套餐级限流，按配额熔断处理。
+                        # 429 速率限制：普通 429 走指数退避；MiniMax 2062 是
+                        # **Token Plan 速率/并发限制（不是额度耗尽）** → 动态降并发 +
+                        # 退避重试，绝不能熔断 5h 或中止流程。
                         if resp.status_code == 429:
                             if _is_token_plan_rate_limit(resp.status_code, err_msg):
-                                _open_quota_breaker()
+                                _reduce_rate_cap()
+                                token_plan_limited = True
                                 logger.warning(
-                                    f"[LLM] Token Plan 速率限制（model={model}）："
-                                    f"熔断 {_quota_breaker_secs()}s，已完成 checkpoint，暂停后续调用。"
+                                    f"[LLM] Token Plan 速率限制（model={model}，非配额耗尽）："
+                                    f"动态降并发为 {_effective_llm_concurrency()} 并退避重试。"
                                     f"err={err_msg}"
-                                )
-                                raise LLMQuotaExhaustedError(
-                                    f"LLM HTTP 429 Token Plan 速率限制: {err_msg}"
                                 )
                             is_rate_limited = True
                         # H-22 402 配额耗尽：**不重试**（周期内重试必然再 402，
@@ -688,8 +746,8 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                         f"req_id={req_id} status={http_status} {tok_str} "
                         f"resp_chars={resp_chars} this_ms={int(elapsed*1000)} total_ms={int(total_elapsed*1000)}"
                     )
+                    _note_llm_success()
                     return validated
-
             except (LLMQuotaExhaustedError, LLMContentRejectedError):
                 # H-22：配额耗尽 / H-24：内容审核拒绝 —— 都直接穿透：不重试
                 # （窗口内必然再 402 / 同一段原文必然再 422）、不退避、不进
@@ -738,10 +796,14 @@ class MiniMaxLLMProvider(BaseLLMProvider):
                         )
                     if is_rate_limited:
                         # 429 速率限制：指数退避（2s / 4s / 8s ...）
-                        # 比固定 1s 更稳，给供应商 RPM 窗口恢复时间
-                        backoff = 2.0 * (2 ** (attempt - 1))
+                        # Token Plan(2062) 用更长退避（8/16/32…上限 60s），给并发退出留时间
+                        if token_plan_limited:
+                            backoff = min(60.0, 8.0 * (2 ** (attempt - 1)))
+                        else:
+                            backoff = 2.0 * (2 ** (attempt - 1))
                         logger.warning(
-                            f"[LLM] 429 rate-limited, backing off {backoff}s before retry "
+                            f"[LLM] {'Token Plan 速率限制' if token_plan_limited else '429 rate-limited'}, "
+                            f"backing off {backoff}s before retry "
                             f"(attempt={attempt}/{max_retries})"
                         )
                         await asyncio.sleep(backoff)

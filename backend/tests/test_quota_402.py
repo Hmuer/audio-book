@@ -133,17 +133,28 @@ async def test_h22_402_raises_once_without_retry(monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
-async def test_token_plan_2062_429_opens_quota_breaker_without_three_retries(monkeypatch):
-    """2062 套餐级 429 不应按普通瞬时 429 重试 2/4 秒。"""
+async def test_token_plan_2062_429_is_retryable_not_quota(monkeypatch):
+    """2062「Token Plan 速率限制」= 速率/并发超限，**不是额度耗尽**：
+    应动态降并发 + 退避重试（多次 HTTP），绝不开 5h 配额熔断、绝不抛配额错误。"""
     llm_mod = _get_llm_mod()
     llm_mod.reset_quota_breaker()
+    llm_mod.reset_rate_cap()
     fake = _make_fake_client([_FakeResp(429, _token_plan_429_payload())])
     monkeypatch.setattr(llm_mod.httpx, "AsyncClient", fake)
+    sleeps: list[float] = []
 
-    with pytest.raises(LLMQuotaExhaustedError, match="Token Plan"):
+    async def _fake_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr(llm_mod.asyncio, "sleep", _fake_sleep)
+
+    with pytest.raises(RuntimeError) as ei:
         await _make_provider().chat_structured("test", _TinyResult, max_retries=3)
-    assert fake.state["post_calls"] == 1
-    assert llm_mod._quota_blocked_until > time.monotonic()
+    assert not isinstance(ei.value, LLMQuotaExhaustedError), "2062 不应被当成配额耗尽"
+    assert fake.state["post_calls"] == 3, "2062 应按速率限制重试（3 次 HTTP）"
+    assert llm_mod._quota_blocked_until == 0.0, "2062 不应打开 5h 配额熔断"
+    assert sleeps and sleeps[0] >= 8.0, f"Token Plan 应使用更长退避，实际 {sleeps}"
+    llm_mod.reset_rate_cap()
     llm_mod.reset_quota_breaker()
 
 
