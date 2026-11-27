@@ -169,6 +169,9 @@
 - 章级质检 M-QA（`services/chapter_qa.py`）：时长/字数比、引号句漏识别、未知/低置信说话人；`quality_report.suspicious` 带 `reasons`。
 - 失败收尾：仅当「已落盘且有 `project_dialogues` 行」才置 `partial_success`，避免产出整本旁白平读的坏成品（真正的「按已完成章构建」在 Phase 2 落地）。
 
-**Phase 2（待实现）**：prepare 重构为「A 全局实体分析（角色/去重/音色/资料）」+「B 章节级独立 worker（并发/限流/章级 checkpoint、逐章落盘对白与情绪）」，并支持按已完成章构建 / 单章重试。
+**Phase 2（本轮已落地核心；端到端章节 worker 化待续）**
+- 章节级增量落盘：对白阶段每批处理完立即写该批章节的 `project_dialogues`（`_replace_chapter_dialogues`），长书中途失败时已完成批次的对白已入库，可断点续跑/部分构建。
+- 部分构建：`start_build` 在 `project.status=partial_success` 且有 `dialogue_completed_chapters` 时，**只构建已识别章节**（`_select_build_chapters`），未识别章不会被合成成整本旁白平读。
+- 待续：把情绪/指令阶段也并入"逐章 worker"（真正端到端独立 + 章级并发限流）。
 
 **Phase 3（待实现）**：超长书自动分卷（每 N 章一个子构建）+ 逐章试听/校对工作流。

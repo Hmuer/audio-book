@@ -1114,6 +1114,41 @@ def _prepare_reached_partial(proj: "Project | None") -> bool:
     )
 
 
+async def _replace_chapter_dialogues(
+    session, project_id: str, chapter_idx: int, attrs: list,
+    *, instruction_map=None, emotion_map=None,
+) -> None:
+    """整章替换某章的 ProjectDialogue 行（Phase2 增量落盘 / 复用）。
+
+    attrs 为 `DialogueAttribution.model_dump()` 形态：[{anchor:{start,end,text}, speaker, text, confidence}]。
+    """
+    await session.execute(
+        delete(ProjectDialogue).where(
+            ProjectDialogue.project_id == project_id,
+            ProjectDialogue.chapter_idx == chapter_idx,
+        )
+    )
+    for seg_idx, a in enumerate(attrs or []):
+        if not isinstance(a, dict):
+            continue
+        anchor = a.get("anchor") or {}
+        if not isinstance(anchor, dict):
+            anchor = {}
+        session.add(ProjectDialogue(
+            project_id=project_id,
+            chapter_idx=chapter_idx,
+            segment_index=seg_idx,
+            anchor_start=int(anchor.get("start", 0) or 0),
+            anchor_end=int(anchor.get("end", 0) or 0),
+            anchor_text=str(anchor.get("text", "") or ""),
+            speaker=str(a.get("speaker", "") or ""),
+            text=str(a.get("text", "") or ""),
+            confidence=float(a.get("confidence", 1.0) or 1.0),
+            instruction=str((instruction_map or {}).get((chapter_idx, seg_idx), "") or "")[:512],
+            emotion=str((emotion_map or {}).get((chapter_idx, seg_idx), "") or "")[:16],
+        ))
+
+
 async def _mark_project_failed(project_id: str) -> None:
     """把项目置为 failed；仅当「已落盘且有对白数据」的部分成果才置 partial_success。"""
     factory = get_session_factory()
@@ -2523,6 +2558,18 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
                         for a in completed:
                             a.speaker = name_map.get(a.speaker, a.speaker)
                         out.append((ch_idx_b, [a.model_dump() for a in completed]))
+                    # Phase2：本批对白立即落库（章级增量持久化）。长书中途失败时，
+                    # 已完成批次的对白已进 project_dialogues → 可部分构建/断点续跑。
+                    try:
+                        async with factory() as _ps:
+                            for _ci, _attrs in out:
+                                await _replace_chapter_dialogues(_ps, project_id, _ci, _attrs)
+                            await _ps.commit()
+                    except Exception as _pe:
+                        logger.warning(
+                            f"[project_prepare] project_id={project_id[:8]}... "
+                            f"增量落盘对白失败（不影响识别）：{type(_pe).__name__}: {_pe}"
+                        )
                     return batch_idx, out, None
                 except LLMQuotaExhaustedError:
                     # H-22：配额耗尽不算批失败（failed checkpoint 由中止语义

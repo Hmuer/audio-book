@@ -513,6 +513,36 @@ def _h5_quality_summary(
     return {"suspicious": suspicious, "failed_n": failed_n, "checked_n": checked}
 
 
+def _select_build_chapters(project_status: str, progress_json: "str | None", chapters: "list[Chapter]"):
+    """Phase2：选择本次构建的章节。
+
+    - 普通（ready/done）：全部章节，only=None。
+    - partial_success 且 progress 里有 dialogue_completed_chapters：
+      只构建「对白阶段已完成」的章节（未识别的章不合成成整本旁白），并返回 only。
+    返回 (chapters_to_build, only_idxs_or_None)。
+    """
+    if project_status != "partial_success":
+        return chapters, None
+    try:
+        prog = json.loads(progress_json or "{}")
+        if not isinstance(prog, dict):
+            prog = {}
+    except Exception:
+        prog = {}
+    want: set[int] = set()
+    for x in (prog.get("dialogue_completed_chapters") or []):
+        try:
+            want.add(int(x))
+        except Exception:
+            pass
+    if not want:
+        return chapters, None
+    filtered = [c for c in chapters if c.idx in want]
+    if not filtered or len(filtered) >= len(chapters):
+        return chapters, None
+    return filtered, [c.idx for c in filtered]
+
+
 def _h4_progress_meta_json(
     *,
     phase: str,
@@ -1618,6 +1648,17 @@ async def _start_build_impl(
         if not chapters:
             raise RuntimeError("项目尚未 prepare（没有章节数据），请先执行识别")
 
+        # Phase2：项目「部分完成」时只构建已识别（对白阶段已完成）的章节，
+        # 避免把未识别章合成成整本旁白平读。dcc = dialogue_completed_chapters。
+        chapters, only_chapter_idxs_for_build = _select_build_chapters(
+            p.status, p.progress_json, chapters
+        )
+        if only_chapter_idxs_for_build:
+            logger.info(
+                f"[build_start] project_id={project_id[:8]}... 部分完成，"
+                f"仅构建已识别章 {len(chapters)} 章"
+            )
+
         # 未归属对白兜底音色（见 _with_unknown_speaker_voices）。必须放在 digest 计算
         # **之前**：它改变了实际使用的音色映射，digest 不跟着变的话，用户重新合成会命中
         # 历史成功 build 的旧产物（匿名对白仍由旁白念）而完全听不出变化。
@@ -1768,7 +1809,7 @@ async def _start_build_impl(
                         voice_assignments=voice_assignments,
                         narrator_voice_id=narrator_voice_id,
                         speed=speed,
-                        only_chapter_idxs=None,
+                        only_chapter_idxs=only_chapter_idxs_for_build,
                         source_build_id=None,
                     )
                     # 终态由 _run_build_inner 写 Build.status；这里尝试把对应终态同步给 JobTask

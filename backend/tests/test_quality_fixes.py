@@ -280,3 +280,28 @@ def test_prepare_reached_partial():
     assert _prepare_reached_partial(_proj(5, {"stage": "characters"})) is False
     assert _prepare_reached_partial(_proj(5, {"dialogue_completed_chapters": [0, 1]})) is True
     assert _prepare_reached_partial(_proj(5, {"instructions_done": True})) is True
+
+
+def test_select_build_chapters_partial():
+    from backend.app.services.build import _select_build_chapters
+
+    class C:
+        def __init__(self, i):
+            self.idx = i
+
+    chs = [C(0), C(1), C(2), C(3)]
+    out, only = _select_build_chapters("ready", "{}", chs)
+    assert only is None and len(out) == 4
+
+    out2, only2 = _select_build_chapters(
+        "partial_success", json.dumps({"dialogue_completed_chapters": [0, 2]}), chs
+    )
+    assert only2 == [0, 2] and [c.idx for c in out2] == [0, 2]
+
+    out3, only3 = _select_build_chapters(
+        "partial_success", json.dumps({"dialogue_completed_chapters": [0, 1, 2, 3]}), chs
+    )
+    assert only3 is None and len(out3) == 4
+
+    out4, only4 = _select_build_chapters("partial_success", "{}", chs)
+    assert only4 is None
