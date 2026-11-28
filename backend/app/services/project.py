@@ -2971,6 +2971,9 @@ async def _do_prepare_project_async(project_id: str) -> ProjectPrepareResp:
             # 402 项目；跑通即闭环，避免残留 attempts 误导前端展示）
             if "quota_retry" in prog:
                 prog.pop("quota_retry", None)
+            # 残留失败自动补跑：真正跑干净后清零计数（下次再失败重新享额度）
+            if not incomplete and "auto_retry_failed" in prog:
+                prog.pop("auto_retry_failed", None)
             await _write_progress(prog)
 
         # 7. 落库：先清旧数据 → 写新数据
@@ -3541,6 +3544,175 @@ async def _scan_quota_failed_and_retry(trigger: str) -> None:
         )
 
 
+# =====================================================================
+# 残留失败自动补跑（对白批失败 / 角色切片失败等）
+# ---------------------------------------------------------------------
+# 旧行为：某批/切片重试耗尽 → 记入 progress 的 dialogue_failed_batches /
+# char_failed_slices，prepare 以 partial_success 收尾，**必须用户手动点
+# 「重跑识别」才补**。用户明确要求自动补跑，不能靠人工。
+#
+# 新行为：watchdog 每轮扫描「已完成但有残留失败且没有正在跑的 prepare/build」
+# 的项目，到点自动重新拉起 prepare（断点续跑 → 只会重跑失败批/切片），
+# 用 auto_retry_failed{attempts,next_at} 记录次数并做上限（默认 3 次），
+# 真正跑干净（incomplete=False）后计数清零。
+# =====================================================================
+
+def _residual_failed_n(prog: dict) -> int:
+    """进度里残留的失败单元数：对白失败批 + 角色失败切片。"""
+    n = 0
+    fb = prog.get("dialogue_failed_batches")
+    if isinstance(fb, dict):
+        n += len(fb)
+    cs = prog.get("char_failed_slices")
+    if isinstance(cs, dict):
+        n += len(cs)
+    return n
+
+
+def _auto_retry_failed_enabled() -> bool:
+    return bool(getattr(settings, "PREPARE_AUTO_RETRY_FAILED_ENABLED", True))
+
+
+def _auto_retry_failed_minutes() -> float:
+    try:
+        return max(0.5, float(getattr(settings, "PREPARE_AUTO_RETRY_FAILED_MINUTES", 2) or 2))
+    except Exception:
+        return 2.0
+
+
+def _auto_retry_failed_max() -> int:
+    try:
+        return max(1, int(getattr(settings, "PREPARE_AUTO_RETRY_FAILED_MAX", 3) or 3))
+    except Exception:
+        return 3
+
+
+async def _list_auto_retry_failed_projects() -> list[tuple[Project, dict]]:
+    """扫描「已完成但有残留失败、到点且未超上限」的项目。"""
+    import time as _time
+    if not _auto_retry_failed_enabled():
+        return []
+    factory = get_session_factory()
+    result: list[tuple[Project, dict]] = []
+    async with factory() as sess:
+        rows = (
+            await sess.execute(
+                select(Project)
+                .where(Project.status.in_(("ready", "partial_success")))
+                .order_by(Project.updated_at.asc())
+            )
+        ).scalars().all()
+        for proj in rows:
+            if _is_prepare_running_for(proj.project_id):
+                continue
+            prog = _parse_progress(proj)
+            if _residual_failed_n(prog) <= 0:
+                continue
+            ar = prog.get("auto_retry_failed")
+            ar = ar if isinstance(ar, dict) else {}
+            if int(ar.get("attempts") or 0) >= _auto_retry_failed_max():
+                continue
+            if ar.get("next_at"):
+                due_s = _seconds_since(str(ar["next_at"]), _time.time())
+                if due_s is None or due_s < 0:
+                    continue
+            # 有未终态 build 时跳过，避免与合成任务并发写库
+            latest_build = (
+                await sess.execute(
+                    select(Build)
+                    .where(Build.project_id == proj.project_id)
+                    .order_by(Build.created_at.desc())
+                    .limit(1)
+                )
+            ).scalars().first()
+            if latest_build and latest_build.status not in (
+                "success", "partial_success", "failed", "cancelled"
+            ):
+                continue
+            result.append((proj, prog))
+    return result
+
+
+async def _retry_one_auto_failed_project(proj: Project, trigger: str) -> bool:
+    """把有残留失败的项目重新拉起（断点续跑，只补失败批/切片）。"""
+    pid = proj.project_id
+    if _is_prepare_running_for(pid):
+        return False
+    factory = get_session_factory()
+    async with factory() as sess:
+        p = await sess.get(Project, pid)
+        if not p or p.status not in ("ready", "partial_success"):
+            return False
+        prog = _parse_progress(p)
+        if _residual_failed_n(prog) <= 0:
+            return False
+        if not p.source_file_path or not os.path.isfile(p.source_file_path):
+            prog["auto_retry_failed"] = {
+                "attempts": _auto_retry_failed_max(),
+                "note": "source_missing",
+            }
+            prog["updated_at"] = _fmt_time_now()
+            p.progress_json = json.dumps(prog, ensure_ascii=False)
+            await sess.commit()
+            logger.warning(
+                f"[project_prepare][auto_retry] project_id={pid[:8]}... "
+                f"源文件缺失，停止自动补跑。"
+            )
+            return False
+        ar = prog.get("auto_retry_failed")
+        ar = ar if isinstance(ar, dict) else {}
+        attempts = int(ar.get("attempts") or 0) + 1
+        prog["auto_retry_failed"] = {
+            "attempts": attempts,
+            "last_at": _fmt_time_now(),
+            "next_at": (
+                datetime.now() + timedelta(minutes=_auto_retry_failed_minutes())
+            ).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        prog["stage"] = "start"
+        prog["updated_at"] = _fmt_time_now()
+        p.status = "preparing"
+        p.progress_json = json.dumps(prog, ensure_ascii=False)
+        await sess.commit()
+    _enqueue_prepare_task(pid, trigger="auto_retry")
+    logger.info(
+        f"[project_prepare][auto_retry] project_id={pid[:8]}... "
+        f"检测到残留失败，自动补跑 #{attempts}/{_auto_retry_failed_max()}"
+        f"（trigger={trigger}），断点续跑只补失败批/切片。"
+    )
+    return True
+
+
+async def _scan_auto_retry_failed(trigger: str) -> None:
+    """扫一圈有残留失败的项目并自动补跑。"""
+    try:
+        due = await _list_auto_retry_failed_projects()
+        if not due:
+            return
+        logger.info(
+            f"[project_prepare][auto_retry] 扫描到 {len(due)} 个有残留失败的项目，"
+            f"trigger={trigger}，自动补跑。"
+        )
+        sem = asyncio.Semaphore(max(1, PREPARE_RECOVERY_CONCURRENCY))
+
+        async def _do_one(item):
+            async with sem:
+                try:
+                    await _retry_one_auto_failed_project(item[0], trigger)
+                except Exception as e:
+                    logger.warning(
+                        f"[project_prepare][auto_retry] 补跑 "
+                        f"{item[0].project_id[:8]}... 失败: {type(e).__name__}: {e}"
+                    )
+
+        await asyncio.gather(*[_do_one(it) for it in due])
+    except Exception as e:
+        logger.warning(
+            f"[project_prepare][auto_retry] 扫描异常，跳过本轮: "
+            f"{type(e).__name__}: {e}"
+        )
+
+
 async def _watchdog_loop() -> None:
     """后台轮询：每 PREPARE_WATCHDOG_INTERVAL_SECONDS 扫一次 preparing 卡死的项目并恢复。"""
     logger.info(
@@ -3566,6 +3738,13 @@ async def _watchdog_loop() -> None:
         except Exception as e:
             logger.warning(
                 f"[project_prepare][watchdog] 配额重试轮询异常: {type(e).__name__}: {e}"
+            )
+        # 残留失败（对白批 / 角色切片）自动补跑：不依赖用户手动点「重跑」。
+        try:
+            await _scan_auto_retry_failed(trigger="watchdog")
+        except Exception as e:
+            logger.warning(
+                f"[project_prepare][watchdog] 残留失败补跑轮询异常: {type(e).__name__}: {e}"
             )
 
 
