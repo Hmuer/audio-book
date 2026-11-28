@@ -13,6 +13,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ...core.config import settings
 from . import localize, prefs, store, subtitles
@@ -54,6 +55,9 @@ def start_run(*, date: str | None = None, max_items: int | None = None) -> dict[
         )
     date = date or datetime.now().strftime("%Y-%m-%d")
     store.issue_dir(date)  # 校验日期格式
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    if date > today:
+        raise DailyError(f"不能生成未来日期：{date}（今天是 {today}）")
     now = store.utcnow_iso()
     run_id = f"run_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     store.write_run_status(

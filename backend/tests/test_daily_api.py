@@ -428,3 +428,12 @@ async def test_daily_lrc_endpoint(_isolate_data_dir, daily_env, admin_token):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         r = await c.get(f"/api/daily/issues/{DATE}/subtitles.lrc", params={"key": "test-feed-key"})
         assert r.status_code == 200 and r.text.startswith("[")
+
+
+@pytest.mark.asyncio
+async def test_daily_run_rejects_future_date(_isolate_data_dir, daily_env, admin_token):
+    """禁止生成未来日期（避免测试期混进真实列表）。"""
+    async with _client(admin_token) as c:
+        r = await c.post("/api/daily/run", json={"date": "2099-01-01"})
+        assert r.status_code == 409
+        assert "未来" in r.json()["detail"]
