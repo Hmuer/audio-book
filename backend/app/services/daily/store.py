@@ -24,6 +24,7 @@ import re
 import tempfile
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from ...core.config import settings
@@ -193,9 +194,12 @@ def list_issues(limit: int = 30) -> list[dict[str, Any]]:
     if not root.is_dir():
         return []
     dates: list[str] = []
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
     for child in root.iterdir():
         if child.is_dir() and DATE_RE.match(child.name) and (child / META_NAME).is_file():
-            dates.append(child.name)
+            # 防御：即使目录里残留未来日期的试听期，也不在列表里展示
+            if child.name <= today:
+                dates.append(child.name)
     dates.sort(reverse=True)
     issues: list[dict[str, Any]] = []
     for date in dates[: max(1, min(int(limit), 200))]:

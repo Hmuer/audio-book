@@ -404,7 +404,9 @@ function DailyList() {
     if (!silent) setListLoading(true);
     try {
       const r = await api.dailyIssues(LIST_LIMIT);
-      const items = Array.isArray(r.items) ? r.items : [];
+      const items = (Array.isArray(r.items) ? r.items : [])
+        .slice()
+        .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
       setIssues(items);
       setTotal(typeof r.total === 'number' ? r.total : items.length);
       setListError(null);

@@ -437,3 +437,28 @@ async def test_daily_run_rejects_future_date(_isolate_data_dir, daily_env, admin
         r = await c.post("/api/daily/run", json={"date": "2099-01-01"})
         assert r.status_code == 409
         assert "未来" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_daily_list_sorted_desc_and_hides_future(_isolate_data_dir, daily_env, admin_token):
+    """列表按日期倒序（最近在上），且不展示未来日期。"""
+    import shutil
+
+    older = daily_env / DATE
+    newer = daily_env / "2025-11-25"
+    shutil.copytree(older, newer)
+    meta = json.loads((newer / "meta.json").read_text(encoding="utf-8"))
+    meta["date"] = "2025-11-25"
+    meta["title"] = "更新的那期"
+    (newer / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+    future = daily_env / "2099-01-01"
+    shutil.copytree(older, future)
+    meta = json.loads((future / "meta.json").read_text(encoding="utf-8"))
+    meta["date"] = "2099-01-01"
+    (future / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+    async with _client(admin_token) as c:
+        r = await c.get("/api/daily/issues")
+        dates = [x["date"] for x in r.json()["items"]]
+        assert dates == ["2025-11-25", DATE], dates
